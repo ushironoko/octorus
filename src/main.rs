@@ -42,13 +42,11 @@ async fn main() -> Result<()> {
 
     // キャッシュを同期的に読み込み（メインスレッドで即座に）
     let (mut app, tx, needs_fetch) = if args.refresh {
-        // --refresh: キャッシュ無視、API取得が必要
         let (app, tx) = app::App::new_loading(&args.repo, args.pr, config);
         (app, tx, loader::FetchMode::Fresh)
     } else {
         match cache::read_cache(&args.repo, args.pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
-                // キャッシュヒット: 即座にデータをセット
                 let (app, tx) = app::App::new_with_cache(
                     &args.repo,
                     args.pr,
@@ -59,7 +57,6 @@ async fn main() -> Result<()> {
                 (app, tx, loader::FetchMode::CheckUpdate(entry.pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
-                // TTL切れ: 一旦データ表示、バックグラウンドで更新
                 let (app, tx) = app::App::new_with_cache(
                     &args.repo,
                     args.pr,
@@ -70,7 +67,6 @@ async fn main() -> Result<()> {
                 (app, tx, loader::FetchMode::Fresh)
             }
             Ok(cache::CacheResult::Miss) | Err(_) => {
-                // キャッシュなし: Loading状態で開始
                 let (app, tx) = app::App::new_loading(&args.repo, args.pr, config);
                 (app, tx, loader::FetchMode::Fresh)
             }
@@ -86,7 +82,6 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         loader::fetch_pr_data(repo.clone(), pr_number, needs_fetch, tx.clone()).await;
 
-        // リトライ要求を待機
         while retry_rx.recv().await.is_some() {
             let tx_retry = tx.clone();
             loader::fetch_pr_data(repo.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
@@ -94,6 +89,5 @@ async fn main() -> Result<()> {
         }
     });
 
-    // TUI実行
     app.run().await
 }
