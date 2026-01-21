@@ -5,8 +5,49 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
+
+/// Wrap text to fit within the specified width, handling multibyte characters
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    for ch in text.chars() {
+        // Skip newlines, treat as space
+        if ch == '\n' {
+            continue;
+        }
+
+        let char_width = ch.width().unwrap_or(1);
+
+        if current_width + char_width > max_width {
+            // Start new line
+            lines.push(current_line);
+            current_line = String::new();
+            current_width = 0;
+        }
+
+        current_line.push(ch);
+        current_width += char_width;
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -41,6 +82,10 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .block(Block::default().borders(Borders::ALL));
             frame.render_widget(empty, chunks[1]);
         } else {
+            // Calculate available width for text (subtract borders and indent)
+            let available_width = chunks[1].width.saturating_sub(4) as usize; // 2 for borders + 4 for indent
+            let body_width = available_width.saturating_sub(4); // 4 spaces indent for body
+
             let items: Vec<ListItem> = comments
                 .iter()
                 .enumerate()
@@ -74,21 +119,24 @@ pub fn render(frame: &mut Frame, app: &App) {
                         ),
                     ]);
 
-                    // Second line: comment body (truncated)
-                    let body_preview: String = comment
+                    // Wrap comment body to multiple lines
+                    let body_text: String = comment
                         .body
                         .lines()
-                        .next()
-                        .unwrap_or("")
-                        .chars()
-                        .take(60)
-                        .collect();
-                    let body_line = Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(body_preview, style),
-                    ]);
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let wrapped_lines = wrap_text(&body_text, body_width);
 
-                    ListItem::new(vec![header_line, body_line, Line::from("")])
+                    let mut lines = vec![header_line];
+                    for wrapped_line in wrapped_lines {
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled(wrapped_line, style),
+                        ]));
+                    }
+                    lines.push(Line::from(""));
+
+                    ListItem::new(lines)
                 })
                 .collect();
 

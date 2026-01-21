@@ -882,6 +882,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]

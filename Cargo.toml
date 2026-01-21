@@ -22,6 +22,7 @@ tempfile = "3"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
+unicode-width = "0.2.2"
 
 [dev-dependencies]
 assert_cmd = "2"

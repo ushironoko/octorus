@@ -69,6 +69,7 @@ pub struct App {
     pub comments_loading: bool,
     data_receiver: Option<mpsc::Receiver<DataLoadResult>>,
     retry_sender: Option<mpsc::Sender<()>>,
+    comment_receiver: Option<mpsc::Receiver<Vec<ReviewComment>>>,
 }
 
 impl App {
@@ -99,6 +100,7 @@ impl App {
             comments_loading: false,
             data_receiver: Some(rx),
             retry_sender: None,
+            comment_receiver: None,
         };
 
         (app, tx)
@@ -135,6 +137,7 @@ impl App {
             comments_loading: false,
             data_receiver: Some(rx),
             retry_sender: None,
+            comment_receiver: None,
         };
 
         (app, tx)
@@ -149,6 +152,7 @@ impl App {
 
         while !self.should_quit {
             self.poll_data_updates();
+            self.poll_comment_updates();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -168,6 +172,29 @@ impl App {
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 self.data_receiver = None;
+            }
+        }
+    }
+
+    /// コメント取得のポーリング
+    fn poll_comment_updates(&mut self) {
+        let Some(ref mut rx) = self.comment_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(comments) => {
+                self.review_comments = Some(comments);
+                self.selected_comment = 0;
+                self.comment_list_scroll_offset = 0;
+                self.comments_loading = false;
+                self.comment_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.review_comments = Some(vec![]);
+                self.comments_loading = false;
+                self.comment_receiver = None;
             }
         }
     }
@@ -294,7 +321,7 @@ impl App {
             KeyCode::Char(c) if c == self.config.keybindings.comment => {
                 self.submit_review(ReviewAction::Comment, terminal).await?
             }
-            KeyCode::Char('C') => self.open_comment_list().await,
+            KeyCode::Char('C') => self.open_comment_list(),
             KeyCode::Char('?') => self.state = AppState::Help,
             _ => {}
         }
@@ -549,21 +576,53 @@ impl App {
         Ok(())
     }
 
-    async fn open_comment_list(&mut self) {
-        self.comments_loading = true;
+    fn open_comment_list(&mut self) {
         self.state = AppState::CommentList;
 
-        match github::comment::fetch_review_comments(&self.repo, self.pr_number).await {
-            Ok(comments) => {
-                self.review_comments = Some(comments);
+        // Try cache first
+        let cache_result = crate::cache::read_comment_cache(
+            &self.repo,
+            self.pr_number,
+            crate::cache::DEFAULT_TTL_SECS,
+        );
+
+        match cache_result {
+            Ok(crate::cache::CacheResult::Hit(entry)) => {
+                // Cache hit (fresh) - show immediately, no background fetch needed
+                self.review_comments = Some(entry.comments);
                 self.selected_comment = 0;
                 self.comment_list_scroll_offset = 0;
+                self.comments_loading = false;
+                return;
             }
-            Err(_) => {
-                self.review_comments = Some(vec![]);
+            Ok(crate::cache::CacheResult::Stale(entry)) => {
+                // Stale cache - show immediately, fetch in background for next time
+                self.review_comments = Some(entry.comments);
+                self.selected_comment = 0;
+                self.comment_list_scroll_offset = 0;
+                self.comments_loading = false;
             }
-        }
-        self.comments_loading = false;
+            _ => {
+                // No cache - show loading
+                self.comments_loading = true;
+            }
+        };
+
+        // Start background fetch (for stale cache update or fresh fetch)
+        let (tx, rx) = mpsc::channel(1);
+        self.comment_receiver = Some(rx);
+
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number;
+
+        tokio::spawn(async move {
+            let comments = github::comment::fetch_review_comments(&repo, pr_number)
+                .await
+                .unwrap_or_default();
+            // Write to cache
+            let _ = crate::cache::write_comment_cache(&repo, pr_number, &comments);
+            let _ = tx.send(comments).await;
+        });
     }
 
     async fn handle_comment_list_input(
