@@ -27,10 +27,10 @@ pub async fn create_review_comment(
     path: &str,
     line: u32,
     body: &str,
-) -> Result<()> {
+) -> Result<ReviewComment> {
     let endpoint = format!("repos/{}/pulls/{}/comments", repo, pr_number);
     let line_str = line.to_string();
-    gh_api_post(
+    let json = gh_api_post(
         &endpoint,
         &[
             ("body", FieldValue::String(body)),
@@ -41,5 +41,5 @@ pub async fn create_review_comment(
         ],
     )
     .await?;
-    Ok(())
+    serde_json::from_value(json).context("Failed to parse created comment response")
 }

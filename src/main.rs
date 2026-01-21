@@ -7,6 +7,7 @@ use crossterm::{
 use std::io;
 use std::panic;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 mod app;
 mod cache;
@@ -71,22 +72,23 @@ async fn main() -> Result<()> {
     } else {
         match cache::read_cache(&args.repo, args.pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
+                let pr_updated_at = entry.pr_updated_at;
                 let (app, tx) = app::App::new_with_cache(
                     &args.repo,
                     args.pr,
                     config,
-                    entry.pr.clone(),
-                    entry.files.clone(),
+                    entry.pr,
+                    entry.files,
                 );
-                (app, tx, loader::FetchMode::CheckUpdate(entry.pr_updated_at))
+                (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
                 let (app, tx) = app::App::new_with_cache(
                     &args.repo,
                     args.pr,
                     config,
-                    entry.pr.clone(),
-                    entry.files.clone(),
+                    entry.pr,
+                    entry.files,
                 );
                 (app, tx, loader::FetchMode::Fresh)
             }
@@ -99,22 +101,35 @@ async fn main() -> Result<()> {
 
     app.set_retry_sender(retry_tx);
 
+    // Cancellation token for graceful shutdown
+    let cancel_token = CancellationToken::new();
+    let token_clone = cancel_token.clone();
+
     // バックグラウンドでAPI取得
     let repo = args.repo.clone();
     let pr_number = args.pr;
 
     tokio::spawn(async move {
-        loader::fetch_pr_data(repo.clone(), pr_number, needs_fetch, tx.clone()).await;
+        tokio::select! {
+            _ = token_clone.cancelled() => {}
+            _ = async {
+                loader::fetch_pr_data(repo.clone(), pr_number, needs_fetch, tx.clone()).await;
 
-        while retry_rx.recv().await.is_some() {
-            let tx_retry = tx.clone();
-            loader::fetch_pr_data(repo.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
-                .await;
+                while retry_rx.recv().await.is_some() {
+                    let tx_retry = tx.clone();
+                    loader::fetch_pr_data(repo.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
+                        .await;
+                }
+            } => {}
         }
     });
 
     // Run the app and ensure terminal is restored on error
     let result = app.run().await;
+
+    // Signal background tasks to stop
+    cancel_token.cancel();
+
     if result.is_err() {
         restore_terminal();
     }

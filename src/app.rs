@@ -69,7 +69,7 @@ pub struct App {
     pub comments_loading: bool,
     data_receiver: Option<mpsc::Receiver<DataLoadResult>>,
     retry_sender: Option<mpsc::Sender<()>>,
-    comment_receiver: Option<mpsc::Receiver<Vec<ReviewComment>>>,
+    comment_receiver: Option<mpsc::Receiver<Result<Vec<ReviewComment>, String>>>,
 }
 
 impl App {
@@ -183,16 +183,28 @@ impl App {
         };
 
         match rx.try_recv() {
-            Ok(comments) => {
+            Ok(Ok(comments)) => {
                 self.review_comments = Some(comments);
                 self.selected_comment = 0;
                 self.comment_list_scroll_offset = 0;
                 self.comments_loading = false;
                 self.comment_receiver = None;
             }
+            Ok(Err(e)) => {
+                eprintln!("Warning: Failed to fetch comments: {}", e);
+                // Keep existing comments if any, or show empty
+                if self.review_comments.is_none() {
+                    self.review_comments = Some(vec![]);
+                }
+                self.comments_loading = false;
+                self.comment_receiver = None;
+            }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.review_comments = Some(vec![]);
+                // Keep existing comments if any, or show empty
+                if self.review_comments.is_none() {
+                    self.review_comments = Some(vec![]);
+                }
                 self.comments_loading = false;
                 self.comment_receiver = None;
             }
@@ -596,11 +608,12 @@ impl App {
                 return;
             }
             Ok(crate::cache::CacheResult::Stale(entry)) => {
-                // Stale cache - show immediately, fetch in background for next time
+                // Stale cache - show immediately, fetch in background to update
                 self.review_comments = Some(entry.comments);
                 self.selected_comment = 0;
                 self.comment_list_scroll_offset = 0;
-                self.comments_loading = false;
+                // Mark as loading to indicate background update in progress
+                self.comments_loading = true;
             }
             _ => {
                 // No cache - show loading
@@ -616,12 +629,17 @@ impl App {
         let pr_number = self.pr_number;
 
         tokio::spawn(async move {
-            let comments = github::comment::fetch_review_comments(&repo, pr_number)
-                .await
-                .unwrap_or_default();
-            // Write to cache
-            let _ = crate::cache::write_comment_cache(&repo, pr_number, &comments);
-            let _ = tx.send(comments).await;
+            match github::comment::fetch_review_comments(&repo, pr_number).await {
+                Ok(comments) => {
+                    if let Err(e) = crate::cache::write_comment_cache(&repo, pr_number, &comments) {
+                        eprintln!("Warning: Failed to write comment cache: {}", e);
+                    }
+                    let _ = tx.send(Ok(comments)).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string())).await;
+                }
+            }
         });
     }
 
