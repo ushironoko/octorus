@@ -14,6 +14,8 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 - Browse changed files in a PR
 - View diffs with syntax highlighting (via delta, diff-so-fancy, etc.)
 - Add inline comments on specific lines
+- Add code suggestions
+- View and navigate review comments with jump-to-line
 - Submit reviews (Approve / Request Changes / Comment)
 - Fast startup with intelligent caching
 - Configurable keybindings and editor

@@ -46,12 +46,15 @@ main.rs
 - **github/**: GitHub API 通信
   - `client.rs`: `gh` CLI のラッパー（`gh_command`, `gh_api`, `gh_api_post`）
   - `pr.rs`: PR 情報取得、レビュー送信
-  - `comment.rs`: インラインコメント作成
+  - `comment.rs`: レビューコメント取得・作成
 - **ui/**: TUI レンダリング（ratatui ベース）
   - `file_list.rs`: ファイル一覧画面
   - `diff_view.rs`: diff 表示画面
+  - `comment_list.rs`: レビューコメント一覧画面
   - `help.rs`: ヘルプ画面
 - **cache.rs**: キャッシュ管理（JSON ファイル、TTL ベース）
+  - PRデータ: `~/.cache/octorus/{repo}_{pr}.json`
+  - コメント: `~/.cache/octorus/{repo}_{pr}_comments.json`
 - **loader.rs**: バックグラウンドデータ取得（`tokio::spawn`）
 - **config.rs**: 設定ファイル読み込み（`~/.config/octorus/config.toml`）
 - **editor/**: 外部エディタ連携（コメント入力）
@@ -59,7 +62,8 @@ main.rs
 ### Key State Machines
 
 **AppState** (UI 状態):
-- `FileList` → `DiffView` → `CommentPreview`
+- `FileList` → `DiffView` → `CommentPreview` / `SuggestionPreview`
+- `FileList` → `CommentList` → `DiffView` (コメントジャンプ)
 - `Help` (トグル)
 
 **DataState** (データ状態):
@@ -68,10 +72,18 @@ main.rs
 ### Async Pattern
 
 キャッシュヒット時は即座に UI 表示し、バックグラウンドで更新チェックを行う lazy loading パターン:
+
+**PRデータ取得**:
 1. `main.rs`: 同期的にキャッシュ読み込み
 2. `App::new_with_cache()` で即座にデータ表示
 3. `loader::fetch_pr_data()` がバックグラウンドで更新チェック
 4. `App::poll_data_updates()` が mpsc チャンネル経由で更新を受信
+
+**コメント取得**:
+1. `App::open_comment_list()`: キャッシュ確認 → 即座に画面遷移
+2. キャッシュヒット: 即座に表示、API呼び出しなし
+3. キャッシュ古い/なし: バックグラウンドで取得
+4. `App::poll_comment_updates()` が mpsc チャンネル経由で更新を受信
 
 ## Requirements
 
