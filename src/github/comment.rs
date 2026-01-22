@@ -20,6 +20,37 @@ pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<Rev
     serde_json::from_value(json).context("Failed to parse review comments response")
 }
 
+/// Issue コメント（PR 全体へのコメント）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: String,
+    pub user: User,
+    pub created_at: String,
+}
+
+pub async fn fetch_issue_comments(repo: &str, pr_number: u32) -> Result<Vec<IssueComment>> {
+    let endpoint = format!("repos/{}/issues/{}/comments", repo, pr_number);
+    let json = gh_api(&endpoint).await?;
+    serde_json::from_value(json).context("Failed to parse issue comments response")
+}
+
+/// PR レビュー（全体コメント）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Review {
+    pub id: u64,
+    pub body: Option<String>,
+    pub state: String,
+    pub user: User,
+    pub submitted_at: Option<String>,
+}
+
+pub async fn fetch_reviews(repo: &str, pr_number: u32) -> Result<Vec<Review>> {
+    let endpoint = format!("repos/{}/pulls/{}/reviews", repo, pr_number);
+    let json = gh_api(&endpoint).await?;
+    serde_json::from_value(json).context("Failed to parse reviews response")
+}
+
 pub async fn create_review_comment(
     repo: &str,
     pr_number: u32,

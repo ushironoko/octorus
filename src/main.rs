@@ -75,6 +75,8 @@ async fn main() -> Result<()> {
 
     // キャッシュを同期的に読み込み（メインスレッドで即座に）
     let (mut app, tx, needs_fetch) = if args.refresh {
+        // --refresh 時は全キャッシュを削除
+        let _ = cache::invalidate_all_cache(&args.repo, args.pr);
         let (app, tx) = app::App::new_loading(&args.repo, args.pr, config);
         (app, tx, loader::FetchMode::Fresh)
     } else {
@@ -127,6 +129,9 @@ async fn main() -> Result<()> {
 
     // Signal background tasks to stop
     cancel_token.cancel();
+
+    // 終了時にキャッシュを削除
+    let _ = cache::invalidate_all_cache(&args.repo, args.pr);
 
     if result.is_err() {
         restore_terminal();

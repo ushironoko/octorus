@@ -43,6 +43,7 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  r               Request changes"),
         Line::from("  c               Comment only"),
         Line::from("  C               View review comments"),
+        Line::from("  R               Refresh (clear cache and reload)"),
         Line::from("  ?               Toggle help"),
         Line::from("  q               Quit"),
         Line::from(""),
@@ -65,8 +66,9 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
+        Line::from("  [, ]            Switch tab (Review/Discussion)"),
         Line::from("  j/k, Down/Up    Move selection"),
-        Line::from("  Enter           Jump to file/line"),
+        Line::from("  Enter           Review: Jump to file | Discussion: View detail"),
         Line::from("  q, Esc          Back to file list"),
         Line::from(""),
         Line::from(vec![Span::styled(
