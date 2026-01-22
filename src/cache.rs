@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::SystemTime;
+use xdg::BaseDirectories;
 
 use crate::github::comment::ReviewComment;
 use crate::github::{ChangedFile, PullRequest};
@@ -25,9 +26,9 @@ pub enum CacheResult<T> {
 
 /// キャッシュディレクトリ: ~/.cache/octorus/
 pub fn cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("octorus")
+    BaseDirectories::with_prefix("octorus")
+        .map(|dirs| dirs.get_cache_home())
+        .unwrap_or_else(|_| PathBuf::from(".cache"))
 }
 
 /// キャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}.json

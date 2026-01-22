@@ -14,6 +14,7 @@
 use std::io::Cursor;
 use std::sync::OnceLock;
 
+use xdg::BaseDirectories;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
@@ -53,8 +54,8 @@ fn load_all_themes() -> ThemeSet {
     }
 
     // Load user themes from ~/.config/octorus/themes/
-    if let Some(config_dir) = dirs::config_dir() {
-        let user_themes_dir = config_dir.join("octorus").join("themes");
+    if let Ok(base_dirs) = BaseDirectories::with_prefix("octorus") {
+        let user_themes_dir = base_dirs.get_config_home().join("themes");
         if user_themes_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&user_themes_dir) {
                 for entry in entries.flatten() {
