@@ -1,14 +1,12 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
 use crate::app::App;
-use crate::config::DiffConfig;
-use crate::diff::renderer::render_with_external;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -58,48 +56,19 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let patch = app
+    let lines: Vec<Line> = app
         .files()
         .get(app.selected_file)
-        .and_then(|file| file.patch.as_ref());
+        .and_then(|file| file.patch.as_ref())
+        .map(|patch| parse_patch_to_lines(patch, app.selected_line))
+        .unwrap_or_else(|| vec![Line::from("No diff available")]);
 
-    let text: Text = match patch {
-        Some(patch) => render_patch(patch, app.selected_line, &app.config.diff, app.renderer_available),
-        None => Text::from("No diff available"),
-    };
-
-    let diff_block = Paragraph::new(text)
+    let diff_block = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false })
         .scroll((app.scroll_offset as u16, 0));
 
     frame.render_widget(diff_block, area);
-}
-
-/// Render a patch using external renderer or fallback to builtin.
-fn render_patch<'a>(patch: &str, selected_line: usize, config: &DiffConfig, renderer_available: bool) -> Text<'a> {
-    // Use external renderer only if available (checked at startup)
-    if renderer_available {
-        if let Some(text) = render_with_external(patch, config) {
-            // External renderer succeeded - add line selection highlight
-            return highlight_selected_line(text, selected_line);
-        }
-    }
-
-    // Use builtin renderer
-    let lines = parse_patch_to_lines(patch, selected_line);
-    Text::from(lines)
-}
-
-/// Add selection highlight to a specific line in the rendered text.
-fn highlight_selected_line(mut text: Text<'_>, selected_line: usize) -> Text<'_> {
-    if let Some(line) = text.lines.get_mut(selected_line) {
-        // Add REVERSED modifier to all spans in the selected line
-        for span in &mut line.spans {
-            span.style = span.style.add_modifier(Modifier::REVERSED);
-        }
-    }
-    text
 }
 
 fn parse_patch_to_lines(patch: &str, selected_line: usize) -> Vec<Line<'static>> {

@@ -24,7 +24,6 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 unicode-width = "0.2.2"
-ansi-to-tui = "8"
 
 [dev-dependencies]
 assert_cmd = "2"
