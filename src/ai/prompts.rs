@@ -165,23 +165,25 @@ PR #{pr_number}: {pr_title}
 {external_section}
 ## Git Operations
 
-After making changes, you MUST commit locally (do NOT push):
+After making changes, you MUST commit and push:
 
 1. Check status: `git status`
 2. Stage files: `git add <files>`
 3. Commit: `git commit -m "fix: <description>"`
+4. Push: `git push`
 
 CRITICAL RULES:
-- Do NOT use `git push` - pushing is done manually by the user after review
+- NEVER use `git push --force` or `git push -f` - this can destroy others' work
 - NEVER use `git reset --hard` - this destroys work
 - NEVER use `git clean -fd` - this deletes untracked files permanently
+- If push fails due to conflicts, set status to "needs_clarification"
 - Use `gh` commands for GitHub API operations (viewing PR info, comments, etc.)
 
 ## Your Task
 
 1. Address each blocking issue and review comment
 2. Make the necessary code changes
-3. Commit your changes locally (do NOT push)
+3. Commit and push your changes
 4. If something is unclear, set status to "needs_clarification" and ask a question
 5. If you need permission for a significant change, set status to "needs_permission"
 
@@ -408,7 +410,8 @@ mod tests {
         assert!(prompt.contains("general")); // For the comment without path
 
         // Check git instructions are present
-        assert!(prompt.contains("Do NOT use `git push`"));
+        assert!(prompt.contains("git push"));
+        assert!(prompt.contains("NEVER use `git push --force`"));
     }
 
     #[test]

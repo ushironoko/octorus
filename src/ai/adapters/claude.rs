@@ -300,9 +300,8 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     async fn run_reviewee(&mut self, prompt: &str, context: &Context) -> Result<RevieweeOutput> {
-        // Reviewee tools: file editing, safe build/test commands (NO git push)
+        // Reviewee tools: file editing, safe build/test commands, git push (no --force)
         // Explicitly list safe subcommands to prevent dangerous operations like:
-        // - git push (not allowed - changes are committed locally only)
         // - git push --force, git reset --hard
         // - git checkout -- . (discards all changes)
         // - git restore . (discards all changes)
@@ -311,8 +310,9 @@ impl AgentAdapter for ClaudeAdapter {
         // - cargo clean (could delete build artifacts unexpectedly)
         // - gh pr close/merge/edit (could modify PR state unexpectedly)
         //
-        // Note: git push is NOT allowed. The reviewee only makes local commits.
-        // Pushing is done manually by the user after reviewing the changes.
+        // Note: git push is allowed but --force/-f is prohibited via prompt.
+        // Claude Code's permission system doesn't distinguish subflags,
+        // so we rely on the prompt to prevent dangerous flags.
         //
         // GitHub CLI: Only safe, read-only PR operations (view, diff, checks) are allowed.
         // Excluded dangerous commands: gh pr close, gh pr merge, gh pr edit, gh pr ready, gh pr reopen
@@ -323,12 +323,13 @@ impl AgentAdapter for ClaudeAdapter {
         // and build commands. The user should review package.json scripts in the PR.
         let allowed_tools = concat!(
             "Read,Edit,Write,Glob,Grep,",
-            // Git: local operations only (no push, no destructive operations)
+            // Git: local operations + push (no destructive operations)
             // Note: git checkout and git restore are excluded because they can discard changes
             // (e.g., "git checkout -- ." or "git restore ."). Use git switch for branch operations.
+            // git push is allowed but --force/-f is prohibited via prompt instructions.
             "Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),",
             "Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),",
-            "Bash(git stash:*),",
+            "Bash(git stash:*),Bash(git push:*),",
             // GitHub CLI: Only safe, read-only PR operations (view, diff, checks)
             "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),",
             // GitHub API: Only GET requests (read-only)
