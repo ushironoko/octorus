@@ -105,3 +105,33 @@ pub fn open_suggestion_editor(
         Ok(Some(suggested))
     }
 }
+
+/// Open external editor for AI Rally clarification response
+/// Returns the user's answer to the clarification question
+pub fn open_clarification_editor(editor: &str, question: &str) -> Result<Option<String>> {
+    let temp_file = NamedTempFile::new()?;
+    let template = format!(
+        "<!-- octorus: AI Rally Clarification -->\n\
+         <!-- Question: {} -->\n\
+         <!-- Enter your answer below. Save and close to submit. -->\n\
+         <!-- Delete all content to cancel. -->\n\n",
+        question
+    );
+    fs::write(temp_file.path(), &template)?;
+
+    let editor_cmd = resolve_editor(editor);
+    let status = Command::new(&editor_cmd).arg(temp_file.path()).status()?;
+
+    if !status.success() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(temp_file.path())?;
+    let body = extract_comment_body(&content);
+
+    if body.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(body))
+    }
+}

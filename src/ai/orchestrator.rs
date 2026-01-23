@@ -85,6 +85,17 @@ pub enum RallyResult {
     Error { iteration: u32, error: String },
 }
 
+/// Command sent from TUI to Orchestrator
+#[derive(Debug)]
+pub enum OrchestratorCommand {
+    /// User provided clarification answer
+    ClarificationResponse(String),
+    /// User granted or denied permission
+    PermissionResponse(bool),
+    /// User requested abort
+    Abort,
+}
+
 /// Main orchestrator for AI rally
 pub struct Orchestrator {
     repo: String,
@@ -98,6 +109,8 @@ pub struct Orchestrator {
     last_fix: Option<RevieweeOutput>,
     event_sender: mpsc::Sender<RallyEvent>,
     prompt_loader: PromptLoader,
+    /// Command receiver for TUI commands
+    command_receiver: Option<mpsc::Receiver<OrchestratorCommand>>,
 }
 
 impl Orchestrator {
@@ -106,6 +119,7 @@ impl Orchestrator {
         pr_number: u32,
         config: AiConfig,
         event_sender: mpsc::Sender<RallyEvent>,
+        command_receiver: Option<mpsc::Receiver<OrchestratorCommand>>,
     ) -> Result<Self> {
         let mut reviewer_adapter = create_adapter(&config.reviewer)?;
         let mut reviewee_adapter = create_adapter(&config.reviewee)?;
@@ -129,6 +143,7 @@ impl Orchestrator {
             last_fix: None,
             event_sender,
             prompt_loader,
+            command_receiver,
         })
     }
 
@@ -288,12 +303,37 @@ impl Orchestrator {
                         ))
                         .await;
 
-                        // In the TUI, this will pause and wait for user input
-                        // For now, we'll return and let the caller handle it
-                        return Ok(RallyResult::Aborted {
-                            iteration,
-                            reason: format!("Clarification needed: {}", question),
-                        });
+                        // Wait for user command
+                        match self.wait_for_command().await {
+                            Some(OrchestratorCommand::ClarificationResponse(answer)) => {
+                                // Handle clarification response
+                                if let Err(e) = self.handle_clarification_response(&answer).await {
+                                    self.session.update_state(RallyState::Error);
+                                    write_session(&self.session)?;
+                                    self.send_event(RallyEvent::Error(e.to_string())).await;
+                                    self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                                        .await;
+                                    return Ok(RallyResult::Error {
+                                        iteration,
+                                        error: e.to_string(),
+                                    });
+                                }
+                                // Continue to next iteration
+                            }
+                            Some(OrchestratorCommand::Abort) | None => {
+                                return Ok(RallyResult::Aborted {
+                                    iteration,
+                                    reason: format!("Clarification aborted: {}", question),
+                                });
+                            }
+                            Some(OrchestratorCommand::PermissionResponse(_)) => {
+                                // Ignore invalid command
+                                return Ok(RallyResult::Aborted {
+                                    iteration,
+                                    reason: format!("Clarification needed: {}", question),
+                                });
+                            }
+                        }
                     }
                 }
                 RevieweeStatus::NeedsPermission => {
@@ -309,10 +349,49 @@ impl Orchestrator {
                         self.send_event(RallyEvent::StateChanged(RallyState::WaitingForPermission))
                             .await;
 
-                        return Ok(RallyResult::Aborted {
-                            iteration,
-                            reason: format!("Permission needed: {}", perm.action),
-                        });
+                        // Wait for user command
+                        match self.wait_for_command().await {
+                            Some(OrchestratorCommand::PermissionResponse(approved)) => {
+                                if approved {
+                                    // Handle permission granted
+                                    if let Err(e) =
+                                        self.handle_permission_granted(&perm.action).await
+                                    {
+                                        self.session.update_state(RallyState::Error);
+                                        write_session(&self.session)?;
+                                        self.send_event(RallyEvent::Error(e.to_string())).await;
+                                        self.send_event(RallyEvent::StateChanged(
+                                            RallyState::Error,
+                                        ))
+                                        .await;
+                                        return Ok(RallyResult::Error {
+                                            iteration,
+                                            error: e.to_string(),
+                                        });
+                                    }
+                                    // Continue to next iteration
+                                } else {
+                                    // Permission denied
+                                    return Ok(RallyResult::Aborted {
+                                        iteration,
+                                        reason: format!("Permission denied: {}", perm.action),
+                                    });
+                                }
+                            }
+                            Some(OrchestratorCommand::Abort) | None => {
+                                return Ok(RallyResult::Aborted {
+                                    iteration,
+                                    reason: format!("Permission aborted: {}", perm.action),
+                                });
+                            }
+                            Some(OrchestratorCommand::ClarificationResponse(_)) => {
+                                // Ignore invalid command
+                                return Ok(RallyResult::Aborted {
+                                    iteration,
+                                    reason: format!("Permission needed: {}", perm.action),
+                                });
+                            }
+                        }
                     }
                 }
                 RevieweeStatus::Error => {
@@ -342,12 +421,20 @@ impl Orchestrator {
         })
     }
 
-    /// Continue after clarification answer
-    ///
-    /// For Clarification/Permission flow (not yet implemented)
-    /// See CLAUDE.md "Known Limitations"
-    #[allow(dead_code)]
-    pub async fn continue_with_clarification(&mut self, answer: &str) -> Result<()> {
+    /// Wait for a command from the TUI
+    async fn wait_for_command(&mut self) -> Option<OrchestratorCommand> {
+        let rx = self.command_receiver.as_mut()?;
+        rx.recv().await
+    }
+
+    /// Handle clarification response from user
+    async fn handle_clarification_response(&mut self, answer: &str) -> Result<()> {
+        self.send_event(RallyEvent::Log(format!(
+            "User provided clarification: {}",
+            answer
+        )))
+        .await;
+
         // Ask reviewer for clarification and log the response
         let prompt = build_clarification_prompt(answer);
         let reviewer_response = self.reviewer_adapter.continue_reviewer(&prompt).await?;
@@ -363,24 +450,42 @@ impl Orchestrator {
         self.reviewee_adapter.continue_reviewee(answer).await?;
 
         self.session.update_state(RallyState::RevieweeFix);
+        self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+            .await;
         write_session(&self.session)?;
 
         Ok(())
     }
 
-    /// Continue after permission granted
-    ///
-    /// For Clarification/Permission flow (not yet implemented)
-    /// See CLAUDE.md "Known Limitations"
-    #[allow(dead_code)]
-    pub async fn continue_with_permission(&mut self, action: &str) -> Result<()> {
+    /// Handle permission granted from user
+    async fn handle_permission_granted(&mut self, action: &str) -> Result<()> {
+        self.send_event(RallyEvent::Log(format!(
+            "User granted permission for: {}",
+            action
+        )))
+        .await;
+
         let prompt = build_permission_granted_prompt(action);
         self.reviewee_adapter.continue_reviewee(&prompt).await?;
 
         self.session.update_state(RallyState::RevieweeFix);
+        self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+            .await;
         write_session(&self.session)?;
 
         Ok(())
+    }
+
+    /// Continue after clarification answer (legacy, kept for compatibility)
+    #[allow(dead_code)]
+    pub async fn continue_with_clarification(&mut self, answer: &str) -> Result<()> {
+        self.handle_clarification_response(answer).await
+    }
+
+    /// Continue after permission granted (legacy, kept for compatibility)
+    #[allow(dead_code)]
+    pub async fn continue_with_permission(&mut self, action: &str) -> Result<()> {
+        self.handle_permission_granted(action).await
     }
 
     async fn run_reviewer_with_timeout(

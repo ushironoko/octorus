@@ -5,7 +5,7 @@ use std::io::Stdout;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
-use crate::ai::orchestrator::RallyEvent;
+use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
 use crate::ai::{Context, Orchestrator, RallyState};
 use crate::config::Config;
 use crate::github::comment::{DiscussionComment, ReviewComment};
@@ -56,6 +56,13 @@ impl LogEntry {
     }
 }
 
+/// Permission request information for AI Rally
+#[derive(Debug, Clone)]
+pub struct PermissionInfo {
+    pub action: String,
+    pub reason: String,
+}
+
 /// State for AI Rally view
 #[derive(Debug, Clone)]
 pub struct AiRallyState {
@@ -69,6 +76,10 @@ pub struct AiRallyState {
     pub selected_log_index: Option<usize>,
     /// Whether the log detail modal is visible
     pub showing_log_detail: bool,
+    /// Pending clarification question from reviewee
+    pub pending_question: Option<String>,
+    /// Pending permission request from reviewee
+    pub pending_permission: Option<PermissionInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,6 +156,8 @@ pub struct App {
     rally_event_receiver: Option<mpsc::Receiver<RallyEvent>>,
     // Handle for aborting the rally orchestrator task
     rally_abort_handle: Option<AbortHandle>,
+    // Command sender to communicate with the orchestrator
+    rally_command_sender: Option<mpsc::Sender<OrchestratorCommand>>,
     // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
     start_ai_rally_on_load: bool,
 }
@@ -189,6 +202,7 @@ impl App {
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
+            rally_command_sender: None,
             start_ai_rally_on_load: false,
         };
 
@@ -240,6 +254,7 @@ impl App {
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
+            rally_command_sender: None,
             start_ai_rally_on_load: false,
         };
 
@@ -437,6 +452,23 @@ impl App {
                                     .logs
                                     .push(LogEntry::new(LogEventType::Error, e.clone()));
                             }
+                            RallyEvent::ClarificationNeeded(question) => {
+                                rally_state.pending_question = Some(question.clone());
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!("Clarification needed: {}", question),
+                                ));
+                            }
+                            RallyEvent::PermissionNeeded(action, reason) => {
+                                rally_state.pending_permission = Some(PermissionInfo {
+                                    action: action.clone(),
+                                    reason: reason.clone(),
+                                });
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!("Permission needed: {} - {}", action, reason),
+                                ));
+                            }
                             _ => {}
                         }
                         rally_state.history.push(event);
@@ -611,48 +643,90 @@ impl App {
                 self.state = AppState::FileList;
             }
             KeyCode::Char('q') | KeyCode::Esc => {
+                // Send abort command to orchestrator if in waiting state
+                if let Some(ref state) = self.ai_rally_state {
+                    if matches!(
+                        state.state,
+                        RallyState::WaitingForClarification | RallyState::WaitingForPermission
+                    ) {
+                        self.send_rally_command(OrchestratorCommand::Abort);
+                    }
+                }
                 // Abort the orchestrator task if running
                 if let Some(handle) = self.rally_abort_handle.take() {
                     handle.abort();
                 }
                 // Abort rally and return to file list
-                self.ai_rally_state = None;
-                self.rally_event_receiver = None;
+                self.cleanup_rally_state();
                 self.state = AppState::FileList;
             }
             KeyCode::Char('y') => {
-                // Grant permission or answer yes
-                // Note: Currently, the rally process returns RallyResult::Aborted when
-                // WaitingForPermission or WaitingForClarification state is reached.
-                // A full implementation would need to:
-                // 1. Store the Orchestrator instance for resumption
-                // 2. Implement user input collection (e.g., via editor for clarification)
-                // 3. Call orchestrator.continue_with_permission() or continue_with_clarification()
-                //
-                // For now, pressing 'y' just logs a message indicating the limitation.
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    if rally_state.state == RallyState::WaitingForPermission {
-                        rally_state.logs.push(LogEntry::new(
-                            LogEventType::Info,
-                            "Permission continuation is not yet fully implemented. Press 'q' to abort and manually apply changes.".to_string(),
-                        ));
-                    } else if rally_state.state == RallyState::WaitingForClarification {
-                        rally_state.logs.push(LogEntry::new(
-                            LogEventType::Info,
-                            "Clarification continuation is not yet fully implemented. Press 'q' to abort and manually provide clarification.".to_string(),
-                        ));
+                // Grant permission or open clarification editor
+                let current_state = self
+                    .ai_rally_state
+                    .as_ref()
+                    .map(|s| s.state)
+                    .unwrap_or(RallyState::Error);
+
+                match current_state {
+                    RallyState::WaitingForPermission => {
+                        // Send permission granted
+                        self.send_rally_command(OrchestratorCommand::PermissionResponse(true));
+                        // Clear pending permission
+                        if let Some(ref mut rally_state) = self.ai_rally_state {
+                            rally_state.pending_permission = None;
+                            rally_state.logs.push(LogEntry::new(
+                                LogEventType::Info,
+                                "Permission granted, continuing...".to_string(),
+                            ));
+                        }
                     }
+                    RallyState::WaitingForClarification => {
+                        // Get the question for the editor
+                        let question = self
+                            .ai_rally_state
+                            .as_ref()
+                            .and_then(|s| s.pending_question.clone())
+                            .unwrap_or_default();
+
+                        // Open editor and send clarification
+                        self.handle_clarification_editor(&question);
+                    }
+                    _ => {}
                 }
             }
             KeyCode::Char('n') => {
-                // Deny permission or answer no
-                if let Some(ref state) = self.ai_rally_state {
-                    if state.state == RallyState::WaitingForPermission {
-                        // Abort the rally
-                        self.ai_rally_state = None;
-                        self.rally_event_receiver = None;
-                        self.state = AppState::FileList;
+                // Deny permission or skip clarification
+                let current_state = self
+                    .ai_rally_state
+                    .as_ref()
+                    .map(|s| s.state)
+                    .unwrap_or(RallyState::Error);
+
+                match current_state {
+                    RallyState::WaitingForPermission => {
+                        // Send permission denied
+                        self.send_rally_command(OrchestratorCommand::PermissionResponse(false));
+                        if let Some(ref mut rally_state) = self.ai_rally_state {
+                            rally_state.pending_permission = None;
+                            rally_state.logs.push(LogEntry::new(
+                                LogEventType::Info,
+                                "Permission denied, aborting...".to_string(),
+                            ));
+                        }
                     }
+                    RallyState::WaitingForClarification => {
+                        // Send abort (skip clarification)
+                        self.send_rally_command(OrchestratorCommand::Abort);
+                        if let Some(ref mut rally_state) = self.ai_rally_state {
+                            rally_state.pending_question = None;
+                            rally_state.logs.push(LogEntry::new(
+                                LogEventType::Info,
+                                "Clarification skipped, aborting...".to_string(),
+                            ));
+                        }
+                    }
+                    _ => {}
                 }
             }
             KeyCode::Char('r') => {
@@ -768,6 +842,65 @@ impl App {
         }
     }
 
+    /// Send a command to the orchestrator
+    fn send_rally_command(&mut self, cmd: OrchestratorCommand) {
+        if let Some(ref sender) = self.rally_command_sender {
+            // Use try_send since we're not in an async context
+            if sender.try_send(cmd).is_err() {
+                // Orchestrator may have terminated, clean up state
+                self.cleanup_rally_state();
+            }
+        }
+    }
+
+    /// Clean up rally state when orchestrator terminates or user aborts
+    fn cleanup_rally_state(&mut self) {
+        self.ai_rally_state = None;
+        self.rally_command_sender = None;
+        self.rally_event_receiver = None;
+        if let Some(handle) = self.rally_abort_handle.take() {
+            handle.abort();
+        }
+    }
+
+    /// Open editor for clarification input and send response
+    fn handle_clarification_editor(&mut self, question: &str) {
+        let editor = self.config.editor.clone();
+        let sender = self.rally_command_sender.clone();
+
+        // Use spawn_blocking for the blocking editor operation
+        let question_owned = question.to_string();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::editor::open_clarification_editor(&editor, &question_owned)
+            })
+            .await;
+
+            if let Some(sender) = sender {
+                match result {
+                    Ok(Ok(Some(answer))) if !answer.trim().is_empty() => {
+                        let _ = sender
+                            .send(OrchestratorCommand::ClarificationResponse(answer))
+                            .await;
+                    }
+                    _ => {
+                        // User cancelled (empty answer) or error
+                        let _ = sender.send(OrchestratorCommand::Abort).await;
+                    }
+                }
+            }
+        });
+
+        // Add log entry
+        if let Some(ref mut rally_state) = self.ai_rally_state {
+            rally_state.pending_question = None;
+            rally_state.logs.push(LogEntry::new(
+                LogEventType::Info,
+                "Opening editor for clarification...".to_string(),
+            ));
+        }
+    }
+
     /// 既存のRallyがあれば画面遷移のみ、なければ新規Rally開始
     fn resume_or_start_ai_rally(&mut self) {
         // 既存のRallyがあれば画面遷移のみ（完了/エラー状態でも結果確認のため）
@@ -832,7 +965,11 @@ impl App {
         };
 
         let (event_tx, event_rx) = mpsc::channel(100);
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+
+        // Store channels first to prevent race conditions
         self.rally_event_receiver = Some(event_rx);
+        self.rally_command_sender = Some(cmd_tx);
 
         // Initialize rally state
         self.ai_rally_state = Some(AiRallyState {
@@ -844,6 +981,8 @@ impl App {
             log_scroll_offset: 0,
             selected_log_index: None,
             showing_log_detail: false,
+            pending_question: None,
+            pending_permission: None,
         });
 
         self.state = AppState::AiRally;
@@ -854,7 +993,8 @@ impl App {
         let pr_number = self.pr_number;
 
         let handle = tokio::spawn(async move {
-            let orchestrator_result = Orchestrator::new(&repo, pr_number, config, event_tx.clone());
+            let orchestrator_result =
+                Orchestrator::new(&repo, pr_number, config, event_tx.clone(), Some(cmd_rx));
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);

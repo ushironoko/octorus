@@ -81,16 +81,86 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState) {
 }
 
 fn render_main_content(frame: &mut Frame, area: Rect, state: &AiRallyState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(50), // History
-            Constraint::Percentage(50), // Logs
-        ])
-        .split(area);
+    // Add waiting prompt area when in clarification/permission state
+    let is_waiting = matches!(
+        state.state,
+        RallyState::WaitingForClarification | RallyState::WaitingForPermission
+    );
+
+    let chunks = if is_waiting {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(35), // History
+                Constraint::Length(6),      // Waiting prompt
+                Constraint::Min(10),        // Logs
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(50), // History
+                Constraint::Percentage(50), // Logs
+            ])
+            .split(area)
+    };
 
     render_history(frame, chunks[0], state);
-    render_logs(frame, chunks[1], state);
+
+    if is_waiting {
+        render_waiting_prompt(frame, chunks[1], state);
+        render_logs(frame, chunks[2], state);
+    } else {
+        render_logs(frame, chunks[1], state);
+    }
+}
+
+fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+    let (title, content, help) = match state.state {
+        RallyState::WaitingForClarification => {
+            let question = state
+                .pending_question
+                .as_deref()
+                .unwrap_or("(No question provided)");
+            (
+                " Clarification Required ",
+                format!("Question: {}", question),
+                "Press 'y' to open editor and respond, 'n' to skip, 'q' to abort",
+            )
+        }
+        RallyState::WaitingForPermission => {
+            let (action, reason) = state
+                .pending_permission
+                .as_ref()
+                .map(|p| (p.action.as_str(), p.reason.as_str()))
+                .unwrap_or(("(No action)", "(No reason)"));
+            (
+                " Permission Required ",
+                format!("Action: {}\nReason: {}", action, reason),
+                "Press 'y' to approve, 'n' to deny, 'q' to abort",
+            )
+        }
+        _ => return,
+    };
+
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            content,
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(help, Style::default().fg(Color::Yellow))]),
+    ];
+
+    let prompt = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+
+    frame.render_widget(prompt, area);
 }
 
 fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
@@ -354,14 +424,11 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         "Esc/Enter/q: Close detail"
     } else {
         match state.state {
-            // Note: y key handlers for permission/clarification are not yet fully implemented.
-            // They currently display a message indicating the limitation. Users should press 'q'
-            // to abort and manually handle these cases for now.
             RallyState::WaitingForClarification => {
-                "n: Skip | ↑↓: Select | Enter: Detail | q: Abort (clarification: WIP)"
+                "y: Open editor | n: Skip | ↑↓: Select | Enter: Detail | q: Abort"
             }
             RallyState::WaitingForPermission => {
-                "n: Deny | ↑↓: Select | Enter: Detail | q: Abort (permission: WIP)"
+                "y: Approve | n: Deny | ↑↓: Select | Enter: Detail | q: Abort"
             }
             RallyState::Completed => "↑↓: Select | Enter: Detail | b: Background | q: Close",
             RallyState::Error => "r: Retry | ↑↓: Select | Enter: Detail | b: Background | q: Close",

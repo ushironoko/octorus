@@ -120,14 +120,16 @@ AI Rally は2つのAIエージェント（Reviewer/Reviewee）がPRに対して�
     ▼           ▼                             │
 ┌─────────┐ ┌───────────┐    Fix completed    │
 │Completed│ │RevieweeFix├─────────────────────┘
-└─────────┘ └─────┬─────┘
-                  │
-        ┌─────────┼─────────┐
-        │         │         │
-        ▼         ▼         ▼
-┌───────────┐ ┌────────┐ ┌─────┐
-│NeedsClarif│ │NeedsPerm│ │Error│
-└───────────┘ └────────┘ └─────┘
+└─────────┘ └─────┬─────┘                     ▲
+                  │                           │
+        ┌─────────┼─────────┐                 │
+        │         │         │                 │
+        ▼         ▼         ▼                 │
+┌───────────┐ ┌────────┐ ┌─────┐              │
+│NeedsClarif│ │NeedsPerm│ │Error│              │
+└─────┬─────┘ └───┬────┘ └─────┘              │
+      │ y: answer │ y: approve                │
+      └───────────┴───────────────────────────┘
 ```
 
 ### Module Structure (src/ai/)
@@ -207,8 +209,19 @@ timeout_secs = 600
 
 ### Known Limitations
 
-1. **Permission/Clarificationフロー未完成**: `y`キーハンドリングはプレースホルダー
-2. **--resume-rally未実装**: セッション永続化インフラは存在するが、再開機能は未実装
+1. **--resume-rally未実装**: セッション永続化インフラは存在するが、プロセス再起動後の再開機能は未実装
+
+### Clarification/Permission Flow
+
+AI Rallyでレビュイーが`NeedsClarification`または`NeedsPermission`を返した時のフロー:
+
+1. **WaitingForClarification**: ユーザーに質問を表示し、`y`でエディタ入力、`n`でスキップ（abort）
+2. **WaitingForPermission**: ユーザーにアクション/理由を表示し、`y`で承認、`n`で拒否
+
+TUI キーバインド:
+- `y`: 承認またはエディタで回答入力
+- `n`: 拒否またはスキップ
+- `q`: abort
 
 ## Requirements
 
