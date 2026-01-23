@@ -7,6 +7,8 @@
 [![Crates.io](https://img.shields.io/crates/v/octorus.svg)](https://crates.io/crates/octorus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+[日本語](./README-jp.md)
+
 A TUI tool for GitHub PR review with Vim-style keybindings.
 
 ## Features
@@ -25,7 +27,9 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 
 - [GitHub CLI (gh)](https://cli.github.com/) - Must be installed and authenticated
 - Rust 1.70+ (for building from source)
-- [Claude Code](https://claude.ai/code) - Required for AI Rally feature (optional)
+- **For AI Rally feature** (optional, choose one or both):
+  - [Claude Code](https://claude.ai/code) - Anthropic's CLI tool
+  - [OpenAI Codex CLI](https://github.com/openai/codex) - OpenAI's CLI tool
 
 ## Installation
 
@@ -130,7 +134,8 @@ comment = 'c'
 suggestion = 's'
 
 [ai]
-# AI agent to use for reviewer/reviewee (currently only "claude" is supported)
+# AI agent to use for reviewer/reviewee
+# Supported: "claude" (Claude Code), "codex" (OpenAI Codex CLI)
 reviewer = "claude"
 reviewee = "claude"
 
@@ -189,7 +194,7 @@ AI Rally is an automated PR review and fix cycle that uses two AI agents:
          ▼
 ┌─────────────────┐
 │    Reviewer     │  AI reviews the diff
-│   (Claude)      │  → Posts comments to PR
+│ (Claude/Codex)  │  → Posts comments to PR
 └────────┬────────┘
          │
     ┌────┴────┐
@@ -200,7 +205,7 @@ AI Rally is an automated PR review and fix cycle that uses two AI agents:
          ▼
 ┌─────────────────┐
 │    Reviewee     │  AI fixes issues
-│   (Claude)      │  → Commits changes locally
+│ (Claude/Codex)  │  → Commits changes locally
 └────────┬────────┘
          │
          ▼

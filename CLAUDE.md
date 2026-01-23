@@ -133,7 +133,10 @@ AI Rally は2つのAIエージェント（Reviewer/Reviewee）がPRに対して�
 ### Module Structure (src/ai/)
 
 - **adapter.rs**: `AgentAdapter` トレイト定義、`Context`, `ReviewerOutput`, `RevieweeOutput` 型
-- **adapters/claude.rs**: Claude Code CLI アダプター（`--output-format stream-json` でストリーミング）
+- **adapters/**: エージェントアダプター実装
+  - `mod.rs`: `create_adapter()` ファクトリ関数
+  - `claude.rs`: Claude Code CLI アダプター（`--output-format stream-json` でストリーミング）
+  - `codex.rs`: OpenAI Codex CLI アダプター（`--json` でストリーミング）
 - **orchestrator.rs**: ラリーオーケストレーター、状態管理、イベント送信
 - **prompts.rs**: レビュワー/レビュイー用プロンプトテンプレート
 - **session.rs**: セッション永続化（`~/.cache/octorus/rally/{repo}_{pr}/`）
@@ -146,7 +149,7 @@ Orchestrator.run()
   │
   ├── Iteration 1
   │     ├── run_reviewer(PR diff from GitHub)
-  │     │     └── ClaudeAdapter → claude CLI (stream-json)
+  │     │     └── AgentAdapter (Claude or Codex) → CLI (stream-json)
   │     │           └── NDJSON events → RallyEvent::AgentThinking/ToolUse/Text
   │     │
   │     ├── ReviewerOutput saved to history/001_review.json
@@ -189,12 +192,12 @@ Orchestrator.run()
 ```toml
 # ~/.config/octorus/config.toml
 [ai]
+# サポート: "claude" (Claude Code), "codex" (OpenAI Codex CLI)
 reviewer = "claude"
 reviewee = "claude"
 max_iterations = 10
 timeout_secs = 600
-reviewer_prompt = ""  # カスタムプロンプト（オプション）
-reviewee_prompt = ""  # カスタムプロンプト（オプション）
+# prompt_dir = "/custom/path/to/prompts"  # カスタムプロンプトディレクトリ
 ```
 
 ### Usage
@@ -210,8 +213,10 @@ reviewee_prompt = ""  # カスタムプロンプト（オプション）
 ## Requirements
 
 - GitHub CLI (`gh`) がインストール・認証済みであること
-- Claude Code CLI (`claude`) がインストール・認証済みであること（AI Rally使用時）
 - Rust 1.70+
+- **AI Rally使用時**（いずれか）:
+  - Claude Code CLI (`claude`) がインストール・認証済み
+  - OpenAI Codex CLI (`codex`) がインストール・認証済み
 
 ## Dependency Version Policy
 
