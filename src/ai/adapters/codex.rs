@@ -162,9 +162,9 @@ impl CodexAdapter {
         let mut cmd = Command::new("codex");
 
         // Handle session resume
+        // Usage: codex exec resume <SESSION_ID> [PROMPT]
         if let Some(sid) = session_id {
-            cmd.arg("exec").arg("resume").arg(sid);
-            cmd.arg("--message").arg(prompt);
+            cmd.arg("exec").arg("resume").arg(sid).arg(prompt);
         } else {
             cmd.arg("exec").arg(prompt);
         }
