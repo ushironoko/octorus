@@ -174,10 +174,14 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         // Calculate visible range for optimization
         // Add buffer for smooth scrolling and wrap handling
         let visible_height = area.height.saturating_sub(2) as usize;
-        let visible_start = app.scroll_offset.saturating_sub(2);
-        let visible_end = (app.scroll_offset + visible_height + 5).min(cache.lines.len());
+        let line_count = cache.lines.len();
+
+        // Clamp visible_start to avoid out-of-bounds access when scroll_offset >= line_count
+        let visible_start = app.scroll_offset.saturating_sub(2).min(line_count);
+        let visible_end = (app.scroll_offset + visible_height + 5).min(line_count);
 
         // Only process visible lines (with buffer) for performance
+        // When visible_start >= visible_end, this produces an empty slice (safe)
         cache.lines[visible_start..visible_end]
             .iter()
             .enumerate()
