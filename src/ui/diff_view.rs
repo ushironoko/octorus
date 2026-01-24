@@ -10,9 +10,39 @@ use ratatui::{
 use syntect::easy::HighlightLines;
 
 use super::common::render_rally_status_bar;
-use crate::app::App;
+use crate::app::{App, CachedDiffLine};
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
+
+/// Build cached diff lines with syntax highlighting (called from App::ensure_diff_cache)
+pub fn build_diff_cache(
+    patch: &str,
+    filename: &str,
+    theme_name: &str,
+    comment_lines: &HashSet<usize>,
+) -> Vec<CachedDiffLine> {
+    let syntax = syntax_for_file(filename);
+    let theme = get_theme(theme_name);
+    let mut highlighter = syntax.map(|s| HighlightLines::new(s, theme));
+
+    patch
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let has_comment = comment_lines.contains(&i);
+            let (line_type, content) = classify_line(line);
+
+            let mut spans = build_line_spans(line_type, line, content, &mut highlighter);
+
+            // Add comment indicator at the beginning if this line has comments
+            if has_comment {
+                spans.insert(0, Span::styled("● ", Style::default().fg(Color::Yellow)));
+            }
+
+            CachedDiffLine { spans }
+        })
+        .collect()
+}
 
 pub fn render(frame: &mut Frame, app: &App) {
     // If current line has inline comments, show split view with comment panel
@@ -139,21 +169,52 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let file = app.files().get(app.selected_file);
-    let theme_name = &app.config.diff.theme;
+    // Try to use cached lines if available
+    let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
+        // Use cached lines, apply REVERSED only to selected line
+        cache
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(i, cached)| {
+                let is_selected = i == app.selected_line;
+                if is_selected {
+                    // Selected line: apply REVERSED modifier
+                    let spans: Vec<Span> = cached
+                        .spans
+                        .iter()
+                        .map(|span| {
+                            Span::styled(
+                                span.content.clone(),
+                                span.style.add_modifier(Modifier::REVERSED),
+                            )
+                        })
+                        .collect();
+                    Line::from(spans)
+                } else {
+                    // Non-selected line: clone as-is
+                    Line::from(cached.spans.clone())
+                }
+            })
+            .collect()
+    } else {
+        // Fallback: parse without cache (should rarely happen)
+        let file = app.files().get(app.selected_file);
+        let theme_name = &app.config.diff.theme;
 
-    let lines: Vec<Line> = match file {
-        Some(f) => match f.patch.as_ref() {
-            Some(patch) => parse_patch_to_lines(
-                patch,
-                app.selected_line,
-                &f.filename,
-                theme_name,
-                &app.file_comment_lines,
-            ),
-            None => vec![Line::from("No diff available")],
-        },
-        None => vec![Line::from("No file selected")],
+        match file {
+            Some(f) => match f.patch.as_ref() {
+                Some(patch) => parse_patch_to_lines(
+                    patch,
+                    app.selected_line,
+                    &f.filename,
+                    theme_name,
+                    &app.file_comment_lines,
+                ),
+                None => vec![Line::from("No diff available")],
+            },
+            None => vec![Line::from("No file selected")],
+        }
     };
 
     let diff_block = Paragraph::new(lines)

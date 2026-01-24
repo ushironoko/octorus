@@ -1,8 +1,10 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, text::Span, Terminal};
 use std::io::Stdout;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -20,6 +22,32 @@ use crate::ui;
 pub struct CommentPosition {
     pub diff_line_index: usize,
     pub comment_index: usize,
+}
+
+/// Diff行のキャッシュ（シンタックスハイライト済み）
+#[derive(Clone)]
+pub struct CachedDiffLine {
+    /// 基本の Span（REVERSED なし）
+    pub spans: Vec<Span<'static>>,
+}
+
+/// Diff表示のキャッシュ
+pub struct DiffCache {
+    /// キャッシュ対象のファイルインデックス
+    pub file_index: usize,
+    /// patch のハッシュ（変更検出用）
+    pub patch_hash: u64,
+    /// コメント行のセット（キャッシュ無効化判定用）
+    pub comment_lines: HashSet<usize>,
+    /// パース済みの行データ
+    pub lines: Vec<CachedDiffLine>,
+}
+
+/// 文字列のハッシュを計算
+fn hash_string(s: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -150,6 +178,8 @@ pub struct App {
     pub file_comment_positions: Vec<CommentPosition>,
     // Set of diff line indices with comments (for fast lookup in render)
     pub file_comment_lines: HashSet<usize>,
+    // Cached diff lines (syntax highlighted)
+    pub diff_cache: Option<DiffCache>,
     // Discussion comments (PR conversation)
     pub discussion_comments: Option<Vec<DiscussionComment>>,
     pub selected_discussion_comment: usize,
@@ -203,6 +233,7 @@ impl App {
             comments_loading: false,
             file_comment_positions: vec![],
             file_comment_lines: HashSet::new(),
+            diff_cache: None,
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comments_loading: false,
@@ -257,6 +288,7 @@ impl App {
             comments_loading: false,
             file_comment_positions: vec![],
             file_comment_lines: HashSet::new(),
+            diff_cache: None,
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comments_loading: false,
@@ -349,6 +381,7 @@ impl App {
                 // Update comment positions if in diff view
                 if self.state == AppState::DiffView {
                     self.update_file_comment_positions();
+                    self.ensure_diff_cache();
                 }
             }
             Ok(Err(e)) => {
@@ -623,6 +656,7 @@ impl App {
                     self.scroll_offset = 0;
                     self.update_diff_line_count();
                     self.update_file_comment_positions();
+                    self.ensure_diff_cache();
                 }
             }
             KeyCode::Char(c) if c == self.config.keybindings.approve => {
@@ -1605,6 +1639,7 @@ impl App {
             self.scroll_offset = 0;
             self.update_diff_line_count();
             self.update_file_comment_positions();
+            self.ensure_diff_cache();
 
             // Find diff line index from pre-computed positions
             let diff_line_index = self
@@ -1728,6 +1763,57 @@ impl App {
             self.selected_line = pos.diff_line_index;
             self.scroll_offset = self.selected_line;
         }
+    }
+
+    /// Diffキャッシュを構築または再利用
+    pub fn ensure_diff_cache(&mut self) {
+        let file_index = self.selected_file;
+
+        // file_index を先に比較（O(1)）
+        if let Some(ref cache) = self.diff_cache {
+            if cache.file_index == file_index {
+                // patch hash と comment_lines を比較（clone 前に参照比較）
+                let Some(file) = self.files().get(file_index) else {
+                    self.diff_cache = None;
+                    return;
+                };
+                let Some(ref patch) = file.patch else {
+                    self.diff_cache = None;
+                    return;
+                };
+                let current_hash = hash_string(patch);
+                if cache.patch_hash == current_hash
+                    && cache.comment_lines == self.file_comment_lines
+                {
+                    return; // キャッシュ有効
+                }
+            }
+        }
+
+        // キャッシュ再構築
+        let Some(file) = self.files().get(file_index) else {
+            self.diff_cache = None;
+            return;
+        };
+        let Some(patch) = file.patch.clone() else {
+            self.diff_cache = None;
+            return;
+        };
+        let filename = file.filename.clone();
+
+        let lines = crate::ui::diff_view::build_diff_cache(
+            &patch,
+            &filename,
+            &self.config.diff.theme,
+            &self.file_comment_lines,
+        );
+
+        self.diff_cache = Some(DiffCache {
+            file_index,
+            patch_hash: hash_string(&patch),
+            comment_lines: self.file_comment_lines.clone(),
+            lines,
+        });
     }
 }
 
