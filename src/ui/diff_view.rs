@@ -142,13 +142,6 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     let file = app.files().get(app.selected_file);
     let theme_name = &app.config.diff.theme;
 
-    // Build set of lines that have comments
-    let comment_lines: HashSet<usize> = app
-        .file_comment_positions
-        .iter()
-        .map(|pos| pos.diff_line_index)
-        .collect();
-
     let lines: Vec<Line> = match file {
         Some(f) => match f.patch.as_ref() {
             Some(patch) => parse_patch_to_lines(
@@ -156,7 +149,7 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
                 app.selected_line,
                 &f.filename,
                 theme_name,
-                &comment_lines,
+                &app.file_comment_lines,
             ),
             None => vec![Line::from("No diff available")],
         },

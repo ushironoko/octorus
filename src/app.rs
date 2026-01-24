@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -146,6 +148,8 @@ pub struct App {
     pub comments_loading: bool,
     // Comment positions in current diff view
     pub file_comment_positions: Vec<CommentPosition>,
+    // Set of diff line indices with comments (for fast lookup in render)
+    pub file_comment_lines: HashSet<usize>,
     // Discussion comments (PR conversation)
     pub discussion_comments: Option<Vec<DiscussionComment>>,
     pub selected_discussion_comment: usize,
@@ -198,6 +202,7 @@ impl App {
             comment_list_scroll_offset: 0,
             comments_loading: false,
             file_comment_positions: vec![],
+            file_comment_lines: HashSet::new(),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comments_loading: false,
@@ -251,6 +256,7 @@ impl App {
             comment_list_scroll_offset: 0,
             comments_loading: false,
             file_comment_positions: vec![],
+            file_comment_lines: HashSet::new(),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comments_loading: false,
@@ -1649,6 +1655,7 @@ impl App {
     /// Update file_comment_positions based on current file and review_comments
     fn update_file_comment_positions(&mut self) {
         self.file_comment_positions.clear();
+        self.file_comment_lines.clear();
 
         let Some(file) = self.files().get(self.selected_file) else {
             return;
@@ -1676,6 +1683,7 @@ impl App {
                     diff_line_index: diff_index,
                     comment_index: i,
                 });
+                self.file_comment_lines.insert(diff_index);
             }
         }
         self.file_comment_positions
