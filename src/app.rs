@@ -1099,8 +1099,8 @@ impl App {
             KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
                 self.open_suggestion_editor(terminal).await?
             }
-            KeyCode::Char('n') => self.jump_to_next_comment(visible_lines),
-            KeyCode::Char('N') => self.jump_to_prev_comment(visible_lines),
+            KeyCode::Char('n') => self.jump_to_next_comment(),
+            KeyCode::Char('N') => self.jump_to_prev_comment(),
             _ => {}
         }
         Ok(())
@@ -1735,8 +1735,8 @@ impl App {
             .any(|pos| pos.diff_line_index == self.selected_line)
     }
 
-    /// Jump to next comment in the diff (no wrap-around)
-    fn jump_to_next_comment(&mut self, visible_lines: usize) {
+    /// Jump to next comment in the diff (no wrap-around, scroll to top)
+    fn jump_to_next_comment(&mut self) {
         let next = self
             .file_comment_positions
             .iter()
@@ -1744,12 +1744,12 @@ impl App {
 
         if let Some(pos) = next {
             self.selected_line = pos.diff_line_index;
-            self.adjust_scroll(visible_lines);
+            self.scroll_offset = self.selected_line;
         }
     }
 
-    /// Jump to previous comment in the diff (no wrap-around)
-    fn jump_to_prev_comment(&mut self, visible_lines: usize) {
+    /// Jump to previous comment in the diff (no wrap-around, scroll to top)
+    fn jump_to_prev_comment(&mut self) {
         let prev = self
             .file_comment_positions
             .iter()
@@ -1758,7 +1758,7 @@ impl App {
 
         if let Some(pos) = prev {
             self.selected_line = pos.diff_line_index;
-            self.adjust_scroll(visible_lines);
+            self.scroll_offset = self.selected_line;
         }
     }
 }
@@ -1880,13 +1880,13 @@ mod tests {
         ];
 
         app.selected_line = 0;
-        app.jump_to_next_comment(20);
+        app.jump_to_next_comment();
         assert_eq!(app.selected_line, 5);
 
-        app.jump_to_next_comment(20);
+        app.jump_to_next_comment();
         assert_eq!(app.selected_line, 10);
 
-        app.jump_to_next_comment(20);
+        app.jump_to_next_comment();
         assert_eq!(app.selected_line, 15);
     }
 
@@ -1900,7 +1900,7 @@ mod tests {
         }];
 
         app.selected_line = 5;
-        app.jump_to_next_comment(20);
+        app.jump_to_next_comment();
         // Should stay at 5 (no wrap-around)
         assert_eq!(app.selected_line, 5);
     }
@@ -1925,13 +1925,13 @@ mod tests {
         ];
 
         app.selected_line = 20;
-        app.jump_to_prev_comment(20);
+        app.jump_to_prev_comment();
         assert_eq!(app.selected_line, 15);
 
-        app.jump_to_prev_comment(20);
+        app.jump_to_prev_comment();
         assert_eq!(app.selected_line, 10);
 
-        app.jump_to_prev_comment(20);
+        app.jump_to_prev_comment();
         assert_eq!(app.selected_line, 5);
     }
 
@@ -1945,7 +1945,7 @@ mod tests {
         }];
 
         app.selected_line = 5;
-        app.jump_to_prev_comment(20);
+        app.jump_to_prev_comment();
         // Should stay at 5 (no wrap-around)
         assert_eq!(app.selected_line, 5);
     }
@@ -1957,10 +1957,10 @@ mod tests {
         app.file_comment_positions = vec![];
 
         app.selected_line = 10;
-        app.jump_to_next_comment(20);
+        app.jump_to_next_comment();
         assert_eq!(app.selected_line, 10);
 
-        app.jump_to_prev_comment(20);
+        app.jump_to_prev_comment();
         assert_eq!(app.selected_line, 10);
     }
 }
