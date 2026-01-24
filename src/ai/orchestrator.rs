@@ -752,6 +752,118 @@ fn is_bot_user(login: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn test_orchestrator_command_variants() {
+        // Test ClarificationResponse
+        let cmd = OrchestratorCommand::ClarificationResponse("test answer".to_string());
+        match cmd {
+            OrchestratorCommand::ClarificationResponse(answer) => {
+                assert_eq!(answer, "test answer");
+            }
+            _ => panic!("Expected ClarificationResponse"),
+        }
+
+        // Test PermissionResponse approved
+        let cmd = OrchestratorCommand::PermissionResponse(true);
+        match cmd {
+            OrchestratorCommand::PermissionResponse(approved) => {
+                assert!(approved);
+            }
+            _ => panic!("Expected PermissionResponse"),
+        }
+
+        // Test PermissionResponse denied
+        let cmd = OrchestratorCommand::PermissionResponse(false);
+        match cmd {
+            OrchestratorCommand::PermissionResponse(approved) => {
+                assert!(!approved);
+            }
+            _ => panic!("Expected PermissionResponse"),
+        }
+
+        // Test Abort
+        let cmd = OrchestratorCommand::Abort;
+        assert!(matches!(cmd, OrchestratorCommand::Abort));
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_clarification() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        // Send clarification response
+        tx.send(OrchestratorCommand::ClarificationResponse(
+            "user's answer".to_string(),
+        ))
+        .await
+        .unwrap();
+
+        // Receive and verify
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            OrchestratorCommand::ClarificationResponse(answer) => {
+                assert_eq!(answer, "user's answer");
+            }
+            _ => panic!("Expected ClarificationResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_permission_granted() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        tx.send(OrchestratorCommand::PermissionResponse(true))
+            .await
+            .unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            OrchestratorCommand::PermissionResponse(approved) => {
+                assert!(approved, "Permission should be granted");
+            }
+            _ => panic!("Expected PermissionResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_permission_denied() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        tx.send(OrchestratorCommand::PermissionResponse(false))
+            .await
+            .unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            OrchestratorCommand::PermissionResponse(approved) => {
+                assert!(!approved, "Permission should be denied");
+            }
+            _ => panic!("Expected PermissionResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_abort() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        tx.send(OrchestratorCommand::Abort).await.unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        assert!(matches!(cmd, OrchestratorCommand::Abort));
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_closed_returns_none() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        // Drop sender to close channel
+        drop(tx);
+
+        // Receive should return None
+        let cmd = rx.recv().await;
+        assert!(cmd.is_none());
+    }
 
     #[test]
     fn test_is_bot_user() {
