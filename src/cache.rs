@@ -97,25 +97,23 @@ fn cache_file_path_generic<T: Cacheable>(repo: &str, pr_number: u32) -> Result<P
 }
 
 /// ジェネリックキャッシュ読み込み
-/// キャッシュファイルが破損している場合は CacheResult::Miss を返す
+/// キャッシュファイルが破損している場合（JSONデシリアライズエラー）は CacheResult::Miss を返す
+/// その他のI/Oエラー（パーミッション問題、ディスク障害など）はエラーとして伝播する
 fn read_cache_generic<T: Cacheable>(
     repo: &str,
     pr_number: u32,
     ttl_secs: u64,
 ) -> Result<CacheResult<T>> {
     let path = cache_file_path_generic::<T>(repo, pr_number)?;
-    if !path.exists() {
-        return Ok(CacheResult::Miss);
-    }
 
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "Failed to read cache file {:?}: {}, treating as miss",
-                path, e
-            );
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(CacheResult::Miss);
+        }
+        Err(e) => {
+            // Propagate unexpected I/O errors (permission issues, disk faults, etc.)
+            return Err(e.into());
         }
     };
 
