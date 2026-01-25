@@ -1220,7 +1220,7 @@ impl App {
                             let repo = self.repo.clone();
                             let pr_number = self.pr_number;
                             let line_number = comment.line_number;
-                            let body = comment.body.clone();
+                            let body = comment.body;
 
                             // Start background submission
                             let (tx, rx) = mpsc::channel(1);
