@@ -1141,7 +1141,7 @@ impl App {
     }
 
     fn adjust_scroll(&mut self, visible_lines: usize) {
-        if visible_lines == 0 {
+        if visible_lines == 0 || self.diff_line_count == 0 {
             return;
         }
         if self.selected_line < self.scroll_offset {
@@ -1150,6 +1150,9 @@ impl App {
         if self.selected_line >= self.scroll_offset + visible_lines {
             self.scroll_offset = self.selected_line.saturating_sub(visible_lines) + 1;
         }
+        // 最大スクロール位置を制限（最下部にマージンを確保）
+        let max_scroll = self.diff_line_count.saturating_sub(visible_lines);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     async fn handle_comment_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
