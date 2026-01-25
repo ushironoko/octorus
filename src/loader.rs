@@ -13,6 +13,14 @@ pub enum DataLoadResult {
     Error(String),
 }
 
+/// コメント送信結果
+pub enum CommentSubmitResult {
+    /// 送信成功
+    Success,
+    /// エラー
+    Error(String),
+}
+
 /// バックグラウンド取得モード
 pub enum FetchMode {
     /// 新規取得（キャッシュミスまたは強制更新）

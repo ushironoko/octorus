@@ -78,9 +78,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Rally status bar (if background rally exists)
     if has_rally {
         render_rally_status_bar(frame, chunks[2], app);
-        render_footer(frame, chunks[3]);
+        render_footer(frame, app, chunks[3]);
     } else {
-        render_footer(frame, chunks[2]);
+        render_footer(frame, app, chunks[2]);
     }
 }
 
@@ -330,11 +330,34 @@ fn highlight_or_fallback(
     }
 }
 
-fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let footer = Paragraph::new(
-        "j/k: move | n/N: next/prev comment | c: comment | s: suggestion | Ctrl-d/u: page | q: back",
-    )
-    .block(Block::default().borders(Borders::ALL));
+fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let help_text = "j/k: move | n/N: next/prev comment | c: comment | s: suggestion | Ctrl-d/u: page | q: back";
+
+    // Build footer content with submission status
+    let mut spans = vec![Span::raw(help_text)];
+
+    if app.is_submitting_comment() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "⏳ Submitting...",
+            Style::default().fg(Color::Yellow),
+        ));
+    } else if let Some((success, message)) = &app.submission_result {
+        spans.push(Span::raw("  "));
+        if *success {
+            spans.push(Span::styled(
+                format!("✓ {}", message),
+                Style::default().fg(Color::Green),
+            ));
+        } else {
+            spans.push(Span::styled(
+                format!("✗ {}", message),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    }
+
+    let footer = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 

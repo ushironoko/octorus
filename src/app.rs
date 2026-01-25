@@ -14,7 +14,8 @@ use crate::ai::{Context, Orchestrator, RallyState};
 use crate::config::Config;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PullRequest};
-use crate::loader::DataLoadResult;
+use crate::loader::{CommentSubmitResult, DataLoadResult};
+use std::time::Instant;
 use crate::ui;
 
 /// コメントのdiff内位置を表す構造体
@@ -203,6 +204,13 @@ pub struct App {
     rally_command_sender: Option<mpsc::Sender<OrchestratorCommand>>,
     // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
     start_ai_rally_on_load: bool,
+    // Comment submission state
+    comment_submit_receiver: Option<mpsc::Receiver<CommentSubmitResult>>,
+    comment_submitting: bool,
+    /// Last submission result: (success, message)
+    pub submission_result: Option<(bool, String)>,
+    /// Timestamp when result was set (for auto-hide)
+    submission_result_time: Option<Instant>,
 }
 
 impl App {
@@ -250,6 +258,10 @@ impl App {
             rally_abort_handle: None,
             rally_command_sender: None,
             start_ai_rally_on_load: false,
+            comment_submit_receiver: None,
+            comment_submitting: false,
+            submission_result: None,
+            submission_result_time: None,
         };
 
         (app, tx)
@@ -305,6 +317,10 @@ impl App {
             rally_abort_handle: None,
             rally_command_sender: None,
             start_ai_rally_on_load: false,
+            comment_submit_receiver: None,
+            comment_submitting: false,
+            submission_result: None,
+            submission_result_time: None,
         };
 
         (app, tx)
@@ -327,6 +343,7 @@ impl App {
             self.poll_data_updates();
             self.poll_comment_updates();
             self.poll_discussion_comment_updates();
+            self.poll_comment_submit_updates();
             self.poll_rally_events();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
@@ -435,6 +452,48 @@ impl App {
                 self.discussion_comment_receiver = None;
             }
         }
+    }
+
+    /// コメント送信結果のポーリング
+    fn poll_comment_submit_updates(&mut self) {
+        // Clear old submission result after 3 seconds
+        if let Some(time) = self.submission_result_time {
+            if time.elapsed().as_secs() >= 3 {
+                self.submission_result = None;
+                self.submission_result_time = None;
+            }
+        }
+
+        let Some(ref mut rx) = self.comment_submit_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(CommentSubmitResult::Success) => {
+                self.comment_submitting = false;
+                self.comment_submit_receiver = None;
+                self.submission_result = Some((true, "Submitted".to_string()));
+                self.submission_result_time = Some(Instant::now());
+                // Invalidate comment cache to force refresh on next open
+                self.review_comments = None;
+            }
+            Ok(CommentSubmitResult::Error(e)) => {
+                self.comment_submitting = false;
+                self.comment_submit_receiver = None;
+                self.submission_result = Some((false, format!("Failed: {}", e)));
+                self.submission_result_time = Some(Instant::now());
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.comment_submitting = false;
+                self.comment_submit_receiver = None;
+            }
+        }
+    }
+
+    /// コメント送信中かどうか
+    pub fn is_submitting_comment(&self) -> bool {
+        self.comment_submitting
     }
 
     /// AI Rally イベントのポーリング
@@ -613,10 +672,8 @@ impl App {
                 match self.state {
                     AppState::FileList => self.handle_file_list_input(key, terminal).await?,
                     AppState::DiffView => self.handle_diff_view_input(key, terminal).await?,
-                    AppState::CommentPreview => self.handle_comment_preview_input(key).await?,
-                    AppState::SuggestionPreview => {
-                        self.handle_suggestion_preview_input(key).await?
-                    }
+                    AppState::CommentPreview => self.handle_comment_preview_input(key)?,
+                    AppState::SuggestionPreview => self.handle_suggestion_preview_input(key)?,
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
                     AppState::Help => self.handle_help_input(key)?,
                     AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
@@ -1152,7 +1209,7 @@ impl App {
         }
     }
 
-    async fn handle_comment_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
+    fn handle_comment_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
                 if let Some(comment) = self.pending_comment.take() {
@@ -1160,15 +1217,34 @@ impl App {
                         if let Some(pr) = self.pr() {
                             let commit_id = pr.head.sha.clone();
                             let filename = file.filename.clone();
-                            github::create_review_comment(
-                                &self.repo,
-                                self.pr_number,
-                                &commit_id,
-                                &filename,
-                                comment.line_number,
-                                &comment.body,
-                            )
-                            .await?;
+                            let repo = self.repo.clone();
+                            let pr_number = self.pr_number;
+                            let line_number = comment.line_number;
+                            let body = comment.body.clone();
+
+                            // Start background submission
+                            let (tx, rx) = mpsc::channel(1);
+                            self.comment_submit_receiver = Some(rx);
+                            self.comment_submitting = true;
+
+                            tokio::spawn(async move {
+                                let result = github::create_review_comment(
+                                    &repo,
+                                    pr_number,
+                                    &commit_id,
+                                    &filename,
+                                    line_number,
+                                    &body,
+                                )
+                                .await;
+
+                                let _ = tx
+                                    .send(match result {
+                                        Ok(_) => CommentSubmitResult::Success,
+                                        Err(e) => CommentSubmitResult::Error(e.to_string()),
+                                    })
+                                    .await;
+                            });
                         }
                     }
                 }
@@ -1314,7 +1390,7 @@ impl App {
         Ok(())
     }
 
-    async fn handle_suggestion_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
+    fn handle_suggestion_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
                 if let Some(suggestion) = self.pending_suggestion.take() {
@@ -1326,15 +1402,33 @@ impl App {
                                 "```suggestion\n{}\n```",
                                 suggestion.suggested_code.trim_end()
                             );
-                            github::create_review_comment(
-                                &self.repo,
-                                self.pr_number,
-                                &commit_id,
-                                &filename,
-                                suggestion.line_number,
-                                &body,
-                            )
-                            .await?;
+                            let repo = self.repo.clone();
+                            let pr_number = self.pr_number;
+                            let line_number = suggestion.line_number;
+
+                            // Start background submission
+                            let (tx, rx) = mpsc::channel(1);
+                            self.comment_submit_receiver = Some(rx);
+                            self.comment_submitting = true;
+
+                            tokio::spawn(async move {
+                                let result = github::create_review_comment(
+                                    &repo,
+                                    pr_number,
+                                    &commit_id,
+                                    &filename,
+                                    line_number,
+                                    &body,
+                                )
+                                .await;
+
+                                let _ = tx
+                                    .send(match result {
+                                        Ok(_) => CommentSubmitResult::Success,
+                                        Err(e) => CommentSubmitResult::Error(e.to_string()),
+                                    })
+                                    .await;
+                            });
                         }
                     }
                 }
