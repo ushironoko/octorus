@@ -1086,6 +1086,7 @@ impl App {
             diff,
             working_dir: self.working_dir.clone(),
             head_sha: pr.head.sha.clone(),
+            base_branch: pr.base.ref_name.clone(),
             external_comments: Vec::new(),
         };
 

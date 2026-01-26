@@ -16,6 +16,8 @@ pub struct Context {
     pub working_dir: Option<String>,
     /// HEAD SHA for inline comment posting
     pub head_sha: String,
+    /// Base branch name (e.g., "main", "master") for local diff comparison
+    pub base_branch: String,
     /// External tool comments (Copilot, CodeRabbit, etc.)
     pub external_comments: Vec<ExternalComment>,
 }

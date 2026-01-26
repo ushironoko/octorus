@@ -215,6 +215,7 @@ mod tests {
             diff: "+added line\n-removed line".to_string(),
             working_dir: None,
             head_sha: "abc123".to_string(),
+            base_branch: "main".to_string(),
             external_comments: Vec::new(),
         }
     }

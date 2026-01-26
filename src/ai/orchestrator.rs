@@ -732,8 +732,35 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Fetch current diff from GitHub API
+    /// Fetch current diff, preferring local git diff over GitHub API.
+    ///
+    /// This allows the reviewer to see uncommitted/unpushed changes made by the reviewee.
+    /// Falls back to GitHub API if local git diff fails or returns empty.
     async fn fetch_current_diff(&self) -> Result<String> {
+        // Try local git diff first if we have working_dir and base_branch
+        if let Some(ref ctx) = self.context {
+            if let Some(ref working_dir) = ctx.working_dir {
+                let base_branch = &ctx.base_branch;
+
+                // Try git diff against origin/base_branch
+                let output = tokio::process::Command::new("git")
+                    .args(["diff", &format!("origin/{}..HEAD", base_branch)])
+                    .current_dir(working_dir)
+                    .output()
+                    .await;
+
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+                        if !diff.trim().is_empty() {
+                            return Ok(diff);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback to GitHub API
         github::fetch_pr_diff(&self.repo, self.pr_number).await
     }
 
