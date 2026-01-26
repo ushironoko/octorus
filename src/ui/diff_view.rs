@@ -188,13 +188,19 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
             .map(|(rel_idx, cached)| {
                 let abs_idx = visible_start + rel_idx;
                 let is_selected = abs_idx == app.selected_line;
+                // Borrow spans from cache instead of cloning owned Strings.
+                // Each Span gets Cow::Borrowed(&str) pointing to the cached data,
+                // avoiding heap allocation entirely.
+                let spans: Vec<Span<'_>> = cached
+                    .spans
+                    .iter()
+                    .map(|s| Span::styled(s.content.as_ref(), s.style))
+                    .collect();
                 if is_selected {
-                    // Use Line::style() instead of cloning each span with REVERSED
-                    // This is more efficient as it applies style at the Line level
-                    Line::from(cached.spans.clone())
+                    Line::from(spans)
                         .style(Style::default().add_modifier(Modifier::REVERSED))
                 } else {
-                    Line::from(cached.spans.clone())
+                    Line::from(spans)
                 }
             })
             .collect()

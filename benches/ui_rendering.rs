@@ -146,6 +146,39 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
                 });
             },
         );
+
+        // Benchmark zero-clone approach: borrow spans from cache instead of cloning
+        group.bench_with_input(
+            BenchmarkId::new("borrowed_spans", line_count),
+            &cached_lines,
+            |b, cached_lines| {
+                b.iter(|| {
+                    let lines: Vec<Line> = cached_lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cached)| {
+                            let is_selected = i == line_count / 2;
+                            // Borrow content from cache: Cow::Borrowed(&str) instead of
+                            // cloning Cow::Owned(String)
+                            let spans: Vec<ratatui::text::Span<'_>> = cached
+                                .spans
+                                .iter()
+                                .map(|s| {
+                                    ratatui::text::Span::styled(s.content.as_ref(), s.style)
+                                })
+                                .collect();
+                            if is_selected {
+                                Line::from(spans)
+                                    .style(Style::default().add_modifier(Modifier::REVERSED))
+                            } else {
+                                Line::from(spans)
+                            }
+                        })
+                        .collect();
+                    black_box(lines)
+                });
+            },
+        );
     }
 
     group.finish();
@@ -210,6 +243,41 @@ fn bench_visible_range_processing(c: &mut Criterion) {
                                     .style(Style::default().add_modifier(Modifier::REVERSED))
                             } else {
                                 Line::from(cached.spans.clone())
+                            }
+                        })
+                        .collect();
+                    black_box(lines)
+                });
+            },
+        );
+
+        // Process only visible range with borrowed spans (zero-clone approach)
+        group.bench_with_input(
+            BenchmarkId::new("visible_borrowed", total_lines),
+            &cached_lines,
+            |b, cached_lines| {
+                b.iter(|| {
+                    let visible_start = scroll_offset.saturating_sub(2);
+                    let visible_end = (scroll_offset + visible_height + 5).min(cached_lines.len());
+
+                    let lines: Vec<Line> = cached_lines[visible_start..visible_end]
+                        .iter()
+                        .enumerate()
+                        .map(|(rel_idx, cached)| {
+                            let abs_idx = visible_start + rel_idx;
+                            let is_selected = abs_idx == scroll_offset;
+                            let spans: Vec<ratatui::text::Span<'_>> = cached
+                                .spans
+                                .iter()
+                                .map(|s| {
+                                    ratatui::text::Span::styled(s.content.as_ref(), s.style)
+                                })
+                                .collect();
+                            if is_selected {
+                                Line::from(spans)
+                                    .style(Style::default().add_modifier(Modifier::REVERSED))
+                            } else {
+                                Line::from(spans)
                             }
                         })
                         .collect();
