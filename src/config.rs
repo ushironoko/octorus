@@ -22,6 +22,14 @@ pub struct AiConfig {
     pub timeout_secs: u64,
     /// Custom prompt directory (default: ~/.config/octorus/prompts/)
     pub prompt_dir: Option<String>,
+    /// Additional tools for reviewer (Claude adapter only).
+    /// Use Claude Code's --allowedTools format (e.g., "Skill", "Bash(git push:*)").
+    #[serde(default)]
+    pub reviewer_additional_tools: Vec<String>,
+    /// Additional tools for reviewee (Claude adapter only).
+    /// Use Claude Code's --allowedTools format (e.g., "Skill", "Bash(git push:*)").
+    #[serde(default)]
+    pub reviewee_additional_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +66,8 @@ impl Default for AiConfig {
             max_iterations: 10,
             timeout_secs: 600,
             prompt_dir: None,
+            reviewer_additional_tools: Vec::new(),
+            reviewee_additional_tools: Vec::new(),
         }
     }
 }

@@ -152,6 +152,14 @@ timeout_secs = 600
 
 # Custom prompt directory (default: ~/.config/octorus/prompts/)
 # prompt_dir = "/custom/path/to/prompts"
+
+# Additional tools for reviewer (Claude only)
+# Use Claude Code's --allowedTools format
+# reviewer_additional_tools = []
+
+# Additional tools for reviewee (Claude only)
+# Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
+# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
 
 ### Customizing Prompt Templates
@@ -225,6 +233,70 @@ AI Rally is an automated PR review and fix cycle that uses two AI agents:
 - **Session Persistence**: Rally state is saved and can be resumed
 - **Interactive Flow**: When the AI agent needs clarification or permission, you can respond interactively
 - **Background Execution**: Press `b` to run rally in background while continuing to browse files
+
+### Recommended Configuration
+
+Codex uses sandbox mode and cannot control tool permissions at a fine-grained level.
+For maximum security, we recommend:
+
+| Role | Recommended | Reason |
+|------|-------------|--------|
+| Reviewer | Codex or Claude | Read-only operations, both are safe |
+| Reviewee | **Claude** | Allows fine-grained tool control via allowedTools |
+
+Example configuration for secure setup:
+
+```toml
+[ai]
+reviewer = "codex"   # Safe: read-only sandbox
+reviewee = "claude"  # Recommended: fine-grained tool control
+reviewee_additional_tools = ["Skill"]  # Add only what you need
+```
+
+**Note**: If you use Codex as reviewee, it runs in `--full-auto` mode with
+workspace write access and no tool restrictions.
+
+### Tool Permissions
+
+#### Default Allowed Tools
+
+**Reviewer** (read-only operations):
+
+| Tool | Description |
+|------|-------------|
+| Read, Glob, Grep | File reading and searching |
+| `gh pr view/diff/checks` | View PR information |
+| `gh api --method GET` | GitHub API (GET only) |
+
+**Reviewee** (code modification):
+
+| Category | Commands |
+|----------|----------|
+| File | Read, Edit, Write, Glob, Grep |
+| Git | status, diff, add, commit, log, show, branch, switch, stash |
+| GitHub CLI | pr view, pr diff, pr checks, api GET |
+| Cargo | build, test, check, clippy, fmt, run |
+| npm/pnpm/bun | install, test, run |
+
+#### Additional Tools (Claude only)
+
+Additional tools can be enabled via config using Claude Code's `--allowedTools` format:
+
+| Example | Description |
+|---------|-------------|
+| `"Skill"` | Execute Claude Code skills |
+| `"WebFetch"` | Fetch URL content |
+| `"WebSearch"` | Web search |
+| `"Bash(git push:*)"` | git push to remote |
+| `"Bash(gh api --method POST:*)"` | GitHub API POST requests |
+
+```toml
+[ai]
+reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
+```
+
+**Breaking Change (v0.2.0)**: `git push` is now disabled by default.
+To enable, add `"Bash(git push:*)"` to `reviewee_additional_tools`.
 
 ### Keybindings (AI Rally View)
 
