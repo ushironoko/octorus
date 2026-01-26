@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769416882813,
+  "lastUpdate": 1769471471861,
   "repoUrl": "https://github.com/ushironoko/octorus",
   "entries": {
     "octorus Benchmark": [
@@ -553,6 +553,298 @@ window.BENCHMARK_DATA = {
             "name": "visible_range/visible_borrowed/5000",
             "value": 3339,
             "range": "± 7",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "ushironoko",
+            "username": "ushironoko",
+            "email": "apple19940820@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "939202ea2e1b62abf1751287439d5068e2304e92",
+          "message": "Extract render_cached_lines into reusable function (#23)\n\n* refactor: extract render_cached_lines as pub fn to eliminate benchmark-production code divergence\n\nThe rendering loop logic (converting CachedDiffLine to Line with\nzero-copy borrowing) was duplicated inline in both the production\ncode and benchmarks, causing them to diverge after b92cd35.\nNow both call the same render_cached_lines function.\n\n* refactor(bench): separate archive benchmarks into dedicated groups\n\nMove line_style and visible_only benchmarks into archive/ prefixed\ngroups. These are historical approaches no longer used in production\nbut kept as reference baselines for comparison.\n\nActive groups (production paths):\n  - selected_line/{span_clone, borrowed_spans}\n  - visible_range/{all_lines, visible_borrowed}\n\nArchive groups (historical):\n  - archive/selected_line/line_style\n  - archive/visible_range/visible_only\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-26T23:41:46Z",
+          "url": "https://github.com/ushironoko/octorus/commit/939202ea2e1b62abf1751287439d5068e2304e92"
+        },
+        "date": 1769471471581,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "diff_parsing/classify_line/header",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_diff",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_plus",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_minus",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/added",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/removed",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context_long",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/100",
+            "value": 580,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/500",
+            "value": 2911,
+            "range": "± 112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/1000",
+            "value": 5844,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/start/5",
+            "value": 2150,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/middle/50",
+            "value": 2416,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/end/95",
+            "value": 2737,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/start/5",
+            "value": 9989,
+            "range": "± 42",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/middle/250",
+            "value": 11271,
+            "range": "± 86",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/end/495",
+            "value": 13162,
+            "range": "± 83",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/start/5",
+            "value": 21325,
+            "range": "± 154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/middle/500",
+            "value": 24553,
+            "range": "± 305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/end/995",
+            "value": 28411,
+            "range": "± 474",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/simple",
+            "value": 21006,
+            "range": "± 179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/complex",
+            "value": 24315,
+            "range": "± 255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/100",
+            "value": 2586069,
+            "range": "± 10660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/500",
+            "value": 3447680,
+            "range": "± 22635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/1000",
+            "value": 4743792,
+            "range": "± 56950",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/5000",
+            "value": 14931148,
+            "range": "± 135124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/100",
+            "value": 15004,
+            "range": "± 71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/500",
+            "value": 90046,
+            "range": "± 533",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/1000",
+            "value": 185582,
+            "range": "± 530",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/5000",
+            "value": 910971,
+            "range": "± 1937",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/span_clone/100",
+            "value": 35710,
+            "range": "± 200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/borrowed_spans/100",
+            "value": 5202,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/span_clone/500",
+            "value": 72850,
+            "range": "± 340",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/borrowed_spans/500",
+            "value": 25997,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/span_clone/1000",
+            "value": 124251,
+            "range": "± 543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/borrowed_spans/1000",
+            "value": 52631,
+            "range": "± 110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/all_lines/1000",
+            "value": 122790,
+            "range": "± 432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/visible_borrowed/1000",
+            "value": 2842,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/all_lines/5000",
+            "value": 534568,
+            "range": "± 1833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/visible_borrowed/5000",
+            "value": 2814,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/selected_line/line_style/100",
+            "value": 35076,
+            "range": "± 143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/selected_line/line_style/500",
+            "value": 71984,
+            "range": "± 297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/selected_line/line_style/1000",
+            "value": 123234,
+            "range": "± 345",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/visible_range/visible_only/1000",
+            "value": 5192,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/visible_range/visible_only/5000",
+            "value": 5024,
+            "range": "± 29",
             "unit": "ns/iter"
           }
         ]
