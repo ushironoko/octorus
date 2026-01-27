@@ -35,8 +35,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(outer_chunks[0]);
 
-    let is_file_focused = app.state == AppState::SideBySideFileList;
-    let is_diff_focused = app.state == AppState::SideBySideDiff;
+    let is_file_focused = app.state == AppState::SplitViewFileList;
+    let is_diff_focused = app.state == AppState::SplitViewDiff;
 
     render_file_list_pane(frame, app, h_chunks[0], is_file_focused);
     render_diff_pane(frame, app, h_chunks[1], is_diff_focused);

@@ -49,7 +49,7 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  q               Quit"),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Side-by-Side View",
+            "Split View",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),

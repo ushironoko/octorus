@@ -62,8 +62,8 @@ pub enum AppState {
     CommentList,
     Help,
     AiRally,
-    SideBySideFileList,
-    SideBySideDiff,
+    SplitViewFileList,
+    SplitViewDiff,
 }
 
 /// Log event type for AI Rally
@@ -425,8 +425,8 @@ impl App {
                 if matches!(
                     self.state,
                     AppState::DiffView
-                        | AppState::SideBySideDiff
-                        | AppState::SideBySideFileList
+                        | AppState::SplitViewDiff
+                        | AppState::SplitViewFileList
                 ) {
                     self.update_file_comment_positions();
                     self.ensure_diff_cache();
@@ -708,12 +708,12 @@ impl App {
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
                     AppState::Help => self.handle_help_input(key)?,
                     AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
-                    AppState::SideBySideFileList => {
-                        self.handle_side_by_side_file_list_input(key, terminal)
+                    AppState::SplitViewFileList => {
+                        self.handle_split_view_file_list_input(key, terminal)
                             .await?
                     }
-                    AppState::SideBySideDiff => {
-                        self.handle_side_by_side_diff_input(key, terminal).await?
+                    AppState::SplitViewDiff => {
+                        self.handle_split_view_diff_input(key, terminal).await?
                     }
                 }
             }
@@ -746,7 +746,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if !self.files().is_empty() {
-                    self.state = AppState::SideBySideDiff;
+                    self.state = AppState::SplitViewDiff;
                     self.sync_diff_to_selected_file();
                 }
             }
@@ -804,7 +804,7 @@ impl App {
         }
     }
 
-    async fn handle_side_by_side_file_list_input(
+    async fn handle_split_view_file_list_input(
         &mut self,
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -825,18 +825,18 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if !self.files().is_empty() {
-                    self.state = AppState::SideBySideDiff;
+                    self.state = AppState::SplitViewDiff;
                 }
             }
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('q') | KeyCode::Esc => {
                 self.state = AppState::FileList;
             }
             KeyCode::Char('C') => {
-                self.previous_state = AppState::SideBySideFileList;
+                self.previous_state = AppState::SplitViewFileList;
                 self.open_comment_list();
             }
             KeyCode::Char('?') => {
-                self.previous_state = AppState::SideBySideFileList;
+                self.previous_state = AppState::SplitViewFileList;
                 self.state = AppState::Help;
             }
             _ => {
@@ -846,12 +846,12 @@ impl App {
         Ok(())
     }
 
-    async fn handle_side_by_side_diff_input(
+    async fn handle_split_view_diff_input(
         &mut self,
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        // 右ペインの実高さを計算（side_by_side レイアウトと同じロジック）
+        // 右ペインの実高さを計算（split view レイアウトと同じロジック）
         let term_height = terminal.size()?.height as usize;
         // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
         let visible_lines = (term_height * 65 / 100).saturating_sub(8);
@@ -882,22 +882,22 @@ impl App {
             KeyCode::Char('n') => self.jump_to_next_comment(),
             KeyCode::Char('N') => self.jump_to_prev_comment(),
             KeyCode::Enter => {
-                self.diff_view_return_state = AppState::SideBySideDiff;
+                self.diff_view_return_state = AppState::SplitViewDiff;
                 self.preview_return_state = AppState::DiffView;
                 self.state = AppState::DiffView;
             }
             KeyCode::Left | KeyCode::Char('h') => {
-                self.state = AppState::SideBySideFileList;
+                self.state = AppState::SplitViewFileList;
             }
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.state = AppState::FileList;
             }
             KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.preview_return_state = AppState::SideBySideDiff;
+                self.preview_return_state = AppState::SplitViewDiff;
                 self.open_comment_editor(terminal).await?;
             }
             KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                self.preview_return_state = AppState::SideBySideDiff;
+                self.preview_return_state = AppState::SplitViewDiff;
                 self.open_suggestion_editor(terminal).await?;
             }
             _ => {}
@@ -1508,7 +1508,7 @@ impl App {
         self.diff_line_count = Self::calc_diff_line_count(self.files(), self.selected_file);
     }
 
-    /// Side-by-Side ビューでファイル選択変更時にdiff状態を同期
+    /// Split Viewでファイル選択変更時にdiff状態を同期
     fn sync_diff_to_selected_file(&mut self) {
         self.selected_line = 0;
         self.scroll_offset = 0;
