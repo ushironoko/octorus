@@ -18,6 +18,8 @@ use crate::loader::{CommentSubmitResult, DataLoadResult};
 use crate::ui;
 use std::time::Instant;
 
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// コメントのdiff内位置を表す構造体
 #[derive(Debug, Clone)]
 pub struct CommentPosition {
@@ -211,6 +213,8 @@ pub struct App {
     pub submission_result: Option<(bool, String)>,
     /// Timestamp when result was set (for auto-hide)
     submission_result_time: Option<Instant>,
+    /// Spinner animation frame counter (incremented each tick)
+    pub spinner_frame: usize,
 }
 
 impl App {
@@ -262,6 +266,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            spinner_frame: 0,
         };
 
         (app, tx)
@@ -321,6 +326,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            spinner_frame: 0,
         };
 
         (app, tx)
@@ -340,6 +346,7 @@ impl App {
         }
 
         while !self.should_quit {
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
             self.poll_data_updates();
             self.poll_comment_updates();
             self.poll_discussion_comment_updates();
@@ -356,6 +363,11 @@ impl App {
 
         ui::restore_terminal(&mut terminal)?;
         Ok(())
+    }
+
+    /// Get the current spinner character for loading animations
+    pub fn spinner_char(&self) -> &str {
+        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
     pub fn set_working_dir(&mut self, dir: Option<String>) {

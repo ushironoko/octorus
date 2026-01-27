@@ -126,11 +126,11 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         Style::default().fg(Color::DarkGray)
     };
 
-    let loading_indicator = |loading: bool| {
+    let loading_indicator = |loading: bool| -> String {
         if loading {
-            " ..."
+            format!(" {}", app.spinner_char())
         } else {
-            ""
+            String::new()
         }
     };
 

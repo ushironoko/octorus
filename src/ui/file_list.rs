@@ -131,7 +131,7 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
     frame.render_widget(header, chunks[0]);
 
     // Loading message
-    let loading = Paragraph::new("Loading PR data...")
+    let loading = Paragraph::new(format!("{} Loading PR data...", app.spinner_char()))
         .style(Style::default().fg(Color::Yellow))
         .alignment(Alignment::Center)
         .block(
@@ -142,8 +142,8 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
     frame.render_widget(loading, chunks[1]);
 
     // Footer
-    let footer =
-        Paragraph::new("Please wait... (q: quit)").block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(format!("{} Please wait... (q: quit)", app.spinner_char()))
+        .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 

@@ -362,7 +362,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.is_submitting_comment() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            "⏳ Submitting...",
+            format!("{} Submitting...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
         ));
     } else if let Some((success, message)) = &app.submission_result {
@@ -381,7 +381,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else if app.comments_loading {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            "⏳ Loading comments...",
+            format!("{} Loading comments...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
         ));
     }
