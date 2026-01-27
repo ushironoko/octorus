@@ -8,6 +8,7 @@ use ratatui::{
 
 use super::common::render_rally_status_bar;
 use crate::app::{App, DataState};
+use crate::github::ChangedFile;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let has_rally = app.has_background_rally();
@@ -45,45 +46,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // File list
     let files = app.files();
-    let items: Vec<ListItem> = files
-        .iter()
-        .enumerate()
-        .map(|(i, file)| {
-            let style = if i == app.selected_file {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            let status_color = match file.status.as_str() {
-                "added" => Color::Green,
-                "removed" => Color::Red,
-                "modified" => Color::Yellow,
-                _ => Color::White,
-            };
-
-            let status_char = match file.status.as_str() {
-                "added" => 'A',
-                "removed" => 'D',
-                "modified" => 'M',
-                "renamed" => 'R',
-                _ => '?',
-            };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("[{}] ", status_char),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(&file.filename, style),
-                Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
-            ]);
-
-            ListItem::new(line)
-        })
-        .collect();
+    let items = build_file_list_items(files, app.selected_file);
 
     let list = List::new(items)
         .block(
@@ -172,4 +135,50 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
     // Footer
     let footer = Paragraph::new("r: retry | q: quit").block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
+}
+
+/// ファイル一覧のリストアイテムを構築する（side_by_side でも再利用）
+pub(crate) fn build_file_list_items<'a>(
+    files: &'a [ChangedFile],
+    selected_file: usize,
+) -> Vec<ListItem<'a>> {
+    files
+        .iter()
+        .enumerate()
+        .map(|(i, file)| {
+            let style = if i == selected_file {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let status_color = match file.status.as_str() {
+                "added" => Color::Green,
+                "removed" => Color::Red,
+                "modified" => Color::Yellow,
+                _ => Color::White,
+            };
+
+            let status_char = match file.status.as_str() {
+                "added" => 'A',
+                "removed" => 'D',
+                "modified" => 'M',
+                "renamed" => 'R',
+                _ => '?',
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", status_char),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(&file.filename, style),
+                Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
+            ]);
+
+            ListItem::new(line)
+        })
+        .collect()
 }

@@ -4,6 +4,7 @@ mod common;
 pub mod diff_view;
 mod file_list;
 mod help;
+mod side_by_side;
 
 use anyhow::Result;
 use crossterm::{
@@ -50,5 +51,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         AppState::CommentList => comment_list::render(frame, app),
         AppState::Help => help::render(frame, app),
         AppState::AiRally => ai_rally::render(frame, app),
+        AppState::SideBySideFileList | AppState::SideBySideDiff => {
+            side_by_side::render(frame, app)
+        }
     }
 }

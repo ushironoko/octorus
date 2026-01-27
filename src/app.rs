@@ -62,6 +62,8 @@ pub enum AppState {
     CommentList,
     Help,
     AiRally,
+    SideBySideFileList,
+    SideBySideDiff,
 }
 
 /// Log event type for AI Rally
@@ -164,6 +166,12 @@ pub struct App {
     pub pr_number: u32,
     pub data_state: DataState,
     pub state: AppState,
+    /// DiffView で q/Esc を押した時の戻り先
+    pub diff_view_return_state: AppState,
+    /// CommentPreview/SuggestionPreview の戻り先
+    pub preview_return_state: AppState,
+    /// Help/CommentList など汎用的な戻り先
+    pub previous_state: AppState,
     pub selected_file: usize,
     pub selected_line: usize,
     pub diff_line_count: usize,
@@ -231,6 +239,9 @@ impl App {
             pr_number,
             data_state: DataState::Loading,
             state: AppState::FileList,
+            diff_view_return_state: AppState::FileList,
+            preview_return_state: AppState::DiffView,
+            previous_state: AppState::FileList,
             selected_file: 0,
             selected_line: 0,
             diff_line_count: 0,
@@ -291,6 +302,9 @@ impl App {
                 files,
             },
             state: AppState::FileList,
+            diff_view_return_state: AppState::FileList,
+            preview_return_state: AppState::DiffView,
+            previous_state: AppState::FileList,
             selected_file: 0,
             selected_line: 0,
             diff_line_count,
@@ -407,8 +421,13 @@ impl App {
                 self.comment_list_scroll_offset = 0;
                 self.comments_loading = false;
                 self.comment_receiver = None;
-                // Update comment positions if in diff view
-                if self.state == AppState::DiffView {
+                // Update comment positions if in diff view or side-by-side
+                if matches!(
+                    self.state,
+                    AppState::DiffView
+                        | AppState::SideBySideDiff
+                        | AppState::SideBySideFileList
+                ) {
                     self.update_file_comment_positions();
                     self.ensure_diff_cache();
                 }
@@ -689,6 +708,13 @@ impl App {
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
                     AppState::Help => self.handle_help_input(key)?,
                     AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
+                    AppState::SideBySideFileList => {
+                        self.handle_side_by_side_file_list_input(key, terminal)
+                            .await?
+                    }
+                    AppState::SideBySideDiff => {
+                        self.handle_side_by_side_diff_input(key, terminal).await?
+                    }
                 }
             }
         }
@@ -718,20 +744,10 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_file = self.selected_file.saturating_sub(1);
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if !self.files().is_empty() {
-                    self.state = AppState::DiffView;
-                    self.selected_line = 0;
-                    self.scroll_offset = 0;
-                    self.update_diff_line_count();
-
-                    // コメント未取得の場合、バックグラウンドでロード開始
-                    if self.review_comments.is_none() {
-                        self.load_review_comments();
-                    }
-
-                    self.update_file_comment_positions();
-                    self.ensure_diff_cache();
+                    self.state = AppState::SideBySideFileList;
+                    self.sync_diff_to_selected_file();
                 }
             }
             KeyCode::Char(c) if c == self.config.keybindings.approve => {
@@ -747,7 +763,143 @@ impl App {
             KeyCode::Char('C') => self.open_comment_list(),
             KeyCode::Char('R') => self.refresh_all(),
             KeyCode::Char('A') => self.resume_or_start_ai_rally(),
-            KeyCode::Char('?') => self.state = AppState::Help,
+            KeyCode::Char('?') => {
+                self.previous_state = AppState::FileList;
+                self.state = AppState::Help;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// FileList 系状態で共通のキーを処理する。処理した場合は true を返す。
+    async fn handle_common_file_list_keys(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<bool> {
+        match key.code {
+            KeyCode::Char(c) if c == self.config.keybindings.approve => {
+                self.submit_review(ReviewAction::Approve, terminal).await?;
+                Ok(true)
+            }
+            KeyCode::Char(c) if c == self.config.keybindings.request_changes => {
+                self.submit_review(ReviewAction::RequestChanges, terminal)
+                    .await?;
+                Ok(true)
+            }
+            KeyCode::Char(c) if c == self.config.keybindings.comment => {
+                self.submit_review(ReviewAction::Comment, terminal).await?;
+                Ok(true)
+            }
+            KeyCode::Char('R') => {
+                self.refresh_all();
+                Ok(true)
+            }
+            KeyCode::Char('A') => {
+                self.resume_or_start_ai_rally();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn handle_side_by_side_file_list_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.files().is_empty() {
+                    self.selected_file =
+                        (self.selected_file + 1).min(self.files().len().saturating_sub(1));
+                    self.sync_diff_to_selected_file();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.selected_file > 0 {
+                    self.selected_file = self.selected_file.saturating_sub(1);
+                    self.sync_diff_to_selected_file();
+                }
+            }
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if !self.files().is_empty() {
+                    self.state = AppState::SideBySideDiff;
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('q') | KeyCode::Esc => {
+                self.state = AppState::FileList;
+            }
+            KeyCode::Char('C') => {
+                self.previous_state = AppState::SideBySideFileList;
+                self.open_comment_list();
+            }
+            KeyCode::Char('?') => {
+                self.previous_state = AppState::SideBySideFileList;
+                self.state = AppState::Help;
+            }
+            _ => {
+                self.handle_common_file_list_keys(key, terminal).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_side_by_side_diff_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        // 右ペインの実高さを計算（side_by_side レイアウトと同じロジック）
+        let term_height = terminal.size()?.height as usize;
+        // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
+        let visible_lines = (term_height * 65 / 100).saturating_sub(8);
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.diff_line_count > 0 {
+                    self.selected_line =
+                        (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
+                    self.adjust_scroll(visible_lines);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.selected_line = self.selected_line.saturating_sub(1);
+                self.adjust_scroll(visible_lines);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.diff_line_count > 0 {
+                    self.selected_line =
+                        (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
+                    self.adjust_scroll(visible_lines);
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.selected_line = self.selected_line.saturating_sub(20);
+                self.adjust_scroll(visible_lines);
+            }
+            KeyCode::Char('n') => self.jump_to_next_comment(),
+            KeyCode::Char('N') => self.jump_to_prev_comment(),
+            KeyCode::Enter => {
+                self.diff_view_return_state = AppState::SideBySideDiff;
+                self.preview_return_state = AppState::DiffView;
+                self.state = AppState::DiffView;
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.state = AppState::SideBySideFileList;
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.state = AppState::FileList;
+            }
+            KeyCode::Char(c) if c == self.config.keybindings.comment => {
+                self.preview_return_state = AppState::SideBySideDiff;
+                self.open_comment_editor(terminal).await?;
+            }
+            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
+                self.preview_return_state = AppState::SideBySideDiff;
+                self.open_suggestion_editor(terminal).await?;
+            }
             _ => {}
         }
         Ok(())
@@ -1180,7 +1332,7 @@ impl App {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.state = AppState::FileList,
+            KeyCode::Char('q') | KeyCode::Esc => self.state = self.diff_view_return_state,
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.diff_line_count > 0 {
                     self.selected_line =
@@ -1267,11 +1419,11 @@ impl App {
                         }
                     }
                 }
-                self.state = AppState::DiffView;
+                self.state = self.preview_return_state;
             }
             KeyCode::Esc => {
                 self.pending_comment = None;
-                self.state = AppState::DiffView;
+                self.state = self.preview_return_state;
             }
             _ => {}
         }
@@ -1281,7 +1433,7 @@ impl App {
     fn handle_help_input(&mut self, key: event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
-                self.state = AppState::FileList;
+                self.state = self.previous_state;
             }
             _ => {}
         }
@@ -1354,6 +1506,18 @@ impl App {
 
     fn update_diff_line_count(&mut self) {
         self.diff_line_count = Self::calc_diff_line_count(self.files(), self.selected_file);
+    }
+
+    /// Side-by-Side ビューでファイル選択変更時にdiff状態を同期
+    fn sync_diff_to_selected_file(&mut self) {
+        self.selected_line = 0;
+        self.scroll_offset = 0;
+        self.update_diff_line_count();
+        if self.review_comments.is_none() {
+            self.load_review_comments();
+        }
+        self.update_file_comment_positions();
+        self.ensure_diff_cache();
     }
 
     async fn open_suggestion_editor(
@@ -1451,11 +1615,11 @@ impl App {
                         }
                     }
                 }
-                self.state = AppState::DiffView;
+                self.state = self.preview_return_state;
             }
             KeyCode::Esc => {
                 self.pending_suggestion = None;
-                self.state = AppState::DiffView;
+                self.state = self.preview_return_state;
             }
             _ => {}
         }
@@ -1616,11 +1780,8 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => {
-                self.state = AppState::FileList;
-            }
-            KeyCode::Esc => {
-                self.state = AppState::FileList;
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.state = self.previous_state;
             }
             KeyCode::Char('[') => {
                 self.comment_tab = match self.comment_tab {
@@ -1747,6 +1908,7 @@ impl App {
 
         if let Some(idx) = file_index {
             self.selected_file = idx;
+            self.diff_view_return_state = AppState::FileList;
             self.state = AppState::DiffView;
             self.selected_line = 0;
             self.scroll_offset = 0;

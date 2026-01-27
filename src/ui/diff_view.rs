@@ -185,7 +185,7 @@ pub fn render_with_preview(frame: &mut Frame, app: &App) {
     }
 }
 
-fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+pub(crate) fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let header_text = app
         .files()
         .get(app.selected_file)
@@ -202,7 +202,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(header, area);
 }
 
-fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Try to use cached lines if available
     let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
         // Calculate visible range for optimization
