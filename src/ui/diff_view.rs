@@ -378,6 +378,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 Style::default().fg(Color::Red),
             ));
         }
+    } else if app.comments_loading {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "⏳ Loading comments...",
+            Style::default().fg(Color::Yellow),
+        ));
     }
 
     let footer = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
