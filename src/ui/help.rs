@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from("  j/k, Down/Up    Move selection"),
-        Line::from("  Enter           View file diff"),
+        Line::from("  Enter           Open split view"),
         Line::from("  a               Approve PR"),
         Line::from("  r               Request changes"),
         Line::from("  c               Comment only"),

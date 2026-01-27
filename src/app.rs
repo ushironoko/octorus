@@ -746,7 +746,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if !self.files().is_empty() {
-                    self.state = AppState::SplitViewDiff;
+                    self.state = AppState::SplitViewFileList;
                     self.sync_diff_to_selected_file();
                 }
             }
