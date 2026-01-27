@@ -760,7 +760,10 @@ impl App {
             KeyCode::Char(c) if c == self.config.keybindings.comment => {
                 self.submit_review(ReviewAction::Comment, terminal).await?
             }
-            KeyCode::Char('C') => self.open_comment_list(),
+            KeyCode::Char('C') => {
+                self.previous_state = AppState::FileList;
+                self.open_comment_list();
+            }
             KeyCode::Char('R') => self.refresh_all(),
             KeyCode::Char('A') => self.resume_or_start_ai_rally(),
             KeyCode::Char('?') => {
