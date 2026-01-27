@@ -526,8 +526,10 @@ impl App {
                 self.comment_submit_receiver = None;
                 self.submission_result = Some((true, "Submitted".to_string()));
                 self.submission_result_time = Some(Instant::now());
-                // Invalidate comment cache to force refresh on next open
+                // ファイルキャッシュを破棄してコメントを再取得
+                let _ = crate::cache::invalidate_comment_cache(&self.repo, self.pr_number);
                 self.review_comments = None;
+                self.load_review_comments();
             }
             Ok(CommentSubmitResult::Error(e)) => {
                 self.comment_submitting = false;

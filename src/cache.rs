@@ -204,6 +204,15 @@ pub fn invalidate_all_cache(repo: &str, pr_number: u32) -> Result<()> {
     Ok(())
 }
 
+/// コメントキャッシュのみ削除
+pub fn invalidate_comment_cache(repo: &str, pr_number: u32) -> Result<()> {
+    let comment_path = comment_cache_file_path(repo, pr_number)?;
+    if comment_path.exists() {
+        std::fs::remove_file(comment_path)?;
+    }
+    Ok(())
+}
+
 // ==================== Comment Cache ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
