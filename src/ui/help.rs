@@ -68,6 +68,8 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  j/k, Down/Up    Scroll diff"),
         Line::from("  Ctrl-d/u        Page scroll"),
         Line::from("  n/N             Next/prev comment"),
+        Line::from("  r               Reply to inline comment"),
+        Line::from("  Tab             Select reply target"),
         Line::from("  Enter           Open fullscreen diff"),
         Line::from("  ←, h            Back to file focus"),
         Line::from("  q               Back to file list"),
@@ -85,6 +87,8 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  Ctrl-u          Page up"),
         Line::from("  c               Add comment at line"),
         Line::from("  s               Add suggestion at line"),
+        Line::from("  r               Reply to inline comment"),
+        Line::from("  Tab             Select reply target (multiple comments)"),
         Line::from("  q, Esc          Back to file list"),
         Line::from(""),
         Line::from(vec![Span::styled(

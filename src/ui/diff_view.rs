@@ -518,6 +518,8 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
         return;
     };
 
+    let has_multiple = indices.len() > 1;
+
     let mut lines: Vec<Line> = vec![];
     for (i, &idx) in indices.iter().enumerate() {
         let Some(comment) = comments.get(idx) else {
@@ -532,8 +534,20 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
             )));
         }
 
-        // Header: @user (line N)
+        // Selection indicator for multiple comments
+        let indicator = if has_multiple {
+            if i == app.selected_inline_comment {
+                Span::styled("▶ ", Style::default().fg(Color::Yellow))
+            } else {
+                Span::styled("  ", Style::default())
+            }
+        } else {
+            Span::raw("")
+        };
+
+        // Header: [▶] @user (line N)
         lines.push(Line::from(vec![
+            indicator,
             Span::styled(
                 format!("@{}", comment.user.login),
                 Style::default().fg(Color::Cyan),
@@ -551,14 +565,64 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
         lines.push(Line::from("")); // Spacing after comment body
     }
 
-    let title = format!(
-        "Comment{} (n/N: jump)",
-        if indices.len() > 1 { "s" } else { "" }
-    );
+    let title = if has_multiple {
+        "Comments (Tab: select, r: reply)".to_string()
+    } else {
+        "Comment (r: reply)".to_string()
+    };
 
     let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: true });
 
+    frame.render_widget(paragraph, area);
+}
+
+/// Render reply input view (upper: original comment, lower: text area)
+pub fn render_reply_input(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),      // Header
+            Constraint::Percentage(35), // 返信先コメント（読み取り専用）
+            Constraint::Percentage(65), // テキストエリア
+        ])
+        .split(frame.area());
+
+    render_header(frame, app, chunks[0]);
+    render_reply_target(frame, app, chunks[1]);
+    app.reply_text_area.render(frame, chunks[2]);
+}
+
+/// Render the original comment being replied to (read-only)
+fn render_reply_target(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(ref ctx) = app.reply_context else {
+        return;
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Reply to ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("@{}", ctx.reply_to_user),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    for line in ctx.reply_to_body.lines() {
+        lines.push(Line::from(Span::styled(
+            format!("> {}", line),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Original Comment"),
+        )
+        .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
 }

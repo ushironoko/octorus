@@ -5,6 +5,7 @@ pub mod diff_view;
 mod file_list;
 mod help;
 mod split_view;
+pub mod text_area;
 
 use anyhow::Result;
 use crossterm::{
@@ -54,5 +55,6 @@ pub fn render(frame: &mut Frame, app: &App) {
         AppState::SplitViewFileList | AppState::SplitViewDiff => {
             split_view::render(frame, app)
         }
+        AppState::ReplyInput => diff_view::render_reply_input(frame, app),
     }
 }

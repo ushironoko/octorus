@@ -16,6 +16,7 @@ use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PullRequest};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
 use crate::ui;
+use crate::ui::text_area::{TextArea, TextAreaAction};
 use std::time::Instant;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -64,6 +65,7 @@ pub enum AppState {
     AiRally,
     SplitViewFileList,
     SplitViewDiff,
+    ReplyInput,
 }
 
 /// Log event type for AI Rally
@@ -152,6 +154,13 @@ pub struct CommentData {
 }
 
 #[derive(Debug, Clone)]
+pub struct ReplyContext {
+    pub comment_id: u64,
+    pub reply_to_user: String,
+    pub reply_to_body: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum DataState {
     Loading,
     Loaded {
@@ -223,6 +232,12 @@ pub struct App {
     submission_result_time: Option<Instant>,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
+    /// インラインコメントパネル内の選択インデックス
+    pub selected_inline_comment: usize,
+    /// 返信先のコンテキスト
+    pub reply_context: Option<ReplyContext>,
+    /// 返信入力テキストエリア
+    pub reply_text_area: TextArea,
 }
 
 impl App {
@@ -278,6 +293,9 @@ impl App {
             submission_result: None,
             submission_result_time: None,
             spinner_frame: 0,
+            selected_inline_comment: 0,
+            reply_context: None,
+            reply_text_area: TextArea::new(),
         };
 
         (app, tx)
@@ -341,6 +359,9 @@ impl App {
             submission_result: None,
             submission_result_time: None,
             spinner_frame: 0,
+            selected_inline_comment: 0,
+            reply_context: None,
+            reply_text_area: TextArea::new(),
         };
 
         (app, tx)
@@ -715,6 +736,7 @@ impl App {
                     AppState::SplitViewDiff => {
                         self.handle_split_view_diff_input(key, terminal).await?
                     }
+                    AppState::ReplyInput => self.handle_reply_input(key)?,
                 }
             }
         }
@@ -861,6 +883,8 @@ impl App {
         // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
         let visible_lines = (term_height * 65 / 100).saturating_sub(8);
 
+        let prev_line = self.selected_line;
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.diff_line_count > 0 {
@@ -905,8 +929,29 @@ impl App {
                 self.preview_return_state = AppState::SplitViewDiff;
                 self.open_suggestion_editor(terminal).await?;
             }
+            KeyCode::Char('r') => {
+                if self.has_comment_at_current_line() {
+                    self.preview_return_state = AppState::SplitViewDiff;
+                    self.enter_reply_input();
+                }
+            }
+            KeyCode::Tab => {
+                if self.has_comment_at_current_line() {
+                    let count = self.get_comment_indices_at_current_line().len();
+                    if count > 1 {
+                        self.selected_inline_comment =
+                            (self.selected_inline_comment + 1) % count;
+                    }
+                }
+            }
             _ => {}
         }
+
+        // カーソル移動時にインラインコメント選択をリセット
+        if self.selected_line != prev_line {
+            self.selected_inline_comment = 0;
+        }
+
         Ok(())
     }
 
@@ -1336,6 +1381,8 @@ impl App {
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
+        let prev_line = self.selected_line;
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.state = self.diff_view_return_state,
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1368,8 +1415,28 @@ impl App {
             }
             KeyCode::Char('n') => self.jump_to_next_comment(),
             KeyCode::Char('N') => self.jump_to_prev_comment(),
+            KeyCode::Char('r') => {
+                if self.has_comment_at_current_line() {
+                    self.enter_reply_input();
+                }
+            }
+            KeyCode::Tab => {
+                if self.has_comment_at_current_line() {
+                    let count = self.get_comment_indices_at_current_line().len();
+                    if count > 1 {
+                        self.selected_inline_comment =
+                            (self.selected_inline_comment + 1) % count;
+                    }
+                }
+            }
             _ => {}
         }
+
+        // カーソル移動時にインラインコメント選択をリセット
+        if self.selected_line != prev_line {
+            self.selected_inline_comment = 0;
+        }
+
         Ok(())
     }
 
@@ -2043,6 +2110,79 @@ impl App {
             self.selected_line = pos.diff_line_index;
             self.scroll_offset = self.selected_line;
         }
+    }
+
+    /// 返信入力モードに遷移
+    fn enter_reply_input(&mut self) {
+        let indices = self.get_comment_indices_at_current_line();
+        if indices.is_empty() {
+            return;
+        }
+
+        let local_idx = self
+            .selected_inline_comment
+            .min(indices.len().saturating_sub(1));
+        let comment_idx = indices[local_idx];
+
+        let Some(ref comments) = self.review_comments else {
+            return;
+        };
+        let Some(comment) = comments.get(comment_idx) else {
+            return;
+        };
+
+        self.reply_context = Some(ReplyContext {
+            comment_id: comment.id,
+            reply_to_user: comment.user.login.clone(),
+            reply_to_body: comment.body.clone(),
+        });
+        self.reply_text_area = TextArea::new();
+        self.preview_return_state = self.state;
+        self.state = AppState::ReplyInput;
+    }
+
+    /// 返信入力のキーハンドリング
+    fn handle_reply_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        match self.reply_text_area.input(key) {
+            TextAreaAction::Submit => {
+                let body = self.reply_text_area.content();
+                if body.trim().is_empty() {
+                    self.reply_context = None;
+                    self.state = self.preview_return_state;
+                    return Ok(());
+                }
+                if let Some(ctx) = self.reply_context.take() {
+                    let repo = self.repo.clone();
+                    let pr_number = self.pr_number;
+                    let (tx, rx) = mpsc::channel(1);
+                    self.comment_submit_receiver = Some(rx);
+                    self.comment_submitting = true;
+
+                    tokio::spawn(async move {
+                        let result = github::create_reply_comment(
+                            &repo,
+                            pr_number,
+                            ctx.comment_id,
+                            &body,
+                        )
+                        .await;
+                        let _ = tx
+                            .send(match result {
+                                Ok(_) => CommentSubmitResult::Success,
+                                Err(e) => CommentSubmitResult::Error(e.to_string()),
+                            })
+                            .await;
+                    });
+                }
+                self.state = self.preview_return_state;
+            }
+            TextAreaAction::Cancel => {
+                self.reply_context = None;
+                self.state = self.preview_return_state;
+            }
+            TextAreaAction::Continue => {}
+        }
+        Ok(())
     }
 
     /// Diffキャッシュを構築または再利用
