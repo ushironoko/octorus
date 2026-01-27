@@ -746,7 +746,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if !self.files().is_empty() {
-                    self.state = AppState::SideBySideFileList;
+                    self.state = AppState::SideBySideDiff;
                     self.sync_diff_to_selected_file();
                 }
             }
