@@ -744,9 +744,11 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_file = self.selected_file.saturating_sub(1);
             }
+            // Split view を開く際は diff ペインにフォーカスした状態で遷移する。
+            // ファイル一覧側へのフォーカス切替は ←/h で行う。
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if !self.files().is_empty() {
-                    self.state = AppState::SplitViewFileList;
+                    self.state = AppState::SplitViewDiff;
                     self.sync_diff_to_selected_file();
                 }
             }
