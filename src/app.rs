@@ -141,6 +141,8 @@ pub struct AiRallyState {
     pub pending_question: Option<String>,
     /// Pending permission request from reviewee
     pub pending_permission: Option<PermissionInfo>,
+    /// Last rendered visible log height (updated by UI render)
+    pub last_visible_log_height: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -224,6 +226,7 @@ pub struct App {
     // Discussion comments (PR conversation)
     pub discussion_comments: Option<Vec<DiscussionComment>>,
     pub selected_discussion_comment: usize,
+    pub discussion_comment_list_scroll_offset: usize,
     pub discussion_comments_loading: bool,
     pub discussion_comment_detail_mode: bool,
     pub discussion_comment_detail_scroll: usize,
@@ -303,6 +306,7 @@ impl App {
             diff_cache: None,
             discussion_comments: None,
             selected_discussion_comment: 0,
+            discussion_comment_list_scroll_offset: 0,
             discussion_comments_loading: false,
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
@@ -374,6 +378,7 @@ impl App {
             diff_cache: None,
             discussion_comments: None,
             selected_discussion_comment: 0,
+            discussion_comment_list_scroll_offset: 0,
             discussion_comments_loading: false,
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
@@ -1299,8 +1304,7 @@ impl App {
                 return;
             };
 
-            // Estimate visible height (rough estimate, actual is calculated in UI)
-            let visible_height = 10_usize; // approximate
+            let visible_height = rally_state.last_visible_log_height;
 
             // Calculate current scroll position
             let total_logs = rally_state.logs.len();
@@ -1471,6 +1475,7 @@ impl App {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
+            last_visible_log_height: 10,
         });
 
         self.state = AppState::AiRally;
@@ -2117,7 +2122,6 @@ impl App {
                         if !comments.is_empty() {
                             self.selected_comment =
                                 (self.selected_comment + 1).min(comments.len().saturating_sub(1));
-                            self.adjust_comment_scroll(visible_lines);
                         }
                     }
                 }
@@ -2134,7 +2138,6 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => match self.comment_tab {
                 CommentTab::Review => {
                     self.selected_comment = self.selected_comment.saturating_sub(1);
-                    self.adjust_comment_scroll(visible_lines);
                 }
                 CommentTab::Discussion => {
                     self.selected_discussion_comment =
@@ -2194,19 +2197,6 @@ impl App {
             _ => {}
         }
         Ok(())
-    }
-
-    fn adjust_comment_scroll(&mut self, visible_lines: usize) {
-        if visible_lines == 0 {
-            return;
-        }
-        if self.selected_comment < self.comment_list_scroll_offset {
-            self.comment_list_scroll_offset = self.selected_comment;
-        }
-        if self.selected_comment >= self.comment_list_scroll_offset + visible_lines {
-            self.comment_list_scroll_offset =
-                self.selected_comment.saturating_sub(visible_lines) + 1;
-        }
     }
 
     fn jump_to_comment(&mut self) {

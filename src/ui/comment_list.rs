@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthChar;
@@ -50,7 +50,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     // Handle detail mode separately
     if app.discussion_comment_detail_mode {
         render_discussion_detail(frame, app);
@@ -160,7 +160,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     frame.render_widget(header, area);
 }
 
-fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if app.comments_loading && app.review_comments.is_none() {
         let loading = Paragraph::new("Loading review comments...")
             .style(Style::default().fg(Color::Yellow))
@@ -236,10 +236,18 @@ fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL))
         .highlight_style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(list, area);
+
+    let mut list_state = ListState::default()
+        .with_offset(app.comment_list_scroll_offset)
+        .with_selected(Some(app.selected_comment));
+
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    // ListState が調整した offset を保存
+    app.comment_list_scroll_offset = list_state.offset();
 }
 
-fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if app.discussion_comments_loading && app.discussion_comments.is_none() {
         let loading = Paragraph::new("Loading discussion comments...")
             .style(Style::default().fg(Color::Yellow))
@@ -324,7 +332,15 @@ fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layou
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL))
         .highlight_style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(list, area);
+
+    let mut list_state = ListState::default()
+        .with_offset(app.discussion_comment_list_scroll_offset)
+        .with_selected(Some(app.selected_discussion_comment));
+
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    // ListState が調整した offset を保存
+    app.discussion_comment_list_scroll_offset = list_state.offset();
 }
 
 fn render_discussion_detail(frame: &mut Frame, app: &App) {
