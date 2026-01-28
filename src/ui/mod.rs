@@ -33,7 +33,7 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Re
     Ok(())
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     // Loading状態の場合は専用画面を表示
     if matches!(app.data_state, DataState::Loading) {
         file_list::render_loading(frame, app);

@@ -124,8 +124,8 @@ fn render_diff_pane(
         Color::DarkGray
     };
 
-    // インラインコメントがある場合は分割表示
-    let has_inline_comment = is_focused && app.has_comment_at_current_line();
+    // コメントパネルが開いている場合は分割表示
+    let has_inline_comment = is_focused && app.comment_panel_open;
 
     if has_inline_comment {
         render_diff_pane_with_comments(frame, app, area, border_color);
@@ -155,12 +155,22 @@ fn render_diff_pane_normal(
 
     // Footer
     let footer_text = if is_focused {
-        "j/k: scroll | Enter: fullscreen | ←/h: files | q: back"
+        "j/k: scroll | Enter: comments | →/l: fullscreen | ←/h: files | q: back"
     } else {
         "Enter/→: focus diff"
     };
 
-    let mut footer_spans = vec![Span::raw(footer_text)];
+    render_diff_footer(frame, app, chunks[2], footer_text, border_color);
+}
+
+fn render_diff_footer(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    help_text: &str,
+    border_color: Color,
+) {
+    let mut footer_spans = vec![Span::raw(help_text.to_string())];
 
     if app.is_submitting_comment() {
         footer_spans.push(Span::raw("  "));
@@ -194,7 +204,7 @@ fn render_diff_pane_normal(
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color)),
     );
-    frame.render_widget(footer, chunks[2]);
+    frame.render_widget(footer, area);
 }
 
 fn render_diff_pane_with_comments(
@@ -207,8 +217,9 @@ fn render_diff_pane_with_comments(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),      // Header
-            Constraint::Percentage(60), // Diff content
+            Constraint::Percentage(50), // Diff content
             Constraint::Percentage(40), // Inline comments
+            Constraint::Length(3),      // Footer
         ])
         .split(area);
 
@@ -219,7 +230,12 @@ fn render_diff_pane_with_comments(
     let indices = app.get_comment_indices_at_current_line();
     let mut lines: Vec<Line> = vec![];
 
-    if let Some(ref comments) = app.review_comments {
+    if indices.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No comments. c: comment, s: suggestion",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if let Some(ref comments) = app.review_comments {
         for (i, &idx) in indices.iter().enumerate() {
             let Some(comment) = comments.get(idx) else {
                 continue;
@@ -250,20 +266,22 @@ fn render_diff_pane_with_comments(
         }
     }
 
-    let title = format!(
-        "Comment{} (n/N: jump)",
-        if indices.len() > 1 { "s" } else { "" }
-    );
+    let title = "Comments (j/k: scroll, c: comment, s: suggest, r: reply)";
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
+                .border_style(Style::default().fg(Color::Yellow))
                 .title(title),
         )
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: true })
+        .scroll((app.comment_panel_scroll, 0));
     frame.render_widget(paragraph, chunks[2]);
+
+    // Footer
+    let footer_text = "j/k: scroll | c: comment | s: suggest | n/N: jump | Esc/q: close";
+    render_diff_footer(frame, app, chunks[3], footer_text, border_color);
 }
 
 fn render_diff_header(

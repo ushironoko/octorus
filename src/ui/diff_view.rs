@@ -50,8 +50,8 @@ pub fn build_diff_cache(
 /// avoiding heap allocations entirely.
 ///
 /// * `cached_lines` – slice of cached lines to render (may be a sub-range).
-/// * `start_index`  – absolute index of the first element in `cached_lines`,
-///                    used to correctly identify the selected line.
+/// * `start_index` – absolute index of the first element in `cached_lines`,
+///   used to correctly identify the selected line.
 /// * `selected_line` – absolute index of the currently selected line.
 pub fn render_cached_lines<'a>(
     cached_lines: &'a [CachedDiffLine],
@@ -79,8 +79,8 @@ pub fn render_cached_lines<'a>(
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
-    // If current line has inline comments, show split view with comment panel
-    if app.has_comment_at_current_line() {
+    // If comment panel is open (focused), show split view with comment panel
+    if app.comment_panel_open {
         render_with_inline_comment(frame, app);
         return;
     }
@@ -124,15 +124,17 @@ fn render_with_inline_comment(frame: &mut Frame, app: &App) {
     let constraints = if has_rally {
         vec![
             Constraint::Length(3),      // Header
-            Constraint::Percentage(55), // Diff content
+            Constraint::Percentage(50), // Diff content
             Constraint::Length(1),      // Rally status bar
             Constraint::Percentage(40), // Inline comments
+            Constraint::Length(3),      // Footer
         ]
     } else {
         vec![
             Constraint::Length(3),      // Header
-            Constraint::Percentage(60), // Diff content
+            Constraint::Percentage(55), // Diff content
             Constraint::Percentage(40), // Inline comments
+            Constraint::Length(3),      // Footer
         ]
     };
 
@@ -147,8 +149,10 @@ fn render_with_inline_comment(frame: &mut Frame, app: &App) {
     if has_rally {
         render_rally_status_bar(frame, chunks[2], app);
         render_inline_comments(frame, app, chunks[3]);
+        render_footer(frame, app, chunks[4]);
     } else {
         render_inline_comments(frame, app, chunks[2]);
+        render_footer(frame, app, chunks[3]);
     }
 }
 
@@ -514,66 +518,74 @@ fn render_suggestion_preview(frame: &mut Frame, app: &App, area: ratatui::layout
 /// Render inline comments panel for current line
 fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let indices = app.get_comment_indices_at_current_line();
-    let Some(ref comments) = app.review_comments else {
-        return;
-    };
-
-    let has_multiple = indices.len() > 1;
 
     let mut lines: Vec<Line> = vec![];
-    for (i, &idx) in indices.iter().enumerate() {
-        let Some(comment) = comments.get(idx) else {
-            continue;
-        };
 
-        if i > 0 {
-            // Separator between multiple comments
-            lines.push(Line::from(Span::styled(
-                "───────────────────────────────────────",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
+    if indices.is_empty() {
+        // コメントなしの場合
+        lines.push(Line::from(Span::styled(
+            "No comments. c: comment, s: suggestion",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if let Some(ref comments) = app.review_comments {
+        let has_multiple = indices.len() > 1;
 
-        // Selection indicator for multiple comments
-        let indicator = if has_multiple {
-            if i == app.selected_inline_comment {
-                Span::styled("▶ ", Style::default().fg(Color::Yellow))
-            } else {
-                Span::styled("  ", Style::default())
+        for (i, &idx) in indices.iter().enumerate() {
+            let Some(comment) = comments.get(idx) else {
+                continue;
+            };
+
+            if i > 0 {
+                // Separator between multiple comments
+                lines.push(Line::from(Span::styled(
+                    "───────────────────────────────────────",
+                    Style::default().fg(Color::DarkGray),
+                )));
             }
-        } else {
-            Span::raw("")
-        };
 
-        // Header: [▶] @user (line N)
-        lines.push(Line::from(vec![
-            indicator,
-            Span::styled(
-                format!("@{}", comment.user.login),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!(" (line {})", comment.line.unwrap_or(0)),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+            // Selection indicator for multiple comments
+            let indicator = if has_multiple {
+                if i == app.selected_inline_comment {
+                    Span::styled("▶ ", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::styled("  ", Style::default())
+                }
+            } else {
+                Span::raw("")
+            };
 
-        // Body
-        for line in comment.body.lines() {
-            lines.push(Line::from(line.to_string()));
+            // Header: [▶] @user (line N)
+            lines.push(Line::from(vec![
+                indicator,
+                Span::styled(
+                    format!("@{}", comment.user.login),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!(" (line {})", comment.line.unwrap_or(0)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+
+            // Body
+            for line in comment.body.lines() {
+                lines.push(Line::from(line.to_string()));
+            }
+            lines.push(Line::from("")); // Spacing after comment body
         }
-        lines.push(Line::from("")); // Spacing after comment body
     }
 
-    let title = if has_multiple {
-        "Comments (Tab: select, r: reply)".to_string()
-    } else {
-        "Comment (r: reply)".to_string()
-    };
+    let title = "Comments (j/k: scroll, c: comment, s: suggest, r: reply)";
 
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: true });
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(title),
+        )
+        .wrap(Wrap { trim: true })
+        .scroll((app.comment_panel_scroll, 0));
 
     frame.render_widget(paragraph, area);
 }
