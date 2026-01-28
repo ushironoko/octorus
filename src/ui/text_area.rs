@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::{
     layout::Rect,
@@ -6,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 /// テキストエリアのキー入力結果
 pub enum TextAreaAction {
@@ -23,6 +26,9 @@ pub struct TextArea {
     cursor_row: usize,
     cursor_col: usize,
     scroll_offset: usize,
+    /// 最後にレンダリングされた領域の可視行数（ボーダー除く）
+    /// render()で実際のレンダリング領域から更新される（interior mutability）
+    visible_height: Cell<usize>,
 }
 
 impl Default for TextArea {
@@ -38,6 +44,7 @@ impl TextArea {
             cursor_row: 0,
             cursor_col: 0,
             scroll_offset: 0,
+            visible_height: Cell::new(1),
         }
     }
 
@@ -98,7 +105,8 @@ impl TextArea {
 
     /// テキストエリアをレンダリング
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let visible_height = area.height.saturating_sub(2) as usize; // borders
+        let visible_height = area.height.saturating_sub(2).max(1) as usize; // borders
+        self.visible_height.set(visible_height);
 
         let text: Vec<Line> = self
             .lines
@@ -122,8 +130,8 @@ impl TextArea {
         );
         frame.render_widget(paragraph, area);
 
-        // カーソル表示
-        let cursor_x = area.x + 1 + self.cursor_col as u16;
+        // カーソル表示（CJK文字の表示幅を考慮）
+        let cursor_x = area.x + 1 + self.cursor_display_width() as u16;
         let cursor_y = area.y + 1 + (self.cursor_row.saturating_sub(self.scroll_offset)) as u16;
         if cursor_y < area.y + area.height.saturating_sub(1) {
             frame.set_cursor_position((cursor_x, cursor_y));
@@ -215,9 +223,18 @@ impl TextArea {
         char_count(&self.lines[self.cursor_row])
     }
 
+    /// カーソル位置までの表示幅を計算する（CJK文字は2カラム幅）
+    fn cursor_display_width(&self) -> usize {
+        let line = &self.lines[self.cursor_row];
+        line.chars()
+            .take(self.cursor_col)
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum()
+    }
+
     fn adjust_scroll(&mut self) {
-        // スクロール調整: カーソルが見えるように（高さは固定推定20行）
-        let visible_height = 20_usize;
+        // スクロール調整: カーソルが見えるように（render()で設定された実際の可視高さを使用）
+        let visible_height = self.visible_height.get();
         if self.cursor_row < self.scroll_offset {
             self.scroll_offset = self.cursor_row;
         }
@@ -355,5 +372,37 @@ mod tests {
         assert_eq!(ta.content(), "あい");
         ta.input(key_event(KeyCode::Backspace));
         assert_eq!(ta.content(), "あ");
+    }
+
+    #[test]
+    fn test_cjk_cursor_display_width() {
+        let mut ta = TextArea::new();
+        // "あい" を入力 → cursor_col = 2, 表示幅 = 4
+        ta.input(key_event(KeyCode::Char('あ')));
+        ta.input(key_event(KeyCode::Char('い')));
+        assert_eq!(ta.cursor_col, 2);
+        assert_eq!(ta.cursor_display_width(), 4);
+    }
+
+    #[test]
+    fn test_mixed_ascii_cjk_cursor_display_width() {
+        let mut ta = TextArea::new();
+        // "aあb" → cursor_col = 3, 表示幅 = 1+2+1 = 4
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('あ')));
+        ta.input(key_event(KeyCode::Char('b')));
+        assert_eq!(ta.cursor_col, 3);
+        assert_eq!(ta.cursor_display_width(), 4);
+    }
+
+    #[test]
+    fn test_ascii_only_cursor_display_width() {
+        let mut ta = TextArea::new();
+        // ASCII のみ → cursor_col と表示幅が一致
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('b')));
+        ta.input(key_event(KeyCode::Char('c')));
+        assert_eq!(ta.cursor_col, 3);
+        assert_eq!(ta.cursor_display_width(), 3);
     }
 }
