@@ -51,7 +51,7 @@ pub fn build_diff_cache(
 ///
 /// * `cached_lines` – slice of cached lines to render (may be a sub-range).
 /// * `start_index`  – absolute index of the first element in `cached_lines`,
-///                    used to correctly identify the selected line.
+///   used to correctly identify the selected line.
 /// * `selected_line` – absolute index of the currently selected line.
 pub fn render_cached_lines<'a>(
     cached_lines: &'a [CachedDiffLine],

@@ -27,6 +27,23 @@ pub struct CommentPosition {
     pub comment_index: usize,
 }
 
+/// ジャンプ履歴の1エントリ（Go to Definition / Jump Back 用）
+#[derive(Debug, Clone)]
+pub struct JumpLocation {
+    pub file_index: usize,
+    pub line_index: usize,
+    pub scroll_offset: usize,
+}
+
+/// シンボル選択ポップアップの状態
+#[derive(Debug, Clone)]
+pub struct SymbolPopupState {
+    /// 候補シンボル一覧 (name, start, end)
+    pub symbols: Vec<(String, usize, usize)>,
+    /// 選択中のインデックス
+    pub selected: usize,
+}
+
 /// Diff行のキャッシュ（シンタックスハイライト済み）
 #[derive(Clone)]
 pub struct CachedDiffLine {
@@ -223,6 +240,12 @@ pub struct App {
     submission_result_time: Option<Instant>,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
+    /// ジャンプ履歴スタック（Go to Definition / Jump Back 用）
+    pub jump_stack: Vec<JumpLocation>,
+    /// 'g' キー入力待ち状態（gd, gg などの2キーコマンド用）
+    pub pending_g_key: bool,
+    /// シンボル選択ポップアップの状態
+    pub symbol_popup: Option<SymbolPopupState>,
 }
 
 impl App {
@@ -278,6 +301,9 @@ impl App {
             submission_result: None,
             submission_result_time: None,
             spinner_frame: 0,
+            jump_stack: Vec::new(),
+            pending_g_key: false,
+            symbol_popup: None,
         };
 
         (app, tx)
@@ -341,6 +367,9 @@ impl App {
             submission_result: None,
             submission_result_time: None,
             spinner_frame: 0,
+            jump_stack: Vec::new(),
+            pending_g_key: false,
+            symbol_popup: None,
         };
 
         (app, tx)
@@ -856,10 +885,33 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        // シンボルポップアップ表示中
+        if self.symbol_popup.is_some() {
+            self.handle_symbol_popup_input(key, terminal).await?;
+            return Ok(());
+        }
+
         // 右ペインの実高さを計算（split view レイアウトと同じロジック）
         let term_height = terminal.size()?.height as usize;
         // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
         let visible_lines = (term_height * 65 / 100).saturating_sub(8);
+
+        // pending_g_key: 2キーコマンド処理
+        if self.pending_g_key {
+            self.pending_g_key = false;
+            match key.code {
+                KeyCode::Char('d') => {
+                    self.open_symbol_popup(terminal).await?;
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    self.selected_line = 0;
+                    self.scroll_offset = 0;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
 
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -872,6 +924,18 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_line = self.selected_line.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
+            }
+            KeyCode::Char('g') => {
+                self.pending_g_key = true;
+            }
+            KeyCode::Char('G') => {
+                if self.diff_line_count > 0 {
+                    self.selected_line = self.diff_line_count.saturating_sub(1);
+                    self.adjust_scroll(visible_lines);
+                }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.jump_back();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.diff_line_count > 0 {
@@ -1334,7 +1398,31 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        // シンボルポップアップ表示中
+        if self.symbol_popup.is_some() {
+            self.handle_symbol_popup_input(key, terminal).await?;
+            return Ok(());
+        }
+
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+
+        // pending_g_key: 2キーコマンド処理
+        if self.pending_g_key {
+            self.pending_g_key = false;
+            match key.code {
+                KeyCode::Char('d') => {
+                    self.open_symbol_popup(terminal).await?;
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    // gg: 先頭行へジャンプ
+                    self.selected_line = 0;
+                    self.scroll_offset = 0;
+                    return Ok(());
+                }
+                _ => {} // 無効な組み合わせ → フォールスルーして通常処理
+            }
+        }
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.state = self.diff_view_return_state,
@@ -1348,6 +1436,18 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_line = self.selected_line.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
+            }
+            KeyCode::Char('g') => {
+                self.pending_g_key = true;
+            }
+            KeyCode::Char('G') => {
+                if self.diff_line_count > 0 {
+                    self.selected_line = self.diff_line_count.saturating_sub(1);
+                    self.adjust_scroll(visible_lines);
+                }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.jump_back();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.diff_line_count > 0 {
@@ -1517,6 +1617,8 @@ impl App {
     fn sync_diff_to_selected_file(&mut self) {
         self.selected_line = 0;
         self.scroll_offset = 0;
+        self.pending_g_key = false;
+        self.symbol_popup = None;
         self.update_diff_line_count();
         if self.review_comments.is_none() {
             self.load_review_comments();
@@ -2043,6 +2145,169 @@ impl App {
             self.selected_line = pos.diff_line_index;
             self.scroll_offset = self.selected_line;
         }
+    }
+
+    /// 現在位置をジャンプスタックに保存
+    fn push_jump_location(&mut self) {
+        let loc = JumpLocation {
+            file_index: self.selected_file,
+            line_index: self.selected_line,
+            scroll_offset: self.scroll_offset,
+        };
+        self.jump_stack.push(loc);
+        // 上限 100 件
+        if self.jump_stack.len() > 100 {
+            self.jump_stack.remove(0);
+        }
+    }
+
+    /// ジャンプスタックから復元
+    fn jump_back(&mut self) {
+        let Some(loc) = self.jump_stack.pop() else {
+            return;
+        };
+
+        let file_changed = self.selected_file != loc.file_index;
+        self.selected_file = loc.file_index;
+        self.selected_line = loc.line_index;
+        self.scroll_offset = loc.scroll_offset;
+
+        if file_changed {
+            self.update_diff_line_count();
+            self.update_file_comment_positions();
+            self.ensure_diff_cache();
+        }
+    }
+
+    /// シンボル選択ポップアップを開く
+    async fn open_symbol_popup(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let file = match self.files().get(self.selected_file) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+        let patch = match file.patch.as_ref() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let info = match crate::diff::get_line_info(patch, self.selected_line) {
+            Some(i) => i,
+            None => return Ok(()),
+        };
+
+        let symbols = crate::symbol::extract_all_identifiers(&info.line_content);
+        if symbols.is_empty() {
+            return Ok(());
+        }
+
+        // 候補が1つだけの場合は直接ジャンプ（ポップアップ不要）
+        if symbols.len() == 1 {
+            let symbol_name = symbols[0].0.clone();
+            self.jump_to_symbol_definition_async(&symbol_name, terminal)
+                .await?;
+            return Ok(());
+        }
+
+        self.symbol_popup = Some(SymbolPopupState {
+            symbols,
+            selected: 0,
+        });
+        Ok(())
+    }
+
+    /// ポップアップ内のキーハンドリング
+    async fn handle_symbol_popup_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let popup = match self.symbol_popup.as_mut() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                popup.selected = (popup.selected + 1).min(popup.symbols.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                popup.selected = popup.selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let symbol_name = popup.symbols[popup.selected].0.clone();
+                self.symbol_popup = None;
+                self.jump_to_symbol_definition_async(&symbol_name, terminal)
+                    .await?;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.symbol_popup = None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// シンボルの定義元へジャンプ（diff パッチ内 → リポジトリ全体、非同期）
+    async fn jump_to_symbol_definition_async(
+        &mut self,
+        symbol: &str,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        // Phase 1: diff パッチ内を検索
+        let files: Vec<crate::github::ChangedFile> = self.files().to_vec();
+        if let Some((file_idx, line_idx)) =
+            crate::symbol::find_definition_in_patches(symbol, &files, self.selected_file)
+        {
+            self.push_jump_location();
+            let file_changed = self.selected_file != file_idx;
+            self.selected_file = file_idx;
+            self.selected_line = line_idx;
+            self.scroll_offset = line_idx;
+
+            if file_changed {
+                self.update_diff_line_count();
+                self.update_file_comment_positions();
+                self.ensure_diff_cache();
+            }
+            return Ok(());
+        }
+
+        // Phase 2: ローカルリポジトリ全体を検索
+        let repo_root = match &self.working_dir {
+            Some(dir) => {
+                let output = tokio::process::Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .current_dir(dir)
+                    .output()
+                    .await;
+                match output {
+                    Ok(o) if o.status.success() => {
+                        String::from_utf8_lossy(&o.stdout).trim().to_string()
+                    }
+                    _ => return Ok(()),
+                }
+            }
+            None => return Ok(()),
+        };
+
+        let result = crate::symbol::find_definition_in_repo(
+            symbol,
+            std::path::Path::new(&repo_root),
+        )
+        .await;
+        if let Ok(Some((file_path, line_number))) = result {
+            let full_path = std::path::Path::new(&repo_root).join(&file_path);
+            let path_str = full_path.to_string_lossy().to_string();
+
+            // ターミナルを一時停止して外部エディタを開く
+            crate::ui::restore_terminal(terminal)?;
+            let _ = crate::editor::open_file_at_line(&self.config.editor, &path_str, line_number);
+            *terminal = crate::ui::setup_terminal()?;
+        }
+
+        Ok(())
     }
 
     /// Diffキャッシュを構築または再利用
