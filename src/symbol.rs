@@ -179,6 +179,85 @@ fn is_common_keyword(word: &str) -> bool {
     )
 }
 
+/// Check if a line imports the given symbol via `use` (Rust) or `import` (JS/TS/Python).
+///
+/// Matches patterns like:
+/// - `use std::process::Command;`
+/// - `use crate::foo::{Bar, Baz};`
+/// - `import { Foo } from './module';`
+/// - `import Foo from './module';`
+/// - `from module import Foo`
+pub fn is_import_line(content: &str, symbol: &str) -> bool {
+    let trimmed = content.trim_start();
+
+    // Rust: use ...::Symbol; or use ...::Symbol as ...;
+    if let Some(use_body) = trimmed.strip_prefix("use ") {
+        // Check grouped imports: use path::{..., Symbol, ...};
+        if let Some(brace_start) = use_body.find('{') {
+            if let Some(brace_end) = use_body.find('}') {
+                let inside = &use_body[brace_start + 1..brace_end];
+                for item in inside.split(',') {
+                    let item = item.trim();
+                    // Handle "Symbol" or "Symbol as Alias"
+                    let name = item.split_whitespace().next().unwrap_or("");
+                    if name == symbol {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Check simple import: use path::Symbol; or use path::Symbol as Alias;
+        let without_semi = use_body.trim_end_matches(';').trim();
+        if let Some(last_colon) = without_semi.rfind("::") {
+            let after_colon = &without_semi[last_colon + 2..];
+            let name = after_colon.split_whitespace().next().unwrap_or("");
+            if name == symbol {
+                return true;
+            }
+        }
+    }
+
+    // JS/TS: import { Symbol } from '...'; or import Symbol from '...';
+    if let Some(import_body) = trimmed.strip_prefix("import ") {
+        // Named import: import { Foo, Bar } from ...
+        if let Some(brace_start) = import_body.find('{') {
+            if let Some(brace_end) = import_body.find('}') {
+                let inside = &import_body[brace_start + 1..brace_end];
+                for item in inside.split(',') {
+                    let item = item.trim();
+                    let name = item.split_whitespace().next().unwrap_or("");
+                    if name == symbol {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Default import: import Symbol from '...'
+        let name = import_body.split_whitespace().next().unwrap_or("");
+        if name == symbol {
+            return true;
+        }
+    }
+
+    // Python: from module import Symbol
+    if trimmed.starts_with("from ") {
+        if let Some(import_pos) = trimmed.find(" import ") {
+            let after_import = &trimmed[import_pos + 8..];
+            for item in after_import.split(',') {
+                let item = item.trim();
+                let name = item.split_whitespace().next().unwrap_or("");
+                if name == symbol {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 /// Check if a line is a definition of the given symbol.
 ///
 /// Looks for known definition keyword prefixes followed by the symbol name
@@ -222,6 +301,8 @@ pub fn is_definition_line(content: &str, symbol: &str) -> bool {
 ///
 /// Returns `(file_index, diff_line_index)` if found.
 /// Search order: current file first, then other files.
+/// Two-pass strategy: first search for actual definitions (fn, struct, etc.),
+/// then fall back to import/use statements.
 pub fn find_definition_in_patches(
     symbol: &str,
     files: &[ChangedFile],
@@ -238,7 +319,8 @@ pub fn find_definition_in_patches(
         }
     }
 
-    for file_idx in search_order {
+    // Pass 1: Search for actual definitions (fn, struct, class, etc.)
+    for &file_idx in &search_order {
         let file = &files[file_idx];
         let Some(ref patch) = file.patch else {
             continue;
@@ -258,12 +340,33 @@ pub fn find_definition_in_patches(
         }
     }
 
+    // Pass 2: Fall back to import/use statements
+    for &file_idx in &search_order {
+        let file = &files[file_idx];
+        let Some(ref patch) = file.patch else {
+            continue;
+        };
+
+        for (line_idx, line) in patch.lines().enumerate() {
+            let (line_type, content) = classify_line(line);
+
+            if !matches!(line_type, LineType::Added | LineType::Context) {
+                continue;
+            }
+
+            if is_import_line(content, symbol) {
+                return Some((file_idx, line_idx));
+            }
+        }
+    }
+
     None
 }
 
 /// Search for a symbol definition in the local repository using `grep`.
 ///
 /// Returns `(file_path, line_number)` if found (1-based line number).
+/// Two-pass strategy: first search for definitions, then fall back to imports.
 pub async fn find_definition_in_repo(
     symbol: &str,
     repo_root: &Path,
@@ -282,21 +385,49 @@ pub async fn find_definition_in_repo(
 
     let output = cmd.output().await?;
 
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // Parse matching lines: ./path/to/file:123:line content
+        for result_line in stdout.lines() {
+            let parts: Vec<&str> = result_line.splitn(3, ':').collect();
+            if parts.len() >= 3 {
+                let file_path = parts[0].strip_prefix("./").unwrap_or(parts[0]);
+                if let Ok(line_number) = parts[1].parse::<usize>() {
+                    if is_definition_line(parts[2], symbol) {
+                        return Ok(Some((file_path.to_string(), line_number)));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to import/use statement search
+    let import_pattern = format!(r"(use .*\b{sym}\b|import .*\b{sym}\b|from .* import .*\b{sym}\b)", sym = regex_escape_word(symbol));
+
+    let mut cmd = Command::new("grep");
+    cmd.arg("-rnE").arg(&import_pattern);
+
+    for dir in EXCLUDED_DIRS {
+        cmd.arg(format!("--exclude-dir={}", dir));
+    }
+
+    cmd.arg(".").current_dir(repo_root);
+
+    let output = cmd.output().await?;
+
     if !output.status.success() {
-        // grep returns exit code 1 when no matches found
         return Ok(None);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Parse first matching line: ./path/to/file:123:line content
     for result_line in stdout.lines() {
         let parts: Vec<&str> = result_line.splitn(3, ':').collect();
-        if parts.len() >= 2 {
+        if parts.len() >= 3 {
             let file_path = parts[0].strip_prefix("./").unwrap_or(parts[0]);
             if let Ok(line_number) = parts[1].parse::<usize>() {
-                // Verify it's actually a definition line (not just a match)
-                if parts.len() >= 3 && is_definition_line(parts[2], symbol) {
+                if is_import_line(parts[2], symbol) {
                     return Ok(Some((file_path.to_string(), line_number)));
                 }
             }
@@ -307,6 +438,7 @@ pub async fn find_definition_in_repo(
 }
 
 /// Simple regex escape for symbol names (alphanumeric + underscore).
+/// Appends a non-ident-char assertion for word boundary after symbol.
 fn regex_escape(s: &str) -> String {
     let mut escaped = String::with_capacity(s.len());
     for c in s.chars() {
@@ -319,6 +451,21 @@ fn regex_escape(s: &str) -> String {
     }
     // Add word boundary after symbol
     escaped.push_str("[^a-zA-Z0-9_]");
+    escaped
+}
+
+/// Regex escape for symbol names without trailing boundary assertion.
+/// Used in patterns that already have their own boundary logic (e.g., `\b`).
+fn regex_escape_word(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        if is_ident_char(c) {
+            escaped.push(c);
+        } else {
+            escaped.push('\\');
+            escaped.push(c);
+        }
+    }
     escaped
 }
 
@@ -775,6 +922,76 @@ mod tests {
         let line = "a + b";
         // From 'b' (col 4), skip space, land on '+'
         assert_eq!(prev_word_boundary(line, 4), 2);
+    }
+
+    // ===== is_import_line tests =====
+
+    #[test]
+    fn test_is_import_line_rust_simple() {
+        assert!(is_import_line("use std::process::Command;", "Command"));
+        assert!(is_import_line("use tokio::process::Command;", "Command"));
+        assert!(is_import_line("use crate::app::App;", "App"));
+    }
+
+    #[test]
+    fn test_is_import_line_rust_grouped() {
+        assert!(is_import_line("use std::io::{Read, Write, BufRead};", "Read"));
+        assert!(is_import_line("use std::io::{Read, Write, BufRead};", "Write"));
+        assert!(is_import_line("use std::io::{Read, Write, BufRead};", "BufRead"));
+    }
+
+    #[test]
+    fn test_is_import_line_rust_indented() {
+        assert!(is_import_line("    use std::process::Command;", "Command"));
+    }
+
+    #[test]
+    fn test_is_import_line_rust_no_match() {
+        assert!(!is_import_line("use std::process::Command;", "Process"));
+        assert!(!is_import_line("use std::process::Command;", "CommandExt"));
+    }
+
+    #[test]
+    fn test_is_import_line_js_named() {
+        assert!(is_import_line("import { useState, useEffect } from 'react';", "useState"));
+        assert!(is_import_line("import { useState, useEffect } from 'react';", "useEffect"));
+    }
+
+    #[test]
+    fn test_is_import_line_js_default() {
+        assert!(is_import_line("import React from 'react';", "React"));
+    }
+
+    #[test]
+    fn test_is_import_line_python() {
+        assert!(is_import_line("from os.path import join, exists", "join"));
+        assert!(is_import_line("from os.path import join, exists", "exists"));
+    }
+
+    #[test]
+    fn test_is_import_line_not_import() {
+        assert!(!is_import_line("fn main() {", "main"));
+        assert!(!is_import_line("let cmd = Command::new(\"ls\");", "Command"));
+    }
+
+    // ===== find_definition_in_patches with imports =====
+
+    #[test]
+    fn test_find_definition_in_patches_falls_back_to_import() {
+        let files = vec![ChangedFile {
+            filename: "src/main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 2,
+            deletions: 0,
+            patch: Some(
+                "@@ -1,3 +1,5 @@\n use std::process::Command;\n \n fn main() {\n+    let cmd = Command::new(\"ls\");\n+    cmd.status().unwrap();\n"
+                    .to_string(),
+            ),
+        }];
+
+        // Command is not defined in the patch, but it is imported
+        let result = find_definition_in_patches("Command", &files, 0);
+        assert_eq!(result, Some((0, 1))); // line 1 = "use std::process::Command;"
     }
 
     // ===== find_definition_in_repo is tested with integration tests =====

@@ -901,7 +901,7 @@ impl App {
             self.pending_g_key = false;
             match key.code {
                 KeyCode::Char('d') => {
-                    self.open_symbol_popup();
+                    self.open_symbol_popup(terminal).await?;
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
@@ -1411,7 +1411,7 @@ impl App {
             self.pending_g_key = false;
             match key.code {
                 KeyCode::Char('d') => {
-                    self.open_symbol_popup();
+                    self.open_symbol_popup(terminal).await?;
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
@@ -2180,36 +2180,41 @@ impl App {
     }
 
     /// シンボル選択ポップアップを開く
-    fn open_symbol_popup(&mut self) {
+    async fn open_symbol_popup(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
         let file = match self.files().get(self.selected_file) {
             Some(f) => f,
-            None => return,
+            None => return Ok(()),
         };
         let patch = match file.patch.as_ref() {
             Some(p) => p,
-            None => return,
+            None => return Ok(()),
         };
         let info = match crate::diff::get_line_info(patch, self.selected_line) {
             Some(i) => i,
-            None => return,
+            None => return Ok(()),
         };
 
         let symbols = crate::symbol::extract_all_identifiers(&info.line_content);
         if symbols.is_empty() {
-            return;
+            return Ok(());
         }
 
         // 候補が1つだけの場合は直接ジャンプ（ポップアップ不要）
         if symbols.len() == 1 {
             let symbol_name = symbols[0].0.clone();
-            self.jump_to_symbol_definition(&symbol_name);
-            return;
+            self.jump_to_symbol_definition_async(&symbol_name, terminal)
+                .await?;
+            return Ok(());
         }
 
         self.symbol_popup = Some(SymbolPopupState {
             symbols,
             selected: 0,
         });
+        Ok(())
     }
 
     /// ポップアップ内のキーハンドリング
@@ -2242,26 +2247,6 @@ impl App {
             _ => {}
         }
         Ok(())
-    }
-
-    /// シンボルの定義元へジャンプ（diff パッチ内のみ、同期）
-    fn jump_to_symbol_definition(&mut self, symbol: &str) {
-        let files: Vec<crate::github::ChangedFile> = self.files().to_vec();
-        if let Some((file_idx, line_idx)) =
-            crate::symbol::find_definition_in_patches(symbol, &files, self.selected_file)
-        {
-            self.push_jump_location();
-            let file_changed = self.selected_file != file_idx;
-            self.selected_file = file_idx;
-            self.selected_line = line_idx;
-            self.scroll_offset = line_idx;
-
-            if file_changed {
-                self.update_diff_line_count();
-                self.update_file_comment_positions();
-                self.ensure_diff_cache();
-            }
-        }
     }
 
     /// シンボルの定義元へジャンプ（diff パッチ内 → リポジトリ全体、非同期）
