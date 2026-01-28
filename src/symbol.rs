@@ -120,6 +120,65 @@ pub fn extract_word_at(content: &str, column: usize) -> Option<(&str, usize, usi
     Some((&content[byte_start..byte_end], start, end))
 }
 
+/// Extract all unique identifiers from a line of code.
+///
+/// Returns a deduplicated list of `(word, start, end)` in order of first occurrence.
+/// Skips common language keywords that are unlikely to be jump targets.
+pub fn extract_all_identifiers(content: &str) -> Vec<(String, usize, usize)> {
+    let chars: Vec<char> = content.chars().collect();
+    let len = chars.len();
+    let mut result: Vec<(String, usize, usize)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut i = 0;
+
+    while i < len {
+        if is_ident_start(chars[i]) {
+            let start = i;
+            i += 1;
+            while i < len && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
+            let byte_end: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
+            let word = &content[byte_start..byte_end];
+
+            if !is_common_keyword(word) && seen.insert(word.to_string()) {
+                result.push((word.to_string(), start, i));
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Common keywords that should be excluded from symbol popup candidates.
+fn is_common_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        // Rust
+        "fn" | "pub" | "let" | "mut" | "const" | "static" | "struct" | "enum"
+        | "trait" | "impl" | "mod" | "use" | "crate" | "self" | "super"
+        | "where" | "for" | "in" | "if" | "else" | "match" | "return"
+        | "break" | "continue" | "loop" | "while" | "as" | "ref" | "move"
+        | "async" | "await" | "dyn" | "type" | "true" | "false" | "Some"
+        | "None" | "Ok" | "Err" | "Self"
+        // TypeScript / JavaScript
+        | "function" | "class" | "interface" | "export" | "import" | "from"
+        | "default" | "var" | "new" | "this" | "typeof" | "instanceof"
+        | "void" | "null" | "undefined" | "try" | "catch" | "throw"
+        | "finally" | "yield" | "delete" | "switch" | "case"
+        // Python
+        | "def" | "pass" | "raise" | "with"
+        | "lambda" | "global" | "nonlocal" | "assert" | "del" | "not"
+        | "and" | "or" | "is" | "elif" | "except"
+        // Go
+        | "func" | "package" | "defer" | "go" | "select" | "chan"
+        | "fallthrough" | "range" | "map"
+    )
+}
+
 /// Check if a line is a definition of the given symbol.
 ///
 /// Looks for known definition keyword prefixes followed by the symbol name
@@ -496,6 +555,48 @@ mod tests {
         assert!(!is_definition_line("fn main_loop() {", "main"));
         // But "fn main" should match
         assert!(is_definition_line("fn main() {", "main"));
+    }
+
+    // ===== extract_all_identifiers tests =====
+
+    #[test]
+    fn test_extract_all_identifiers_basic() {
+        let ids = extract_all_identifiers("fn hello_world() {");
+        let names: Vec<&str> = ids.iter().map(|(w, _, _)| w.as_str()).collect();
+        assert_eq!(names, vec!["hello_world"]);
+    }
+
+    #[test]
+    fn test_extract_all_identifiers_multiple() {
+        let ids = extract_all_identifiers("let x = calculate(y, z);");
+        let names: Vec<&str> = ids.iter().map(|(w, _, _)| w.as_str()).collect();
+        assert_eq!(names, vec!["x", "calculate", "y", "z"]);
+    }
+
+    #[test]
+    fn test_extract_all_identifiers_dedup() {
+        let ids = extract_all_identifiers("foo(foo, bar, foo)");
+        let names: Vec<&str> = ids.iter().map(|(w, _, _)| w.as_str()).collect();
+        assert_eq!(names, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn test_extract_all_identifiers_empty() {
+        let ids = extract_all_identifiers("  + - * / ");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_extract_all_identifiers_skips_keywords() {
+        let ids = extract_all_identifiers("pub fn process(data: String) -> Result<()> {");
+        let names: Vec<&str> = ids.iter().map(|(w, _, _)| w.as_str()).collect();
+        // "pub", "fn" are keywords; "process", "data", "String", "Result" are identifiers
+        assert!(names.contains(&"process"));
+        assert!(names.contains(&"data"));
+        assert!(names.contains(&"String"));
+        assert!(names.contains(&"Result"));
+        assert!(!names.contains(&"pub"));
+        assert!(!names.contains(&"fn"));
     }
 
     // ===== find_definition_in_patches tests =====
