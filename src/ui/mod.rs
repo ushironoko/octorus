@@ -8,6 +8,7 @@ mod split_view;
 
 use anyhow::Result;
 use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -16,18 +17,29 @@ use std::io::{self, Stdout};
 
 use crate::app::{App, AppState, DataState};
 
-pub fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+pub fn setup_terminal(enable_mouse: bool) -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    if enable_mouse {
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    } else {
+        execute!(stdout, EnterAlternateScreen)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
 
-pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+pub fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    enable_mouse: bool,
+) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    if enable_mouse {
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    } else {
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    }
     terminal.show_cursor()?;
     Ok(())
 }

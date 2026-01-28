@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::{
+    event::DisableMouseCapture,
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
@@ -61,7 +62,7 @@ enum Commands {
 /// Restore terminal to normal state
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
 /// Set up panic hook to restore terminal on panic

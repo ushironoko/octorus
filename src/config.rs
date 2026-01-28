@@ -9,6 +9,7 @@ use xdg::BaseDirectories;
 pub struct Config {
     pub editor: String,
     pub diff: DiffConfig,
+    pub scroll: ScrollConfig,
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
 }
@@ -40,6 +41,13 @@ pub struct DiffConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ScrollConfig {
+    pub enable_mouse: bool,
+    pub mouse_scroll_lines: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct KeybindingsConfig {
     pub approve: char,
     pub request_changes: char,
@@ -52,6 +60,7 @@ impl Default for Config {
         Self {
             editor: "vi".to_owned(),
             diff: DiffConfig::default(),
+            scroll: ScrollConfig::default(),
             keybindings: KeybindingsConfig::default(),
             ai: AiConfig::default(),
         }
@@ -76,6 +85,25 @@ impl Default for DiffConfig {
     fn default() -> Self {
         Self {
             theme: "base16-ocean.dark".to_owned(),
+        }
+    }
+}
+
+impl Default for ScrollConfig {
+    fn default() -> Self {
+        Self {
+            enable_mouse: true,
+            mouse_scroll_lines: 3,
+        }
+    }
+}
+
+impl ScrollConfig {
+    pub fn effective_mouse_scroll_lines(&self) -> usize {
+        if self.mouse_scroll_lines == 0 {
+            3
+        } else {
+            self.mouse_scroll_lines
         }
     }
 }

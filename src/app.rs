@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, text::Span, Terminal};
 use std::io::Stdout;
 use tokio::sync::mpsc;
@@ -351,7 +351,8 @@ impl App {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let mut terminal = ui::setup_terminal()?;
+        let enable_mouse = self.config.scroll.enable_mouse;
+        let mut terminal = ui::setup_terminal(enable_mouse)?;
 
         // Start AI Rally immediately if flag is set and data is already loaded (from cache)
         if self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loaded { .. }) {
@@ -375,7 +376,7 @@ impl App {
             handle.abort();
         }
 
-        ui::restore_terminal(&mut terminal)?;
+        ui::restore_terminal(&mut terminal, enable_mouse)?;
         Ok(())
     }
 
@@ -681,31 +682,39 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // Error状態でのリトライ処理
-                if let DataState::Error(_) = &self.data_state {
+            let event = event::read()?;
+
+            // Error状態でのリトライ処理
+            if let DataState::Error(_) = &self.data_state {
+                if let Event::Key(key) = event {
                     match key.code {
                         KeyCode::Char('q') => self.should_quit = true,
                         KeyCode::Char('r') => self.retry_load(),
                         _ => {}
                     }
-                    return Ok(());
                 }
+                return Ok(());
+            }
 
-                // Loading状態ではqのみ受け付け
-                if matches!(self.data_state, DataState::Loading) {
+            // Loading状態ではqのみ受け付け
+            if matches!(self.data_state, DataState::Loading) {
+                if let Event::Key(key) = event {
                     if key.code == KeyCode::Char('q') {
                         self.should_quit = true;
                     }
-                    return Ok(());
                 }
+                return Ok(());
+            }
 
-                match self.state {
+            match event {
+                Event::Key(key) => match self.state {
                     AppState::FileList => self.handle_file_list_input(key, terminal).await?,
                     AppState::DiffView => self.handle_diff_view_input(key, terminal).await?,
                     AppState::CommentPreview => self.handle_comment_preview_input(key)?,
                     AppState::SuggestionPreview => self.handle_suggestion_preview_input(key)?,
-                    AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
+                    AppState::CommentList => {
+                        self.handle_comment_list_input(key, terminal).await?
+                    }
                     AppState::Help => self.handle_help_input(key)?,
                     AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
                     AppState::SplitViewFileList => {
@@ -715,7 +724,11 @@ impl App {
                     AppState::SplitViewDiff => {
                         self.handle_split_view_diff_input(key, terminal).await?
                     }
+                },
+                Event::Mouse(mouse) => {
+                    self.handle_mouse_input(mouse.kind, terminal)?;
                 }
+                _ => {}
             }
         }
         Ok(())
@@ -1162,13 +1175,13 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         // Restore terminal before opening editor
-        ui::restore_terminal(terminal)?;
+        ui::restore_terminal(terminal, self.config.scroll.enable_mouse)?;
 
         // Open editor (blocking)
         let answer = crate::editor::open_clarification_editor(&self.config.editor, question)?;
 
         // Re-setup terminal after editor closes
-        *terminal = ui::setup_terminal()?;
+        *terminal = ui::setup_terminal(self.config.scroll.enable_mouse)?;
 
         // Process result
         if let Some(ref mut rally_state) = self.ai_rally_state {
@@ -1373,6 +1386,168 @@ impl App {
         Ok(())
     }
 
+    fn handle_mouse_input(
+        &mut self,
+        kind: MouseEventKind,
+        terminal: &Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let scroll_lines = self.config.scroll.effective_mouse_scroll_lines();
+
+        match kind {
+            MouseEventKind::ScrollDown => {
+                self.handle_mouse_scroll_down(scroll_lines, terminal)?
+            }
+            MouseEventKind::ScrollUp => self.handle_mouse_scroll_up(scroll_lines, terminal)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_mouse_scroll_down(
+        &mut self,
+        scroll_lines: usize,
+        terminal: &Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        match self.state {
+            AppState::DiffView => {
+                let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+                if self.diff_line_count > 0 {
+                    self.selected_line = (self.selected_line + scroll_lines)
+                        .min(self.diff_line_count.saturating_sub(1));
+                    self.adjust_scroll(visible_lines);
+                }
+            }
+            AppState::SplitViewDiff => {
+                let term_height = terminal.size()?.height as usize;
+                let visible_lines = (term_height * 65 / 100).saturating_sub(8);
+                if self.diff_line_count > 0 {
+                    self.selected_line = (self.selected_line + scroll_lines)
+                        .min(self.diff_line_count.saturating_sub(1));
+                    self.adjust_scroll(visible_lines);
+                }
+            }
+            AppState::FileList => {
+                if !self.files().is_empty() {
+                    self.selected_file = (self.selected_file + scroll_lines)
+                        .min(self.files().len().saturating_sub(1));
+                }
+            }
+            AppState::SplitViewFileList => {
+                if !self.files().is_empty() {
+                    self.selected_file = (self.selected_file + scroll_lines)
+                        .min(self.files().len().saturating_sub(1));
+                    self.sync_diff_to_selected_file();
+                }
+            }
+            AppState::CommentList => {
+                if self.discussion_comment_detail_mode {
+                    self.discussion_comment_detail_scroll = self
+                        .discussion_comment_detail_scroll
+                        .saturating_add(scroll_lines);
+                } else {
+                    let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+                    match self.comment_tab {
+                        CommentTab::Review => {
+                            if let Some(ref comments) = self.review_comments {
+                                if !comments.is_empty() {
+                                    self.selected_comment = (self.selected_comment + scroll_lines)
+                                        .min(comments.len().saturating_sub(1));
+                                    self.adjust_comment_scroll(visible_lines);
+                                }
+                            }
+                        }
+                        CommentTab::Discussion => {
+                            if let Some(ref comments) = self.discussion_comments {
+                                if !comments.is_empty() {
+                                    self.selected_discussion_comment =
+                                        (self.selected_discussion_comment + scroll_lines)
+                                            .min(comments.len().saturating_sub(1));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            AppState::AiRally => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs > 0 {
+                        let current = rally_state.selected_log_index.unwrap_or(0);
+                        let new_index =
+                            (current + scroll_lines).min(total_logs.saturating_sub(1));
+                        rally_state.selected_log_index = Some(new_index);
+                    }
+                }
+                self.adjust_log_scroll_to_selection();
+            }
+            AppState::Help | AppState::CommentPreview | AppState::SuggestionPreview => {}
+        }
+        Ok(())
+    }
+
+    fn handle_mouse_scroll_up(
+        &mut self,
+        scroll_lines: usize,
+        terminal: &Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        match self.state {
+            AppState::DiffView => {
+                let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+                self.selected_line = self.selected_line.saturating_sub(scroll_lines);
+                self.adjust_scroll(visible_lines);
+            }
+            AppState::SplitViewDiff => {
+                let term_height = terminal.size()?.height as usize;
+                let visible_lines = (term_height * 65 / 100).saturating_sub(8);
+                self.selected_line = self.selected_line.saturating_sub(scroll_lines);
+                self.adjust_scroll(visible_lines);
+            }
+            AppState::FileList => {
+                self.selected_file = self.selected_file.saturating_sub(scroll_lines);
+            }
+            AppState::SplitViewFileList => {
+                self.selected_file = self.selected_file.saturating_sub(scroll_lines);
+                self.sync_diff_to_selected_file();
+            }
+            AppState::CommentList => {
+                if self.discussion_comment_detail_mode {
+                    self.discussion_comment_detail_scroll = self
+                        .discussion_comment_detail_scroll
+                        .saturating_sub(scroll_lines);
+                } else {
+                    let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+                    match self.comment_tab {
+                        CommentTab::Review => {
+                            self.selected_comment =
+                                self.selected_comment.saturating_sub(scroll_lines);
+                            self.adjust_comment_scroll(visible_lines);
+                        }
+                        CommentTab::Discussion => {
+                            self.selected_discussion_comment = self
+                                .selected_discussion_comment
+                                .saturating_sub(scroll_lines);
+                        }
+                    }
+                }
+            }
+            AppState::AiRally => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs > 0 {
+                        let current = rally_state
+                            .selected_log_index
+                            .unwrap_or(total_logs.saturating_sub(1));
+                        let new_index = current.saturating_sub(scroll_lines);
+                        rally_state.selected_log_index = Some(new_index);
+                    }
+                }
+                self.adjust_log_scroll_to_selection();
+            }
+            AppState::Help | AppState::CommentPreview | AppState::SuggestionPreview => {}
+        }
+        Ok(())
+    }
+
     fn adjust_scroll(&mut self, visible_lines: usize) {
         if visible_lines == 0 {
             return;
@@ -1475,7 +1650,7 @@ impl App {
 
         let filename = file.filename.clone();
 
-        ui::restore_terminal(terminal)?;
+        ui::restore_terminal(terminal, self.config.scroll.enable_mouse)?;
 
         let comment = crate::editor::open_comment_editor(
             &self.config.editor,
@@ -1483,7 +1658,7 @@ impl App {
             line_number as usize,
         )?;
 
-        *terminal = ui::setup_terminal()?;
+        *terminal = ui::setup_terminal(self.config.scroll.enable_mouse)?;
 
         if let Some(body) = comment {
             self.pending_comment = Some(CommentData { body, line_number });
@@ -1497,11 +1672,11 @@ impl App {
         action: ReviewAction,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        ui::restore_terminal(terminal)?;
+        ui::restore_terminal(terminal, self.config.scroll.enable_mouse)?;
 
         let body = crate::editor::open_review_editor(&self.config.editor)?;
 
-        *terminal = ui::setup_terminal()?;
+        *terminal = ui::setup_terminal(self.config.scroll.enable_mouse)?;
 
         if let Some(body) = body {
             github::submit_review(&self.repo, self.pr_number, action, &body).await?;
@@ -1556,7 +1731,7 @@ impl App {
         let filename = file.filename.clone();
         let original_code = line_info.line_content.clone();
 
-        ui::restore_terminal(terminal)?;
+        ui::restore_terminal(terminal, self.config.scroll.enable_mouse)?;
 
         let suggested = crate::editor::open_suggestion_editor(
             &self.config.editor,
@@ -1565,7 +1740,7 @@ impl App {
             &original_code,
         )?;
 
-        *terminal = ui::setup_terminal()?;
+        *terminal = ui::setup_terminal(self.config.scroll.enable_mouse)?;
 
         if let Some(suggested_code) = suggested {
             self.pending_suggestion = Some(SuggestionData {

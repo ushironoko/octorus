@@ -9,6 +9,12 @@ const DEFAULT_CONFIG: &str = r#"editor = "vi"
 [diff]
 theme = "base16-ocean.dark"
 
+[scroll]
+# Enable mouse capture (set to false to keep native terminal text selection)
+enable_mouse = true
+# Number of lines to scroll per mouse wheel notch
+mouse_scroll_lines = 3
+
 [keybindings]
 approve = 'a'
 request_changes = 'r'
