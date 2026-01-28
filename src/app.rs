@@ -1628,6 +1628,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.state = self.diff_view_return_state,
+            KeyCode::Left | KeyCode::Char('h') => self.state = self.diff_view_return_state,
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.diff_line_count > 0 {
                     self.selected_line =
