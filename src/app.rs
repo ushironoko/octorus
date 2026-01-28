@@ -682,6 +682,15 @@ impl App {
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.rally_event_receiver = None;
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        if rally_state.state.is_active() {
+                            rally_state.state = RallyState::Error;
+                            rally_state.logs.push(LogEntry::new(
+                                LogEventType::Error,
+                                "Rally process terminated unexpectedly".to_string(),
+                            ));
+                        }
+                    }
                     break;
                 }
             }
@@ -1486,7 +1495,14 @@ impl App {
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);
-                    let _ = orchestrator.run().await;
+                    if let Err(e) = orchestrator.run().await {
+                        let _ = event_tx
+                            .send(RallyEvent::Error(format!("Rally failed: {}", e)))
+                            .await;
+                        let _ = event_tx
+                            .send(RallyEvent::StateChanged(RallyState::Error))
+                            .await;
+                    }
                 }
                 Err(e) => {
                     // Send error via event channel so it displays in TUI
