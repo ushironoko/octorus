@@ -925,15 +925,18 @@ impl App {
         }
 
         // 右ペインの実高さを計算（split view レイアウトと同じロジック）
-        let term_height = terminal.size()?.height as usize;
+        let term_size = terminal.size()?;
+        let term_height = term_size.height as usize;
+        let term_width = term_size.width as usize;
         // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
         let visible_lines = (term_height * 65 / 100).saturating_sub(8);
+        let panel_inner_width = self.comment_panel_inner_width(term_width);
 
         // コメントパネルフォーカス中
         if self.comment_panel_open {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let max_scroll = self.max_comment_panel_scroll(term_height);
+                    let max_scroll = self.max_comment_panel_scroll(term_height, term_width);
                     self.comment_panel_scroll =
                         self.comment_panel_scroll.saturating_add(1).min(max_scroll);
                 }
@@ -978,7 +981,7 @@ impl App {
                         if count > 1 && self.selected_inline_comment + 1 < count {
                             self.selected_inline_comment += 1;
                             self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment);
+                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
                         }
                     }
                 }
@@ -988,11 +991,13 @@ impl App {
                         if count > 1 && self.selected_inline_comment > 0 {
                             self.selected_inline_comment -= 1;
                             self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment);
+                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
                         }
                     }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
+                    self.comment_panel_open = false;
+                    self.comment_panel_scroll = 0;
                     self.diff_view_return_state = AppState::SplitViewDiff;
                     self.preview_return_state = AppState::DiffView;
                     self.state = AppState::DiffView;
@@ -1012,6 +1017,10 @@ impl App {
             match key.code {
                 KeyCode::Char('d') => {
                     self.open_symbol_popup(terminal).await?;
+                    return Ok(());
+                }
+                KeyCode::Char('f') => {
+                    self.open_current_file_in_editor(terminal).await?;
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
@@ -1520,14 +1529,17 @@ impl App {
             return Ok(());
         }
 
-        let term_h = terminal.size()?.height as usize;
+        let term_size = terminal.size()?;
+        let term_h = term_size.height as usize;
+        let term_w = term_size.width as usize;
         let visible_lines = term_h.saturating_sub(8);
+        let panel_inner_width = self.comment_panel_inner_width(term_w);
 
         // コメントパネルフォーカス中
         if self.comment_panel_open {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let max_scroll = self.max_comment_panel_scroll(term_h);
+                    let max_scroll = self.max_comment_panel_scroll(term_h, term_w);
                     self.comment_panel_scroll =
                         self.comment_panel_scroll.saturating_add(1).min(max_scroll);
                 }
@@ -1569,7 +1581,7 @@ impl App {
                         if count > 1 && self.selected_inline_comment + 1 < count {
                             self.selected_inline_comment += 1;
                             self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment);
+                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
                         }
                     }
                 }
@@ -1579,7 +1591,7 @@ impl App {
                         if count > 1 && self.selected_inline_comment > 0 {
                             self.selected_inline_comment -= 1;
                             self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment);
+                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
                         }
                     }
                 }
@@ -1598,6 +1610,10 @@ impl App {
             match key.code {
                 KeyCode::Char('d') => {
                     self.open_symbol_popup(terminal).await?;
+                    return Ok(());
+                }
+                KeyCode::Char('f') => {
+                    self.open_current_file_in_editor(terminal).await?;
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
@@ -2314,8 +2330,28 @@ impl App {
             .any(|pos| pos.diff_line_index == self.selected_line)
     }
 
+    /// テキスト行がパネル幅内で折り返される表示行数を計算
+    fn wrapped_line_count(text: &str, panel_width: usize) -> usize {
+        if panel_width == 0 {
+            return 1;
+        }
+        let char_count = text.chars().count();
+        if char_count == 0 {
+            return 1;
+        }
+        (char_count + panel_width - 1) / panel_width
+    }
+
+    /// コメント本文の折り返しを考慮した表示行数を計算
+    fn comment_body_wrapped_lines(body: &str, panel_width: usize) -> usize {
+        body.lines()
+            .map(|line| Self::wrapped_line_count(line, panel_width))
+            .sum::<usize>()
+            .max(1) // 空の本文でも最低1行
+    }
+
     /// コメントパネルのコンテンツ行数を計算（スクロール上限算出用）
-    fn comment_panel_content_lines(&self) -> usize {
+    fn comment_panel_content_lines(&self, panel_inner_width: usize) -> usize {
         let indices = self.get_comment_indices_at_current_line();
         if indices.is_empty() {
             return 1; // "No comments..." message
@@ -2332,14 +2368,14 @@ impl App {
                 count += 1; // separator
             }
             count += 1; // header
-            count += comment.body.lines().count();
+            count += Self::comment_body_wrapped_lines(&comment.body, panel_inner_width);
             count += 1; // spacing
         }
         count
     }
 
     /// 指定インラインコメントのパネル内行オフセットを計算（スクロール追従用）
-    fn comment_panel_offset_for(&self, target: usize) -> u16 {
+    fn comment_panel_offset_for(&self, target: usize, panel_inner_width: usize) -> u16 {
         let indices = self.get_comment_indices_at_current_line();
         let Some(ref comments) = self.review_comments else {
             return 0;
@@ -2356,7 +2392,7 @@ impl App {
                 offset += 1; // separator
             }
             offset += 1; // header
-            offset += comment.body.lines().count();
+            offset += Self::comment_body_wrapped_lines(&comment.body, panel_inner_width);
             offset += 1; // spacing
         }
         if target > 0 {
@@ -2365,12 +2401,22 @@ impl App {
         offset as u16
     }
 
+    /// コメントパネルの内側幅を計算（borders分の2を差し引く）
+    fn comment_panel_inner_width(&self, terminal_width: usize) -> usize {
+        let panel_width = match self.state {
+            AppState::SplitViewDiff => terminal_width * 65 / 100,
+            _ => terminal_width,
+        };
+        panel_width.saturating_sub(2) // borders
+    }
+
     /// コメントパネルのスクロール上限を計算
-    fn max_comment_panel_scroll(&self, terminal_height: usize) -> u16 {
-        let content_lines = self.comment_panel_content_lines();
+    fn max_comment_panel_scroll(&self, terminal_height: usize, terminal_width: usize) -> u16 {
+        let panel_inner_width = self.comment_panel_inner_width(terminal_width);
+        let content_lines = self.comment_panel_content_lines(panel_inner_width);
         // コメントパネルは全体高さの約40%（Header/Footer/borders分を差し引き）
-        let panel_inner = (terminal_height.saturating_sub(8) * 40 / 100).max(1);
-        content_lines.saturating_sub(panel_inner) as u16
+        let panel_inner_height = (terminal_height.saturating_sub(8) * 40 / 100).max(1);
+        content_lines.saturating_sub(panel_inner_height) as u16
     }
 
     /// Jump to next comment in the diff (no wrap-around, scroll to top)
@@ -2441,6 +2487,7 @@ impl App {
                 }
                 if let Some(ctx) = self.reply_context.take() {
                     let repo = self.repo.clone();
+                    let pr_number = self.pr_number;
                     let (tx, rx) = mpsc::channel(1);
                     self.comment_submit_receiver = Some(rx);
                     self.comment_submitting = true;
@@ -2448,6 +2495,7 @@ impl App {
                     tokio::spawn(async move {
                         let result = github::create_reply_comment(
                             &repo,
+                            pr_number,
                             ctx.comment_id,
                             &body,
                         )
@@ -2633,6 +2681,57 @@ impl App {
 
         Ok(())
     }
+
+    /// 現在のファイルを外部エディタで開く（gf キー）
+    async fn open_current_file_in_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let file = match self.files().get(self.selected_file) {
+            Some(f) => f.clone(),
+            None => return Ok(()),
+        };
+
+        // 行番号: new_line_number があれば使用、なければ 1
+        let line_number = file.patch.as_ref().and_then(|patch| {
+            crate::diff::get_line_info(patch, self.selected_line)
+                .and_then(|info| info.new_line_number)
+        });
+
+        // リポジトリルート取得 → フルパス構築
+        let full_path = match &self.working_dir {
+            Some(dir) => {
+                let output = tokio::process::Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .current_dir(dir)
+                    .output()
+                    .await;
+                match output {
+                    Ok(o) if o.status.success() => {
+                        let root = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        std::path::Path::new(&root)
+                            .join(&file.filename)
+                            .to_string_lossy()
+                            .to_string()
+                    }
+                    _ => return Ok(()),
+                }
+            }
+            None => return Ok(()),
+        };
+
+        // TUI 一時停止 → エディタ → TUI 復帰
+        crate::ui::restore_terminal(terminal)?;
+        let _ = crate::editor::open_file_at_line(
+            &self.config.editor,
+            &full_path,
+            line_number.unwrap_or(1) as usize,
+        );
+        *terminal = crate::ui::setup_terminal()?;
+
+        Ok(())
+    }
+
     /// Diffキャッシュを構築または再利用
     pub fn ensure_diff_cache(&mut self) {
         let file_index = self.selected_file;
