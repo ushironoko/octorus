@@ -51,8 +51,11 @@ impl TextArea {
     /// キー入力を処理し、アクションを返す
     pub fn input(&mut self, key: event::KeyEvent) -> TextAreaAction {
         match key.code {
-            // Ctrl+Enter で送信
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Cmd+Enter (macOS) / Ctrl+Enter で送信
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SUPER)
+                    || key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 return TextAreaAction::Submit;
             }
             // Ctrl+S は後方互換性のため残す
@@ -313,6 +316,15 @@ mod tests {
         }
     }
 
+    fn super_key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::SUPER,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
     #[test]
     fn test_new_text_area_is_empty() {
         let ta = TextArea::new();
@@ -394,6 +406,13 @@ mod tests {
     fn test_ctrl_enter_submit() {
         let mut ta = TextArea::new();
         let action = ta.input(ctrl_key_event(KeyCode::Enter));
+        assert!(matches!(action, TextAreaAction::Submit));
+    }
+
+    #[test]
+    fn test_cmd_enter_submit() {
+        let mut ta = TextArea::new();
+        let action = ta.input(super_key_event(KeyCode::Enter));
         assert!(matches!(action, TextAreaAction::Submit));
     }
 

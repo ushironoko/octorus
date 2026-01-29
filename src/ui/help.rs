@@ -125,7 +125,8 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  Ctrl+Enter      Submit comment/suggestion/reply"),
+        Line::from("  Cmd+Enter       Submit (macOS)"),
+        Line::from("  Ctrl+Enter      Submit (Linux/Windows)"),
         Line::from("  Ctrl+S          Submit (alternative)"),
         Line::from("  Esc             Cancel input"),
         Line::from(""),
