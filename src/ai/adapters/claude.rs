@@ -305,8 +305,17 @@ impl ClaudeAdapter {
             return Err(anyhow!("Claude process failed: {}", stderr));
         }
 
-        let response: ClaudeResponse = serde_json::from_slice(&output.stdout)
-            .context("Failed to parse claude output as JSON")?;
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let response: ClaudeResponse = serde_json::from_str(&stdout_str).with_context(|| {
+            format!(
+                "Failed to parse claude output as JSON. Raw output: {}",
+                if stdout_str.len() > 500 {
+                    format!("{}...(truncated)", &stdout_str[..500])
+                } else {
+                    stdout_str.to_string()
+                }
+            )
+        })?;
 
         Ok(response)
     }
