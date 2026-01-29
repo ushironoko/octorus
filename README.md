@@ -159,6 +159,17 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `n` / `N` | Jump to next/prev comment |
 | `Esc` / `q` | Close panel |
 
+#### Input Mode (Comment/Suggestion/Reply)
+
+When adding a comment, suggestion, or reply, you enter the built-in text input mode:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+S` | Submit |
+| `Esc` | Cancel |
+
+Multi-line input is supported. Press `Enter` to insert a newline.
+
 #### Comment List View
 
 | Key | Action |
@@ -173,7 +184,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 Run `or init` to create default config files, or create `~/.config/octorus/config.toml` manually:
 
 ```toml
-# Editor to use for writing comments
+# Editor to use for writing review body (Approve/Request Changes/Comment)
 editor = "vi"
 
 [diff]
