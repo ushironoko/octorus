@@ -487,9 +487,7 @@ impl App {
                 // Update comment positions if in diff view or side-by-side
                 if matches!(
                     self.state,
-                    AppState::DiffView
-                        | AppState::SplitViewDiff
-                        | AppState::SplitViewFileList
+                    AppState::DiffView | AppState::SplitViewDiff | AppState::SplitViewFileList
                 ) {
                     self.update_file_comment_positions();
                     self.ensure_diff_cache();
@@ -985,8 +983,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment + 1 < count {
                             self.selected_inline_comment += 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -995,8 +995,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment > 0 {
                             self.selected_inline_comment -= 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -1583,8 +1585,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment + 1 < count {
                             self.selected_inline_comment += 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -1593,8 +1597,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment > 0 {
                             self.selected_inline_comment -= 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -2479,13 +2485,9 @@ impl App {
                     self.comment_submitting = true;
 
                     tokio::spawn(async move {
-                        let result = github::create_reply_comment(
-                            &repo,
-                            pr_number,
-                            ctx.comment_id,
-                            &body,
-                        )
-                        .await;
+                        let result =
+                            github::create_reply_comment(&repo, pr_number, ctx.comment_id, &body)
+                                .await;
                         let _ = tx
                             .send(match result {
                                 Ok(_) => CommentSubmitResult::Success,
@@ -2650,11 +2652,8 @@ impl App {
             None => return Ok(()),
         };
 
-        let result = crate::symbol::find_definition_in_repo(
-            symbol,
-            std::path::Path::new(&repo_root),
-        )
-        .await;
+        let result =
+            crate::symbol::find_definition_in_repo(symbol, std::path::Path::new(&repo_root)).await;
         if let Ok(Some((file_path, line_number))) = result {
             let full_path = std::path::Path::new(&repo_root).join(&file_path);
             let path_str = full_path.to_string_lossy().to_string();
@@ -2994,8 +2993,7 @@ mod tests {
         // Simulate frame-by-frame scrolling like the real app
         let mut offset = 0usize;
         for selected in 0..10 {
-            let list = List::new(items.clone())
-                .block(Block::default().borders(Borders::ALL));
+            let list = List::new(items.clone()).block(Block::default().borders(Borders::ALL));
             let mut state = ListState::default()
                 .with_offset(offset)
                 .with_selected(Some(selected));
