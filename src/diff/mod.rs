@@ -4,6 +4,10 @@
 //! - Line content without diff prefixes (+/-)
 //! - Line type classification (Added, Removed, Context, Header)
 //! - New file line numbers for suggestion positioning
+//! - Unified diff parsing for splitting multi-file diffs
+
+use std::collections::HashMap;
+use tracing::warn;
 
 /// Represents the type of a line in a diff patch
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +135,87 @@ pub fn can_suggest_at_line(patch: &str, line_index: usize) -> bool {
         .unwrap_or(false)
 }
 
+/// Parse a unified diff output into a map of filename -> patch content
+///
+/// This function splits the output of `git diff` or `gh pr diff` into individual
+/// file patches. The filenames are normalized (without `a/` or `b/` prefixes).
+///
+/// # Arguments
+/// * `unified_diff` - The full unified diff output
+///
+/// # Returns
+/// A HashMap mapping normalized filenames to their patch content
+pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let lines: Vec<&str> = unified_diff.lines().collect();
+
+    if lines.is_empty() {
+        return result;
+    }
+
+    let mut current_filename: Option<String> = None;
+    let mut current_patch_start: Option<usize> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("diff --git ") {
+            // Save previous file's patch if any
+            if let (Some(filename), Some(start)) = (&current_filename, current_patch_start) {
+                let patch = lines[start..i].join("\n");
+                if !patch.is_empty() {
+                    result.insert(filename.clone(), patch);
+                }
+            }
+
+            // Extract filename for new file
+            current_filename = extract_filename(line);
+            current_patch_start = Some(i);
+        }
+    }
+
+    // Save last file's patch
+    if let (Some(filename), Some(start)) = (current_filename, current_patch_start) {
+        let patch = lines[start..].join("\n");
+        if !patch.is_empty() {
+            result.insert(filename, patch);
+        }
+    }
+
+    result
+}
+
+/// Extract filename from a "diff --git" line
+///
+/// Handles various formats:
+/// - `diff --git a/src/foo.rs b/src/foo.rs` -> `src/foo.rs`
+/// - `diff --git a/file with spaces.rs b/file with spaces.rs` -> `file with spaces.rs`
+///
+/// For renamed files, returns the new filename (from `b/` path).
+fn extract_filename(git_diff_line: &str) -> Option<String> {
+    // Format: "diff --git a/{path} b/{path}"
+    // We need to find "a/" and "b/" markers and extract the path between them
+
+    let content = git_diff_line.strip_prefix("diff --git ")?;
+
+    // Find "a/" at the start and " b/" separator
+    let a_path = content.strip_prefix("a/")?;
+
+    // Find " b/" which separates the two paths
+    // Handle case where filename might contain " b/" by finding the last occurrence
+    if let Some(b_pos) = a_path.rfind(" b/") {
+        let filename = &a_path[..b_pos];
+        return Some(filename.to_string());
+    }
+
+    // Fallback: try to find any " b/" separator
+    if let Some(b_pos) = content.find(" b/") {
+        let filename = &content[2..b_pos]; // Skip "a/"
+        return Some(filename.to_string());
+    }
+
+    warn!("Failed to parse git diff line: {}", git_diff_line);
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +226,76 @@ mod tests {
 +new line 2
 +added line
  line 3"#;
+
+    // Unified diff test data
+    const UNIFIED_DIFF_SINGLE: &str = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }
+"#;
+
+    const UNIFIED_DIFF_MULTIPLE: &str = r#"diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,3 @@
+ pub mod app;
++pub mod config;
+diff --git a/src/app.rs b/src/app.rs
+index 3333333..4444444 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -10,6 +10,7 @@
+ struct App {
+     name: String,
++    version: String,
+ }
+"#;
+
+    const UNIFIED_DIFF_NEW_FILE: &str = r#"diff --git a/src/new_file.rs b/src/new_file.rs
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/src/new_file.rs
+@@ -0,0 +1,3 @@
++fn new_function() {
++    todo!()
++}
+"#;
+
+    const UNIFIED_DIFF_DELETED: &str = r#"diff --git a/src/old_file.rs b/src/old_file.rs
+deleted file mode 100644
+index 1234567..0000000
+--- a/src/old_file.rs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-fn old_function() {
+-    todo!()
+-}
+"#;
+
+    const UNIFIED_DIFF_RENAMED: &str = r#"diff --git a/src/old_name.rs b/src/new_name.rs
+similarity index 95%
+rename from src/old_name.rs
+rename to src/new_name.rs
+index 1234567..abcdefg 100644
+--- a/src/old_name.rs
++++ b/src/new_name.rs
+@@ -1,3 +1,3 @@
+-fn old_name() {
++fn new_name() {
+ }
+"#;
+
+    const UNIFIED_DIFF_BINARY: &str = r#"diff --git a/image.png b/image.png
+new file mode 100644
+index 0000000..1234567
+Binary files /dev/null and b/image.png differ
+"#;
 
     #[test]
     fn test_parse_hunk_header() {
@@ -195,5 +350,131 @@ mod tests {
     #[test]
     fn test_out_of_bounds() {
         assert!(get_line_info(SAMPLE_PATCH, 100).is_none());
+    }
+
+    // ============================================
+    // Unified diff parser tests
+    // ============================================
+
+    #[test]
+    fn test_extract_filename() {
+        assert_eq!(
+            extract_filename("diff --git a/src/foo.rs b/src/foo.rs"),
+            Some("src/foo.rs".to_string())
+        );
+        assert_eq!(
+            extract_filename("diff --git a/main.rs b/main.rs"),
+            Some("main.rs".to_string())
+        );
+        assert_eq!(
+            extract_filename("diff --git a/deep/nested/path/file.rs b/deep/nested/path/file.rs"),
+            Some("deep/nested/path/file.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_renamed() {
+        // For renamed files, we use the "a/" path (old name) because
+        // GitHub API returns the old filename in its response
+        assert_eq!(
+            extract_filename("diff --git a/src/old_name.rs b/src/new_name.rs"),
+            Some("src/old_name.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_invalid() {
+        assert_eq!(extract_filename("not a diff line"), None);
+        assert_eq!(extract_filename("diff something else"), None);
+    }
+
+    #[test]
+    fn test_parse_single_file() {
+        let result = parse_unified_diff(UNIFIED_DIFF_SINGLE);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("src/main.rs"));
+
+        let patch = result.get("src/main.rs").unwrap();
+        assert!(patch.contains("@@ -1,3 +1,4 @@"));
+        assert!(patch.contains("+    println!(\"Hello\");"));
+    }
+
+    #[test]
+    fn test_parse_multiple_files() {
+        let result = parse_unified_diff(UNIFIED_DIFF_MULTIPLE);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("src/lib.rs"));
+        assert!(result.contains_key("src/app.rs"));
+
+        let lib_patch = result.get("src/lib.rs").unwrap();
+        assert!(lib_patch.contains("+pub mod config;"));
+
+        let app_patch = result.get("src/app.rs").unwrap();
+        assert!(app_patch.contains("+    version: String,"));
+    }
+
+    #[test]
+    fn test_parse_new_file() {
+        let result = parse_unified_diff(UNIFIED_DIFF_NEW_FILE);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("src/new_file.rs"));
+
+        let patch = result.get("src/new_file.rs").unwrap();
+        assert!(patch.contains("new file mode"));
+        assert!(patch.contains("--- /dev/null"));
+    }
+
+    #[test]
+    fn test_parse_deleted_file() {
+        let result = parse_unified_diff(UNIFIED_DIFF_DELETED);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("src/old_file.rs"));
+
+        let patch = result.get("src/old_file.rs").unwrap();
+        assert!(patch.contains("deleted file mode"));
+        assert!(patch.contains("+++ /dev/null"));
+    }
+
+    #[test]
+    fn test_parse_renamed_file() {
+        let result = parse_unified_diff(UNIFIED_DIFF_RENAMED);
+        assert_eq!(result.len(), 1);
+        // Uses old filename (from a/ path) for matching with GitHub API
+        assert!(result.contains_key("src/old_name.rs"));
+
+        let patch = result.get("src/old_name.rs").unwrap();
+        assert!(patch.contains("rename from"));
+        assert!(patch.contains("rename to"));
+    }
+
+    #[test]
+    fn test_parse_binary_file() {
+        let result = parse_unified_diff(UNIFIED_DIFF_BINARY);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("image.png"));
+
+        let patch = result.get("image.png").unwrap();
+        assert!(patch.contains("Binary files"));
+    }
+
+    #[test]
+    fn test_parse_empty_diff() {
+        let result = parse_unified_diff("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filename_matches_github_api_format() {
+        // GitHub API returns filenames without "a/" or "b/" prefix
+        // Our parser should return filenames in the same format
+        let result = parse_unified_diff(UNIFIED_DIFF_SINGLE);
+        let filename = result.keys().next().unwrap();
+
+        // Should not have "a/" or "b/" prefix
+        assert!(!filename.starts_with("a/"));
+        assert!(!filename.starts_with("b/"));
+
+        // Should match the format GitHub API returns
+        assert_eq!(filename, "src/main.rs");
     }
 }
