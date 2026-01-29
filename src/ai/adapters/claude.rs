@@ -295,12 +295,16 @@ impl ClaudeAdapter {
         session_id: &str,
         message: &str,
         schema: &str,
+        allowed_tools: Option<&str>,
     ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
         cmd.arg("-p").arg(message);
         cmd.arg("--resume").arg(session_id);
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--json-schema").arg(schema);
+        if let Some(tools) = allowed_tools {
+            cmd.arg("--allowedTools").arg(tools);
+        }
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -470,7 +474,12 @@ impl AgentAdapter for ClaudeAdapter {
             .clone();
 
         let response = self
-            .continue_session(&session_id, message, REVIEWER_SCHEMA)
+            .continue_session(
+                &session_id,
+                message,
+                REVIEWER_SCHEMA,
+                Some(&self.reviewer_allowed_tools),
+            )
             .await?;
         parse_reviewer_output(&response)
     }
@@ -483,7 +492,12 @@ impl AgentAdapter for ClaudeAdapter {
             .clone();
 
         let response = self
-            .continue_session(&session_id, message, REVIEWEE_SCHEMA)
+            .continue_session(
+                &session_id,
+                message,
+                REVIEWEE_SCHEMA,
+                Some(&self.reviewee_allowed_tools),
+            )
             .await?;
         parse_reviewee_output(&response)
     }
