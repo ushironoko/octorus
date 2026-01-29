@@ -165,7 +165,7 @@ When adding a comment, suggestion, or reply, you enter the built-in text input m
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+S` | Submit |
+| `Ctrl+Enter` / `Ctrl+S` | Submit |
 | `Esc` | Cancel |
 
 Multi-line input is supported. Press `Enter` to insert a newline.
