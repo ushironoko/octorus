@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthChar;
@@ -50,7 +50,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     // Handle detail mode separately
     if app.discussion_comment_detail_mode {
         render_discussion_detail(frame, app);
@@ -160,7 +160,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     frame.render_widget(header, area);
 }
 
-fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if app.comments_loading && app.review_comments.is_none() {
         let loading = Paragraph::new("Loading review comments...")
             .style(Style::default().fg(Color::Yellow))
@@ -195,14 +195,6 @@ fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
             let is_selected = i == app.selected_comment;
             let prefix = if is_selected { "> " } else { "  " };
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
             let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let header_line = Line::from(vec![
                 Span::raw(prefix),
@@ -222,10 +214,7 @@ fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
 
             let mut lines = vec![header_line];
             for wrapped_line in wrapped_lines {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(wrapped_line, style),
-                ]));
+                lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
             }
             lines.push(Line::from(""));
 
@@ -233,13 +222,25 @@ fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
         })
         .collect();
 
+    // Use ListState for stateful rendering with automatic scroll management
+    let mut list_state = ListState::default()
+        .with_offset(app.comment_list_scroll_offset)
+        .with_selected(Some(app.selected_comment));
+
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL))
-        .highlight_style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(list, area);
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    // Update scroll offset from ListState for next frame
+    app.comment_list_scroll_offset = list_state.offset();
 }
 
-fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if app.discussion_comments_loading && app.discussion_comments.is_none() {
         let loading = Paragraph::new("Loading discussion comments...")
             .style(Style::default().fg(Color::Yellow))
@@ -274,14 +275,6 @@ fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layou
             let is_selected = i == app.selected_discussion_comment;
             let prefix = if is_selected { "> " } else { "  " };
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
             // Format created_at to a shorter form (just the date part)
             let date = comment
                 .created_at
@@ -310,10 +303,7 @@ fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layou
 
             let mut lines = vec![header_line];
             for wrapped_line in wrapped_lines {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(wrapped_line, style),
-                ]));
+                lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
             }
             lines.push(Line::from(""));
 
@@ -321,10 +311,22 @@ fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layou
         })
         .collect();
 
+    // Use ListState for stateful rendering with automatic scroll management
+    let mut list_state = ListState::default()
+        .with_offset(app.discussion_comment_list_scroll_offset)
+        .with_selected(Some(app.selected_discussion_comment));
+
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL))
-        .highlight_style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(list, area);
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    // Update scroll offset from ListState for next frame
+    app.discussion_comment_list_scroll_offset = list_state.offset();
 }
 
 fn render_discussion_detail(frame: &mut Frame, app: &App) {

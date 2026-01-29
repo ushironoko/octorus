@@ -59,9 +59,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::CommentList => comment_list::render(frame, app),
         AppState::Help => help::render(frame, app),
         AppState::AiRally => ai_rally::render(frame, app),
-        AppState::SplitViewFileList | AppState::SplitViewDiff => {
-            split_view::render(frame, app)
-        }
+        AppState::SplitViewFileList | AppState::SplitViewDiff => split_view::render(frame, app),
         AppState::ReplyInput => diff_view::render_reply_input(frame, app),
     }
 
@@ -75,12 +73,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
-    Rect::new(
-        x,
-        y,
-        width.min(area.width),
-        height.min(area.height),
-    )
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
 /// シンボル選択ポップアップを描画

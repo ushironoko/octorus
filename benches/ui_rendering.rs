@@ -135,11 +135,7 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
             |b, cached_lines| {
                 b.iter(|| {
                     let selected = line_count / 2;
-                    black_box(render_cached_lines(
-                        black_box(cached_lines),
-                        0,
-                        selected,
-                    ))
+                    black_box(render_cached_lines(black_box(cached_lines), 0, selected))
                 });
             },
         );

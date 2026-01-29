@@ -403,7 +403,10 @@ pub async fn find_definition_in_repo(
     }
 
     // Fall back to import/use statement search
-    let import_pattern = format!(r"(use .*\b{sym}\b|import .*\b{sym}\b|from .* import .*\b{sym}\b)", sym = regex_escape_word(symbol));
+    let import_pattern = format!(
+        r"(use .*\b{sym}\b|import .*\b{sym}\b|from .* import .*\b{sym}\b)",
+        sym = regex_escape_word(symbol)
+    );
 
     let mut cmd = Command::new("grep");
     cmd.arg("-rnE").arg(&import_pattern);
@@ -634,7 +637,10 @@ mod tests {
     #[test]
     fn test_is_definition_line_rust_fn() {
         assert!(is_definition_line("fn main() {", "main"));
-        assert!(is_definition_line("pub fn calculate(x: i32) -> i32 {", "calculate"));
+        assert!(is_definition_line(
+            "pub fn calculate(x: i32) -> i32 {",
+            "calculate"
+        ));
         assert!(is_definition_line("pub(crate) fn helper() {", "helper"));
     }
 
@@ -782,7 +788,9 @@ mod tests {
                 status: "added".to_string(),
                 additions: 3,
                 deletions: 0,
-                patch: Some("@@ -0,0 +1,3 @@\n+pub fn helper() -> i32 {\n+    42\n+}\n".to_string()),
+                patch: Some(
+                    "@@ -0,0 +1,3 @@\n+pub fn helper() -> i32 {\n+    42\n+}\n".to_string(),
+                ),
             },
         ];
 
@@ -797,7 +805,9 @@ mod tests {
             status: "modified".to_string(),
             additions: 1,
             deletions: 0,
-            patch: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }\n".to_string()),
+            patch: Some(
+                "@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }\n".to_string(),
+            ),
         }];
 
         let result = find_definition_in_patches("nonexistent", &files, 0);
@@ -812,7 +822,8 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some(
-                "@@ -1,3 +1,3 @@\n-fn old_helper() {\n+fn new_helper() {\n     42\n }\n".to_string(),
+                "@@ -1,3 +1,3 @@\n-fn old_helper() {\n+fn new_helper() {\n     42\n }\n"
+                    .to_string(),
             ),
         }];
 
@@ -935,9 +946,18 @@ mod tests {
 
     #[test]
     fn test_is_import_line_rust_grouped() {
-        assert!(is_import_line("use std::io::{Read, Write, BufRead};", "Read"));
-        assert!(is_import_line("use std::io::{Read, Write, BufRead};", "Write"));
-        assert!(is_import_line("use std::io::{Read, Write, BufRead};", "BufRead"));
+        assert!(is_import_line(
+            "use std::io::{Read, Write, BufRead};",
+            "Read"
+        ));
+        assert!(is_import_line(
+            "use std::io::{Read, Write, BufRead};",
+            "Write"
+        ));
+        assert!(is_import_line(
+            "use std::io::{Read, Write, BufRead};",
+            "BufRead"
+        ));
     }
 
     #[test]
@@ -953,8 +973,14 @@ mod tests {
 
     #[test]
     fn test_is_import_line_js_named() {
-        assert!(is_import_line("import { useState, useEffect } from 'react';", "useState"));
-        assert!(is_import_line("import { useState, useEffect } from 'react';", "useEffect"));
+        assert!(is_import_line(
+            "import { useState, useEffect } from 'react';",
+            "useState"
+        ));
+        assert!(is_import_line(
+            "import { useState, useEffect } from 'react';",
+            "useEffect"
+        ));
     }
 
     #[test]
@@ -971,7 +997,10 @@ mod tests {
     #[test]
     fn test_is_import_line_not_import() {
         assert!(!is_import_line("fn main() {", "main"));
-        assert!(!is_import_line("let cmd = Command::new(\"ls\");", "Command"));
+        assert!(!is_import_line(
+            "let cmd = Command::new(\"ls\");",
+            "Command"
+        ));
     }
 
     // ===== find_definition_in_patches with imports =====

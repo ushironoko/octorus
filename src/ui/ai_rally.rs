@@ -12,8 +12,8 @@ use ratatui::{
 use crate::ai::{RallyState, ReviewAction, RevieweeStatus};
 use crate::app::{AiRallyState, App, LogEntry, LogEventType};
 
-pub fn render(frame: &mut Frame, app: &App) {
-    let Some(rally_state) = &app.ai_rally_state else {
+pub fn render(frame: &mut Frame, app: &mut App) {
+    let Some(rally_state) = &mut app.ai_rally_state else {
         return;
     };
 
@@ -82,7 +82,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState) {
     frame.render_widget(header, area);
 }
 
-fn render_main_content(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
     // Add waiting prompt area when in clarification/permission state
     let is_waiting = matches!(
         state.state,
@@ -166,6 +166,8 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
 }
 
 fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+    let visible_height = area.height.saturating_sub(2) as usize;
+
     let items: Vec<ListItem> = state
         .history
         .iter()
@@ -244,7 +246,12 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         })
         .collect();
 
-    let list = List::new(items).block(
+    // Auto-scroll to show latest history entries
+    let total = items.len();
+    let scroll_offset = total.saturating_sub(visible_height);
+    let visible_items: Vec<ListItem> = items.into_iter().skip(scroll_offset).collect();
+
+    let list = List::new(visible_items).block(
         Block::default()
             .borders(Borders::ALL)
             .title(" History ")
@@ -254,8 +261,9 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
     frame.render_widget(list, area);
 }
 
-fn render_logs(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+fn render_logs(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
     let visible_height = area.height.saturating_sub(2) as usize; // subtract borders
+    state.last_visible_log_height = visible_height;
     let total_logs = state.logs.len();
 
     // Calculate scroll position (auto-scroll to bottom by default unless user has scrolled up)

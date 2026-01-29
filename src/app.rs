@@ -487,9 +487,7 @@ impl App {
                 // Update comment positions if in diff view or side-by-side
                 if matches!(
                     self.state,
-                    AppState::DiffView
-                        | AppState::SplitViewDiff
-                        | AppState::SplitViewFileList
+                    AppState::DiffView | AppState::SplitViewDiff | AppState::SplitViewFileList
                 ) {
                     self.update_file_comment_positions();
                     self.ensure_diff_cache();
@@ -994,8 +992,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment + 1 < count {
                             self.selected_inline_comment += 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -1004,8 +1004,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment > 0 {
                             self.selected_inline_comment -= 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -1604,8 +1606,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment + 1 < count {
                             self.selected_inline_comment += 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -1614,8 +1618,10 @@ impl App {
                         let count = self.get_comment_indices_at_current_line().len();
                         if count > 1 && self.selected_inline_comment > 0 {
                             self.selected_inline_comment -= 1;
-                            self.comment_panel_scroll =
-                                self.comment_panel_offset_for(self.selected_inline_comment, panel_inner_width);
+                            self.comment_panel_scroll = self.comment_panel_offset_for(
+                                self.selected_inline_comment,
+                                panel_inner_width,
+                            );
                         }
                     }
                 }
@@ -2500,13 +2506,9 @@ impl App {
                     self.comment_submitting = true;
 
                     tokio::spawn(async move {
-                        let result = github::create_reply_comment(
-                            &repo,
-                            pr_number,
-                            ctx.comment_id,
-                            &body,
-                        )
-                        .await;
+                        let result =
+                            github::create_reply_comment(&repo, pr_number, ctx.comment_id, &body)
+                                .await;
                         let _ = tx
                             .send(match result {
                                 Ok(_) => CommentSubmitResult::Success,
@@ -2671,11 +2673,8 @@ impl App {
             None => return Ok(()),
         };
 
-        let result = crate::symbol::find_definition_in_repo(
-            symbol,
-            std::path::Path::new(&repo_root),
-        )
-        .await;
+        let result =
+            crate::symbol::find_definition_in_repo(symbol, std::path::Path::new(&repo_root)).await;
         if let Ok(Some((file_path, line_number))) = result {
             let full_path = std::path::Path::new(&repo_root).join(&file_path);
             let path_str = full_path.to_string_lossy().to_string();
@@ -2990,5 +2989,50 @@ mod tests {
 
         app.jump_to_prev_comment();
         assert_eq!(app.selected_line, 10);
+    }
+
+    #[test]
+    fn test_liststate_autoscroll_with_multiline_items() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::text::Line;
+        use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget};
+
+        // 10 multiline items (each 3 lines), area height = 12 (10 inner after borders)
+        let items: Vec<ListItem> = (0..10)
+            .map(|i| {
+                ListItem::new(vec![
+                    Line::from(format!("Header {}", i)),
+                    Line::from(format!("  Body {}", i)),
+                    Line::from(""),
+                ])
+            })
+            .collect();
+
+        let area = Rect::new(0, 0, 40, 12); // 12 total, 10 inner
+
+        // Simulate frame-by-frame scrolling like the real app
+        let mut offset = 0usize;
+        for selected in 0..10 {
+            let list = List::new(items.clone()).block(Block::default().borders(Borders::ALL));
+            let mut state = ListState::default()
+                .with_offset(offset)
+                .with_selected(Some(selected));
+            let mut buf = Buffer::empty(area);
+            StatefulWidget::render(&list, area, &mut buf, &mut state);
+            offset = state.offset();
+
+            // selected should always be in visible range [offset, offset + visible_items)
+            // With 10 inner height and 3 lines per item, 3 items fit (9 lines)
+            assert!(
+                selected >= offset,
+                "selected={} should be >= offset={}",
+                selected,
+                offset
+            );
+        }
+
+        // After scrolling to last item, offset should be > 0
+        assert!(offset > 0, "offset should have scrolled, got {}", offset);
     }
 }

@@ -63,7 +63,7 @@ fn render_file_list_pane(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Header
-            Constraint::Min(0),   // File list
+            Constraint::Min(0),    // File list
             Constraint::Length(3), // Footer
         ])
         .split(area);
@@ -112,12 +112,7 @@ fn render_file_list_pane(
     frame.render_widget(footer, chunks[2]);
 }
 
-fn render_diff_pane(
-    frame: &mut Frame,
-    app: &App,
-    area: ratatui::layout::Rect,
-    is_focused: bool,
-) {
+fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, is_focused: bool) {
     let border_color = if is_focused {
         Color::Yellow
     } else {
@@ -145,7 +140,7 @@ fn render_diff_pane_normal(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Header
-            Constraint::Min(0),   // Diff content
+            Constraint::Min(0),    // Diff content
             Constraint::Length(3), // Footer
         ])
         .split(area);
