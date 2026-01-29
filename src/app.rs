@@ -1507,14 +1507,10 @@ impl App {
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);
-                    if let Err(e) = orchestrator.run().await {
-                        let _ = event_tx
-                            .send(RallyEvent::Error(format!("Rally failed: {}", e)))
-                            .await;
-                        let _ = event_tx
-                            .send(RallyEvent::StateChanged(RallyState::Error))
-                            .await;
-                    }
+                    // Note: orchestrator.run() already emits RallyEvent::Error and
+                    // StateChanged(Error) when it fails, so we don't emit them again here
+                    // to avoid duplicate error logs in the UI
+                    let _ = orchestrator.run().await;
                 }
                 Err(e) => {
                     // Send error via event channel so it displays in TUI

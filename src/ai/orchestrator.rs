@@ -194,8 +194,11 @@ impl Orchestrator {
                 .await;
             if let Err(e) = write_session(&self.session) {
                 warn!("Failed to write session: {}", e);
-                self.send_event(RallyEvent::Log(format!("Warning: Failed to write session: {}", e)))
-                    .await;
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write session: {}",
+                    e
+                )))
+                .await;
             }
 
             let review_result = match self.run_reviewer_with_timeout(&context, iteration).await {
@@ -219,8 +222,11 @@ impl Orchestrator {
                 &HistoryEntryType::Review(review_result.clone()),
             ) {
                 warn!("Failed to write review history: {}", e);
-                self.send_event(RallyEvent::Log(format!("Warning: Failed to write review history: {}", e)))
-                    .await;
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write review history: {}",
+                    e
+                )))
+                .await;
             }
 
             self.send_event(RallyEvent::ReviewCompleted(review_result.clone()))
@@ -266,8 +272,11 @@ impl Orchestrator {
                 .await;
             if let Err(e) = write_session(&self.session) {
                 warn!("Failed to write session: {}", e);
-                self.send_event(RallyEvent::Log(format!("Warning: Failed to write session: {}", e)))
-                    .await;
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write session: {}",
+                    e
+                )))
+                .await;
             }
 
             // Fetch external comments before reviewee starts
@@ -313,8 +322,11 @@ impl Orchestrator {
                 &HistoryEntryType::Fix(fix_result.clone()),
             ) {
                 warn!("Failed to write fix history: {}", e);
-                self.send_event(RallyEvent::Log(format!("Warning: Failed to write fix history: {}", e)))
-                    .await;
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write fix history: {}",
+                    e
+                )))
+                .await;
             }
 
             self.send_event(RallyEvent::FixCompleted(fix_result.clone()))
@@ -789,11 +801,32 @@ impl Orchestrator {
                 let base_branch = &ctx.base_branch;
 
                 // Fetch latest base branch reference to ensure accurate diff
-                let _ = tokio::process::Command::new("git")
+                // Use timeout to prevent hanging on slow remotes or credential prompts
+                let fetch_future = tokio::process::Command::new("git")
                     .args(["fetch", "origin", base_branch])
                     .current_dir(working_dir)
-                    .output()
-                    .await;
+                    .output();
+
+                match timeout(Duration::from_secs(GIT_TIMEOUT_SECS), fetch_future).await {
+                    Ok(Ok(output)) if output.status.success() => {
+                        // Fetch succeeded
+                    }
+                    Ok(Ok(_)) => {
+                        warn!("git fetch failed, continuing with potentially stale ref");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            "git fetch command failed: {}, continuing with potentially stale ref",
+                            e
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            "git fetch timed out after {} seconds, continuing with potentially stale ref",
+                            GIT_TIMEOUT_SECS
+                        );
+                    }
+                }
 
                 // Try git diff against origin/base_branch using merge-base (three-dot) comparison
                 // This matches GitHub PR diff semantics and avoids including unrelated base-branch changes
