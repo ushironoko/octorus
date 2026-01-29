@@ -519,7 +519,7 @@ fn render_comment_input_area(frame: &mut Frame, app: &App, area: ratatui::layout
     app.input_text_area.render_with_title(
         frame,
         area,
-        "Comment (Ctrl+Enter: submit, Esc: cancel)",
+        "Comment (Ctrl+S: submit, Esc: cancel)",
         "Type your comment here...",
     );
 }
@@ -581,7 +581,7 @@ fn render_suggestion_input_area(frame: &mut Frame, app: &App, area: ratatui::lay
     app.input_text_area.render_with_title(
         frame,
         area,
-        "Suggested code (Ctrl+Enter: submit, Esc: cancel)",
+        "Suggested code (Ctrl+S: submit, Esc: cancel)",
         "Edit the code...",
     );
 }
@@ -625,7 +625,7 @@ fn render_reply_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::
     app.input_text_area.render_with_title(
         frame,
         area,
-        "Reply (Ctrl+Enter: submit, Esc: cancel)",
+        "Reply (Ctrl+S: submit, Esc: cancel)",
         "Type your reply here...",
     );
 }

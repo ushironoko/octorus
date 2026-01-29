@@ -51,14 +51,7 @@ impl TextArea {
     /// キー入力を処理し、アクションを返す
     pub fn input(&mut self, key: event::KeyEvent) -> TextAreaAction {
         match key.code {
-            // Cmd+Enter (macOS) / Ctrl+Enter で送信
-            KeyCode::Enter
-                if key.modifiers.contains(KeyModifiers::SUPER)
-                    || key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                return TextAreaAction::Submit;
-            }
-            // Ctrl+S は後方互換性のため残す
+            // Ctrl+S で送信（メインのキーバインド）
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return TextAreaAction::Submit;
             }
@@ -137,7 +130,7 @@ impl TextArea {
         self.render_with_title(
             frame,
             area,
-            "Reply (Ctrl+Enter: submit, Esc: cancel)",
+            "Reply (Ctrl+S: submit, Esc: cancel)",
             "Type your reply here...",
         );
     }
@@ -316,15 +309,6 @@ mod tests {
         }
     }
 
-    fn super_key_event(code: KeyCode) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers: KeyModifiers::SUPER,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        }
-    }
-
     #[test]
     fn test_new_text_area_is_empty() {
         let ta = TextArea::new();
@@ -403,21 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_enter_submit() {
-        let mut ta = TextArea::new();
-        let action = ta.input(ctrl_key_event(KeyCode::Enter));
-        assert!(matches!(action, TextAreaAction::Submit));
-    }
-
-    #[test]
-    fn test_cmd_enter_submit() {
-        let mut ta = TextArea::new();
-        let action = ta.input(super_key_event(KeyCode::Enter));
-        assert!(matches!(action, TextAreaAction::Submit));
-    }
-
-    #[test]
-    fn test_enter_inserts_newline_not_submit() {
+    fn test_enter_inserts_newline() {
         let mut ta = TextArea::new();
         ta.input(key_event(KeyCode::Char('a')));
         let action = ta.input(key_event(KeyCode::Enter)); // Ctrl なし
