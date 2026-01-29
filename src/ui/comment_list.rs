@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthChar;
@@ -48,53 +48,6 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     }
 
     lines
-}
-
-/// Adjust scroll offset so that `selected` is always visible within `inner_height` lines.
-/// Uses actual `ListItem::height()` to account for multiline items.
-fn adjust_scroll_offset(
-    items: &[ListItem],
-    selected: usize,
-    scroll_offset: &mut usize,
-    inner_height: usize,
-) {
-    if items.is_empty() || inner_height == 0 {
-        *scroll_offset = 0;
-        return;
-    }
-
-    // Clamp scroll_offset to valid range
-    *scroll_offset = (*scroll_offset).min(items.len().saturating_sub(1));
-
-    // If selected is above the visible area, scroll up
-    if selected < *scroll_offset {
-        *scroll_offset = selected;
-        return;
-    }
-
-    // Calculate how many items fit from scroll_offset
-    let mut height = 0;
-    let mut last_visible = *scroll_offset;
-    for idx in *scroll_offset..items.len() {
-        let h = items[idx].height();
-        if height + h > inner_height {
-            break;
-        }
-        height += h;
-        last_visible = idx + 1; // exclusive end
-    }
-
-    // If selected is beyond the visible range, scroll down
-    if selected >= last_visible {
-        // Find the smallest offset so that selected fits in the visible area
-        let mut new_offset = selected;
-        let mut h = items[selected].height();
-        while new_offset > 0 && h + items[new_offset - 1].height() <= inner_height {
-            new_offset -= 1;
-            h += items[new_offset].height();
-        }
-        *scroll_offset = new_offset;
-    }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -232,7 +185,6 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         return;
     }
 
-    let inner_height = area.height.saturating_sub(2) as usize; // borders
     let available_width = area.width.saturating_sub(4) as usize;
     let body_width = available_width.saturating_sub(4);
 
@@ -242,14 +194,6 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         .map(|(i, comment)| {
             let is_selected = i == app.selected_comment;
             let prefix = if is_selected { "> " } else { "  " };
-
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
 
             let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let header_line = Line::from(vec![
@@ -270,10 +214,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
 
             let mut lines = vec![header_line];
             for wrapped_line in wrapped_lines {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(wrapped_line, style),
-                ]));
+                lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
             }
             lines.push(Line::from(""));
 
@@ -281,21 +222,22 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         })
         .collect();
 
-    // Adjust scroll offset using actual item heights
-    adjust_scroll_offset(
-        &items,
-        app.selected_comment,
-        &mut app.comment_list_scroll_offset,
-        inner_height,
-    );
+    // Use ListState for stateful rendering with automatic scroll management
+    let mut list_state = ListState::default()
+        .with_offset(app.comment_list_scroll_offset)
+        .with_selected(Some(app.selected_comment));
 
-    let visible_items: Vec<ListItem> = items
-        .into_iter()
-        .skip(app.comment_list_scroll_offset)
-        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut list_state);
 
-    let list = List::new(visible_items).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(list, area);
+    // Update scroll offset from ListState for next frame
+    app.comment_list_scroll_offset = list_state.offset();
 }
 
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
@@ -323,7 +265,6 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
         return;
     }
 
-    let inner_height = area.height.saturating_sub(2) as usize; // borders
     let available_width = area.width.saturating_sub(4) as usize;
     let body_width = available_width.saturating_sub(4);
 
@@ -333,14 +274,6 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
         .map(|(i, comment)| {
             let is_selected = i == app.selected_discussion_comment;
             let prefix = if is_selected { "> " } else { "  " };
-
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
 
             // Format created_at to a shorter form (just the date part)
             let date = comment
@@ -370,10 +303,7 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
 
             let mut lines = vec![header_line];
             for wrapped_line in wrapped_lines {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(wrapped_line, style),
-                ]));
+                lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
             }
             lines.push(Line::from(""));
 
@@ -381,21 +311,22 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
         })
         .collect();
 
-    // Adjust scroll offset using actual item heights
-    adjust_scroll_offset(
-        &items,
-        app.selected_discussion_comment,
-        &mut app.discussion_comment_list_scroll_offset,
-        inner_height,
-    );
+    // Use ListState for stateful rendering with automatic scroll management
+    let mut list_state = ListState::default()
+        .with_offset(app.discussion_comment_list_scroll_offset)
+        .with_selected(Some(app.selected_discussion_comment));
 
-    let visible_items: Vec<ListItem> = items
-        .into_iter()
-        .skip(app.discussion_comment_list_scroll_offset)
-        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut list_state);
 
-    let list = List::new(visible_items).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(list, area);
+    // Update scroll offset from ListState for next frame
+    app.discussion_comment_list_scroll_offset = list_state.offset();
 }
 
 fn render_discussion_detail(frame: &mut Frame, app: &App) {
