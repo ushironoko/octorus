@@ -2348,7 +2348,7 @@ impl App {
         if char_count == 0 {
             return 1;
         }
-        (char_count + panel_width - 1) / panel_width
+        char_count.div_ceil(panel_width)
     }
 
     /// コメント本文の折り返しを考慮した表示行数を計算

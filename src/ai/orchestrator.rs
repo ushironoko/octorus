@@ -487,11 +487,19 @@ impl Orchestrator {
             }
         }
 
+        // Max iterations reached is a terminal state (not an error)
+        self.session.update_state(RallyState::Completed);
+        if let Err(e) = write_session(&self.session) {
+            warn!("Failed to write session: {}", e);
+        }
+
         self.send_event(RallyEvent::Log(format!(
             "Max iterations ({}) reached",
             self.config.max_iterations
         )))
         .await;
+        self.send_event(RallyEvent::StateChanged(RallyState::Completed))
+            .await;
 
         Ok(RallyResult::MaxIterationsReached {
             iteration: self.session.iteration,
