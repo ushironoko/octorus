@@ -73,14 +73,17 @@ main.rs
 **AppState** (UI 状態):
 
 ```
-FileList ──[Enter/→/l]──> SplitViewFileList ──[Enter/→/l]──> SplitViewDiff ──[Enter]──> DiffView
-                            │                                    │                          │
-                            │[←/h/q/Esc]                         │[←/h]                     │[q/Esc]
-                            ▼                                    ▼                          ▼
-                          FileList                        SplitViewFileList          SplitViewDiff
-                                                                 │[q/Esc]
-                                                                 ▼
-                                                              FileList
+FileList ──[Enter/→/l]──> SplitViewDiff ──[Tab/→/l]──> DiffView
+    ▲                          │  │                        │
+    │                          │  │[←/h]                   │[q/Esc/←/h]
+    │[q/Esc]                   │  ▼                        │
+    └──────────────────────────┘ SplitViewFileList         │
+                                   │  ▲                    │
+                                   │  │[Enter/→/l]         │
+                                   │  └────────────────────┘
+                                   │[q/Esc]
+                                   ▼
+                                FileList
 ```
 
 - `DiffView` → `CommentPreview` / `SuggestionPreview`（戻り先は `preview_return_state` で管理）

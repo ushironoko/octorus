@@ -115,11 +115,15 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 |-----|--------|
 | `j` / `↓` | Scroll diff |
 | `k` / `↑` | Scroll diff |
+| `gd` | Go to definition |
+| `gf` | Open file in $EDITOR |
+| `gg` / `G` | Jump to first/last line |
+| `Ctrl-o` | Jump back |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
 | `n` | Jump to next comment |
 | `N` | Jump to previous comment |
-| `Enter` | Open fullscreen diff view |
+| `Tab` / `→` / `l` | Open fullscreen diff view |
 | `c` | Add comment at line |
 | `s` | Add suggestion at line |
 | `←` / `h` | Focus file list |
@@ -131,15 +135,31 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
+| `gd` | Go to definition |
+| `gf` | Open file in $EDITOR |
+| `gg` / `G` | Jump to first/last line |
+| `Ctrl-o` | Jump back |
 | `n` | Jump to next comment |
 | `N` | Jump to previous comment |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
 | `c` | Add comment at line |
 | `s` | Add suggestion at line |
-| `q` / `Esc` | Back to previous view |
+| `←` / `h` / `q` / `Esc` | Back to previous view |
 
 **Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
+
+**Comment Panel (when focused):**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll panel |
+| `c` | Add comment |
+| `s` | Add suggestion |
+| `r` | Reply to comment |
+| `Tab` / `Shift-Tab` | Select reply target |
+| `n` / `N` | Jump to next/prev comment |
+| `Esc` / `q` | Close panel |
 
 #### Comment List View
 
