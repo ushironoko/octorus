@@ -138,14 +138,17 @@ impl TextArea {
                             return TextAreaAction::PendingSequence;
                         }
                         SequenceMatch::None => {
-                            // Not a match - flush all buffered keys as normal input
-                            let buffered = std::mem::take(&mut self.sequence_state.pending_keys);
+                            // Not a match - flush buffered keys EXCEPT the current one
+                            // (current key will be processed by the match key.code block below)
+                            let mut buffered =
+                                std::mem::take(&mut self.sequence_state.pending_keys);
                             self.sequence_state.pending_since = None;
+                            // Remove the last key (current key) - it will be handled normally
+                            buffered.pop();
                             for pending_key in buffered {
                                 self.insert_keybinding(&pending_key);
                             }
-                            self.adjust_scroll();
-                            return TextAreaAction::Continue;
+                            // Fall through to process the current key normally
                         }
                     }
                 }
@@ -654,5 +657,56 @@ mod tests {
         ta.input(key_event(KeyCode::Char('o')));
 
         assert_eq!(ta.content(), "hellogo");
+    }
+
+    #[test]
+    fn test_multikey_sequence_backspace_after_partial_match() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        // Test case: submit = "gg", type "g" then Backspace
+        // Expected: 'g' is inserted, then Backspace removes it
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // First type some text
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('b')));
+        assert_eq!(ta.content(), "ab");
+
+        // Type 'g' - should return PendingSequence
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::PendingSequence));
+
+        // Type Backspace - sequence breaks, 'g' should be inserted, then Backspace should work
+        let action = ta.input(key_event(KeyCode::Backspace));
+        assert!(matches!(action, TextAreaAction::Continue));
+        // 'g' was inserted (from buffer flush), then Backspace removed it
+        assert_eq!(ta.content(), "ab");
+    }
+
+    #[test]
+    fn test_multikey_sequence_arrow_keys_after_partial_match() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        // Test case: submit = "gg", type "g" then Left arrow
+        // Expected: 'g' is inserted, then cursor moves left
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // Type some text
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('b')));
+        assert_eq!(ta.content(), "ab");
+        assert_eq!(ta.cursor_col, 2);
+
+        // Type 'g' - should return PendingSequence
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::PendingSequence));
+
+        // Type Left arrow - sequence breaks, 'g' should be inserted, then cursor moves left
+        let action = ta.input(key_event(KeyCode::Left));
+        assert!(matches!(action, TextAreaAction::Continue));
+        assert_eq!(ta.content(), "abg"); // 'g' was inserted
+        assert_eq!(ta.cursor_col, 2); // cursor moved left from position 3 to 2
     }
 }
