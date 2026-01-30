@@ -107,19 +107,15 @@ fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListI
             // Draft marker
             let draft_marker = if pr.is_draft { "[DRAFT] " } else { "" };
 
-            // State color
-            let _state_style = match pr.state.as_str() {
-                "OPEN" => Style::default().fg(Color::Green),
-                "CLOSED" => Style::default().fg(Color::Red),
-                "MERGED" => Style::default().fg(Color::Magenta),
-                _ => Style::default(),
+            // PR number - yellow and bold when selected
+            let number_style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Yellow)
             };
-
-            // PR number
-            let number_span = Span::styled(
-                format!("#{:<5}", pr.number),
-                Style::default().fg(Color::Yellow),
-            );
+            let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
             // Draft + Title (truncate if too long)
             let title_width = 50;
@@ -129,7 +125,11 @@ fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListI
             } else {
                 full_title
             };
-            let title_style = if pr.is_draft {
+            let title_style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else if pr.is_draft {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
@@ -160,7 +160,6 @@ fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListI
             let labels_span = Span::styled(labels_str, Style::default().fg(Color::Blue));
 
             let line = Line::from(vec![
-                Span::raw(if is_selected { "▶ " } else { "  " }),
                 number_span,
                 Span::raw("  "),
                 title_span,
@@ -169,13 +168,7 @@ fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListI
                 labels_span,
             ]);
 
-            let style = if is_selected {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(line).style(style)
+            ListItem::new(line)
         })
         .collect()
 }
