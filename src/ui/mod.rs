@@ -42,14 +42,17 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Re
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // Loading状態の場合は専用画面を表示
-    if matches!(app.data_state, DataState::Loading) {
-        file_list::render_loading(frame, app);
-        return;
-    }
-    if let DataState::Error(ref msg) = app.data_state {
-        file_list::render_error(frame, app, msg);
-        return;
+    // PR一覧画面は独自のローディング処理があるためスキップ
+    if app.state != AppState::PullRequestList {
+        // Loading状態の場合は専用画面を表示
+        if matches!(app.data_state, DataState::Loading) {
+            file_list::render_loading(frame, app);
+            return;
+        }
+        if let DataState::Error(ref msg) = app.data_state {
+            file_list::render_error(frame, app, msg);
+            return;
+        }
     }
 
     match app.state {
