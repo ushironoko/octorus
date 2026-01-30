@@ -192,10 +192,11 @@ editor = "vi"
 theme = "base16-ocean.dark"
 
 [keybindings]
-approve = 'a'
-request_changes = 'r'
-comment = 'c'
-suggestion = 's'
+# See "Configurable Keybindings" section below for all options
+approve = "a"
+request_changes = "r"
+comment = "c"
+suggestion = "s"
 
 [ai]
 # AI agent to use for reviewer/reviewee
@@ -220,6 +221,58 @@ timeout_secs = 600
 # Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
 # reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
+
+### Configurable Keybindings
+
+All keybindings can be customized in the `[keybindings]` section. Three formats are supported:
+
+```toml
+[keybindings]
+# Simple key
+move_down = "j"
+
+# Key with modifiers
+page_down = { key = "d", ctrl = true }
+
+# Two-key sequence
+go_to_definition = ["g", "d"]
+```
+
+#### Available Keybindings
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| **Navigation** |||
+| `move_down` | `j` | Move down |
+| `move_up` | `k` | Move up |
+| `move_left` | `h` | Move left / back |
+| `move_right` | `l` | Move right / select |
+| `page_down` | `Ctrl+d` | Page down |
+| `page_up` | `Ctrl+u` | Page up |
+| `jump_to_first` | `gg` | Jump to first line |
+| `jump_to_last` | `G` | Jump to last line |
+| `jump_back` | `Ctrl+o` | Jump to previous position |
+| `next_comment` | `n` | Jump to next comment |
+| `prev_comment` | `N` | Jump to previous comment |
+| **Actions** |||
+| `approve` | `a` | Approve PR |
+| `request_changes` | `r` | Request changes |
+| `comment` | `c` | Add comment |
+| `suggestion` | `s` | Add suggestion |
+| `reply` | `r` | Reply to comment |
+| `refresh` | `R` | Force refresh |
+| `submit` | `Ctrl+s` | Submit input |
+| **Mode Switching** |||
+| `quit` | `q` | Quit / back |
+| `help` | `?` | Toggle help |
+| `comment_list` | `C` | Open comment list |
+| `ai_rally` | `A` | Start AI Rally |
+| `open_panel` | `Enter` | Open panel / select |
+| **Diff Operations** |||
+| `go_to_definition` | `gd` | Go to definition |
+| `go_to_file` | `gf` | Open file in $EDITOR |
+
+**Note**: Arrow keys (`↑/↓/←/→`) always work as alternatives to Vim-style keys and cannot be remapped.
 
 ### Customizing Prompt Templates
 

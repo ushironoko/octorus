@@ -192,10 +192,11 @@ editor = "vi"
 theme = "base16-ocean.dark"
 
 [keybindings]
-approve = 'a'
-request_changes = 'r'
-comment = 'c'
-suggestion = 's'
+# 設定可能なすべてのキーについては「設定可能なキーバインド」セクションを参照
+approve = "a"
+request_changes = "r"
+comment = "c"
+suggestion = "s"
 
 [ai]
 # レビュワー/レビュイーに使用する AI エージェント
@@ -220,6 +221,58 @@ timeout_secs = 600
 # 例: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
 # reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
+
+### 設定可能なキーバインド
+
+すべてのキーバインドは `[keybindings]` セクションでカスタマイズできます。3つのフォーマットをサポート:
+
+```toml
+[keybindings]
+# 単一キー
+move_down = "j"
+
+# 修飾子付きキー
+page_down = { key = "d", ctrl = true }
+
+# 2キーシーケンス
+go_to_definition = ["g", "d"]
+```
+
+#### 設定可能なキー一覧
+
+| キー | デフォルト | 説明 |
+|-----|---------|-------------|
+| **ナビゲーション** |||
+| `move_down` | `j` | 下に移動 |
+| `move_up` | `k` | 上に移動 |
+| `move_left` | `h` | 左に移動 / 戻る |
+| `move_right` | `l` | 右に移動 / 選択 |
+| `page_down` | `Ctrl+d` | ページダウン |
+| `page_up` | `Ctrl+u` | ページアップ |
+| `jump_to_first` | `gg` | 先頭にジャンプ |
+| `jump_to_last` | `G` | 末尾にジャンプ |
+| `jump_back` | `Ctrl+o` | 前の位置に戻る |
+| `next_comment` | `n` | 次のコメントにジャンプ |
+| `prev_comment` | `N` | 前のコメントにジャンプ |
+| **アクション** |||
+| `approve` | `a` | PR を Approve |
+| `request_changes` | `r` | Request changes |
+| `comment` | `c` | コメント追加 |
+| `suggestion` | `s` | サジェスチョン追加 |
+| `reply` | `r` | コメントに返信 |
+| `refresh` | `R` | 強制リフレッシュ |
+| `submit` | `Ctrl+s` | 入力を送信 |
+| **モード切替** |||
+| `quit` | `q` | 終了 / 戻る |
+| `help` | `?` | ヘルプを表示 |
+| `comment_list` | `C` | コメント一覧を開く |
+| `ai_rally` | `A` | AI Rally を開始 |
+| `open_panel` | `Enter` | パネルを開く / 選択 |
+| **Diff 操作** |||
+| `go_to_definition` | `gd` | 定義へジャンプ |
+| `go_to_file` | `gf` | $EDITOR でファイルを開く |
+
+**Note**: 矢印キー（`↑/↓/←/→`）は常に Vim スタイルキーの代替として動作し、リマップできません。
 
 ### プロンプトテンプレートのカスタマイズ
 
