@@ -10,14 +10,18 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
+use crate::keybinding::{event_to_keybinding, KeySequence, SequenceMatch, SequenceState};
+
 /// テキストエリアのキー入力結果
 pub enum TextAreaAction {
     /// 通常の編集操作（継続）
     Continue,
-    /// Ctrl+S: 送信
+    /// Submit key pressed
     Submit,
     /// Esc: キャンセル
     Cancel,
+    /// Waiting for more keys in a sequence
+    PendingSequence,
 }
 
 /// TUI内で動作するマルチラインテキスト入力ウィジェット
@@ -29,6 +33,10 @@ pub struct TextArea {
     /// 最後にレンダリングされた領域の可視行数（ボーダー除く）
     /// render()で実際のレンダリング領域から更新される（interior mutability）
     visible_height: Cell<usize>,
+    /// Custom submit key binding (default: Ctrl+S)
+    submit_key: Option<KeySequence>,
+    /// State for tracking pending key sequences
+    sequence_state: SequenceState,
 }
 
 impl Default for TextArea {
@@ -45,17 +53,111 @@ impl TextArea {
             cursor_col: 0,
             scroll_offset: 0,
             visible_height: Cell::new(1),
+            submit_key: None,
+            sequence_state: SequenceState::new(),
         }
+    }
+
+    /// Create a TextArea with a custom submit key binding
+    pub fn with_submit_key(submit_key: KeySequence) -> Self {
+        Self {
+            lines: vec![String::new()],
+            cursor_row: 0,
+            cursor_col: 0,
+            scroll_offset: 0,
+            visible_height: Cell::new(1),
+            submit_key: Some(submit_key),
+            sequence_state: SequenceState::new(),
+        }
+    }
+
+    /// Set the submit key binding
+    pub fn set_submit_key(&mut self, submit_key: KeySequence) {
+        self.submit_key = Some(submit_key);
+    }
+
+    /// Get the submit key display string
+    pub fn submit_key_display(&self) -> String {
+        self.submit_key
+            .as_ref()
+            .map(|seq| seq.display())
+            .unwrap_or_else(|| "Ctrl-s".to_string())
+    }
+
+    /// Check if the key matches the submit binding (for single-key bindings)
+    /// Returns None if this is a multi-key sequence that needs sequence tracking
+    fn check_single_key_submit(&self, key: &event::KeyEvent) -> Option<bool> {
+        if let Some(ref submit_seq) = self.submit_key {
+            if submit_seq.is_single() {
+                if let Some(first) = submit_seq.first() {
+                    return Some(first.matches(key));
+                }
+            }
+            // Multi-key sequence - handled by sequence state
+            return None;
+        }
+        // Default: Ctrl+S
+        Some(key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL))
     }
 
     /// キー入力を処理し、アクションを返す
     pub fn input(&mut self, key: event::KeyEvent) -> TextAreaAction {
-        match key.code {
-            // Ctrl+S で送信（メインのキーバインド）
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        // Check for timeout on pending sequence - if timed out, flush buffered keys
+        if self.sequence_state.pending_since.is_some() {
+            let timed_out = self
+                .sequence_state
+                .pending_since
+                .is_some_and(|since| since.elapsed() > crate::keybinding::SEQUENCE_TIMEOUT);
+            if timed_out {
+                // Timeout - flush buffered keys as normal input, then process current key
+                let buffered = std::mem::take(&mut self.sequence_state.pending_keys);
+                self.sequence_state.pending_since = None;
+                for pending_key in buffered {
+                    self.insert_keybinding(&pending_key);
+                }
+            }
+        }
+
+        // Check for single-key submit binding first
+        if let Some(is_submit) = self.check_single_key_submit(&key) {
+            if is_submit {
+                self.sequence_state.clear();
                 return TextAreaAction::Submit;
             }
+        } else {
+            // Multi-key sequence handling
+            if let Some(ref submit_seq) = self.submit_key {
+                if let Some(keybinding) = event_to_keybinding(&key) {
+                    self.sequence_state.push(keybinding);
+                    match self.sequence_state.matches(submit_seq) {
+                        SequenceMatch::Full => {
+                            self.sequence_state.clear();
+                            return TextAreaAction::Submit;
+                        }
+                        SequenceMatch::Partial => {
+                            return TextAreaAction::PendingSequence;
+                        }
+                        SequenceMatch::None => {
+                            // Not a match - flush buffered keys EXCEPT the current one
+                            // (current key will be processed by the match key.code block below)
+                            let mut buffered =
+                                std::mem::take(&mut self.sequence_state.pending_keys);
+                            self.sequence_state.pending_since = None;
+                            // Remove the last key (current key) - it will be handled normally
+                            buffered.pop();
+                            for pending_key in buffered {
+                                self.insert_keybinding(&pending_key);
+                            }
+                            // Fall through to process the current key normally
+                        }
+                    }
+                }
+            }
+        }
+
+        match key.code {
             KeyCode::Esc => {
+                self.sequence_state.clear();
                 return TextAreaAction::Cancel;
             }
             KeyCode::Char(c) => {
@@ -127,12 +229,8 @@ impl TextArea {
 
     /// テキストエリアをレンダリング（デフォルトタイトル・プレースホルダー）
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        self.render_with_title(
-            frame,
-            area,
-            "Reply (Ctrl+S: submit, Esc: cancel)",
-            "Type your reply here...",
-        );
+        let title = format!("Reply ({}: submit, Esc: cancel)", self.submit_key_display());
+        self.render_with_title(frame, area, &title, "Type your reply here...");
     }
 
     /// カスタムタイトルとプレースホルダーでレンダリング
@@ -173,6 +271,31 @@ impl TextArea {
         let byte_idx = char_to_byte_index(line, self.cursor_col);
         line.insert(byte_idx, c);
         self.cursor_col += 1;
+    }
+
+    /// Insert a keybinding as text (for flushing buffered sequence keys)
+    fn insert_keybinding(&mut self, keybinding: &crate::keybinding::KeyBinding) {
+        use crate::keybinding::{KeyCodeConfig, NamedKey};
+        match keybinding.code {
+            KeyCodeConfig::Char(c) => {
+                // If shift is held, insert uppercase
+                let ch = if keybinding.modifiers.shift {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                };
+                self.insert_char(ch);
+            }
+            KeyCodeConfig::Named(NamedKey::Enter) => {
+                self.insert_newline();
+            }
+            KeyCodeConfig::Named(NamedKey::Tab) => {
+                // Insert tab as spaces or tab character
+                self.insert_char('\t');
+            }
+            // Other named keys (arrows, backspace, etc.) are not insertable text
+            _ => {}
+        }
     }
 
     fn insert_newline(&mut self) {
@@ -474,5 +597,116 @@ mod tests {
         ta.input(key_event(KeyCode::Char('c')));
         assert_eq!(ta.cursor_col, 3);
         assert_eq!(ta.cursor_display_width(), 3);
+    }
+
+    #[test]
+    fn test_multikey_sequence_flush_on_mismatch() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        // Create textarea with "gg" as submit sequence
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // Type 'g' - should return PendingSequence
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::PendingSequence));
+        assert_eq!(ta.content(), ""); // Not yet inserted
+
+        // Type 'h' - different key, sequence breaks, both 'g' and 'h' should be inserted
+        let action = ta.input(key_event(KeyCode::Char('h')));
+        assert!(matches!(action, TextAreaAction::Continue));
+        assert_eq!(ta.content(), "gh"); // Both characters inserted
+    }
+
+    #[test]
+    fn test_multikey_sequence_full_match() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        // Create textarea with "gg" as submit sequence
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // Type 'g' - should return PendingSequence
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::PendingSequence));
+
+        // Type 'g' again - should return Submit
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::Submit));
+        assert_eq!(ta.content(), ""); // Nothing inserted, it was a submit
+    }
+
+    #[test]
+    fn test_multikey_sequence_allows_normal_typing_after_mismatch() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // Type some text normally
+        ta.input(key_event(KeyCode::Char('h')));
+        ta.input(key_event(KeyCode::Char('e')));
+        ta.input(key_event(KeyCode::Char('l')));
+        ta.input(key_event(KeyCode::Char('l')));
+        ta.input(key_event(KeyCode::Char('o')));
+
+        assert_eq!(ta.content(), "hello");
+
+        // Now try 'g' followed by non-'g' - should insert both
+        ta.input(key_event(KeyCode::Char('g')));
+        ta.input(key_event(KeyCode::Char('o')));
+
+        assert_eq!(ta.content(), "hellogo");
+    }
+
+    #[test]
+    fn test_multikey_sequence_backspace_after_partial_match() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        // Test case: submit = "gg", type "g" then Backspace
+        // Expected: 'g' is inserted, then Backspace removes it
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // First type some text
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('b')));
+        assert_eq!(ta.content(), "ab");
+
+        // Type 'g' - should return PendingSequence
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::PendingSequence));
+
+        // Type Backspace - sequence breaks, 'g' should be inserted, then Backspace should work
+        let action = ta.input(key_event(KeyCode::Backspace));
+        assert!(matches!(action, TextAreaAction::Continue));
+        // 'g' was inserted (from buffer flush), then Backspace removed it
+        assert_eq!(ta.content(), "ab");
+    }
+
+    #[test]
+    fn test_multikey_sequence_arrow_keys_after_partial_match() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        // Test case: submit = "gg", type "g" then Left arrow
+        // Expected: 'g' is inserted, then cursor moves left
+        let submit_seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        let mut ta = TextArea::with_submit_key(submit_seq);
+
+        // Type some text
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('b')));
+        assert_eq!(ta.content(), "ab");
+        assert_eq!(ta.cursor_col, 2);
+
+        // Type 'g' - should return PendingSequence
+        let action = ta.input(key_event(KeyCode::Char('g')));
+        assert!(matches!(action, TextAreaAction::PendingSequence));
+
+        // Type Left arrow - sequence breaks, 'g' should be inserted, then cursor moves left
+        let action = ta.input(key_event(KeyCode::Left));
+        assert!(matches!(action, TextAreaAction::Continue));
+        assert_eq!(ta.content(), "abg"); // 'g' was inserted
+        assert_eq!(ta.cursor_col, 2); // cursor moved left from position 3 to 2
     }
 }
