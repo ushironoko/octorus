@@ -3,7 +3,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
     },
     Frame,
 };
@@ -11,7 +12,7 @@ use ratatui::{
 use crate::app::App;
 use crate::github::PullRequestSummary;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -57,10 +58,18 @@ pub fn render(frame: &mut Frame, app: &App) {
                 format!("Pull Requests ({})", total_prs)
             };
 
+            // Use ListState for stateful rendering with automatic scroll management
+            let mut list_state = ListState::default()
+                .with_offset(app.pr_list_scroll_offset)
+                .with_selected(Some(app.selected_pr));
+
             let list = List::new(items)
                 .block(Block::default().borders(Borders::ALL).title(title))
                 .highlight_style(Style::default().bg(Color::DarkGray));
-            frame.render_widget(list, chunks[1]);
+            frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+            // Update scroll offset from ListState for next frame
+            app.pr_list_scroll_offset = list_state.offset();
 
             // Scrollbar
             if total_prs > 1 {
