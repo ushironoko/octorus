@@ -117,14 +117,10 @@ fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListI
             };
             let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
-            // Draft + Title (truncate if too long)
+            // Draft + Title (truncate if too long, respecting char boundaries)
             let title_width = 50;
             let full_title = format!("{}{}", draft_marker, pr.title);
-            let title = if full_title.len() > title_width {
-                format!("{}...", &full_title[..title_width - 3])
-            } else {
-                full_title
-            };
+            let title = truncate_string(&full_title, title_width);
             let title_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -171,4 +167,14 @@ fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListI
             ListItem::new(line)
         })
         .collect()
+}
+
+/// Truncate a string to fit within a given width, respecting char boundaries
+fn truncate_string(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
 }
