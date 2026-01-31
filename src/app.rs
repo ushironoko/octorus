@@ -577,7 +577,12 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(page)) => {
-                if let Some(ref mut existing) = self.pr_list {
+                // pr_list_scroll_offset が 0 ならリフレッシュ/フィルタ変更なので置き換え
+                // そうでなければ追加ロード
+                if self.pr_list_scroll_offset == 0 && self.selected_pr == 0 {
+                    // フィルタ変更やリフレッシュ: リストを置き換え
+                    self.pr_list = Some(page.items);
+                } else if let Some(ref mut existing) = self.pr_list {
                     // 追加ロード: 既存リストに追加
                     existing.extend(page.items);
                 } else {
@@ -3426,7 +3431,8 @@ impl App {
 
     /// PR一覧を再読み込み
     fn reload_pr_list(&mut self) {
-        self.pr_list = None;
+        // 既存のリストをクリアせず、ローディング状態のみ設定
+        // これにより、ローディング中も既存のリストが表示される
         self.selected_pr = 0;
         self.pr_list_scroll_offset = 0;
         self.pr_list_loading = true;
