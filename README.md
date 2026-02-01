@@ -50,17 +50,32 @@ cp target/release/or ~/.local/bin/
 ## Usage
 
 ```bash
+# Open PR list (interactive selection)
+or
+
+# Open PR list for a specific repository
+or --repo owner/repo
+
+# Open a specific PR directly
 or --repo owner/repo --pr 123
+
+# Start AI Rally after selecting a PR
+or --ai-rally
 ```
+
+Both `--repo` and `--pr` are optional:
+- If `--repo` is omitted, the repository is auto-detected from the current directory's git remote
+- If `--pr` is omitted, an interactive PR list is displayed for selection
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `-r, --repo <REPO>` | Repository name (e.g., "owner/repo") |
-| `-p, --pr <PR>` | Pull request number |
+| `-r, --repo <REPO>` | Repository name (e.g., "owner/repo"). Auto-detected if omitted |
+| `-p, --pr <PR>` | Pull request number. Shows PR list for selection if omitted |
 | `--refresh` | Force refresh, ignore cache |
 | `--cache-ttl <SECS>` | Cache TTL in seconds (default: 300) |
+| `--ai-rally` | Start AI Rally after selecting a PR |
 
 ### Initialize Configuration
 
@@ -79,6 +94,28 @@ This creates:
   - `rereview.md` - Re-review prompt template
 
 ### Keybindings
+
+#### PR List View
+
+Displayed when `--pr` is omitted. Select a PR to review from the list.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `gg` | Jump to first item |
+| `G` | Jump to last item |
+| `Enter` | Open selected PR |
+| `o` | Filter: Open PRs only |
+| `c` | Filter: Closed PRs only |
+| `a` | Filter: All PRs |
+| `r` | Reload list |
+| `?` | Toggle help |
+| `q` | Quit |
+
+**Features:**
+- Infinite scroll: Automatically loads more PRs when scrolling near the bottom
+- Press `q` in File List or Diff View to return to the PR list (when opened from PR list)
 
 #### File List View
 
