@@ -468,4 +468,65 @@ mod tests {
 
         assert!(!spans.is_empty());
     }
+
+    #[test]
+    fn test_cst_with_dracula_theme() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+        use ratatui::style::Color;
+
+        let mut pool = ParserPool::new();
+        let mut highlighter = Highlighter::for_file("test.rs", "Dracula", &mut pool);
+
+        let source = "fn main() {\n    let x = 42;\n}";
+
+        // Parse first (requires &mut self)
+        let result = highlighter
+            .parse_source(source)
+            .expect("Should parse Rust source");
+
+        // Create style cache from Dracula theme
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+        );
+
+        let mut interner = Rodeo::default();
+        let line = "fn main() {";
+        let captures = line_highlights.get(0);
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "fn" should have Dracula pink color (keyword)
+        let fn_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "fn");
+        assert!(fn_span.is_some(), "Should have 'fn' span");
+
+        let fn_style = fn_span.unwrap().style;
+        // Dracula keyword color is Rgb(255, 121, 198) (pink)
+        match fn_style.fg {
+            Some(Color::Rgb(r, g, b)) => {
+                // Dracula pink is approximately Rgb(255, 121, 198)
+                assert!(
+                    r > 200 && g < 200 && b > 150,
+                    "Expected Dracula pink-ish color for 'fn', got Rgb({}, {}, {})",
+                    r,
+                    g,
+                    b
+                );
+            }
+            other => {
+                panic!(
+                    "Expected Rgb color for 'fn' keyword, got {:?}",
+                    other
+                );
+            }
+        }
+    }
 }

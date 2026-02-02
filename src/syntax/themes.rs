@@ -352,6 +352,32 @@ mod tests {
     }
 
     #[test]
+    fn test_theme_style_cache_actually_caches() {
+        let theme = get_theme("Dracula");
+        let cache = ThemeStyleCache::new(theme);
+
+        // Check that the cache is not empty
+        assert!(
+            !cache.cache.is_empty(),
+            "ThemeStyleCache should have cached entries"
+        );
+
+        // Verify that cached styles differ from hardcoded fallbacks for at least some captures
+        let mut differs_count = 0;
+        for (capture, cached_style) in &cache.cache {
+            let fallback_style = style_for_capture(capture);
+            if cached_style.fg != fallback_style.fg {
+                differs_count += 1;
+            }
+        }
+
+        assert!(
+            differs_count > 0,
+            "At least some cached styles should differ from fallback (theme should apply)"
+        );
+    }
+
+    #[test]
     fn test_theme_style_cache_unknown_capture_fallback() {
         let theme = get_theme("Dracula");
         let cache = ThemeStyleCache::new(theme);

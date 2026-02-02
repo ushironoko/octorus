@@ -1,7 +1,74 @@
-; Go highlight queries for tree-sitter
-; Based on nvim-treesitter queries
+; Function calls
+
+(call_expression
+  function: (identifier) @function)
+
+(call_expression
+  function: (identifier) @function.builtin
+  (#match? @function.builtin "^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$"))
+
+(call_expression
+  function: (selector_expression
+    field: (field_identifier) @function.method))
+
+; Function definitions
+
+(function_declaration
+  name: (identifier) @function)
+
+(method_declaration
+  name: (field_identifier) @function.method)
+
+; Identifiers
+
+(type_identifier) @type
+(field_identifier) @property
+(identifier) @variable
+
+; Operators
+
+[
+  "--"
+  "-"
+  "-="
+  ":="
+  "!"
+  "!="
+  "..."
+  "*"
+  "*"
+  "*="
+  "/"
+  "/="
+  "&"
+  "&&"
+  "&="
+  "%"
+  "%="
+  "^"
+  "^="
+  "+"
+  "++"
+  "+="
+  "<-"
+  "<"
+  "<<"
+  "<<="
+  "<="
+  "="
+  "=="
+  ">"
+  ">="
+  ">>"
+  ">>="
+  "|"
+  "|="
+  "||"
+  "~"
+] @operator
 
 ; Keywords
+
 [
   "break"
   "case"
@@ -30,147 +97,27 @@
   "var"
 ] @keyword
 
-; Types
-(type_identifier) @type
-(type_spec name: (type_identifier) @type)
+; Literals
 
-; Builtin types
-((type_identifier) @type.builtin
-  (#any-of? @type.builtin
-    "bool"
-    "byte"
-    "complex128"
-    "complex64"
-    "error"
-    "float32"
-    "float64"
-    "int"
-    "int16"
-    "int32"
-    "int64"
-    "int8"
-    "rune"
-    "string"
-    "uint"
-    "uint16"
-    "uint32"
-    "uint64"
-    "uint8"
-    "uintptr"))
+[
+  (interpreted_string_literal)
+  (raw_string_literal)
+  (rune_literal)
+] @string
 
-; Functions
-(function_declaration name: (identifier) @function)
-(method_declaration name: (field_identifier) @function.method)
-(call_expression function: (identifier) @function.call)
-(call_expression function: (selector_expression field: (field_identifier) @function.method.call))
+(escape_sequence) @escape
 
-; Builtin functions
-((identifier) @function.builtin
-  (#any-of? @function.builtin
-    "append"
-    "cap"
-    "clear"
-    "close"
-    "complex"
-    "copy"
-    "delete"
-    "imag"
-    "len"
-    "make"
-    "max"
-    "min"
-    "new"
-    "panic"
-    "print"
-    "println"
-    "real"
-    "recover"))
+[
+  (int_literal)
+  (float_literal)
+  (imaginary_literal)
+] @number
 
-; Strings
-(raw_string_literal) @string
-(interpreted_string_literal) @string
-(rune_literal) @character
+[
+  (true)
+  (false)
+  (nil)
+  (iota)
+] @constant.builtin
 
-; Numbers
-(int_literal) @number
-(float_literal) @number.float
-(imaginary_literal) @number
-
-; Booleans
-(true) @boolean
-(false) @boolean
-
-; Nil
-(nil) @constant.builtin
-
-; Comments
 (comment) @comment
-
-; Operators
-[
-  "!"
-  "!="
-  "%"
-  "%="
-  "&"
-  "&&"
-  "&="
-  "&^"
-  "&^="
-  "*"
-  "*="
-  "+"
-  "++"
-  "+="
-  "-"
-  "--"
-  "-="
-  "/"
-  "/="
-  "<"
-  "<-"
-  "<<"
-  "<<="
-  "<="
-  "="
-  "=="
-  ">"
-  ">="
-  ">>"
-  ">>="
-  "^"
-  "^="
-  "|"
-  "|="
-  "||"
-  ":="
-] @operator
-
-; Punctuation
-[
-  "("
-  ")"
-  "["
-  "]"
-  "{"
-  "}"
-] @punctuation.bracket
-
-[
-  ","
-  "."
-  ":"
-  ";"
-] @punctuation.delimiter
-
-; Identifiers
-(identifier) @variable
-(field_identifier) @property
-
-; Parameters
-(parameter_declaration name: (identifier) @variable.parameter)
-
-; Packages
-(package_identifier) @namespace
-(package_clause (package_identifier) @namespace)
-(import_spec path: (interpreted_string_literal) @string)
