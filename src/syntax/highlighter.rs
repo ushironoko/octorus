@@ -349,31 +349,34 @@ fn highlight_with_syntect(
 }
 
 /// Get the language and query source for a file extension.
+///
+/// Uses the `HIGHLIGHTS_QUERY` constants exported by each tree-sitter crate,
+/// which are the official highlight queries maintained by the grammar authors.
 fn get_language_and_query(ext: &str) -> Option<(Language, &'static str)> {
     match ext {
         "rs" => Some((
             tree_sitter_rust::LANGUAGE.into(),
-            include_str!("../../queries/rust.scm"),
+            tree_sitter_rust::HIGHLIGHTS_QUERY,
         )),
         "ts" => Some((
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            include_str!("../../queries/typescript.scm"),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
         )),
         "tsx" => Some((
             tree_sitter_typescript::LANGUAGE_TSX.into(),
-            include_str!("../../queries/typescript.scm"),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
         )),
         "js" | "jsx" => Some((
             tree_sitter_javascript::LANGUAGE.into(),
-            include_str!("../../queries/javascript.scm"),
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
         )),
         "go" => Some((
             tree_sitter_go::LANGUAGE.into(),
-            include_str!("../../queries/go.scm"),
+            tree_sitter_go::HIGHLIGHTS_QUERY,
         )),
         "py" => Some((
             tree_sitter_python::LANGUAGE.into(),
-            include_str!("../../queries/python.scm"),
+            tree_sitter_python::HIGHLIGHTS_QUERY,
         )),
         _ => None,
     }
