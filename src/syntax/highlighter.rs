@@ -288,6 +288,17 @@ pub fn apply_line_highlights(
     let mut last_end = 0;
 
     for capture in captures {
+        // Skip captures that overlap with already processed text
+        // This handles duplicate captures from tree-sitter error recovery
+        if capture.local_start < last_end {
+            continue;
+        }
+
+        // Skip invalid captures
+        if capture.local_start >= capture.local_end || capture.local_end > line.len() {
+            continue;
+        }
+
         // Add unstyled text before this highlight
         if capture.local_start > last_end {
             spans.push(InternedSpan {
@@ -297,13 +308,11 @@ pub fn apply_line_highlights(
         }
 
         // Add highlighted text
-        if capture.local_start < capture.local_end && capture.local_end <= line.len() {
-            spans.push(InternedSpan {
-                content: interner.get_or_intern(&line[capture.local_start..capture.local_end]),
-                style: capture.style,
-            });
-            last_end = capture.local_end;
-        }
+        spans.push(InternedSpan {
+            content: interner.get_or_intern(&line[capture.local_start..capture.local_end]),
+            style: capture.style,
+        });
+        last_end = capture.local_end;
     }
 
     // Add remaining unstyled text

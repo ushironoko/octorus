@@ -49,15 +49,12 @@ pub fn build_diff_cache(
     let (combined_source, line_mapping) = build_combined_source_for_highlight(patch);
     let cst_result = highlighter.parse_source(&combined_source);
 
-    // Check if the tree has too many parse errors (indicates invalid syntax)
-    // If so, fall back to syntect for more graceful degradation
-    let use_cst = cst_result.as_ref().is_some_and(|result| {
-        let error_count = count_error_nodes(&result.tree);
-        // Allow up to 5% error nodes or 3 absolute errors, whichever is larger
-        let total_nodes = result.tree.root_node().descendant_count();
-        let threshold = (total_nodes / 20).max(3);
-        error_count <= threshold
-    });
+    // Check if tree-sitter parsing succeeded
+    // Note: We no longer fall back based on error count, since tree-sitter's
+    // error recovery produces usable AST even with parse errors. The errors
+    // typically occur because diffs contain incomplete code (missing context
+    // between hunks), not because the code is actually invalid.
+    let use_cst = cst_result.is_some();
 
     let lines: Vec<CachedDiffLine> = if use_cst {
         let result = cst_result.as_ref().unwrap();
@@ -82,7 +79,7 @@ pub fn build_diff_cache(
             &mut interner,
         )
     } else {
-        // Syntect fallback path (either no CST support or parse errors detected)
+        // Syntect fallback path (no CST support for this file type)
         build_lines_with_syntect(patch, filename, theme_name, comment_lines, &mut interner)
     };
 
@@ -92,29 +89,6 @@ pub fn build_diff_cache(
         comment_lines: comment_lines.clone(),
         lines,
         interner,
-    }
-}
-
-/// Count ERROR nodes in the tree to detect parse failures.
-fn count_error_nodes(tree: &tree_sitter::Tree) -> usize {
-    let mut count = 0;
-    let mut cursor = tree.walk();
-
-    loop {
-        let node = cursor.node();
-        if node.is_error() || node.is_missing() {
-            count += 1;
-        }
-
-        // Traverse the tree
-        if cursor.goto_first_child() {
-            continue;
-        }
-        while !cursor.goto_next_sibling() {
-            if !cursor.goto_parent() {
-                return count;
-            }
-        }
     }
 }
 
