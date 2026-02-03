@@ -124,6 +124,165 @@ pub fn generate_comment_lines(
     comment_lines
 }
 
+/// Generate a realistic TypeScript/JavaScript diff patch.
+pub fn generate_typescript_diff_patch(line_count: usize) -> String {
+    let mut rng = seeded_rng();
+    let mut lines = Vec::with_capacity(line_count);
+    let mut current_line = 1u32;
+
+    lines.push(format!("@@ -1,{} +1,{} @@", line_count / 2, line_count / 2));
+
+    for i in 1..line_count {
+        if i % 50 == 0 {
+            current_line += 50;
+            lines.push(format!(
+                "@@ -{},{} +{},{} @@",
+                current_line, 30, current_line, 30
+            ));
+            continue;
+        }
+
+        let line_type: u8 = rng.random_range(0..10);
+        let content = generate_typescript_line(&mut rng, i);
+
+        match line_type {
+            0..=1 => lines.push(format!("+{}", content)),
+            2..=3 => lines.push(format!("-{}", content)),
+            _ => lines.push(format!(" {}", content)),
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Generate a line of realistic TypeScript code
+fn generate_typescript_line(rng: &mut ChaCha8Rng, line_num: usize) -> String {
+    let templates = [
+        "const value = data.map(x => x * 2);",
+        "export function processData(input: string): Result<string> {",
+        "}",
+        "if (condition) { return ok(); }",
+        "for (const item of items) {",
+        "switch (result) {",
+        "  case 'ok': return value;",
+        "  default: throw new Error('unexpected');",
+        "import { useState, useEffect } from 'react';",
+        "interface Config {",
+        "  field: string;",
+        "class Component extends React.Component {",
+        "@decorator",
+        "/** Documentation comment */",
+        "// Regular comment",
+        "expect(result).toBe(expected);",
+        "console.log('Debug:', value);",
+        "await fetch('/api/data').then(r => r.json());",
+        "async function fetchData(): Promise<number[]> {",
+        ".filter(x => x > 0)",
+    ];
+
+    let idx = rng.random_range(0..templates.len());
+    format!("{} // line {}", templates[idx], line_num)
+}
+
+/// Generate a realistic Vue SFC diff patch.
+pub fn generate_vue_diff_patch(line_count: usize) -> String {
+    let mut rng = seeded_rng();
+    let mut lines = Vec::with_capacity(line_count);
+
+    // Start with template section
+    lines.push("@@ -1,50 +1,50 @@".to_string());
+    lines.push(" <template>".to_string());
+
+    let template_lines = line_count / 3;
+    for i in 0..template_lines {
+        let line_type: u8 = rng.random_range(0..10);
+        let content = generate_vue_template_line(&mut rng, i);
+        match line_type {
+            0..=1 => lines.push(format!("+{}", content)),
+            2..=3 => lines.push(format!("-{}", content)),
+            _ => lines.push(format!(" {}", content)),
+        }
+    }
+    lines.push(" </template>".to_string());
+
+    // Script section
+    lines.push(format!(
+        "@@ -{},{} +{},{} @@",
+        template_lines, 50, template_lines, 50
+    ));
+    lines.push(" <script lang=\"ts\">".to_string());
+
+    let script_lines = line_count / 3;
+    for i in 0..script_lines {
+        let line_type: u8 = rng.random_range(0..10);
+        let content = generate_typescript_line(&mut rng, i);
+        match line_type {
+            0..=1 => lines.push(format!("+{}", content)),
+            2..=3 => lines.push(format!("-{}", content)),
+            _ => lines.push(format!(" {}", content)),
+        }
+    }
+    lines.push(" </script>".to_string());
+
+    // Style section
+    lines.push(format!(
+        "@@ -{},{} +{},{} @@",
+        template_lines + script_lines,
+        30,
+        template_lines + script_lines,
+        30
+    ));
+    lines.push(" <style scoped>".to_string());
+
+    let remaining = line_count.saturating_sub(lines.len());
+    for i in 0..remaining {
+        let line_type: u8 = rng.random_range(0..10);
+        let content = generate_css_line(&mut rng, i);
+        match line_type {
+            0..=1 => lines.push(format!("+{}", content)),
+            2..=3 => lines.push(format!("-{}", content)),
+            _ => lines.push(format!(" {}", content)),
+        }
+    }
+    lines.push(" </style>".to_string());
+
+    lines.join("\n")
+}
+
+fn generate_vue_template_line(rng: &mut ChaCha8Rng, _line_num: usize) -> String {
+    let templates = [
+        "  <div class=\"container\">",
+        "  </div>",
+        "  <button @click=\"handleClick\">Click me</button>",
+        "  <input v-model=\"value\" type=\"text\" />",
+        "  <span>{{ message }}</span>",
+        "  <component :is=\"dynamicComponent\" />",
+        "  <ul><li v-for=\"item in items\" :key=\"item.id\">{{ item.name }}</li></ul>",
+        "  <p v-if=\"show\">Conditional content</p>",
+        "  <slot name=\"header\"></slot>",
+        "  <template #footer>Footer content</template>",
+    ];
+    let idx = rng.random_range(0..templates.len());
+    templates[idx].to_string()
+}
+
+fn generate_css_line(rng: &mut ChaCha8Rng, _line_num: usize) -> String {
+    let templates = [
+        ".container { display: flex; }",
+        ".button { padding: 8px 16px; }",
+        "  color: #333;",
+        "  background-color: white;",
+        "  border-radius: 4px;",
+        "  font-size: 14px;",
+        "@media (max-width: 768px) {",
+        "}",
+        ".active { opacity: 1; }",
+        "  transition: all 0.3s ease;",
+    ];
+    let idx = rng.random_range(0..templates.len());
+    templates[idx].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
