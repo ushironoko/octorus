@@ -245,6 +245,17 @@ fn build_lines_with_syntect(
     let theme = get_theme(theme_name);
     let mut highlighter = syntax.map(|s| HighlightLines::new(s, theme));
 
+    // For Vue files, prime the highlighter by processing a virtual <script> tag.
+    // This puts syntect into JavaScript mode so that code outside the actual
+    // <script> tag (which may not be included in the diff hunk) gets highlighted.
+    if filename.ends_with(".vue") {
+        if let Some(ref mut hl) = highlighter {
+            let ss = two_face::syntax::extra_newlines();
+            // Process virtual script tag to enter JavaScript mode
+            let _ = hl.highlight_line("<script lang=\"ts\">\n", &ss);
+        }
+    }
+
     patch
         .lines()
         .enumerate()

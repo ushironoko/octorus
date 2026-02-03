@@ -617,6 +617,61 @@ mod tests {
     }
 
     #[test]
+    fn test_vue_primed_highlighting() {
+        use syntect::easy::HighlightLines;
+        use syntect::highlighting::Color;
+
+        let tf_ss = two_face::syntax::extra_newlines();
+        let syntax = tf_ss.find_syntax_by_extension("vue").unwrap();
+        let theme = crate::syntax::get_theme("Dracula");
+
+        // Test with priming (our fix)
+        let mut hl = HighlightLines::new(syntax, theme);
+        // Prime with virtual <script> tag
+        let _ = hl.highlight_line("<script lang=\"ts\">\n", &tf_ss);
+
+        // Now highlight code without actual <script> tag in diff
+        let regions = hl
+            .highlight_line("const onClickPageName = () => {\n", &tf_ss)
+            .unwrap();
+
+        // Find the "const" token
+        let const_region = regions.iter().find(|(_, text)| *text == "const");
+        assert!(const_region.is_some(), "Should find 'const' token");
+
+        // Dracula cyan is approximately (139, 233, 253)
+        let (style, _) = const_region.unwrap();
+        let Color { r, g, b, .. } = style.foreground;
+        assert!(
+            r < 200 && g > 200 && b > 200,
+            "const should be cyan-ish, got ({}, {}, {})",
+            r,
+            g,
+            b
+        );
+
+        // Find the function name
+        let func_region = regions
+            .iter()
+            .find(|(_, text)| *text == "onClickPageName");
+        assert!(
+            func_region.is_some(),
+            "Should find 'onClickPageName' token"
+        );
+
+        // Dracula green is approximately (80, 250, 123)
+        let (style, _) = func_region.unwrap();
+        let Color { r, g, b, .. } = style.foreground;
+        assert!(
+            r < 150 && g > 200 && b < 200,
+            "onClickPageName should be green-ish, got ({}, {}, {})",
+            r,
+            g,
+            b
+        );
+    }
+
+    #[test]
     fn test_typescript_function_highlighting() {
         use crate::syntax::get_theme;
         use crate::syntax::themes::ThemeStyleCache;
