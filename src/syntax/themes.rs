@@ -162,10 +162,7 @@ fn find_style_for_scope(scope_str: &str, theme: &Theme) -> Option<Style> {
 }
 
 /// Convert a syntect StyleModifier to a ratatui Style.
-fn convert_theme_style(
-    style_mod: &syntect::highlighting::StyleModifier,
-    theme: &Theme,
-) -> Style {
+fn convert_theme_style(style_mod: &syntect::highlighting::StyleModifier, theme: &Theme) -> Style {
     let mut style = Style::default();
 
     // Apply foreground color (fall back to theme's default foreground)

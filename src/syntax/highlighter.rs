@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use lasso::Rodeo;
 use ratatui::style::Style;
-use syntect::easy::HighlightLines;
 use std::sync::OnceLock;
+use syntect::easy::HighlightLines;
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::app::InternedSpan;
@@ -537,9 +537,7 @@ mod tests {
         let spans = apply_line_highlights(line, captures, &mut interner);
 
         // "fn" should have Dracula pink color (keyword)
-        let fn_span = spans
-            .iter()
-            .find(|s| interner.resolve(&s.content) == "fn");
+        let fn_span = spans.iter().find(|s| interner.resolve(&s.content) == "fn");
         assert!(fn_span.is_some(), "Should have 'fn' span");
 
         let fn_style = fn_span.unwrap().style;
@@ -556,10 +554,7 @@ mod tests {
                 );
             }
             other => {
-                panic!(
-                    "Expected Rgb color for 'fn' keyword, got {:?}",
-                    other
-                );
+                panic!("Expected Rgb color for 'fn' keyword, got {:?}", other);
             }
         }
     }
@@ -596,9 +591,7 @@ mod tests {
         let spans = apply_line_highlights(line, captures, &mut interner);
 
         // "use" should have Dracula pink color (keyword)
-        let use_span = spans
-            .iter()
-            .find(|s| interner.resolve(&s.content) == "use");
+        let use_span = spans.iter().find(|s| interner.resolve(&s.content) == "use");
         assert!(use_span.is_some(), "Should have 'use' span");
 
         let use_style = use_span.unwrap().style;
@@ -651,13 +644,8 @@ mod tests {
         );
 
         // Find the function name
-        let func_region = regions
-            .iter()
-            .find(|(_, text)| *text == "onClickPageName");
-        assert!(
-            func_region.is_some(),
-            "Should find 'onClickPageName' token"
-        );
+        let func_region = regions.iter().find(|(_, text)| *text == "onClickPageName");
+        assert!(func_region.is_some(), "Should find 'onClickPageName' token");
 
         // Dracula green is approximately (80, 250, 123)
         let (style, _) = func_region.unwrap();
