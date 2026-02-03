@@ -73,6 +73,8 @@ pub fn build_diff_cache(
         );
         build_lines_with_cst(
             patch,
+            filename,
+            theme_name,
             comment_lines,
             &line_highlights,
             &line_mapping,
@@ -129,15 +131,21 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
 /// Build cached lines using CST highlighting.
 ///
 /// Uses pre-computed line highlights to avoid per-line tree traversal.
+/// Removed lines (which are excluded from CST source for valid syntax) are
+/// highlighted using syntect as a fallback to maintain syntax coloring.
 ///
 /// # Arguments
 /// * `patch` - The original diff patch
+/// * `filename` - The filename for syntect fallback highlighting
+/// * `theme_name` - The theme name for syntect fallback highlighting
 /// * `comment_lines` - Set of line indices with comments
 /// * `line_highlights` - Pre-computed highlights from tree-sitter (indexed by source line)
 /// * `line_mapping` - Mapping from source line index to (diff line index, line type)
 /// * `interner` - String interner for deduplication
 fn build_lines_with_cst(
     patch: &str,
+    filename: &str,
+    theme_name: &str,
     comment_lines: &HashSet<usize>,
     line_highlights: &crate::syntax::LineHighlights,
     line_mapping: &[(usize, LineType)],
@@ -150,6 +158,12 @@ fn build_lines_with_cst(
     for (source_idx, (diff_idx, _)) in line_mapping.iter().enumerate() {
         diff_to_source.insert(*diff_idx, source_idx);
     }
+
+    // Create syntect highlighter for removed lines (they're not in CST source)
+    // This is needed because removed lines are excluded from CST to maintain valid syntax
+    let syntax = syntax_for_file(filename);
+    let theme = get_theme(theme_name);
+    let mut syntect_highlighter = syntax.map(|s| HighlightLines::new(s, theme));
 
     patch
         .lines()
@@ -199,16 +213,18 @@ fn build_lines_with_cst(
                 }
                 LineType::Removed => {
                     // Removed lines are NOT in the CST source (to preserve valid syntax)
-                    // Fall back to plain styling with red color
+                    // Use syntect to apply syntax highlighting (fallback)
                     let marker = InternedSpan {
                         content: interner.get_or_intern("-"),
                         style: Style::default().fg(Color::Red),
                     };
-                    let code = InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default().fg(Color::Red),
-                    };
-                    vec![marker, code]
+                    let code_spans = highlight_or_fallback(
+                        content,
+                        &mut syntect_highlighter,
+                        Color::Red,
+                        interner,
+                    );
+                    std::iter::once(marker).chain(code_spans).collect()
                 }
             };
 
@@ -958,7 +974,13 @@ mod tests {
 
         let mut parser_pool = ParserPool::new();
         let comment_lines = HashSet::new();
-        let cache = build_diff_cache(patch, "test.rs", "Dracula", &comment_lines, &mut parser_pool);
+        let cache = build_diff_cache(
+            patch,
+            "test.rs",
+            "Dracula",
+            &comment_lines,
+            &mut parser_pool,
+        );
 
         // Line 1 is " use std::collections::HashMap;" (Context line)
         // Find the "use" keyword span
@@ -983,6 +1005,133 @@ mod tests {
             other => {
                 panic!("Expected Rgb color for 'use' keyword, got {:?}", other);
             }
+        }
+    }
+
+    #[test]
+    fn test_removed_lines_have_syntax_highlighting_in_cst_path() {
+        use ratatui::style::Color;
+
+        // This patch includes removed lines that should be syntax highlighted
+        // even when CST (tree-sitter) is used for added/context lines
+        let patch = r#"@@ -1,5 +1,5 @@
+ use std::collections::HashMap;
+
+ fn main() {
+-    let old_value = 100;
++    let new_value = 200;
+ }"#;
+
+        let mut parser_pool = ParserPool::new();
+        let comment_lines = HashSet::new();
+        let cache = build_diff_cache(
+            patch,
+            "test.rs",
+            "Dracula",
+            &comment_lines,
+            &mut parser_pool,
+        );
+
+        // Line 4 is "-    let old_value = 100;" (Removed line)
+        // Find the "let" keyword span - it should be syntax highlighted, not plain red
+        let removed_line = &cache.lines[4];
+
+        // First span should be the "-" marker
+        assert_eq!(cache.resolve(removed_line.spans[0].content), "-");
+
+        // Find the "let" keyword in the removed line
+        let let_span = removed_line
+            .spans
+            .iter()
+            .find(|s| cache.resolve(s.content) == "let");
+        assert!(
+            let_span.is_some(),
+            "Removed line should have 'let' span with syntax highlighting"
+        );
+
+        let let_style = let_span.unwrap().style;
+
+        // "let" should have syntax highlighting (Dracula cyan for keywords)
+        // NOT plain red (Color::Red)
+        match let_style.fg {
+            Some(Color::Red) => {
+                panic!(
+                    "'let' in removed line has plain red color. \
+                     It should have syntax highlighting (e.g., Dracula cyan)."
+                );
+            }
+            Some(Color::Rgb(r, g, b)) => {
+                // Should be some syntax color (not pure red 255,0,0)
+                assert!(
+                    !(r == 255 && g == 0 && b == 0),
+                    "'let' should have syntax highlighting, not plain red"
+                );
+            }
+            None => {
+                panic!("'let' in removed line should have a foreground color");
+            }
+            _ => {
+                // Other colors are acceptable (theme-dependent)
+            }
+        }
+    }
+
+    #[test]
+    fn test_removed_lines_typescript_highlighting() {
+        use ratatui::style::Color;
+
+        let patch = r#"@@ -1,3 +1,3 @@
+-const oldValue = 42;
++const newValue = 100;
+ export default oldValue;"#;
+
+        let mut parser_pool = ParserPool::new();
+        let comment_lines = HashSet::new();
+        let cache = build_diff_cache(
+            patch,
+            "test.ts",
+            "Dracula",
+            &comment_lines,
+            &mut parser_pool,
+        );
+
+        // Line 1 is "-const oldValue = 42;" (Removed line)
+        let removed_line = &cache.lines[1];
+
+        // Find the "const" keyword in the removed line
+        let const_span = removed_line
+            .spans
+            .iter()
+            .find(|s| cache.resolve(s.content) == "const");
+        assert!(
+            const_span.is_some(),
+            "Removed TypeScript line should have 'const' span with syntax highlighting"
+        );
+
+        let const_style = const_span.unwrap().style;
+
+        // "const" should be syntax highlighted, not plain red
+        match const_style.fg {
+            Some(Color::Red) => {
+                panic!(
+                    "'const' in removed TypeScript line has plain red color. \
+                     It should have syntax highlighting."
+                );
+            }
+            Some(Color::Rgb(r, g, b)) => {
+                // Should be some syntax color (Dracula cyan is approximately (139, 233, 253))
+                assert!(
+                    !(r == 255 && g == 0 && b == 0),
+                    "'const' should have syntax highlighting, not plain red. Got Rgb({}, {}, {})",
+                    r,
+                    g,
+                    b
+                );
+            }
+            None => {
+                panic!("'const' in removed line should have a foreground color");
+            }
+            _ => {}
         }
     }
 }
