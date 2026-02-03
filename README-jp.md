@@ -59,8 +59,8 @@ or
 # 3. 特定の PR を開く
 or --repo owner/repo --pr 123
 
-# 4. AI Rally を直接開始
-or --pr 123 --ai-rally
+# 4. AI Rally を開始（PR 選択後に自動開始）
+or --ai-rally
 ```
 
 ### オプション

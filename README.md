@@ -59,8 +59,8 @@ or
 # 3. Open specific PR
 or --repo owner/repo --pr 123
 
-# 4. Start AI Rally directly on a PR
-or --pr 123 --ai-rally
+# 4. Start AI Rally (select PR from list, then auto-start)
+or --ai-rally
 ```
 
 ### Options
