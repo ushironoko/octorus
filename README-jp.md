@@ -50,6 +50,10 @@ cp target/release/or ~/.local/bin/
 ## 使い方
 
 ```bash
+# 現在のリポジトリの PR 一覧を開く（git remote から自動検出）
+or
+
+# 特定の PR を開く
 or --repo owner/repo --pr 123
 ```
 

@@ -50,6 +50,10 @@ cp target/release/or ~/.local/bin/
 ## Usage
 
 ```bash
+# Open PR list for current repository (auto-detected from git remote)
+or
+
+# Open specific PR
 or --repo owner/repo --pr 123
 ```
 
