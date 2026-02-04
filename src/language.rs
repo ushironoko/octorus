@@ -20,6 +20,15 @@ pub enum SupportedLanguage {
     JavaScriptReact,
     Go,
     Python,
+    // New languages
+    Ruby,
+    Zig,
+    C,
+    /// C++
+    Cpp,
+    Java,
+    CSharp,
+    MoonBit,
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -34,6 +43,24 @@ static TYPESCRIPT_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
         tree_sitter_typescript::HIGHLIGHTS_QUERY
     )
 });
+
+/// Combined C++ highlights query (C base + C++-specific).
+///
+/// C++'s HIGHLIGHT_QUERY only contains C++-specific patterns (class, virtual, etc.)
+/// and expects to inherit C patterns. We combine them here for complete highlighting.
+static CPP_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\n{}",
+        tree_sitter_c::HIGHLIGHT_QUERY,
+        tree_sitter_cpp::HIGHLIGHT_QUERY
+    )
+});
+
+/// MoonBit highlights query (bundled as tree-sitter-moonbit doesn't export it).
+const MOONBIT_HIGHLIGHTS_QUERY: &str = include_str!("queries/moonbit/highlights.scm");
+
+/// C# highlights query (bundled as tree-sitter-c-sharp doesn't export it).
+const CSHARP_HIGHLIGHTS_QUERY: &str = include_str!("queries/c_sharp/highlights.scm");
 
 /// All definition prefixes from all supported languages, deduplicated.
 static ALL_DEFINITION_PREFIXES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
@@ -74,6 +101,20 @@ impl SupportedLanguage {
             "jsx" => Some(Self::JavaScriptReact),
             "go" => Some(Self::Go),
             "py" => Some(Self::Python),
+            // Ruby
+            "rb" | "rake" | "gemspec" => Some(Self::Ruby),
+            // Zig
+            "zig" => Some(Self::Zig),
+            // C (including .h - plain C headers commonly use C11/gnu extensions)
+            "c" | "h" => Some(Self::C),
+            // C++ (explicit C++ headers and source files)
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Self::Cpp),
+            // Java
+            "java" => Some(Self::Java),
+            // C#
+            "cs" => Some(Self::CSharp),
+            // MoonBit
+            "mbt" => Some(Self::MoonBit),
             _ => None,
         }
     }
@@ -92,6 +133,13 @@ impl SupportedLanguage {
             Self::JavaScript | Self::JavaScriptReact => tree_sitter_javascript::LANGUAGE.into(),
             Self::Go => tree_sitter_go::LANGUAGE.into(),
             Self::Python => tree_sitter_python::LANGUAGE.into(),
+            Self::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            Self::Zig => tree_sitter_zig::LANGUAGE.into(),
+            Self::C => tree_sitter_c::LANGUAGE.into(),
+            Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Self::Java => tree_sitter_java::LANGUAGE.into(),
+            Self::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            Self::MoonBit => tree_sitter_moonbit::LANGUAGE.into(),
         }
     }
 
@@ -100,6 +148,12 @@ impl SupportedLanguage {
     /// For TypeScript/TSX, this returns a combined query including JavaScript
     /// patterns, since tree-sitter-typescript's query only contains TS-specific
     /// additions.
+    ///
+    /// For C++, this returns a combined query including C patterns, since
+    /// tree-sitter-cpp's query only contains C++-specific additions.
+    ///
+    /// For MoonBit and C#, we bundle our own highlights query as the upstream
+    /// crates don't export them.
     pub fn highlights_query(&self) -> &'static str {
         match self {
             Self::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
@@ -111,6 +165,17 @@ impl SupportedLanguage {
             Self::JavaScript | Self::JavaScriptReact => tree_sitter_javascript::HIGHLIGHT_QUERY,
             Self::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
             Self::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
+            Self::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY,
+            Self::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY,
+            Self::C => tree_sitter_c::HIGHLIGHT_QUERY,
+            Self::Cpp => {
+                // SAFETY: LazyLock ensures the string is initialized once and lives
+                // for the duration of the program
+                CPP_COMBINED_QUERY.as_str()
+            }
+            Self::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
+            Self::CSharp => CSHARP_HIGHLIGHTS_QUERY,
+            Self::MoonBit => MOONBIT_HIGHLIGHTS_QUERY,
         }
     }
 
@@ -157,6 +222,50 @@ impl SupportedLanguage {
             }
             Self::Python => &["def ", "class "],
             Self::Go => &["func ", "type ", "var "],
+            Self::Ruby => &[
+                "def ",
+                "class ",
+                "module ",
+                "attr_reader ",
+                "attr_writer ",
+                "attr_accessor ",
+            ],
+            Self::Zig => &[
+                "fn ", "pub fn ", "const ", "var ", "struct ", "enum ", "union ",
+            ],
+            Self::C => &["void ", "int ", "char ", "struct ", "enum ", "typedef "],
+            Self::Cpp => &[
+                "void ",
+                "int ",
+                "char ",
+                "struct ",
+                "enum ",
+                "typedef ",
+                "class ",
+                "namespace ",
+                "template ",
+                "virtual ",
+            ],
+            Self::Java => &[
+                "public ",
+                "private ",
+                "protected ",
+                "class ",
+                "interface ",
+                "enum ",
+                "void ",
+            ],
+            Self::CSharp => &[
+                "public ",
+                "private ",
+                "protected ",
+                "class ",
+                "interface ",
+                "struct ",
+                "enum ",
+                "void ",
+            ],
+            Self::MoonBit => &["fn ", "pub fn ", "struct ", "enum ", "type ", "trait "],
         }
     }
 
@@ -245,6 +354,327 @@ impl SupportedLanguage {
                 "false",
                 "nil",
             ],
+            Self::Ruby => &[
+                "def",
+                "class",
+                "module",
+                "end",
+                "if",
+                "else",
+                "elsif",
+                "unless",
+                "case",
+                "when",
+                "while",
+                "until",
+                "for",
+                "do",
+                "begin",
+                "rescue",
+                "ensure",
+                "raise",
+                "return",
+                "break",
+                "next",
+                "redo",
+                "retry",
+                "yield",
+                "self",
+                "super",
+                "nil",
+                "true",
+                "false",
+                "and",
+                "or",
+                "not",
+                "in",
+                "then",
+                "alias",
+                "defined",
+                "BEGIN",
+                "END",
+                "__FILE__",
+                "__LINE__",
+                "__ENCODING__",
+                "attr_reader",
+                "attr_writer",
+                "attr_accessor",
+                "private",
+                "protected",
+                "public",
+                "require",
+                "require_relative",
+                "include",
+                "extend",
+                "prepend",
+            ],
+            Self::Zig => &[
+                "fn",
+                "pub",
+                "const",
+                "var",
+                "struct",
+                "enum",
+                "union",
+                "if",
+                "else",
+                "switch",
+                "while",
+                "for",
+                "break",
+                "continue",
+                "return",
+                "defer",
+                "errdefer",
+                "unreachable",
+                "try",
+                "catch",
+                "orelse",
+                "and",
+                "or",
+                "comptime",
+                "inline",
+                "noalias",
+                "volatile",
+                "extern",
+                "export",
+                "align",
+                "packed",
+                "linksection",
+                "threadlocal",
+                "allowzero",
+                "anytype",
+                "anyframe",
+                "null",
+                "undefined",
+                "true",
+                "false",
+                "error",
+                "test",
+            ],
+            Self::C => &[
+                "void", "int", "char", "short", "long", "float", "double", "signed", "unsigned",
+                "struct", "union", "enum", "typedef", "const", "static", "extern", "register",
+                "volatile", "auto", "inline", "restrict", "if", "else", "switch", "case",
+                "default", "while", "do", "for", "break", "continue", "return", "goto", "sizeof",
+                "NULL", "true", "false",
+            ],
+            Self::Cpp => &[
+                "void",
+                "int",
+                "char",
+                "short",
+                "long",
+                "float",
+                "double",
+                "signed",
+                "unsigned",
+                "struct",
+                "union",
+                "enum",
+                "typedef",
+                "const",
+                "static",
+                "extern",
+                "register",
+                "volatile",
+                "auto",
+                "inline",
+                "restrict",
+                "if",
+                "else",
+                "switch",
+                "case",
+                "default",
+                "while",
+                "do",
+                "for",
+                "break",
+                "continue",
+                "return",
+                "goto",
+                "sizeof",
+                "NULL",
+                "true",
+                "false",
+                "class",
+                "public",
+                "private",
+                "protected",
+                "virtual",
+                "override",
+                "final",
+                "new",
+                "delete",
+                "this",
+                "throw",
+                "try",
+                "catch",
+                "template",
+                "typename",
+                "namespace",
+                "using",
+                "operator",
+                "friend",
+                "explicit",
+                "mutable",
+                "constexpr",
+                "nullptr",
+                "noexcept",
+                "decltype",
+                "static_cast",
+                "dynamic_cast",
+                "const_cast",
+                "reinterpret_cast",
+                "co_await",
+                "co_yield",
+                "co_return",
+                "concept",
+                "requires",
+                "export",
+                "import",
+                "module",
+            ],
+            Self::Java => &[
+                "public",
+                "private",
+                "protected",
+                "class",
+                "interface",
+                "enum",
+                "extends",
+                "implements",
+                "abstract",
+                "final",
+                "static",
+                "void",
+                "int",
+                "long",
+                "short",
+                "byte",
+                "char",
+                "float",
+                "double",
+                "boolean",
+                "if",
+                "else",
+                "switch",
+                "case",
+                "default",
+                "while",
+                "do",
+                "for",
+                "break",
+                "continue",
+                "return",
+                "throw",
+                "try",
+                "catch",
+                "finally",
+                "new",
+                "this",
+                "super",
+                "null",
+                "true",
+                "false",
+                "instanceof",
+                "import",
+                "package",
+                "native",
+                "synchronized",
+                "transient",
+                "volatile",
+                "strictfp",
+                "assert",
+                "throws",
+                "var",
+                "record",
+                "sealed",
+                "permits",
+                "non-sealed",
+                "yield",
+            ],
+            Self::CSharp => &[
+                "public",
+                "private",
+                "protected",
+                "internal",
+                "class",
+                "interface",
+                "struct",
+                "enum",
+                "namespace",
+                "using",
+                "abstract",
+                "sealed",
+                "static",
+                "readonly",
+                "const",
+                "virtual",
+                "override",
+                "new",
+                "void",
+                "int",
+                "long",
+                "short",
+                "byte",
+                "char",
+                "float",
+                "double",
+                "decimal",
+                "bool",
+                "string",
+                "object",
+                "var",
+                "dynamic",
+                "if",
+                "else",
+                "switch",
+                "case",
+                "default",
+                "while",
+                "do",
+                "for",
+                "foreach",
+                "in",
+                "break",
+                "continue",
+                "return",
+                "throw",
+                "try",
+                "catch",
+                "finally",
+                "null",
+                "true",
+                "false",
+                "this",
+                "base",
+                "typeof",
+                "sizeof",
+                "is",
+                "as",
+                "ref",
+                "out",
+                "params",
+                "async",
+                "await",
+                "lock",
+                "yield",
+                "get",
+                "set",
+                "init",
+                "value",
+                "where",
+                "when",
+                "record",
+                "with",
+            ],
+            Self::MoonBit => &[
+                "fn", "pub", "let", "mut", "const", "struct", "enum", "type", "trait", "impl",
+                "match", "if", "else", "while", "for", "loop", "break", "continue", "return",
+                "try", "raise", "catch", "derive", "test", "async", "guard", "with", "as", "is",
+                "in", "import", "package", "true", "false", "self", "Self",
+            ],
         }
     }
 
@@ -272,6 +702,13 @@ impl SupportedLanguage {
             Self::JavaScriptReact,
             Self::Go,
             Self::Python,
+            Self::Ruby,
+            Self::Zig,
+            Self::C,
+            Self::Cpp,
+            Self::Java,
+            Self::CSharp,
+            Self::MoonBit,
         ]
         .into_iter()
     }
@@ -314,6 +751,81 @@ mod tests {
     }
 
     #[test]
+    fn test_from_extension_new_languages() {
+        // Ruby
+        assert_eq!(
+            SupportedLanguage::from_extension("rb"),
+            Some(SupportedLanguage::Ruby)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("rake"),
+            Some(SupportedLanguage::Ruby)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("gemspec"),
+            Some(SupportedLanguage::Ruby)
+        );
+
+        // Zig
+        assert_eq!(
+            SupportedLanguage::from_extension("zig"),
+            Some(SupportedLanguage::Zig)
+        );
+
+        // C
+        assert_eq!(
+            SupportedLanguage::from_extension("c"),
+            Some(SupportedLanguage::C)
+        );
+
+        // C header files (.h) are treated as C (supports C11/gnu extensions)
+        assert_eq!(
+            SupportedLanguage::from_extension("h"),
+            Some(SupportedLanguage::C)
+        );
+
+        // C++ (explicit C++ headers and source files)
+        assert_eq!(
+            SupportedLanguage::from_extension("cpp"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("cc"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("cxx"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("hpp"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("hxx"),
+            Some(SupportedLanguage::Cpp)
+        );
+
+        // Java
+        assert_eq!(
+            SupportedLanguage::from_extension("java"),
+            Some(SupportedLanguage::Java)
+        );
+
+        // C#
+        assert_eq!(
+            SupportedLanguage::from_extension("cs"),
+            Some(SupportedLanguage::CSharp)
+        );
+
+        // MoonBit
+        assert_eq!(
+            SupportedLanguage::from_extension("mbt"),
+            Some(SupportedLanguage::MoonBit)
+        );
+    }
+
+    #[test]
     fn test_from_extension_unsupported() {
         assert_eq!(SupportedLanguage::from_extension("vue"), None);
         assert_eq!(SupportedLanguage::from_extension("yaml"), None);
@@ -331,6 +843,17 @@ mod tests {
         assert!(SupportedLanguage::is_supported("jsx"));
         assert!(SupportedLanguage::is_supported("go"));
         assert!(SupportedLanguage::is_supported("py"));
+
+        // New languages
+        assert!(SupportedLanguage::is_supported("rb"));
+        assert!(SupportedLanguage::is_supported("zig"));
+        assert!(SupportedLanguage::is_supported("c"));
+        assert!(SupportedLanguage::is_supported("cpp"));
+        // .h is now treated as C (not C++)
+        assert!(SupportedLanguage::is_supported("h"));
+        assert!(SupportedLanguage::is_supported("java"));
+        assert!(SupportedLanguage::is_supported("cs"));
+        assert!(SupportedLanguage::is_supported("mbt"));
 
         assert!(!SupportedLanguage::is_supported("vue"));
         assert!(!SupportedLanguage::is_supported("yaml"));
@@ -360,6 +883,22 @@ mod tests {
     }
 
     #[test]
+    fn test_highlights_query_parses_correctly() {
+        // Verify each highlights query can be parsed by tree-sitter
+        for lang in SupportedLanguage::all() {
+            let ts_lang = lang.ts_language();
+            let query_str = lang.highlights_query();
+            let result = tree_sitter::Query::new(&ts_lang, query_str);
+            assert!(
+                result.is_ok(),
+                "{:?} highlights query should parse correctly: {:?}",
+                lang,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
     fn test_typescript_combined_query() {
         let query = SupportedLanguage::TypeScript.highlights_query();
         // Should contain JavaScript patterns
@@ -372,6 +911,21 @@ mod tests {
         assert!(
             query.len() > tree_sitter_javascript::HIGHLIGHT_QUERY.len(),
             "Combined query should be longer than JavaScript-only query"
+        );
+    }
+
+    #[test]
+    fn test_cpp_combined_query() {
+        let query = SupportedLanguage::Cpp.highlights_query();
+        // Should contain C patterns (like struct)
+        assert!(
+            query.contains("struct"),
+            "C++ query should include C patterns"
+        );
+        // Should also contain C++-specific patterns
+        assert!(
+            query.len() > tree_sitter_c::HIGHLIGHT_QUERY.len(),
+            "Combined C++ query should be longer than C-only query"
         );
     }
 
@@ -426,8 +980,20 @@ mod tests {
             prefixes.contains(&"function "),
             "Should contain JS 'function '"
         );
-        assert!(prefixes.contains(&"def "), "Should contain Python 'def '");
+        assert!(
+            prefixes.contains(&"def "),
+            "Should contain Python/Ruby 'def '"
+        );
         assert!(prefixes.contains(&"func "), "Should contain Go 'func '");
+        // New languages
+        assert!(
+            prefixes.contains(&"module "),
+            "Should contain Ruby 'module '"
+        );
+        assert!(
+            prefixes.contains(&"class "),
+            "Should contain C++/Java/C# 'class '"
+        );
     }
 
     #[test]
@@ -439,14 +1005,27 @@ mod tests {
             keywords.contains(&"function"),
             "Should contain JS 'function'"
         );
-        assert!(keywords.contains(&"def"), "Should contain Python 'def'");
+        assert!(
+            keywords.contains(&"def"),
+            "Should contain Python/Ruby 'def'"
+        );
         assert!(keywords.contains(&"func"), "Should contain Go 'func'");
+        // New languages
+        assert!(keywords.contains(&"module"), "Should contain Ruby 'module'");
+        assert!(
+            keywords.contains(&"namespace"),
+            "Should contain C++/C# 'namespace'"
+        );
+        assert!(
+            keywords.contains(&"trait"),
+            "Should contain MoonBit 'trait'"
+        );
     }
 
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 7);
+        assert_eq!(langs.len(), 14);
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));
@@ -454,6 +1033,14 @@ mod tests {
         assert!(langs.contains(&SupportedLanguage::JavaScriptReact));
         assert!(langs.contains(&SupportedLanguage::Go));
         assert!(langs.contains(&SupportedLanguage::Python));
+        // New languages
+        assert!(langs.contains(&SupportedLanguage::Ruby));
+        assert!(langs.contains(&SupportedLanguage::Zig));
+        assert!(langs.contains(&SupportedLanguage::C));
+        assert!(langs.contains(&SupportedLanguage::Cpp));
+        assert!(langs.contains(&SupportedLanguage::Java));
+        assert!(langs.contains(&SupportedLanguage::CSharp));
+        assert!(langs.contains(&SupportedLanguage::MoonBit));
     }
 
     #[test]
@@ -463,9 +1050,13 @@ mod tests {
         let mut map: HashMap<SupportedLanguage, &str> = HashMap::new();
         map.insert(SupportedLanguage::Rust, "rust");
         map.insert(SupportedLanguage::TypeScript, "typescript");
+        map.insert(SupportedLanguage::Ruby, "ruby");
+        map.insert(SupportedLanguage::MoonBit, "moonbit");
 
         assert_eq!(map.get(&SupportedLanguage::Rust), Some(&"rust"));
         assert_eq!(map.get(&SupportedLanguage::TypeScript), Some(&"typescript"));
+        assert_eq!(map.get(&SupportedLanguage::Ruby), Some(&"ruby"));
+        assert_eq!(map.get(&SupportedLanguage::MoonBit), Some(&"moonbit"));
         assert_eq!(map.get(&SupportedLanguage::Python), None);
     }
 }
