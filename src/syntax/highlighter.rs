@@ -1,6 +1,9 @@
 //! Unified highlighter supporting both tree-sitter and syntect.
 //!
-//! Tree-sitter is used for supported languages (Rust, TypeScript, JavaScript, Go, Python).
+//! Tree-sitter is used for supported languages:
+//! - Rust, TypeScript/TSX, JavaScript/JSX, Go, Python (original)
+//! - Ruby, Zig, C, C++, Java, C#, MoonBit (added)
+//!
 //! Syntect is used as a fallback for other languages (Vue, YAML, Markdown, etc.).
 
 use std::collections::HashMap;

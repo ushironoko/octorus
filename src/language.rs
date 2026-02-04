@@ -24,7 +24,7 @@ pub enum SupportedLanguage {
     Ruby,
     Zig,
     C,
-    /// C++ (also used for header files .h, .hpp, .hxx as C++ is a superset of C)
+    /// C++
     Cpp,
     Java,
     CSharp,
@@ -105,10 +105,10 @@ impl SupportedLanguage {
             "rb" | "rake" | "gemspec" => Some(Self::Ruby),
             // Zig
             "zig" => Some(Self::Zig),
-            // C
-            "c" => Some(Self::C),
-            // C++ (including header files as C++ is a superset of C)
-            "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx" => Some(Self::Cpp),
+            // C (including .h - plain C headers commonly use C11/gnu extensions)
+            "c" | "h" => Some(Self::C),
+            // C++ (explicit C++ headers and source files)
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Self::Cpp),
             // Java
             "java" => Some(Self::Java),
             // C#
@@ -778,7 +778,13 @@ mod tests {
             Some(SupportedLanguage::C)
         );
 
-        // C++
+        // C header files (.h) are treated as C (supports C11/gnu extensions)
+        assert_eq!(
+            SupportedLanguage::from_extension("h"),
+            Some(SupportedLanguage::C)
+        );
+
+        // C++ (explicit C++ headers and source files)
         assert_eq!(
             SupportedLanguage::from_extension("cpp"),
             Some(SupportedLanguage::Cpp)
@@ -789,11 +795,6 @@ mod tests {
         );
         assert_eq!(
             SupportedLanguage::from_extension("cxx"),
-            Some(SupportedLanguage::Cpp)
-        );
-        // Header files are treated as C++ (C++ is a superset of C)
-        assert_eq!(
-            SupportedLanguage::from_extension("h"),
             Some(SupportedLanguage::Cpp)
         );
         assert_eq!(
@@ -848,6 +849,7 @@ mod tests {
         assert!(SupportedLanguage::is_supported("zig"));
         assert!(SupportedLanguage::is_supported("c"));
         assert!(SupportedLanguage::is_supported("cpp"));
+        // .h is now treated as C (not C++)
         assert!(SupportedLanguage::is_supported("h"));
         assert!(SupportedLanguage::is_supported("java"));
         assert!(SupportedLanguage::is_supported("cs"));

@@ -98,6 +98,56 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_pool_ruby() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("rb").is_some());
+        assert!(pool.get_or_create("rake").is_some());
+        assert!(pool.get_or_create("gemspec").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_zig() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("zig").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_c() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("c").is_some());
+        // .h files are treated as C
+        assert!(pool.get_or_create("h").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_cpp() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("cpp").is_some());
+        assert!(pool.get_or_create("cc").is_some());
+        assert!(pool.get_or_create("cxx").is_some());
+        assert!(pool.get_or_create("hpp").is_some());
+        assert!(pool.get_or_create("hxx").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_java() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("java").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_csharp() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("cs").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_moonbit() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("mbt").is_some());
+    }
+
+    #[test]
     fn test_parser_pool_unsupported() {
         let mut pool = ParserPool::new();
         assert!(pool.get_or_create("vue").is_none());
