@@ -698,11 +698,12 @@ mod tests {
 
     #[test]
     fn test_extract_all_identifiers_skips_keywords() {
-        let ids = extract_all_identifiers("pub fn process(data: String) -> Result<()> {");
+        let ids = extract_all_identifiers("pub fn process(input: String) -> Result<()> {");
         let names: Vec<&str> = ids.iter().map(|(w, _, _)| w.as_str()).collect();
-        // "pub", "fn" are keywords; "process", "data", "String", "Result" are identifiers
+        // "pub", "fn" are keywords; "process", "input", "String", "Result" are identifiers
+        // Note: "data" is a Haskell keyword, "value" is a Swift keyword
         assert!(names.contains(&"process"));
-        assert!(names.contains(&"data"));
+        assert!(names.contains(&"input"));
         assert!(names.contains(&"String"));
         assert!(names.contains(&"Result"));
         assert!(!names.contains(&"pub"));

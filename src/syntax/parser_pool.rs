@@ -142,6 +142,45 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_pool_lua() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("lua").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_bash() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("sh").is_some());
+        assert!(pool.get_or_create("bash").is_some());
+        assert!(pool.get_or_create("zsh").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_php() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("php").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_swift() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("swift").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_haskell() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("hs").is_some());
+        assert!(pool.get_or_create("lhs").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_svelte() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("svelte").is_some());
+    }
+
+    #[test]
     fn test_parser_pool_unsupported() {
         let mut pool = ParserPool::new();
         assert!(pool.get_or_create("vue").is_none());
@@ -151,6 +190,7 @@ mod tests {
 
     #[test]
     fn test_supports_extension() {
+        // Original languages
         assert!(ParserPool::supports_extension("rs"));
         assert!(ParserPool::supports_extension("ts"));
         assert!(ParserPool::supports_extension("tsx"));
@@ -158,6 +198,14 @@ mod tests {
         assert!(ParserPool::supports_extension("jsx"));
         assert!(ParserPool::supports_extension("go"));
         assert!(ParserPool::supports_extension("py"));
+
+        // Phase 1 languages
+        assert!(ParserPool::supports_extension("lua"));
+        assert!(ParserPool::supports_extension("sh"));
+        assert!(ParserPool::supports_extension("php"));
+        assert!(ParserPool::supports_extension("swift"));
+        assert!(ParserPool::supports_extension("hs"));
+        assert!(ParserPool::supports_extension("svelte"));
 
         assert!(!ParserPool::supports_extension("vue"));
         assert!(!ParserPool::supports_extension("yaml"));
