@@ -177,6 +177,12 @@ mod tests {
     // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
 
     #[test]
+    fn test_parser_pool_moonbit() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("mbt").is_some());
+    }
+
+    #[test]
     fn test_parser_pool_unsupported() {
         let mut pool = ParserPool::new();
         assert!(pool.get_or_create("vue").is_none());

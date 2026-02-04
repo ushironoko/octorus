@@ -58,6 +58,8 @@ tree-sitter-swift = "0.7.1"
 # tree-sitter-kotlin-ng = "1.1.0"  # TODO: highlights.scm が tree-sitter 互換でない (#lua-match?)
 tree-sitter-haskell = "0.23.1"
 # tree-sitter-svelte-ng = "1.0.2"  # TODO: injection が必要 (syntect にフォールバック)
+# Phase 2: MoonBit (path dependency, not on crates.io)
+tree-sitter-moonbit = { path = "crates/tree-sitter-moonbit" }
 
 [dev-dependencies]
 assert_cmd = "2.1.2"

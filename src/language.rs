@@ -37,6 +37,8 @@ pub enum SupportedLanguage {
     Haskell,
     // Svelte is excluded: tree-sitter-svelte-ng requires injection for <script>/<style> content
     // which octorus doesn't support. Svelte falls back to syntect which provides better highlighting.
+    // Phase 2: MoonBit (path dependency)
+    MoonBit,
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -124,6 +126,8 @@ impl SupportedLanguage {
             "php" => Some(Self::Php),
             "swift" => Some(Self::Swift),
             "hs" | "lhs" => Some(Self::Haskell),
+            // Phase 2: MoonBit
+            "mbt" => Some(Self::MoonBit),
             // Svelte falls back to syntect (better highlighting without injection)
             _ => None,
         }
@@ -155,6 +159,8 @@ impl SupportedLanguage {
             Self::Php => tree_sitter_php::LANGUAGE_PHP.into(),
             Self::Swift => tree_sitter_swift::LANGUAGE.into(),
             Self::Haskell => tree_sitter_haskell::LANGUAGE.into(),
+            // Phase 2: MoonBit
+            Self::MoonBit => tree_sitter_moonbit::LANGUAGE.into(),
         }
     }
 
@@ -196,6 +202,8 @@ impl SupportedLanguage {
             Self::Php => tree_sitter_php::HIGHLIGHTS_QUERY,
             Self::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY,
             Self::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY,
+            // Phase 2: MoonBit
+            Self::MoonBit => tree_sitter_moonbit::HIGHLIGHTS_QUERY,
         }
     }
 
@@ -308,6 +316,21 @@ impl SupportedLanguage {
                 "let ",
             ],
             Self::Haskell => &["data ", "newtype ", "type ", "class ", "instance "],
+            // Phase 2: MoonBit
+            Self::MoonBit => &[
+                "fn ",
+                "pub fn ",
+                "priv fn ",
+                "struct ",
+                "pub struct ",
+                "enum ",
+                "pub enum ",
+                "type ",
+                "pub type ",
+                "trait ",
+                "pub trait ",
+                "let ",
+            ],
         }
     }
 
@@ -939,6 +962,43 @@ impl SupportedLanguage {
                 "True",
                 "False",
             ],
+            // Phase 2: MoonBit
+            Self::MoonBit => &[
+                "fn",
+                "pub",
+                "priv",
+                "let",
+                "mut",
+                "const",
+                "struct",
+                "enum",
+                "type",
+                "trait",
+                "impl",
+                "derive",
+                "test",
+                "if",
+                "else",
+                "match",
+                "for",
+                "while",
+                "loop",
+                "break",
+                "continue",
+                "return",
+                "try",
+                "catch",
+                "throw",
+                "raise",
+                "true",
+                "false",
+                "not",
+                "and",
+                "or",
+                "self",
+                "Self",
+                "init",
+            ],
         }
     }
 
@@ -978,6 +1038,8 @@ impl SupportedLanguage {
             Self::Php,
             Self::Swift,
             Self::Haskell,
+            // Phase 2: MoonBit
+            Self::MoonBit,
         ]
         .into_iter()
     }
@@ -1163,7 +1225,8 @@ mod tests {
         // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
         assert!(!SupportedLanguage::is_supported("svelte"));
         assert!(!SupportedLanguage::is_supported("vue"));
-        assert!(!SupportedLanguage::is_supported("mbt"));
+        // Phase 2: MoonBit is now supported
+        assert!(SupportedLanguage::is_supported("mbt"));
         assert!(!SupportedLanguage::is_supported("yaml"));
         assert!(!SupportedLanguage::is_supported("md"));
     }
@@ -1333,7 +1396,7 @@ mod tests {
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 18);
+        assert_eq!(langs.len(), 19);
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));

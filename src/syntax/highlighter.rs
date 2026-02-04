@@ -4,6 +4,7 @@
 //! - Rust, TypeScript/TSX, JavaScript/JSX, Go, Python (original)
 //! - Ruby, Zig, C, C++, Java, C# (added)
 //! - Lua, Bash/Shell, PHP, Swift, Haskell (Phase 1)
+//! - MoonBit (Phase 2)
 //!
 //! Syntect is used as a fallback for other languages (Vue, Svelte, YAML, Markdown, etc.).
 
