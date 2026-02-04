@@ -50,7 +50,6 @@ tree-sitter-c = "0.24.1"
 tree-sitter-cpp = "0.23.4"
 tree-sitter-java = "0.23.5"
 tree-sitter-c-sharp = "0.23.1"
-tree-sitter-moonbit = { git = "https://github.com/moonbitlang/tree-sitter-moonbit", rev = "28596c53e9bea464d05ef606deeee065e95a2665" }
 
 [dev-dependencies]
 assert_cmd = "2.1.2"

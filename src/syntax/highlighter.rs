@@ -2,7 +2,7 @@
 //!
 //! Tree-sitter is used for supported languages:
 //! - Rust, TypeScript/TSX, JavaScript/JSX, Go, Python (original)
-//! - Ruby, Zig, C, C++, Java, C#, MoonBit (added)
+//! - Ruby, Zig, C, C++, Java, C# (added)
 //!
 //! Syntect is used as a fallback for other languages (Vue, YAML, Markdown, etc.).
 

@@ -1267,7 +1267,6 @@ dependencies = [
  "tree-sitter-go",
  "tree-sitter-java",
  "tree-sitter-javascript",
- "tree-sitter-moonbit",
  "tree-sitter-python",
  "tree-sitter-ruby",
  "tree-sitter-rust",
@@ -2497,15 +2496,6 @@ name = "tree-sitter-language"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ae62f7eae5eb549c71b76658648b72cc6111f2d87d24a1e31fa907f4943e3ce"
-
-[[package]]
-name = "tree-sitter-moonbit"
-version = "0.1.0"
-source = "git+https://github.com/moonbitlang/tree-sitter-moonbit?rev=28596c53e9bea464d05ef606deeee065e95a2665#28596c53e9bea464d05ef606deeee065e95a2665"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
 
 [[package]]
 name = "tree-sitter-python"

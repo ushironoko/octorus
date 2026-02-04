@@ -28,7 +28,6 @@ pub enum SupportedLanguage {
     Cpp,
     Java,
     CSharp,
-    MoonBit,
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -55,9 +54,6 @@ static CPP_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
         tree_sitter_cpp::HIGHLIGHT_QUERY
     )
 });
-
-/// MoonBit highlights query (bundled as tree-sitter-moonbit doesn't export it).
-const MOONBIT_HIGHLIGHTS_QUERY: &str = include_str!("queries/moonbit/highlights.scm");
 
 /// C# highlights query (bundled as tree-sitter-c-sharp doesn't export it).
 const CSHARP_HIGHLIGHTS_QUERY: &str = include_str!("queries/c_sharp/highlights.scm");
@@ -113,8 +109,6 @@ impl SupportedLanguage {
             "java" => Some(Self::Java),
             // C#
             "cs" => Some(Self::CSharp),
-            // MoonBit
-            "mbt" => Some(Self::MoonBit),
             _ => None,
         }
     }
@@ -139,7 +133,6 @@ impl SupportedLanguage {
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Self::Java => tree_sitter_java::LANGUAGE.into(),
             Self::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
-            Self::MoonBit => tree_sitter_moonbit::LANGUAGE.into(),
         }
     }
 
@@ -152,8 +145,8 @@ impl SupportedLanguage {
     /// For C++, this returns a combined query including C patterns, since
     /// tree-sitter-cpp's query only contains C++-specific additions.
     ///
-    /// For MoonBit and C#, we bundle our own highlights query as the upstream
-    /// crates don't export them.
+    /// For C#, we bundle our own highlights query as the upstream crate
+    /// doesn't export it.
     pub fn highlights_query(&self) -> &'static str {
         match self {
             Self::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
@@ -175,7 +168,6 @@ impl SupportedLanguage {
             }
             Self::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
             Self::CSharp => CSHARP_HIGHLIGHTS_QUERY,
-            Self::MoonBit => MOONBIT_HIGHLIGHTS_QUERY,
         }
     }
 
@@ -265,7 +257,6 @@ impl SupportedLanguage {
                 "enum ",
                 "void ",
             ],
-            Self::MoonBit => &["fn ", "pub fn ", "struct ", "enum ", "type ", "trait "],
         }
     }
 
@@ -669,12 +660,6 @@ impl SupportedLanguage {
                 "record",
                 "with",
             ],
-            Self::MoonBit => &[
-                "fn", "pub", "let", "mut", "const", "struct", "enum", "type", "trait", "impl",
-                "match", "if", "else", "while", "for", "loop", "break", "continue", "return",
-                "try", "raise", "catch", "derive", "test", "async", "guard", "with", "as", "is",
-                "in", "import", "package", "true", "false", "self", "Self",
-            ],
         }
     }
 
@@ -708,7 +693,6 @@ impl SupportedLanguage {
             Self::Cpp,
             Self::Java,
             Self::CSharp,
-            Self::MoonBit,
         ]
         .into_iter()
     }
@@ -818,11 +802,6 @@ mod tests {
             Some(SupportedLanguage::CSharp)
         );
 
-        // MoonBit
-        assert_eq!(
-            SupportedLanguage::from_extension("mbt"),
-            Some(SupportedLanguage::MoonBit)
-        );
     }
 
     #[test]
@@ -853,9 +832,9 @@ mod tests {
         assert!(SupportedLanguage::is_supported("h"));
         assert!(SupportedLanguage::is_supported("java"));
         assert!(SupportedLanguage::is_supported("cs"));
-        assert!(SupportedLanguage::is_supported("mbt"));
 
         assert!(!SupportedLanguage::is_supported("vue"));
+        assert!(!SupportedLanguage::is_supported("mbt"));
         assert!(!SupportedLanguage::is_supported("yaml"));
         assert!(!SupportedLanguage::is_supported("md"));
     }
@@ -1018,14 +997,14 @@ mod tests {
         );
         assert!(
             keywords.contains(&"trait"),
-            "Should contain MoonBit 'trait'"
+            "Should contain Rust 'trait'"
         );
     }
 
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 14);
+        assert_eq!(langs.len(), 13);
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));
@@ -1040,7 +1019,6 @@ mod tests {
         assert!(langs.contains(&SupportedLanguage::Cpp));
         assert!(langs.contains(&SupportedLanguage::Java));
         assert!(langs.contains(&SupportedLanguage::CSharp));
-        assert!(langs.contains(&SupportedLanguage::MoonBit));
     }
 
     #[test]
@@ -1051,12 +1029,10 @@ mod tests {
         map.insert(SupportedLanguage::Rust, "rust");
         map.insert(SupportedLanguage::TypeScript, "typescript");
         map.insert(SupportedLanguage::Ruby, "ruby");
-        map.insert(SupportedLanguage::MoonBit, "moonbit");
 
         assert_eq!(map.get(&SupportedLanguage::Rust), Some(&"rust"));
         assert_eq!(map.get(&SupportedLanguage::TypeScript), Some(&"typescript"));
         assert_eq!(map.get(&SupportedLanguage::Ruby), Some(&"ruby"));
-        assert_eq!(map.get(&SupportedLanguage::MoonBit), Some(&"moonbit"));
         assert_eq!(map.get(&SupportedLanguage::Python), None);
     }
 }
