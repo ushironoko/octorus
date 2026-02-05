@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use lasso::Rodeo;
 use ratatui::style::Style;
 use syntect::easy::HighlightLines;
-use tree_sitter::{Language, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::app::InternedSpan;
 use crate::language::SupportedLanguage;
@@ -26,14 +26,13 @@ use super::{convert_syntect_style, get_theme, syntax_for_file, syntax_set};
 ///
 /// This type does not hold any mutable references to `ParserPool`, allowing
 /// the pool to be borrowed again during injection processing (e.g., for Svelte).
+///
+/// Query compilation is deferred to `ParserPool::get_or_create_query()` for caching.
 pub enum Highlighter {
     /// Tree-sitter CST highlighter for supported languages.
     Cst {
-        /// The supported language (used to look up parser from pool)
+        /// The supported language (used to look up parser/query from pool)
         supported_lang: SupportedLanguage,
-        language: Language,
-        query_source: &'static str,
-        capture_names: Vec<String>,
         /// Pre-computed style cache from the theme.
         style_cache: ThemeStyleCache,
     },
@@ -63,17 +62,27 @@ pub struct LineHighlights {
 }
 
 impl LineHighlights {
+    /// Create an empty LineHighlights.
+    pub fn empty() -> Self {
+        Self {
+            captures_by_line: HashMap::new(),
+        }
+    }
+
     /// Get captures for a specific line index.
     pub fn get(&self, line_index: usize) -> Option<&[LineCapture]> {
         self.captures_by_line.get(&line_index).map(|v| v.as_slice())
     }
 }
 
-/// Parsed tree-sitter result with query.
+/// Parsed tree-sitter result.
+///
+/// Query is not included here - it should be obtained from `ParserPool::get_or_create_query()`
+/// to benefit from query caching.
 pub struct CstParseResult {
     pub tree: Tree,
-    pub query: Query,
-    pub capture_names: Vec<String>,
+    /// The language that was parsed (use this to get cached query from ParserPool)
+    pub lang: SupportedLanguage,
 }
 
 impl Highlighter {
@@ -92,26 +101,14 @@ impl Highlighter {
 
         // Try tree-sitter first
         if let Some(supported_lang) = SupportedLanguage::from_extension(ext) {
-            let language = supported_lang.ts_language();
-            let query_source = supported_lang.highlights_query();
-            // Pre-create query to get capture names
-            if let Ok(query) = Query::new(&language, query_source) {
-                let capture_names = query
-                    .capture_names()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                // Create style cache from theme for O(1) lookups
-                let theme = get_theme(theme_name);
-                let style_cache = ThemeStyleCache::new(theme);
-                return Highlighter::Cst {
-                    supported_lang,
-                    language,
-                    query_source,
-                    capture_names,
-                    style_cache,
-                };
-            }
+            // Create style cache from theme for O(1) lookups
+            // Query compilation is deferred to parse_source() via ParserPool cache
+            let theme = get_theme(theme_name);
+            let style_cache = ThemeStyleCache::new(theme);
+            return Highlighter::Cst {
+                supported_lang,
+                style_cache,
+            };
         }
 
         // Fall back to syntect
@@ -131,24 +128,22 @@ impl Highlighter {
     /// # Arguments
     /// * `source` - The source code to parse
     /// * `parser_pool` - The parser pool to borrow a parser from (borrowed only for this call)
-    pub fn parse_source(&self, source: &str, parser_pool: &mut ParserPool) -> Option<CstParseResult> {
+    pub fn parse_source(
+        &self,
+        source: &str,
+        parser_pool: &mut ParserPool,
+    ) -> Option<CstParseResult> {
         match self {
             Highlighter::Cst {
                 supported_lang,
-                language,
-                query_source,
-                capture_names,
                 style_cache: _,
             } => {
                 // Get parser for this language
                 let parser = parser_pool.get_or_create(supported_lang.default_extension())?;
                 let tree = parser.parse(source, None)?;
-                // Create a fresh query for the result
-                let query = Query::new(language, query_source).ok()?;
                 Some(CstParseResult {
                     tree,
-                    query,
-                    capture_names: capture_names.clone(),
+                    lang: *supported_lang,
                 })
             }
             _ => None,
@@ -300,22 +295,31 @@ pub fn collect_line_highlights(
 /// * `query` - The highlight query for the parent language
 /// * `capture_names` - Capture names from the parent query
 /// * `style_cache` - Style cache for theme colors
-/// * `parser_pool` - Parser pool for creating injection parsers
+/// * `parser_pool` - Parser pool for creating injection parsers and cached queries
 /// * `parent_ext` - File extension of the parent language (e.g., "svelte")
 pub fn collect_line_highlights_with_injections(
     source: &str,
     tree: &Tree,
-    query: &Query,
-    capture_names: &[String],
+    lang: SupportedLanguage,
     style_cache: &ThemeStyleCache,
     parser_pool: &mut ParserPool,
     parent_ext: &str,
 ) -> LineHighlights {
-    use crate::language::SupportedLanguage;
     use crate::syntax::injection::{extract_injections, normalize_language_name};
 
+    // Get cached query for parent language
+    let query = match parser_pool.get_or_create_query(lang) {
+        Some(q) => q,
+        None => return LineHighlights::empty(),
+    };
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
     // Start with parent language highlights
-    let mut result = collect_line_highlights(source, tree, query, capture_names, style_cache);
+    let mut result = collect_line_highlights(source, tree, query, &capture_names, style_cache);
 
     // Get parent language for injection query
     let parent_lang = match SupportedLanguage::from_extension(parent_ext) {
@@ -375,28 +379,26 @@ pub fn collect_line_highlights_with_injections(
             _ => continue,      // Skip unsupported languages
         };
 
-        // Get or create parser for injection language
-        let Some(inj_parser) = parser_pool.get_or_create(ext) else {
-            continue;
-        };
-
         // Get the injection content
         let inj_source = &source[injection.range.clone()];
 
-        // Parse the injection content
-        let Some(inj_tree) = inj_parser.parse(inj_source, None) else {
-            continue;
-        };
-
-        // Get highlight query for injection language
+        // Get injection language
         let Some(inj_lang) = SupportedLanguage::from_extension(ext) else {
             continue;
         };
 
-        let inj_query_str = inj_lang.highlights_query();
-        let inj_ts_lang = inj_lang.ts_language();
+        // Parse the injection content (scoped to release parser borrow)
+        let inj_tree = match parser_pool.get_or_create(ext) {
+            Some(parser) => match parser.parse(inj_source, None) {
+                Some(tree) => tree,
+                None => continue,
+            },
+            None => continue,
+        };
+        // parser_pool borrow is released here
 
-        let Ok(inj_query) = Query::new(&inj_ts_lang, inj_query_str) else {
+        // Get cached highlight query for injection language
+        let Some(inj_query) = parser_pool.get_or_create_query(inj_lang) else {
             continue;
         };
 
@@ -409,7 +411,7 @@ pub fn collect_line_highlights_with_injections(
         // Collect highlights from injection
         let mut inj_cursor = QueryCursor::new();
         let mut inj_matches =
-            inj_cursor.matches(&inj_query, inj_tree.root_node(), inj_source.as_bytes());
+            inj_cursor.matches(inj_query, inj_tree.root_node(), inj_source.as_bytes());
 
         while let Some(mat) = inj_matches.next() {
             for capture in mat.captures {
@@ -619,16 +621,19 @@ mod tests {
         let source = "fn main() {\n    let x = 42;\n}";
 
         if let Some(result) = highlighter.parse_source(source, &mut pool) {
+            // Get cached query
+            let query = pool.get_or_create_query(result.lang).unwrap();
+            let capture_names: Vec<String> = query
+                .capture_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+
             // Create style cache from theme for testing
             let theme = get_theme("base16-ocean.dark");
             let style_cache = ThemeStyleCache::new(theme);
-            let line_highlights = collect_line_highlights(
-                source,
-                &result.tree,
-                &result.query,
-                &result.capture_names,
-                &style_cache,
-            );
+            let line_highlights =
+                collect_line_highlights(source, &result.tree, query, &capture_names, &style_cache);
 
             let mut interner = Rodeo::default();
             let line = "fn main() {";
@@ -672,17 +677,20 @@ mod tests {
             .parse_source(source, &mut pool)
             .expect("Should parse Rust source");
 
+        // Get cached query
+        let query = pool.get_or_create_query(result.lang).unwrap();
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
         // Create style cache from Dracula theme
         let theme = get_theme("Dracula");
         let style_cache = ThemeStyleCache::new(theme);
 
-        let line_highlights = collect_line_highlights(
-            source,
-            &result.tree,
-            &result.query,
-            &result.capture_names,
-            &style_cache,
-        );
+        let line_highlights =
+            collect_line_highlights(source, &result.tree, query, &capture_names, &style_cache);
 
         let mut interner = Rodeo::default();
         let line = "fn main() {";
@@ -727,16 +735,19 @@ mod tests {
             .parse_source(source, &mut pool)
             .expect("Should parse Rust source");
 
+        // Get cached query
+        let query = pool.get_or_create_query(result.lang).unwrap();
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
         let theme = get_theme("Dracula");
         let style_cache = ThemeStyleCache::new(theme);
 
-        let line_highlights = collect_line_highlights(
-            source,
-            &result.tree,
-            &result.query,
-            &result.capture_names,
-            &style_cache,
-        );
+        let line_highlights =
+            collect_line_highlights(source, &result.tree, query, &capture_names, &style_cache);
 
         let mut interner = Rodeo::default();
         let line = "use std::collections::HashMap;";
@@ -827,16 +838,19 @@ mod tests {
             .parse_source(source, &mut pool)
             .expect("Should parse TypeScript source");
 
+        // Get cached query
+        let query = pool.get_or_create_query(result.lang).unwrap();
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
         let theme = get_theme("Dracula");
         let style_cache = ThemeStyleCache::new(theme);
 
-        let line_highlights = collect_line_highlights(
-            source,
-            &result.tree,
-            &result.query,
-            &result.capture_names,
-            &style_cache,
-        );
+        let line_highlights =
+            collect_line_highlights(source, &result.tree, query, &capture_names, &style_cache);
 
         let mut interner = Rodeo::default();
         let line = "const onClickPageName = () => {";
@@ -907,8 +921,7 @@ mod tests {
         let line_highlights = collect_line_highlights_with_injections(
             source,
             &result.tree,
-            &result.query,
-            &result.capture_names,
+            result.lang,
             &style_cache,
             &mut pool,
             "svelte",
@@ -980,8 +993,7 @@ mod tests {
         let line_highlights = collect_line_highlights_with_injections(
             source,
             &result.tree,
-            &result.query,
-            &result.capture_names,
+            result.lang,
             &style_cache,
             &mut pool,
             "svelte",
@@ -1063,8 +1075,7 @@ mod tests {
         let line_highlights = collect_line_highlights_with_injections(
             source,
             &result.tree,
-            &result.query,
-            &result.capture_names,
+            result.lang,
             &style_cache,
             &mut pool,
             "svelte",

@@ -75,22 +75,30 @@ pub fn build_diff_cache(
         // CST path: use tree-sitter with full AST context
         // Use injection-aware highlighting for SFC languages (Svelte)
         let line_highlights = if ext == "svelte" {
+            // Injection path: query is obtained inside the function to avoid borrow conflicts
             collect_line_highlights_with_injections(
                 &combined_source,
                 &result.tree,
-                &result.query,
-                &result.capture_names,
+                result.lang,
                 style_cache,
                 parser_pool,
                 ext,
             )
         } else {
-            // Standard CST highlighting for other languages
+            // Standard CST highlighting: get cached query
+            let query = parser_pool
+                .get_or_create_query(result.lang)
+                .expect("Query should be available for supported language");
+            let capture_names: Vec<String> = query
+                .capture_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             collect_line_highlights(
                 &combined_source,
                 &result.tree,
-                &result.query,
-                &result.capture_names,
+                query,
+                &capture_names,
                 style_cache,
             )
         };

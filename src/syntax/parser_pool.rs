@@ -2,19 +2,24 @@
 //!
 //! Parsers are relatively heavy objects (~200KB each), so we maintain a pool
 //! to reuse them across multiple files rather than creating new ones for each file.
+//!
+//! Also caches compiled queries, which are expensive to create (they require
+//! parsing the query string and building internal data structures).
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use tree_sitter::Parser;
+use tree_sitter::{Parser, Query};
 
 use crate::language::SupportedLanguage;
 
-/// Pool of tree-sitter parsers, one per language.
+/// Pool of tree-sitter parsers and compiled queries, one per language.
 ///
-/// Parsers are lazily created on first use and reused for subsequent parses.
-/// This avoids the overhead of creating a new parser for each file.
+/// Parsers and queries are lazily created on first use and reused for subsequent operations.
+/// This avoids the overhead of creating new parsers/compiling queries for each file.
 pub struct ParserPool {
     parsers: HashMap<SupportedLanguage, Parser>,
+    /// Cached compiled queries for highlight queries
+    queries: HashMap<SupportedLanguage, Query>,
 }
 
 impl Default for ParserPool {
@@ -28,7 +33,25 @@ impl ParserPool {
     pub fn new() -> Self {
         Self {
             parsers: HashMap::new(),
+            queries: HashMap::new(),
         }
+    }
+
+    /// Get or create a compiled highlight query for the given language.
+    ///
+    /// Queries are cached to avoid recompilation overhead on each use.
+    /// This is particularly important for injection processing (e.g., Svelte)
+    /// where multiple queries are needed per file.
+    pub fn get_or_create_query(&mut self, lang: SupportedLanguage) -> Option<&Query> {
+        // If query doesn't exist, compile it
+        if let Entry::Vacant(e) = self.queries.entry(lang) {
+            let ts_language = lang.ts_language();
+            let query_source = lang.highlights_query();
+            let query = Query::new(&ts_language, query_source).ok()?;
+            e.insert(query);
+        }
+
+        self.queries.get(&lang)
     }
 
     /// Get or create a parser for the given file extension.
@@ -230,5 +253,59 @@ mod tests {
         let code = "fn main() { println!(\"Hello\"); }";
         let tree = parser.parse(code, None);
         assert!(tree.is_some(), "Should parse Rust code");
+    }
+
+    #[test]
+    fn test_query_cache_creates_query() {
+        let mut pool = ParserPool::new();
+        let query = pool.get_or_create_query(SupportedLanguage::Rust);
+        assert!(query.is_some(), "Should create Rust highlight query");
+    }
+
+    #[test]
+    fn test_query_cache_reuses_query() {
+        let mut pool = ParserPool::new();
+
+        // First call creates the query
+        let query1 = pool.get_or_create_query(SupportedLanguage::TypeScript);
+        assert!(query1.is_some());
+
+        // Second call should return the same query (cached)
+        let query2 = pool.get_or_create_query(SupportedLanguage::TypeScript);
+        assert!(query2.is_some());
+
+        // Verify cache is populated
+        assert!(
+            pool.queries.contains_key(&SupportedLanguage::TypeScript),
+            "Query should be cached"
+        );
+    }
+
+    #[test]
+    fn test_query_cache_multiple_languages() {
+        let mut pool = ParserPool::new();
+
+        // Create queries for multiple languages
+        assert!(pool.get_or_create_query(SupportedLanguage::Rust).is_some());
+        assert!(pool
+            .get_or_create_query(SupportedLanguage::TypeScript)
+            .is_some());
+        assert!(pool
+            .get_or_create_query(SupportedLanguage::JavaScript)
+            .is_some());
+        assert!(pool.get_or_create_query(SupportedLanguage::Css).is_some());
+
+        // All should be cached
+        assert_eq!(pool.queries.len(), 4);
+    }
+
+    #[test]
+    fn test_query_has_capture_names() {
+        let mut pool = ParserPool::new();
+        let query = pool.get_or_create_query(SupportedLanguage::Rust).unwrap();
+
+        // Query should have capture names for highlighting
+        let capture_names = query.capture_names();
+        assert!(!capture_names.is_empty(), "Query should have capture names");
     }
 }
