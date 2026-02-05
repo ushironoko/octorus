@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use lasso::Rodeo;
 use ratatui::style::Style;
 use syntect::easy::HighlightLines;
-use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Language, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::app::InternedSpan;
 use crate::language::SupportedLanguage;
@@ -23,10 +23,14 @@ use super::themes::ThemeStyleCache;
 use super::{convert_syntect_style, get_theme, syntax_for_file, syntax_set};
 
 /// Unified highlighter that can use either tree-sitter or syntect.
-pub enum Highlighter<'a> {
+///
+/// This type does not hold any mutable references to `ParserPool`, allowing
+/// the pool to be borrowed again during injection processing (e.g., for Svelte).
+pub enum Highlighter {
     /// Tree-sitter CST highlighter for supported languages.
     Cst {
-        parser: &'a mut Parser,
+        /// The supported language (used to look up parser from pool)
+        supported_lang: SupportedLanguage,
         language: Language,
         query_source: &'static str,
         capture_names: Vec<String>,
@@ -34,7 +38,7 @@ pub enum Highlighter<'a> {
         style_cache: ThemeStyleCache,
     },
     /// Syntect regex-based highlighter for fallback.
-    Syntect(HighlightLines<'a>),
+    Syntect(HighlightLines<'static>),
     /// No highlighting available.
     None,
 }
@@ -72,40 +76,41 @@ pub struct CstParseResult {
     pub capture_names: Vec<String>,
 }
 
-impl<'a> Highlighter<'a> {
+impl Highlighter {
     /// Create a highlighter for the given filename.
     ///
     /// Attempts to use tree-sitter first, falling back to syntect if the language
     /// is not supported by tree-sitter.
-    pub fn for_file(filename: &str, theme_name: &str, parser_pool: &'a mut ParserPool) -> Self {
+    ///
+    /// Note: This does not borrow `ParserPool`. The parser is borrowed only during
+    /// `parse_source`, allowing the pool to be used for injection processing.
+    pub fn for_file(filename: &str, theme_name: &str) -> Self {
         let ext = std::path::Path::new(filename)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
         // Try tree-sitter first
-        if let Some(lang) = SupportedLanguage::from_extension(ext) {
-            if let Some(parser) = parser_pool.get_or_create(ext) {
-                let language = lang.ts_language();
-                let query_source = lang.highlights_query();
-                // Pre-create query to get capture names
-                if let Ok(query) = Query::new(&language, query_source) {
-                    let capture_names = query
-                        .capture_names()
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect();
-                    // Create style cache from theme for O(1) lookups
-                    let theme = get_theme(theme_name);
-                    let style_cache = ThemeStyleCache::new(theme);
-                    return Highlighter::Cst {
-                        parser,
-                        language,
-                        query_source,
-                        capture_names,
-                        style_cache,
-                    };
-                }
+        if let Some(supported_lang) = SupportedLanguage::from_extension(ext) {
+            let language = supported_lang.ts_language();
+            let query_source = supported_lang.highlights_query();
+            // Pre-create query to get capture names
+            if let Ok(query) = Query::new(&language, query_source) {
+                let capture_names = query
+                    .capture_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // Create style cache from theme for O(1) lookups
+                let theme = get_theme(theme_name);
+                let style_cache = ThemeStyleCache::new(theme);
+                return Highlighter::Cst {
+                    supported_lang,
+                    language,
+                    query_source,
+                    capture_names,
+                    style_cache,
+                };
             }
         }
 
@@ -122,15 +127,21 @@ impl<'a> Highlighter<'a> {
     ///
     /// For CST highlighter, parses the source and returns the tree.
     /// For Syntect, this is a no-op (syntect processes line by line).
-    pub fn parse_source(&mut self, source: &str) -> Option<CstParseResult> {
+    ///
+    /// # Arguments
+    /// * `source` - The source code to parse
+    /// * `parser_pool` - The parser pool to borrow a parser from (borrowed only for this call)
+    pub fn parse_source(&self, source: &str, parser_pool: &mut ParserPool) -> Option<CstParseResult> {
         match self {
             Highlighter::Cst {
-                parser,
+                supported_lang,
                 language,
                 query_source,
                 capture_names,
                 style_cache: _,
             } => {
+                // Get parser for this language
+                let parser = parser_pool.get_or_create(supported_lang.default_extension())?;
                 let tree = parser.parse(source, None)?;
                 // Create a fresh query for the result
                 let query = Query::new(language, query_source).ok()?;
@@ -567,8 +578,7 @@ mod tests {
 
     #[test]
     fn test_highlighter_rust() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark");
         assert!(
             matches!(highlighter, Highlighter::Cst { .. }),
             "Expected Cst highlighter for Rust"
@@ -577,29 +587,25 @@ mod tests {
 
     #[test]
     fn test_highlighter_typescript() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.ts", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.ts", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::Cst { .. }));
     }
 
     #[test]
     fn test_highlighter_vue_fallback() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::Syntect(_)));
     }
 
     #[test]
     fn test_highlighter_yaml_fallback() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.yaml", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.yaml", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::Syntect(_)));
     }
 
     #[test]
     fn test_highlighter_unknown() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.unknown", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.unknown", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::None));
     }
 
@@ -608,11 +614,11 @@ mod tests {
         use crate::syntax::get_theme;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark");
 
         let source = "fn main() {\n    let x = 42;\n}";
 
-        if let Some(result) = highlighter.parse_source(source) {
+        if let Some(result) = highlighter.parse_source(source, &mut pool) {
             // Create style cache from theme for testing
             let theme = get_theme("base16-ocean.dark");
             let style_cache = ThemeStyleCache::new(theme);
@@ -642,8 +648,7 @@ mod tests {
 
     #[test]
     fn test_syntect_highlight() {
-        let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark", &mut pool);
+        let mut highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark");
 
         let mut interner = Rodeo::default();
         let spans = highlighter.highlight_line("<template>", &mut interner);
@@ -658,13 +663,13 @@ mod tests {
         use ratatui::style::Color;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.rs", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "Dracula");
 
         let source = "fn main() {\n    let x = 42;\n}";
 
-        // Parse first (requires &mut self)
+        // Parse source (borrows pool only for this call)
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Rust source");
 
         // Create style cache from Dracula theme
@@ -714,12 +719,12 @@ mod tests {
         use ratatui::style::Color;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.rs", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "Dracula");
 
         let source = "use std::collections::HashMap;\n\nfn main() {}";
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Rust source");
 
         let theme = get_theme("Dracula");
@@ -813,13 +818,13 @@ mod tests {
         use crate::syntax::themes::ThemeStyleCache;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.ts", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.ts", "Dracula");
 
         // Arrow function assignment - common pattern in Vue/React
         let source = "const onClickPageName = () => {\n  const rootDom = store.tree\n}";
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse TypeScript source");
 
         let theme = get_theme("Dracula");
@@ -864,8 +869,7 @@ mod tests {
 
     #[test]
     fn test_svelte_uses_cst_highlighter() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.svelte", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
         assert!(
             matches!(highlighter, Highlighter::Cst { .. }),
             "Svelte should use CST highlighter"
@@ -878,7 +882,7 @@ mod tests {
         use crate::syntax::themes::ThemeStyleCache;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.svelte", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
 
         // Svelte file with TypeScript in <script>
         let source = r#"<script lang="ts">
@@ -893,7 +897,7 @@ mod tests {
 </button>"#;
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Svelte source");
 
         let theme = get_theme("Dracula");
@@ -950,7 +954,7 @@ mod tests {
         use crate::syntax::themes::ThemeStyleCache;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.svelte", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
 
         // Svelte file with CSS in <style>
         let source = r#"<script>
@@ -967,7 +971,7 @@ mod tests {
 <div class="container">Hello</div>"#;
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Svelte source");
 
         let theme = get_theme("Dracula");
@@ -1030,7 +1034,7 @@ mod tests {
         use crate::syntax::themes::ThemeStyleCache;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.svelte", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
 
         // Svelte file with script containing "<style" as a string literal
         // This should NOT be misclassified as CSS
@@ -1050,7 +1054,7 @@ mod tests {
 <div>{template}</div>"#;
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Svelte source");
 
         let theme = get_theme("Dracula");

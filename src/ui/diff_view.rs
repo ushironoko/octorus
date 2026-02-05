@@ -53,53 +53,46 @@ pub fn build_diff_cache(
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    // Parse and collect highlights in a scoped block to release parser_pool borrow
-    // This is necessary for Svelte injection support, which needs parser_pool again
-    let (cst_result_data, style_cache_owned) = {
-        let mut highlighter = Highlighter::for_file(filename, theme_name, parser_pool);
-        let cst_result = highlighter.parse_source(&combined_source);
+    // Create highlighter (does not borrow parser_pool)
+    let highlighter = Highlighter::for_file(filename, theme_name);
 
-        if let Some(result) = cst_result {
-            let style_cache = highlighter
-                .style_cache()
-                .expect("CST highlighter should have style_cache")
-                .clone();
-            (
-                Some((result.tree, result.query, result.capture_names)),
-                Some(style_cache),
-            )
-        } else {
-            (None, None)
-        }
-    };
-    // highlighter is now dropped, parser_pool is available again
+    // Parse source (borrows parser_pool only for this call)
+    let cst_result = highlighter.parse_source(&combined_source, parser_pool);
 
     // Check if tree-sitter parsing succeeded
     // Note: We no longer fall back based on error count, since tree-sitter's
     // error recovery produces usable AST even with parse errors. The errors
     // typically occur because diffs contain incomplete code (missing context
     // between hunks), not because the code is actually invalid.
-    let use_cst = cst_result_data.is_some();
+    let use_cst = cst_result.is_some();
 
     let lines: Vec<CachedDiffLine> = if use_cst {
-        let (tree, query, capture_names) = cst_result_data.as_ref().unwrap();
-        let style_cache = style_cache_owned.as_ref().unwrap();
+        let result = cst_result.as_ref().unwrap();
+        let style_cache = highlighter
+            .style_cache()
+            .expect("CST highlighter should have style_cache");
 
         // CST path: use tree-sitter with full AST context
         // Use injection-aware highlighting for SFC languages (Svelte)
         let line_highlights = if ext == "svelte" {
             collect_line_highlights_with_injections(
                 &combined_source,
-                tree,
-                query,
-                capture_names,
+                &result.tree,
+                &result.query,
+                &result.capture_names,
                 style_cache,
                 parser_pool,
                 ext,
             )
         } else {
             // Standard CST highlighting for other languages
-            collect_line_highlights(&combined_source, tree, query, capture_names, style_cache)
+            collect_line_highlights(
+                &combined_source,
+                &result.tree,
+                &result.query,
+                &result.capture_names,
+                style_cache,
+            )
         };
         build_lines_with_cst(
             patch,

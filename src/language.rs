@@ -160,6 +160,35 @@ impl SupportedLanguage {
         Self::from_extension(ext).is_some()
     }
 
+    /// Get the default file extension for this language.
+    ///
+    /// This is used to look up the parser from the parser pool.
+    pub fn default_extension(&self) -> &'static str {
+        match self {
+            Self::Rust => "rs",
+            Self::TypeScript => "ts",
+            Self::TypeScriptReact => "tsx",
+            Self::JavaScript => "js",
+            Self::JavaScriptReact => "jsx",
+            Self::Go => "go",
+            Self::Python => "py",
+            Self::Ruby => "rb",
+            Self::Zig => "zig",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::Java => "java",
+            Self::CSharp => "cs",
+            Self::Lua => "lua",
+            Self::Bash => "sh",
+            Self::Php => "php",
+            Self::Swift => "swift",
+            Self::Haskell => "hs",
+            Self::MoonBit => "mbt",
+            Self::Svelte => "svelte",
+            Self::Css => "css",
+        }
+    }
+
     /// Get the tree-sitter Language for this language.
     pub fn ts_language(&self) -> Language {
         match self {
