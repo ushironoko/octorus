@@ -31,6 +31,7 @@
 //! User themes override bundled themes if they have the same name.
 
 pub mod highlighter;
+pub mod injection;
 pub mod parser_pool;
 pub mod themes;
 
