@@ -92,12 +92,15 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
     "embedded" => &["meta.embedded", "source"],
 };
 
+use std::sync::Arc;
+
 /// Cache of styles for each capture name, pre-computed from a theme.
 ///
 /// This avoids repeated scope lookups during highlighting.
+/// Wrapped in Arc for cheap cloning when needed (e.g., Svelte injection support).
 #[derive(Clone)]
 pub struct ThemeStyleCache {
-    cache: HashMap<&'static str, Style>,
+    cache: Arc<HashMap<&'static str, Style>>,
 }
 
 impl ThemeStyleCache {
@@ -113,7 +116,7 @@ impl ThemeStyleCache {
             }
         }
 
-        Self { cache }
+        Self { cache: Arc::new(cache) }
     }
 
     /// Get the style for a capture name.
@@ -362,7 +365,7 @@ mod tests {
 
         // Verify that cached styles differ from hardcoded fallbacks for at least some captures
         let mut differs_count = 0;
-        for (capture, cached_style) in &cache.cache {
+        for (capture, cached_style) in cache.cache.iter() {
             let fallback_style = style_for_capture(capture);
             if cached_style.fg != fallback_style.fg {
                 differs_count += 1;
