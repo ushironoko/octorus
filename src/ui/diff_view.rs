@@ -64,7 +64,10 @@ pub fn build_diff_cache(
                 .style_cache()
                 .expect("CST highlighter should have style_cache")
                 .clone();
-            (Some((result.tree, result.query, result.capture_names)), Some(style_cache))
+            (
+                Some((result.tree, result.query, result.capture_names)),
+                Some(style_cache),
+            )
         } else {
             (None, None)
         }
@@ -96,13 +99,7 @@ pub fn build_diff_cache(
             )
         } else {
             // Standard CST highlighting for other languages
-            collect_line_highlights(
-                &combined_source,
-                tree,
-                query,
-                capture_names,
-                style_cache,
-            )
+            collect_line_highlights(&combined_source, tree, query, capture_names, style_cache)
         };
         build_lines_with_cst(
             patch,

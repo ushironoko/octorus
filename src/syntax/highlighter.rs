@@ -327,43 +327,31 @@ pub fn collect_line_highlights_with_injections(
     }
 
     // Pre-compute line byte offsets for fast line lookup
-    let line_offsets: Vec<usize> = std::iter::once(0)
-        .chain(source.bytes().enumerate().filter_map(|(i, b)| {
-            if b == b'\n' {
-                Some(i + 1)
-            } else {
-                None
-            }
-        }))
-        .collect();
+    let line_offsets: Vec<usize> =
+        std::iter::once(0)
+            .chain(source.bytes().enumerate().filter_map(|(i, b)| {
+                if b == b'\n' {
+                    Some(i + 1)
+                } else {
+                    None
+                }
+            }))
+            .collect();
 
     // Process each injection
     for injection in injections {
         let mut normalized_lang = normalize_language_name(&injection.language);
 
         // Svelte's injection query marks all raw_text as "javascript" by default,
-        // but <style> content should be CSS. Check the surrounding context.
+        // but <style> content should be CSS. Use the parent node kind from the
+        // syntax tree to determine the correct language.
         if normalized_lang == "javascript" && parent_ext == "svelte" {
-            // Look backwards from injection start to find the opening tag
-            let prefix = &source[..injection.range.start];
-            // Find the last <style or <script tag before this injection
-            let last_style = prefix.rfind("<style");
-            let last_script = prefix.rfind("<script");
-
-            match (last_style, last_script) {
-                (Some(style_pos), Some(script_pos)) => {
-                    if style_pos > script_pos {
-                        // <style> tag is closer, treat as CSS
-                        normalized_lang = "css";
-                    }
-                }
-                (Some(_), None) => {
-                    // Only <style> found, treat as CSS
+            if let Some(ref parent_kind) = injection.parent_node_kind {
+                // Check if this injection is inside a style element
+                if parent_kind.contains("style") {
                     normalized_lang = "css";
                 }
-                _ => {
-                    // Only <script> or neither found, keep as javascript
-                }
+                // script_element keeps "javascript" (or typescript if lang attr is set)
             }
         }
 
@@ -409,7 +397,8 @@ pub fn collect_line_highlights_with_injections(
 
         // Collect highlights from injection
         let mut inj_cursor = QueryCursor::new();
-        let mut inj_matches = inj_cursor.matches(&inj_query, inj_tree.root_node(), inj_source.as_bytes());
+        let mut inj_matches =
+            inj_cursor.matches(&inj_query, inj_tree.root_node(), inj_source.as_bytes());
 
         while let Some(mat) = inj_matches.next() {
             for capture in mat.captures {
@@ -449,7 +438,9 @@ pub fn collect_line_highlights_with_injections(
 
                     // Clamp capture to line boundaries (relative to line start)
                     let cap_local_start = abs_start.saturating_sub(line_start);
-                    let cap_local_end = abs_end.saturating_sub(line_start).min(line_end - line_start);
+                    let cap_local_end = abs_end
+                        .saturating_sub(line_start)
+                        .min(line_end - line_start);
 
                     if cap_local_start < cap_local_end {
                         result
@@ -1025,6 +1016,111 @@ mod tests {
         assert!(
             color_span.unwrap().style.fg.is_some(),
             "'color' should have syntax highlighting as CSS property"
+        );
+    }
+
+    /// Test that script blocks containing `<style` substring are NOT misclassified as CSS.
+    ///
+    /// This is a regression test for the issue where raw string search (`rfind("<style")`)
+    /// would incorrectly detect `<style` inside JavaScript code (e.g., template strings,
+    /// comments, DOM manipulation) and apply CSS highlighting to the script block.
+    #[test]
+    fn test_svelte_script_with_style_substring_not_misclassified() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let mut highlighter = Highlighter::for_file("test.svelte", "Dracula", &mut pool);
+
+        // Svelte file with script containing "<style" as a string literal
+        // This should NOT be misclassified as CSS
+        let source = r#"<script lang="ts">
+    const template = `<style>body { color: red; }</style>`;
+    const element = document.querySelector("<style");
+    function addStyle() {
+        const style = "<style>test</style>";
+        return style;
+    }
+</script>
+
+<style>
+    .real-css { color: blue; }
+</style>
+
+<div>{template}</div>"#;
+
+        let result = highlighter
+            .parse_source(source)
+            .expect("Should parse Svelte source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+            &mut pool,
+            "svelte",
+        );
+
+        let mut interner = Rodeo::default();
+
+        // Line 2: "    const template = `<style>body { color: red; }</style>`;"
+        // "const" should be highlighted as JS/TS keyword (NOT CSS)
+        let line = "    const template = `<style>body { color: red; }</style>`;";
+        let captures = line_highlights.get(1); // Line index 1
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        let const_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "const");
+        assert!(
+            const_span.is_some(),
+            "Should find 'const' in script block with <style substring"
+        );
+        assert!(
+            const_span.unwrap().style.fg.is_some(),
+            "'const' should be highlighted as keyword (TypeScript), not misclassified as CSS"
+        );
+
+        // Line 4: "    function addStyle() {"
+        // "function" should be highlighted as JS/TS keyword
+        let line = "    function addStyle() {";
+        let captures = line_highlights.get(3); // Line index 3
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        let function_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "function");
+        assert!(
+            function_span.is_some(),
+            "Should find 'function' in script block"
+        );
+        assert!(
+            function_span.unwrap().style.fg.is_some(),
+            "'function' should be highlighted as keyword"
+        );
+
+        // Line 11: "    .real-css { color: blue; }"
+        // This is actual CSS in a <style> block, should be highlighted as CSS
+        let line = "    .real-css { color: blue; }";
+        let captures = line_highlights.get(10); // Line index 10
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "color" in the actual CSS block should be highlighted
+        let color_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "color");
+        assert!(
+            color_span.is_some(),
+            "Should find 'color' in actual CSS block"
+        );
+        assert!(
+            color_span.unwrap().style.fg.is_some(),
+            "'color' in real <style> block should be highlighted as CSS property"
         );
     }
 }

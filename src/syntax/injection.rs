@@ -13,6 +13,8 @@ pub struct InjectionRange {
     pub range: Range<usize>,
     /// The language to use for this range
     pub language: String,
+    /// The kind of the parent node containing this injection (e.g., "script_element", "style_element")
+    pub parent_node_kind: Option<String>,
 }
 
 /// Extract injection ranges from a tree using an injection query.
@@ -38,6 +40,7 @@ pub fn extract_injections(
 
     while let Some(match_) = matches.next() {
         let mut content_range: Option<Range<usize>> = None;
+        let mut content_node: Option<tree_sitter::Node> = None;
         let mut lang: Option<String> = None;
 
         for capture in match_.captures {
@@ -45,6 +48,7 @@ pub fn extract_injections(
 
             if *capture_name == "injection.content" {
                 content_range = Some(capture.node.byte_range());
+                content_node = Some(capture.node);
             } else if *capture_name == "injection.language" {
                 // Language from captured text
                 if let Ok(text) = capture.node.utf8_text(source) {
@@ -58,9 +62,29 @@ pub fn extract_injections(
             lang = get_injection_language_from_pattern(&query, match_.pattern_index);
         }
 
+        // Get parent node kind from the content node
+        let parent_node_kind = content_node.and_then(|node| {
+            // Walk up the tree to find a meaningful parent node kind
+            // (e.g., "script_element", "style_element")
+            let mut current = node.parent();
+            while let Some(parent) = current {
+                let kind = parent.kind();
+                // Look for element-level nodes that indicate the injection context
+                if kind.ends_with("_element") || kind == "script" || kind == "style" {
+                    return Some(kind.to_string());
+                }
+                current = parent.parent();
+            }
+            None
+        });
+
         if let (Some(range), Some(language)) = (content_range, lang) {
             if !range.is_empty() {
-                injections.push(InjectionRange { range, language });
+                injections.push(InjectionRange {
+                    range,
+                    language,
+                    parent_node_kind,
+                });
             }
         }
     }
