@@ -525,3 +525,61 @@ mod tests {
         assert!(language_specificity("css") > language_specificity("typescript"));
     }
 }
+
+#[cfg(test)]
+mod priming_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_injections_primed_vue_script() {
+        // Simulate primed source: wrapping plain script content in <script lang="ts">
+        let code = r#"<script lang="ts">
+import { ref } from 'vue'
+const count = ref(0)
+</script>
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_vue3::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+
+        let injections = extract_injections(
+            &tree,
+            code.as_bytes(),
+            &language,
+            tree_sitter_vue3::INJECTIONS_QUERY,
+        );
+
+        // Should find TypeScript injection
+        assert!(
+            !injections.is_empty(),
+            "Should find injections in primed Vue code"
+        );
+
+        let ts_injection = injections
+            .iter()
+            .find(|i| i.language == "typescript" || i.language == "ts");
+        assert!(
+            ts_injection.is_some(),
+            "Should find TypeScript injection, found: {:?}",
+            injections
+        );
+
+        if let Some(inj) = ts_injection {
+            let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
+            println!("TypeScript injection content:\n{}", content);
+            println!("Injection range: {:?}", inj.range);
+            assert!(
+                content.contains("import"),
+                "Injection should contain script content, got: {}",
+                content
+            );
+            assert!(
+                content.contains("const count"),
+                "Injection should contain script content, got: {}",
+                content
+            );
+        }
+    }
+}

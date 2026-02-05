@@ -163,6 +163,129 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
     (source, line_mapping)
 }
 
+/// Check if the content looks like JavaScript/TypeScript script code.
+///
+/// This is a conservative heuristic: we only prime if we're confident
+/// the content is script. If we can't tell, we don't prime (better to
+/// have less highlighting than wrong highlighting).
+///
+/// Returns true if content shows clear signs of being script code.
+fn looks_like_script_content(source: &str) -> bool {
+    // Patterns that strongly suggest template/markup content
+    let template_patterns = [
+        // HTML elements (common Vue/Svelte template tags)
+        "<div", "<span", "<p>", "<a ", "<ul", "<li", "<h1", "<h2", "<h3", "<button", "<input",
+        "<form", "<label", "<img", "<section", "<article", "<header", "<footer", "<nav", "<main",
+        "<aside", // Svelte-specific template syntax
+        "{#if", "{#each", "{#await", "{:else", "{:then", "{:catch", "{/if", "{/each", "{/await",
+        "{@html", "{@debug", "{@const", // Vue template syntax
+        "v-if", "v-else", "v-for", "v-bind", "v-on", "v-model", "v-slot", "@click", "@input",
+        "@change", "@submit", ":class", ":style", ":key", ":ref",
+        // Self-closing custom component syntax (PascalCase components)
+        "/>",
+    ];
+
+    // Patterns that strongly suggest CSS/style content
+    let style_patterns = [
+        // CSS at-rules
+        "@media",
+        "@keyframes",
+        "@import",
+        "@font-face",
+        "@supports",
+        // Common CSS properties with colon
+        "color:",
+        "background:",
+        "margin:",
+        "padding:",
+        "border:",
+        "display:",
+        "position:",
+        "width:",
+        "height:",
+        "font-",
+        "text-align:",
+        "flex:",
+        "grid:",
+        "z-index:",
+        // CSS selectors (common patterns)
+        ".class",
+        "#id",
+    ];
+
+    // Patterns that strongly suggest script content
+    let script_patterns = [
+        // ES module syntax
+        "import ",
+        "export ",
+        "from '",
+        "from \"",
+        // Variable declarations
+        "const ",
+        "let ",
+        "var ",
+        // Function declarations
+        "function ",
+        "=> {",
+        "=> (",
+        // Class syntax
+        "class ",
+        "extends ",
+        // Control flow (with space to avoid matching CSS/template)
+        "if (",
+        "else {",
+        "for (",
+        "while (",
+        "switch (",
+        // Common JS patterns
+        "return ",
+        "async ",
+        "await ",
+        // TypeScript-specific
+        "interface ",
+        "type ",
+        ": string",
+        ": number",
+        ": boolean",
+        "implements ",
+        "declare ",
+        // Vue 3 Composition API
+        "defineProps",
+        "defineEmits",
+        "defineExpose",
+        "defineSlots",
+        "ref(",
+        "reactive(",
+        "computed(",
+        "watch(",
+        "onMounted(",
+        "defineComponent",
+    ];
+
+    // Check for template/style patterns first (these take precedence)
+    for pattern in template_patterns {
+        if source.contains(pattern) {
+            return false;
+        }
+    }
+
+    for pattern in style_patterns {
+        if source.contains(pattern) {
+            return false;
+        }
+    }
+
+    // Check for script patterns
+    for pattern in script_patterns {
+        if source.contains(pattern) {
+            return true;
+        }
+    }
+
+    // If we can't determine, be conservative and don't prime
+    false
+}
+
 /// Build combined source with priming for SFC languages (Vue/Svelte).
 ///
 /// When a diff doesn't contain SFC structural tags like `<script>`, the tree-sitter
@@ -191,7 +314,14 @@ fn build_combined_source_for_highlight_with_priming(
         return (base_source, line_mapping, 0);
     }
 
-    // No structural tags found - assume this is script content and add priming
+    // No structural tags found - only prime if we're confident it's script content.
+    // Being conservative: if we can't determine the content type, don't prime.
+    // Wrong priming (e.g., treating template/style as script) is worse than no priming.
+    if !looks_like_script_content(&base_source) {
+        return (base_source, line_mapping, 0);
+    }
+
+    // Content looks like script - add priming
     // Use TypeScript as it's a superset of JavaScript
     let priming_prefix = "<script lang=\"ts\">\n";
     let priming_suffix = "</script>\n";

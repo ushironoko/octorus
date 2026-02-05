@@ -515,56 +515,91 @@ pub fn apply_line_highlights(
         }
     };
 
-    // Build a map of byte position -> style, where shorter captures override longer ones
-    // This gives injection highlights (more specific) priority over parent highlights
-    let mut style_map: Vec<Option<Style>> = vec![None; line.len()];
+    // Build spans using an event-based approach instead of byte-map for better performance.
+    // This is O(m log m) where m is the number of captures, rather than O(n) where n is line length.
+    // For long lines (e.g., minified code), this is much more efficient.
 
-    // Process captures in order: shorter captures come after longer ones for same start,
-    // so they will overwrite the longer ones
-    for capture in captures {
+    // Collect boundary events: (position, is_start, capture_index)
+    // We'll process these in order to build spans
+    let mut events: Vec<(usize, bool, usize)> = Vec::with_capacity(captures.len() * 2);
+
+    for (idx, capture) in captures.iter().enumerate() {
         // Skip invalid captures
         if capture.local_start >= capture.local_end || capture.local_end > line.len() {
             continue;
         }
-
-        for slot in &mut style_map[capture.local_start..capture.local_end] {
-            *slot = Some(capture.style);
-        }
+        events.push((capture.local_start, true, idx)); // start event
+        events.push((capture.local_end, false, idx)); // end event
     }
 
-    // Convert style map to spans by merging consecutive bytes with same style
-    let mut spans = Vec::new();
-    let mut current_start = 0;
-    let mut current_style = style_map.first().copied().flatten();
+    // If no valid captures, return plain text
+    if events.is_empty() {
+        return vec![InternedSpan {
+            content: interner.get_or_intern(line),
+            style: Style::default(),
+        }];
+    }
 
-    for (i, style) in style_map.iter().enumerate().skip(1) {
-        let style = *style;
-        if style != current_style {
-            // Emit span for previous range
-            let text = &line[current_start..i];
+    // Sort events by position, with end events before start events at same position
+    events.sort_by(|a, b| {
+        a.0.cmp(&b.0).then_with(|| {
+            // End events (false) come before start events (true) at same position
+            a.1.cmp(&b.1)
+        })
+    });
+
+    // Build spans by tracking active captures
+    // Use a stack approach: shorter captures (higher specificity) override longer ones
+    let mut spans = Vec::new();
+    let mut active_captures: Vec<usize> = Vec::new(); // indices of currently active captures
+    let mut last_pos = 0;
+
+    for (pos, is_start, capture_idx) in events {
+        // Emit span for the gap before this event if there's content
+        if pos > last_pos {
+            let style = active_captures
+                .last()
+                .map(|&idx| captures[idx].style)
+                .unwrap_or_default();
+            let text = &line[last_pos..pos];
             if !text.is_empty() {
                 spans.push(InternedSpan {
                     content: interner.get_or_intern(text),
-                    style: current_style.unwrap_or_default(),
+                    style,
                 });
             }
-            current_start = i;
-            current_style = style;
         }
+
+        if is_start {
+            // Push new capture - shorter captures are processed after longer ones
+            // (due to sorting in collect_line_highlights), so they'll be on top
+            active_captures.push(capture_idx);
+        } else {
+            // Remove this capture from active set
+            if let Some(idx) = active_captures.iter().rposition(|&c| c == capture_idx) {
+                active_captures.remove(idx);
+            }
+        }
+
+        last_pos = pos;
     }
 
-    // Emit final span
-    if current_start < line.len() {
-        let text = &line[current_start..];
+    // Emit final span if there's remaining content
+    if last_pos < line.len() {
+        let style = active_captures
+            .last()
+            .map(|&idx| captures[idx].style)
+            .unwrap_or_default();
+        let text = &line[last_pos..];
         if !text.is_empty() {
             spans.push(InternedSpan {
                 content: interner.get_or_intern(text),
-                style: current_style.unwrap_or_default(),
+                style,
             });
         }
     }
 
-    // If no spans, return the whole line as plain text
+    // If no spans were created, return the whole line as plain text
     if spans.is_empty() {
         spans.push(InternedSpan {
             content: interner.get_or_intern(line),
@@ -1281,6 +1316,66 @@ mod tests {
         assert!(
             color_span.unwrap().style.fg.is_some(),
             "'color' should have syntax highlighting as CSS property in Vue"
+        );
+    }
+}
+
+#[cfg(test)]
+mod priming_injection_tests {
+    use super::*;
+    use crate::language::SupportedLanguage;
+    use crate::syntax::get_theme;
+
+    #[test]
+    fn test_collect_highlights_primed_vue() {
+        // Simulate primed source: wrapping plain script content in <script lang="ts">
+        let source = r#"<script lang="ts">
+import { ref } from 'vue'
+const count = ref(0)
+</script>
+"#;
+
+        // Parse with Vue parser
+        let mut pool = ParserPool::new();
+        let parser = pool.get_or_create("vue").unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        // Get style cache
+        let theme_name = "base16-ocean.dark";
+        let theme = get_theme(theme_name);
+        let style_cache = ThemeStyleCache::new(theme);
+
+        // Collect highlights with injection
+        let highlights = collect_line_highlights_with_injections(
+            source,
+            &tree,
+            SupportedLanguage::Vue,
+            &style_cache,
+            &mut pool,
+            "vue",
+        );
+
+        // Check highlights for line 1 (import { ref } from 'vue')
+        // Line 0 is <script lang="ts">, line 1 is the import
+        let line1_captures = highlights.get(1);
+        println!("Line 1 captures: {:?}", line1_captures);
+
+        // Line 2 is const count = ref(0)
+        let line2_captures = highlights.get(2);
+        println!("Line 2 captures: {:?}", line2_captures);
+
+        // Line 0 is <script lang="ts">
+        let line0_captures = highlights.get(0);
+        println!("Line 0 captures: {:?}", line0_captures);
+
+        // Should have captures for TypeScript keywords
+        assert!(
+            line1_captures.is_some() && !line1_captures.unwrap().is_empty(),
+            "Should have highlights for import line"
+        );
+        assert!(
+            line2_captures.is_some() && !line2_captures.unwrap().is_empty(),
+            "Should have highlights for const line"
         );
     }
 }
