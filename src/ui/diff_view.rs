@@ -20,6 +20,89 @@ use crate::syntax::{
     get_theme, highlight_code_line, syntax_for_file, Highlighter, ParserPool,
 };
 
+/// Build a plain DiffCache without syntax highlighting (diff coloring only).
+///
+/// This is a fast path (~1ms) used to provide immediate visual feedback while
+/// the full syntax-highlighted cache is being built in the background.
+///
+/// # Arguments
+/// * `patch` - The diff patch content
+/// * `comment_lines` - Set of line indices that have comments
+///
+/// Returns a DiffCache with file_index set to 0 (caller should update).
+pub fn build_plain_diff_cache(patch: &str, comment_lines: &HashSet<usize>) -> DiffCache {
+    let mut interner = Rodeo::default();
+    let lines: Vec<CachedDiffLine> = patch
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let has_comment = comment_lines.contains(&i);
+            let (line_type, content) = classify_line(line);
+
+            let mut spans = match line_type {
+                LineType::Header => vec![InternedSpan {
+                    content: interner.get_or_intern(line),
+                    style: Style::default().fg(Color::Cyan),
+                }],
+                LineType::Meta => vec![InternedSpan {
+                    content: interner.get_or_intern(line),
+                    style: Style::default().fg(Color::Yellow),
+                }],
+                LineType::Added => vec![
+                    InternedSpan {
+                        content: interner.get_or_intern("+"),
+                        style: Style::default().fg(Color::Green),
+                    },
+                    InternedSpan {
+                        content: interner.get_or_intern(content),
+                        style: Style::default().fg(Color::Green),
+                    },
+                ],
+                LineType::Removed => vec![
+                    InternedSpan {
+                        content: interner.get_or_intern("-"),
+                        style: Style::default().fg(Color::Red),
+                    },
+                    InternedSpan {
+                        content: interner.get_or_intern(content),
+                        style: Style::default().fg(Color::Red),
+                    },
+                ],
+                LineType::Context => vec![
+                    InternedSpan {
+                        content: interner.get_or_intern(" "),
+                        style: Style::default(),
+                    },
+                    InternedSpan {
+                        content: interner.get_or_intern(content),
+                        style: Style::default(),
+                    },
+                ],
+            };
+
+            if has_comment {
+                spans.insert(
+                    0,
+                    InternedSpan {
+                        content: interner.get_or_intern("● "),
+                        style: Style::default().fg(Color::Yellow),
+                    },
+                );
+            }
+            CachedDiffLine { spans }
+        })
+        .collect();
+
+    DiffCache {
+        file_index: 0,
+        patch_hash: hash_string(patch),
+        comment_lines: comment_lines.clone(),
+        lines,
+        interner,
+        highlighted: false,
+    }
+}
+
 /// Build DiffCache with syntax highlighting and string interning.
 ///
 /// Uses tree-sitter for supported languages (Rust, TypeScript, JavaScript, Go, Python)
@@ -126,6 +209,7 @@ pub fn build_diff_cache(
         comment_lines: comment_lines.clone(),
         lines,
         interner,
+        highlighted: true,
     }
 }
 
@@ -1451,6 +1535,19 @@ mod tests {
             !source.contains("<script"),
             "TypeScript source should not have <script> tag"
         );
+    }
+
+    #[test]
+    fn plain_and_highlighted_cache_have_same_line_count() {
+        let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
+        let comment_lines = HashSet::new();
+        let mut parser_pool = ParserPool::new();
+
+        let plain = build_plain_diff_cache(patch, &comment_lines);
+        let highlighted =
+            build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &comment_lines, &mut parser_pool);
+
+        assert_eq!(plain.lines.len(), highlighted.lines.len());
     }
 }
 
