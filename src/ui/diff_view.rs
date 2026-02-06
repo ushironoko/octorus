@@ -42,16 +42,18 @@ pub fn build_diff_cache(
 ) -> DiffCache {
     let mut interner = Rodeo::default();
 
-    // Try to build a combined source for CST highlighting
-    // For CST, we need to parse the entire content at once
-    // Only includes post-change lines (added + context) to ensure valid syntax
-    let (combined_source, line_mapping) = build_combined_source_for_highlight(patch);
-
     // Get file extension for injection support check
     let ext = std::path::Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
+
+    // Try to build a combined source for CST highlighting
+    // For CST, we need to parse the entire content at once
+    // Only includes post-change lines (added + context) to ensure valid syntax
+    // For SFC languages (Vue/Svelte), we may need to add priming tags
+    let (combined_source, line_mapping, priming_lines) =
+        build_combined_source_for_highlight_with_priming(patch, ext);
 
     // Create highlighter (does not borrow parser_pool)
     let highlighter = Highlighter::for_file(filename, theme_name);
@@ -73,9 +75,10 @@ pub fn build_diff_cache(
             .expect("CST highlighter should have style_cache");
 
         // CST path: use tree-sitter with full AST context
-        // Use injection-aware highlighting for SFC languages (Svelte)
-        let line_highlights = if ext == "svelte" {
+        // Use injection-aware highlighting for SFC languages (Svelte, Vue)
+        let line_highlights = if ext == "svelte" || ext == "vue" {
             // Injection path: query is obtained inside the function to avoid borrow conflicts
+            // Note: priming_lines offset is handled when applying highlights to diff lines
             collect_line_highlights_with_injections(
                 &combined_source,
                 &result.tree,
@@ -109,6 +112,7 @@ pub fn build_diff_cache(
             comment_lines,
             &line_highlights,
             &line_mapping,
+            priming_lines,
             &mut interner,
         )
     } else {
@@ -159,6 +163,122 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
     (source, line_mapping)
 }
 
+/// Check if the content looks like JavaScript/TypeScript script code.
+///
+/// Returns true if content contains script code patterns.
+///
+/// Priming is applied whenever script patterns are detected, even if template
+/// or style patterns are also present (mixed content diffs). HTML `<script>`
+/// elements use raw_text, so mixed content is handled correctly by the Vue
+/// parser, and the TypeScript parser does error recovery on non-script parts.
+///
+/// Only returns false when NO script patterns are found (pure template/style
+/// content should not be wrapped in `<script>` tags).
+fn looks_like_script_content(source: &str) -> bool {
+    // Patterns that strongly suggest script content
+    let script_patterns = [
+        // ES module syntax
+        "import ",
+        "export ",
+        "from '",
+        "from \"",
+        // Variable declarations
+        "const ",
+        "let ",
+        "var ",
+        // Function declarations
+        "function ",
+        "=> {",
+        "=> (",
+        // Class syntax
+        "class ",
+        "extends ",
+        // Control flow (with space to avoid matching CSS/template)
+        "if (",
+        "else {",
+        "for (",
+        "while (",
+        "switch (",
+        // Common JS patterns
+        "return ",
+        "async ",
+        "await ",
+        // TypeScript-specific
+        "interface ",
+        "type ",
+        ": string",
+        ": number",
+        ": boolean",
+        "implements ",
+        "declare ",
+        // Vue 3 Composition API
+        "defineProps",
+        "defineEmits",
+        "defineExpose",
+        "defineSlots",
+        "ref(",
+        "reactive(",
+        "computed(",
+        "watch(",
+        "onMounted(",
+        "defineComponent",
+    ];
+
+    for pattern in script_patterns {
+        if source.contains(pattern) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Build combined source with priming for SFC languages (Vue/Svelte).
+///
+/// When a diff doesn't contain SFC structural tags like `<script>`, the tree-sitter
+/// parser cannot detect language injections. This function adds virtual priming tags
+/// to enable proper syntax highlighting.
+///
+/// Returns: (source, line_mapping, priming_lines_count)
+fn build_combined_source_for_highlight_with_priming(
+    patch: &str,
+    ext: &str,
+) -> (String, Vec<(usize, LineType)>, usize) {
+    let (base_source, line_mapping) = build_combined_source_for_highlight(patch);
+
+    // Only add priming for SFC languages
+    if ext != "vue" && ext != "svelte" {
+        return (base_source, line_mapping, 0);
+    }
+
+    // If an opening <script> tag is present, Vue/Svelte parser can detect script injection.
+    // No priming needed in this case.
+    //
+    // NOTE: We intentionally do NOT skip priming when only <template>/<style> is present.
+    // Diff hunks may include template/style tags while omitting the opening <script> tag
+    // (e.g., hidden by hunk context), which would otherwise break script injection.
+    if base_source.contains("<script") {
+        return (base_source, line_mapping, 0);
+    }
+
+    // No structural tags found - only prime if we're confident it's script content.
+    // Being conservative: if we can't determine the content type, don't prime.
+    // Wrong priming (e.g., treating template/style as script) is worse than no priming.
+    if !looks_like_script_content(&base_source) {
+        return (base_source, line_mapping, 0);
+    }
+
+    // Content looks like script - add priming
+    // Use TypeScript as it's a superset of JavaScript
+    let priming_prefix = "<script lang=\"ts\">\n";
+    let priming_suffix = "</script>\n";
+    let priming_lines = 1; // One line for the opening tag
+
+    let primed_source = format!("{}{}{}", priming_prefix, base_source, priming_suffix);
+
+    (primed_source, line_mapping, priming_lines)
+}
+
 /// Build cached lines using CST highlighting.
 ///
 /// Uses pre-computed line highlights to avoid per-line tree traversal.
@@ -172,7 +292,9 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
 /// * `comment_lines` - Set of line indices with comments
 /// * `line_highlights` - Pre-computed highlights from tree-sitter (indexed by source line)
 /// * `line_mapping` - Mapping from source line index to (diff line index, line type)
+/// * `priming_lines` - Number of priming lines added for SFC languages (to offset indices)
 /// * `interner` - String interner for deduplication
+#[allow(clippy::too_many_arguments)]
 fn build_lines_with_cst(
     patch: &str,
     filename: &str,
@@ -180,14 +302,17 @@ fn build_lines_with_cst(
     comment_lines: &HashSet<usize>,
     line_highlights: &crate::syntax::LineHighlights,
     line_mapping: &[(usize, LineType)],
+    priming_lines: usize,
     interner: &mut Rodeo,
 ) -> Vec<CachedDiffLine> {
     // Build a reverse mapping: diff_line_index -> source_line_index
     // Only Added and Context lines are in the source (Removed lines are excluded)
+    // Note: source_idx needs to account for priming_lines offset when looking up highlights
     let mut diff_to_source: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
     for (source_idx, (diff_idx, _)) in line_mapping.iter().enumerate() {
-        diff_to_source.insert(*diff_idx, source_idx);
+        // Add priming_lines to map to the actual line in the primed source
+        diff_to_source.insert(*diff_idx, source_idx + priming_lines);
     }
 
     // Create syntect highlighter for removed lines (they're not in CST source)
@@ -1160,5 +1285,340 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    #[test]
+    fn test_vue_priming_for_script_only_diff() {
+        use ratatui::style::Color;
+
+        // Vue diff that only contains script content (no <script> tag)
+        // This simulates editing inside a script block
+        let patch = r#"@@ -5,3 +5,4 @@
+ const count = ref(0);
++const doubled = computed(() => count.value * 2);
+ function increment() {"#;
+
+        let mut parser_pool = ParserPool::new();
+        let comment_lines = HashSet::new();
+        let cache = build_diff_cache(
+            patch,
+            "Component.vue",
+            "Dracula",
+            &comment_lines,
+            &mut parser_pool,
+        );
+
+        // Line 2 is "+const doubled = computed(() => count.value * 2);" (Added line)
+        let added_line = &cache.lines[2];
+
+        // Find the "const" keyword - should be syntax highlighted via priming
+        let const_span = added_line
+            .spans
+            .iter()
+            .find(|s| cache.resolve(s.content).contains("const"));
+        assert!(
+            const_span.is_some(),
+            "Vue script content should have 'const' highlighted via priming. Spans: {:?}",
+            added_line
+                .spans
+                .iter()
+                .map(|s| cache.resolve(s.content))
+                .collect::<Vec<_>>()
+        );
+
+        let const_style = const_span.unwrap().style;
+
+        // "const" should be syntax highlighted, not plain green (added line default)
+        match const_style.fg {
+            Some(Color::Green) => {
+                panic!(
+                    "'const' in Vue diff has plain green color (added line default). \
+                     Priming should enable TypeScript syntax highlighting."
+                );
+            }
+            Some(Color::Rgb(r, g, b)) => {
+                // Should be some syntax color, not plain green (0, 128, 0)
+                assert!(
+                    !(r == 0 && g == 128 && b == 0),
+                    "'const' should have syntax highlighting. Got Rgb({}, {}, {})",
+                    r,
+                    g,
+                    b
+                );
+            }
+            None => {
+                panic!("'const' in Vue script should have a foreground color");
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_vue_no_priming_when_script_tag_present() {
+        // Vue diff that already has <script> tag - no priming needed
+        let patch = r#"@@ -1,5 +1,6 @@
+ <script lang="ts">
+ const count = ref(0);
++const doubled = computed(() => count.value * 2);
+ </script>"#;
+
+        let (source, line_mapping, priming_lines) =
+            build_combined_source_for_highlight_with_priming(patch, "vue");
+
+        assert_eq!(
+            priming_lines, 0,
+            "Should not add priming when <script> tag is present"
+        );
+        assert!(
+            source.contains("<script"),
+            "Source should contain original <script> tag"
+        );
+        assert_eq!(line_mapping.len(), 4, "Should have 4 mapped lines");
+    }
+
+    #[test]
+    fn test_vue_priming_adds_script_wrapper() {
+        // Vue diff without any SFC tags - needs priming
+        let patch = r#"@@ -5,2 +5,3 @@
+ const count = ref(0);
++const doubled = computed(() => count.value * 2);"#;
+
+        let (source, line_mapping, priming_lines) =
+            build_combined_source_for_highlight_with_priming(patch, "vue");
+
+        assert_eq!(priming_lines, 1, "Should add 1 priming line for <script>");
+        assert!(
+            source.starts_with("<script lang=\"ts\">\n"),
+            "Source should start with priming <script> tag"
+        );
+        assert!(
+            source.ends_with("</script>\n"),
+            "Source should end with closing </script> tag"
+        );
+        assert_eq!(line_mapping.len(), 2, "Line mapping should be unchanged");
+    }
+
+    #[test]
+    fn test_vue_priming_when_template_tag_present_but_script_tag_missing() {
+        // Vue diff where template hunk is visible, but opening <script> tag is hidden by hunk context.
+        // We should still prime script wrapper so script lines get injection highlighting.
+        let patch = r#"@@ -7,4 +7,4 @@
+ import { ref } from 'vue'
+ const count = ref(0)
+-const oldValue = computed(() => count.value)
++const newValue = computed(() => count.value)
+@@ -40,5 +40,6 @@
+ <template>
+   <div class="foo">
++    <span>{{ newValue }}</span>
+   </div>
+ </template>"#;
+
+        let (source, line_mapping, priming_lines) =
+            build_combined_source_for_highlight_with_priming(patch, "vue");
+
+        assert_eq!(
+            priming_lines, 1,
+            "Should add priming when <script> start tag is missing, even if <template> exists"
+        );
+        assert!(
+            source.starts_with("<script lang=\"ts\">\n"),
+            "Source should start with priming <script> tag"
+        );
+        assert!(
+            source.contains("<template>"),
+            "Original template content should still be present"
+        );
+        assert_eq!(
+            line_mapping.len(),
+            8,
+            "Line mapping should preserve source lines"
+        );
+    }
+
+    #[test]
+    fn test_non_sfc_no_priming() {
+        // TypeScript file - no priming needed
+        let patch = r#"@@ -1,2 +1,3 @@
+ const x = 1;
++const y = 2;"#;
+
+        let (source, _, priming_lines) =
+            build_combined_source_for_highlight_with_priming(patch, "ts");
+
+        assert_eq!(priming_lines, 0, "TypeScript should not have priming");
+        assert!(
+            !source.contains("<script"),
+            "TypeScript source should not have <script> tag"
+        );
+    }
+}
+
+#[cfg(test)]
+mod priming_diff_tests {
+    use super::*;
+    use crate::syntax::ParserPool;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_build_diff_cache_primed_vue() {
+        // Simulate a diff that contains only script content (no <script> tag)
+        let patch = r#"diff --git a/src/composables/useFoo.ts b/src/composables/useFoo.ts
+@@ -1,5 +1,7 @@
++import { ref } from 'vue'
++
+ export const useFoo = () => {
+-  const old = 1
++  const count = ref(0)
+   return { count }
+ }
+"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "src/components/Foo.vue",
+            "base16-ocean.dark",
+            &HashSet::new(),
+            &mut parser_pool,
+        );
+
+        // The import line should have syntax highlighting
+        // Line 2 is "+import { ref } from 'vue'"
+        let import_line = &cache.lines[2];
+        assert!(
+            import_line.spans.len() > 2,
+            "Import line should have syntax highlighting (more than just marker), got {} spans",
+            import_line.spans.len()
+        );
+    }
+
+    #[test]
+    fn test_build_diff_cache_primed_vue_mixed_content() {
+        // Simulate a diff with BOTH script and template content (no structural tags).
+        // This is the common case when a Vue SFC diff spans multiple hunks across
+        // script and template sections.
+        let patch = r#"diff --git a/src/components/Foo.vue b/src/components/Foo.vue
+@@ -7,14 +7,13 @@
++import { ref } from 'vue'
+ import SomeComponent from '@/components/SomeComponent.vue'
+-import OldComponent from '@/components/OldComponent.vue'
+
+ const count = ref(0)
+@@ -80,5 +79,5 @@
+     </div>
+-    <OldDialog />
++    <NewDialog @close="closeDialog" />
+   </div>
+"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "src/components/Foo.vue",
+            "base16-ocean.dark",
+            &HashSet::new(),
+            &mut parser_pool,
+        );
+
+        // Find import and const lines by content
+        let mut import_idx = None;
+        let mut const_idx = None;
+        for (i, line) in cache.lines.iter().enumerate() {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|s| cache.resolve(s.content).to_string())
+                .collect();
+            if text.contains("import { ref }") {
+                import_idx = Some(i);
+            }
+            if text.contains("const count") {
+                const_idx = Some(i);
+            }
+        }
+
+        // The import line should have TypeScript highlighting
+        let import_line = &cache.lines[import_idx.expect("import line not found")];
+        assert!(
+            import_line.spans.len() > 2,
+            "Import line in mixed content should have syntax highlighting, got {} spans",
+            import_line.spans.len()
+        );
+
+        // The const line should also have TypeScript highlighting
+        let const_line = &cache.lines[const_idx.expect("const line not found")];
+        assert!(
+            const_line.spans.len() > 2,
+            "Const line in mixed content should have syntax highlighting, got {} spans",
+            const_line.spans.len()
+        );
+    }
+
+    #[test]
+    fn test_build_diff_cache_primed_vue_with_visible_template_but_hidden_script_tag() {
+        // Simulate a diff where the template hunk includes <template>, but <script> start
+        // tag is outside hunk context. Script lines should still be highlighted.
+        let patch = r#"diff --git a/src/components/Foo.vue b/src/components/Foo.vue
+@@ -7,4 +7,4 @@
+ import { ref } from 'vue'
+ const count = ref(0)
+-const oldValue = computed(() => count.value)
++const newValue = computed(() => count.value)
+@@ -40,5 +40,6 @@
+ <template>
+   <div class="foo">
++    <span>{{ newValue }}</span>
+   </div>
+ </template>
+"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "src/components/Foo.vue",
+            "base16-ocean.dark",
+            &HashSet::new(),
+            &mut parser_pool,
+        );
+
+        // Find the updated const line by content and ensure tokenized highlighting exists.
+        let const_line = cache
+            .lines
+            .iter()
+            .find(|line| {
+                let text: String = line
+                    .spans
+                    .iter()
+                    .map(|s| cache.resolve(s.content).to_string())
+                    .collect();
+                text.contains("const newValue = computed")
+            })
+            .expect("const line not found");
+
+        assert!(
+            const_line.spans.len() > 2,
+            "Script line should have syntax highlighting even when <template> is visible"
+        );
+    }
+
+    #[test]
+    fn test_looks_like_script_content_mixed() {
+        // Mixed content should still be detected as script
+        let source = "import { ref } from 'vue'\nconst count = ref(0)\n</div>\n<NewDialog @close=\"closeDialog\" />\n";
+        assert!(
+            looks_like_script_content(source),
+            "Mixed script+template content should be detected as script"
+        );
+    }
+
+    #[test]
+    fn test_looks_like_script_content_pure_template() {
+        // Pure template content should NOT be detected as script
+        let source = "<div>\n  <span>hello</span>\n</div>\n";
+        assert!(
+            !looks_like_script_content(source),
+            "Pure template content should not be detected as script"
+        );
     }
 }
