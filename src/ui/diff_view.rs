@@ -251,13 +251,13 @@ fn build_combined_source_for_highlight_with_priming(
         return (base_source, line_mapping, 0);
     }
 
-    // Check if the source already has SFC structural tags
-    let has_script = base_source.contains("<script");
-    let has_style = base_source.contains("<style");
-    let has_template = base_source.contains("<template");
-
-    // If we have any structural tags, no priming needed
-    if has_script || has_style || has_template {
+    // If an opening <script> tag is present, Vue/Svelte parser can detect script injection.
+    // No priming needed in this case.
+    //
+    // NOTE: We intentionally do NOT skip priming when only <template>/<style> is present.
+    // Diff hunks may include template/style tags while omitting the opening <script> tag
+    // (e.g., hidden by hunk context), which would otherwise break script injection.
+    if base_source.contains("<script") {
         return (base_source, line_mapping, 0);
     }
 
@@ -1399,6 +1399,44 @@ mod tests {
     }
 
     #[test]
+    fn test_vue_priming_when_template_tag_present_but_script_tag_missing() {
+        // Vue diff where template hunk is visible, but opening <script> tag is hidden by hunk context.
+        // We should still prime script wrapper so script lines get injection highlighting.
+        let patch = r#"@@ -7,4 +7,4 @@
+ import { ref } from 'vue'
+ const count = ref(0)
+-const oldValue = computed(() => count.value)
++const newValue = computed(() => count.value)
+@@ -40,5 +40,6 @@
+ <template>
+   <div class="foo">
++    <span>{{ newValue }}</span>
+   </div>
+ </template>"#;
+
+        let (source, line_mapping, priming_lines) =
+            build_combined_source_for_highlight_with_priming(patch, "vue");
+
+        assert_eq!(
+            priming_lines, 1,
+            "Should add priming when <script> start tag is missing, even if <template> exists"
+        );
+        assert!(
+            source.starts_with("<script lang=\"ts\">\n"),
+            "Source should start with priming <script> tag"
+        );
+        assert!(
+            source.contains("<template>"),
+            "Original template content should still be present"
+        );
+        assert_eq!(
+            line_mapping.len(),
+            8,
+            "Line mapping should preserve source lines"
+        );
+    }
+
+    #[test]
     fn test_non_sfc_no_priming() {
         // TypeScript file - no priming needed
         let patch = r#"@@ -1,2 +1,3 @@
@@ -1514,6 +1552,53 @@ mod priming_diff_tests {
             const_line.spans.len() > 2,
             "Const line in mixed content should have syntax highlighting, got {} spans",
             const_line.spans.len()
+        );
+    }
+
+    #[test]
+    fn test_build_diff_cache_primed_vue_with_visible_template_but_hidden_script_tag() {
+        // Simulate a diff where the template hunk includes <template>, but <script> start
+        // tag is outside hunk context. Script lines should still be highlighted.
+        let patch = r#"diff --git a/src/components/Foo.vue b/src/components/Foo.vue
+@@ -7,4 +7,4 @@
+ import { ref } from 'vue'
+ const count = ref(0)
+-const oldValue = computed(() => count.value)
++const newValue = computed(() => count.value)
+@@ -40,5 +40,6 @@
+ <template>
+   <div class="foo">
++    <span>{{ newValue }}</span>
+   </div>
+ </template>
+"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "src/components/Foo.vue",
+            "base16-ocean.dark",
+            &HashSet::new(),
+            &mut parser_pool,
+        );
+
+        // Find the updated const line by content and ensure tokenized highlighting exists.
+        let const_line = cache
+            .lines
+            .iter()
+            .find(|line| {
+                let text: String = line
+                    .spans
+                    .iter()
+                    .map(|s| cache.resolve(s.content).to_string())
+                    .collect();
+                text.contains("const newValue = computed")
+            })
+            .expect("const line not found");
+
+        assert!(
+            const_line.spans.len() > 2,
+            "Script line should have syntax highlighting even when <template> is visible"
         );
     }
 
