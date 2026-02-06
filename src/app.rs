@@ -30,7 +30,7 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 
 /// ハイライトキャッシュストアの最大エントリ数（メモリ上限）
 ///
-/// 大規模PRでのOOM防止。超過時は最も古いエントリから削除。
+/// 大規模PRでのOOM防止。超過時は現在選択中のファイルから最も遠いエントリを削除。
 const MAX_HIGHLIGHTED_CACHE_ENTRIES: usize = 50;
 
 /// プリフェッチ対象ファイルの最大数
@@ -891,7 +891,7 @@ impl App {
                     if self.highlighted_cache_store.contains_key(&file_index) {
                         continue;
                     }
-                    // サイズ上限チェック: 超過時は最も古いエントリを削除
+                    // サイズ上限チェック: 超過時は現在選択中のファイルから最も遠いエントリを削除
                     if self.highlighted_cache_store.len() >= MAX_HIGHLIGHTED_CACHE_ENTRIES {
                         // 現在選択中のファイルから最も遠いエントリを削除
                         let evict_key = self
