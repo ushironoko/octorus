@@ -31,14 +31,6 @@ struct Args {
     #[arg(short, long)]
     pr: Option<u32>,
 
-    /// Force refresh, ignore cache
-    #[arg(long, default_value = "false")]
-    refresh: bool,
-
-    /// Cache TTL in seconds (default: 300 = 5 minutes)
-    #[arg(long, default_value = "300")]
-    cache_ttl: u64,
-
     /// Start AI Rally mode directly
     #[arg(long, default_value = "false")]
     ai_rally: bool,
@@ -56,6 +48,8 @@ enum Commands {
         #[arg(long, default_value = "false")]
         force: bool,
     },
+    /// Remove AI Rally session data
+    Clean,
 }
 
 /// Restore terminal to normal state
@@ -84,6 +78,12 @@ async fn main() -> Result<()> {
     if let Some(command) = args.command {
         return match command {
             Commands::Init { force } => init::run_init(force),
+            Commands::Clean => {
+                cache::cleanup_rally_sessions();
+                let rally_dir = cache::cache_dir().join("rally");
+                println!("Rally sessions cleaned: {}", rally_dir.display());
+                Ok(())
+            }
         };
     }
 
@@ -122,31 +122,8 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     // リトライ用のチャンネル
     let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
 
-    // キャッシュを同期的に読み込み（メインスレッドで即座に）
-    let (mut app, tx, needs_fetch) = if args.refresh {
-        // --refresh 時は全キャッシュを削除
-        let _ = cache::invalidate_all_cache(repo, pr);
-        let (app, tx) = app::App::new_loading(repo, pr, config.clone(), args.cache_ttl);
-        (app, tx, loader::FetchMode::Fresh)
-    } else {
-        match cache::read_cache(repo, pr, args.cache_ttl) {
-            Ok(cache::CacheResult::Hit(entry)) => {
-                let pr_updated_at = entry.pr_updated_at;
-                let (app, tx) =
-                    app::App::new_with_cache(repo, pr, config.clone(), args.cache_ttl, entry.pr, entry.files);
-                (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
-            }
-            Ok(cache::CacheResult::Stale(entry)) => {
-                let (app, tx) =
-                    app::App::new_with_cache(repo, pr, config.clone(), args.cache_ttl, entry.pr, entry.files);
-                (app, tx, loader::FetchMode::Fresh)
-            }
-            Ok(cache::CacheResult::Miss) | Err(_) => {
-                let (app, tx) = app::App::new_loading(repo, pr, config.clone(), args.cache_ttl);
-                (app, tx, loader::FetchMode::Fresh)
-            }
-        }
-    };
+    // 常に Loading 状態で開始し、バックグラウンドで API 取得
+    let (mut app, tx) = app::App::new_loading(repo, pr, config.clone());
 
     app.set_retry_sender(retry_tx);
     setup_working_dir(&mut app, args);
@@ -168,7 +145,7 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
         tokio::select! {
             _ = token_clone.cancelled() => {}
             _ = async {
-                loader::fetch_pr_data(repo_clone.clone(), pr_number, needs_fetch, tx.clone()).await;
+                loader::fetch_pr_data(repo_clone.clone(), pr_number, loader::FetchMode::Fresh, tx.clone()).await;
 
                 while retry_rx.recv().await.is_some() {
                     let tx_retry = tx.clone();
@@ -185,18 +162,19 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     // Signal background tasks to stop
     cancel_token.cancel();
 
-    // 終了時にキャッシュを削除
-    let _ = cache::invalidate_all_cache(repo, pr);
-
     if result.is_err() {
         restore_terminal();
     }
-    result
+
+    // spawn_blocking タスク（プリフェッチ等）が巨大ファイル処理中の場合、
+    // tokio ランタイムの drop が完了を待ち続けるため、即座にプロセスを終了する
+    let exit_code = if result.is_ok() { 0 } else { 1 };
+    std::process::exit(exit_code);
 }
 
 /// Run the app with PR list (new flow)
 async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Result<()> {
-    let mut app = app::App::new_pr_list(repo, config, args.cache_ttl);
+    let mut app = app::App::new_pr_list(repo, config);
     setup_working_dir(&mut app, args);
 
     // Set pending AI Rally flag if --ai-rally was passed
@@ -222,7 +200,9 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     if result.is_err() {
         restore_terminal();
     }
-    result
+
+    let exit_code = if result.is_ok() { 0 } else { 1 };
+    std::process::exit(exit_code);
 }
 
 /// Set up working directory for AI agents

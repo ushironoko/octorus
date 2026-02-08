@@ -1,16 +1,11 @@
-use anyhow::Result;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::SystemTime;
-use tracing::warn;
+
+use anyhow::Result;
 use xdg::BaseDirectories;
 
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{ChangedFile, PullRequest};
-
-#[allow(dead_code)]
-pub const DEFAULT_TTL_SECS: u64 = 300; // 5分
 
 /// Sanitize repository name to prevent path traversal attacks.
 /// Only allows alphanumeric characters, underscores, hyphens, and single dots (not ".." sequences).
@@ -47,272 +42,133 @@ pub fn sanitize_repo_name(repo: &str) -> Result<String> {
     Ok(sanitized)
 }
 
-/// キャッシュ可能なエントリのトレイト
-trait Cacheable: Serialize + DeserializeOwned {
-    /// キャッシュファイルのサフィックス（例: "", "_comments", "_discussion_comments"）
-    fn cache_suffix() -> &'static str;
-    /// エントリの作成時刻を返す
-    fn created_at(&self) -> u64;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    pub pr: PullRequest,
-    pub files: Vec<ChangedFile>,
-    pub created_at: u64,
-    pub pr_updated_at: String,
-}
-
-impl Cacheable for CacheEntry {
-    fn cache_suffix() -> &'static str {
-        ""
-    }
-    fn created_at(&self) -> u64 {
-        self.created_at
-    }
-}
-
-pub enum CacheResult<T> {
-    Hit(T),
-    Stale(T),
-    Miss,
-}
-
 /// キャッシュディレクトリ: ~/.cache/octorus/
+/// AI Rally セッション等で使用
 pub fn cache_dir() -> PathBuf {
     BaseDirectories::with_prefix("octorus")
         .map(|dirs| dirs.get_cache_home())
         .unwrap_or_else(|_| PathBuf::from(".cache"))
 }
 
-/// ジェネリックキャッシュファイルパス
-fn cache_file_path_generic<T: Cacheable>(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    let sanitized = sanitize_repo_name(repo)?;
-    Ok(cache_dir().join(format!(
-        "{}_{}{}.json",
-        sanitized,
-        pr_number,
-        T::cache_suffix()
-    )))
-}
-
-/// ジェネリックキャッシュ読み込み
-/// キャッシュファイルが破損している場合（JSONデシリアライズエラー）は CacheResult::Miss を返す
-/// その他のI/Oエラー（パーミッション問題、ディスク障害など）はエラーとして伝播する
-fn read_cache_generic<T: Cacheable>(
-    repo: &str,
-    pr_number: u32,
-    ttl_secs: u64,
-) -> Result<CacheResult<T>> {
-    let path = cache_file_path_generic::<T>(repo, pr_number)?;
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CacheResult::Miss);
-        }
-        Err(e) => {
-            // Propagate unexpected I/O errors (permission issues, disk faults, etc.)
-            return Err(e.into());
-        }
-    };
-
-    let entry: T = match serde_json::from_str(&content) {
+/// Rally セッションディレクトリ内のデータをクリーンアップ
+pub fn cleanup_rally_sessions() {
+    let rally_dir = cache_dir().join("rally");
+    if !rally_dir.exists() {
+        return;
+    }
+    let entries = match std::fs::read_dir(&rally_dir) {
         Ok(e) => e,
-        Err(e) => {
-            warn!("Cache file {:?} corrupted: {}, treating as miss", path, e);
-            return Ok(CacheResult::Miss);
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(path);
         }
-    };
-
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-    let age = now.saturating_sub(entry.created_at());
-
-    if age <= ttl_secs {
-        Ok(CacheResult::Hit(entry))
-    } else {
-        Ok(CacheResult::Stale(entry))
     }
 }
 
-/// ジェネリックキャッシュ書き込み（atomic: tempfile + persist）
-fn write_cache_generic<T: Cacheable>(repo: &str, pr_number: u32, entry: &T) -> Result<()> {
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    let dir = cache_dir();
-    std::fs::create_dir_all(&dir)?;
-    let content = serde_json::to_string_pretty(entry)?;
-    let target = cache_file_path_generic::<T>(repo, pr_number)?;
-    let mut tmp = NamedTempFile::new_in(&dir)?;
-    tmp.write_all(content.as_bytes())?;
-    tmp.persist(target)?;
-    Ok(())
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PrCacheKey {
+    pub repo: String,
+    pub pr_number: u32,
 }
 
-/// キャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}.json
-/// Returns an error if the repository name contains invalid characters or path traversal patterns.
-pub fn cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    cache_file_path_generic::<CacheEntry>(repo, pr_number)
+pub struct PrData {
+    pub pr: Box<PullRequest>,
+    pub files: Vec<ChangedFile>,
+    pub pr_updated_at: String,
 }
 
-/// キャッシュ読み込み
-pub fn read_cache(repo: &str, pr_number: u32, ttl_secs: u64) -> Result<CacheResult<CacheEntry>> {
-    read_cache_generic(repo, pr_number, ttl_secs)
+pub struct SessionCache {
+    pr_data: HashMap<PrCacheKey, PrData>,
+    review_comments: HashMap<PrCacheKey, Vec<ReviewComment>>,
+    discussion_comments: HashMap<PrCacheKey, Vec<DiscussionComment>>,
 }
 
-/// キャッシュ書き込み
-pub fn write_cache(
-    repo: &str,
-    pr_number: u32,
-    pr: &PullRequest,
-    files: &[ChangedFile],
-) -> Result<()> {
-    let entry = CacheEntry {
-        pr: pr.clone(),
-        files: files.to_vec(),
-        created_at: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs(),
-        pr_updated_at: pr.updated_at.clone(),
-    };
-    write_cache_generic(repo, pr_number, &entry)
-}
-
-/// PRキャッシュ削除
-#[allow(dead_code)]
-pub fn invalidate_cache(repo: &str, pr_number: u32) -> Result<()> {
-    let path = cache_file_path(repo, pr_number)?;
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
-/// 全キャッシュ削除（PR + コメント + ディスカッションコメント）
-pub fn invalidate_all_cache(repo: &str, pr_number: u32) -> Result<()> {
-    // PR cache
-    let pr_path = cache_file_path(repo, pr_number)?;
-    if pr_path.exists() {
-        std::fs::remove_file(pr_path)?;
-    }
-    // Comment cache
-    let comment_path = comment_cache_file_path(repo, pr_number)?;
-    if comment_path.exists() {
-        std::fs::remove_file(comment_path)?;
-    }
-    // Discussion comment cache
-    let discussion_comment_path = discussion_comment_cache_file_path(repo, pr_number)?;
-    if discussion_comment_path.exists() {
-        std::fs::remove_file(discussion_comment_path)?;
-    }
-    Ok(())
-}
-
-/// コメントキャッシュのみ削除
-pub fn invalidate_comment_cache(repo: &str, pr_number: u32) -> Result<()> {
-    let comment_path = comment_cache_file_path(repo, pr_number)?;
-    if comment_path.exists() {
-        std::fs::remove_file(comment_path)?;
-    }
-    Ok(())
-}
-
-// ==================== Comment Cache ====================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommentCacheEntry {
-    pub comments: Vec<ReviewComment>,
-    pub created_at: u64,
-}
-
-impl Cacheable for CommentCacheEntry {
-    fn cache_suffix() -> &'static str {
-        "_comments"
-    }
-    fn created_at(&self) -> u64 {
-        self.created_at
+impl Default for SessionCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// コメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_comments.json
-/// Returns an error if the repository name contains invalid characters or path traversal patterns.
-pub fn comment_cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    cache_file_path_generic::<CommentCacheEntry>(repo, pr_number)
-}
-
-/// コメントキャッシュ読み込み
-pub fn read_comment_cache(
-    repo: &str,
-    pr_number: u32,
-    ttl_secs: u64,
-) -> Result<CacheResult<CommentCacheEntry>> {
-    read_cache_generic(repo, pr_number, ttl_secs)
-}
-
-/// コメントキャッシュ書き込み
-pub fn write_comment_cache(repo: &str, pr_number: u32, comments: &[ReviewComment]) -> Result<()> {
-    let entry = CommentCacheEntry {
-        comments: comments.to_vec(),
-        created_at: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs(),
-    };
-    write_cache_generic(repo, pr_number, &entry)
-}
-
-// ==================== Discussion Comment Cache ====================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscussionCommentCacheEntry {
-    pub comments: Vec<DiscussionComment>,
-    pub created_at: u64,
-}
-
-impl Cacheable for DiscussionCommentCacheEntry {
-    fn cache_suffix() -> &'static str {
-        "_discussion_comments"
+impl SessionCache {
+    pub fn new() -> Self {
+        Self {
+            pr_data: HashMap::new(),
+            review_comments: HashMap::new(),
+            discussion_comments: HashMap::new(),
+        }
     }
-    fn created_at(&self) -> u64 {
-        self.created_at
+
+    pub fn get_pr_data(&self, key: &PrCacheKey) -> Option<&PrData> {
+        self.pr_data.get(key)
     }
-}
 
-/// ディスカッションコメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_discussion_comments.json
-/// Returns an error if the repository name contains invalid characters or path traversal patterns.
-pub fn discussion_comment_cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    cache_file_path_generic::<DiscussionCommentCacheEntry>(repo, pr_number)
-}
+    pub fn put_pr_data(&mut self, key: PrCacheKey, data: PrData) {
+        self.pr_data.insert(key, data);
+    }
 
-/// ディスカッションコメントキャッシュ読み込み
-pub fn read_discussion_comment_cache(
-    repo: &str,
-    pr_number: u32,
-    ttl_secs: u64,
-) -> Result<CacheResult<DiscussionCommentCacheEntry>> {
-    read_cache_generic(repo, pr_number, ttl_secs)
-}
+    pub fn get_review_comments(&self, key: &PrCacheKey) -> Option<&[ReviewComment]> {
+        self.review_comments.get(key).map(|v| v.as_slice())
+    }
 
-/// ディスカッションコメントキャッシュ書き込み
-pub fn write_discussion_comment_cache(
-    repo: &str,
-    pr_number: u32,
-    comments: &[DiscussionComment],
-) -> Result<()> {
-    let entry = DiscussionCommentCacheEntry {
-        comments: comments.to_vec(),
-        created_at: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs(),
-    };
-    write_cache_generic(repo, pr_number, &entry)
+    pub fn put_review_comments(&mut self, key: PrCacheKey, comments: Vec<ReviewComment>) {
+        self.review_comments.insert(key, comments);
+    }
+
+    pub fn remove_review_comments(&mut self, key: &PrCacheKey) {
+        self.review_comments.remove(key);
+    }
+
+    pub fn get_discussion_comments(&self, key: &PrCacheKey) -> Option<&[DiscussionComment]> {
+        self.discussion_comments.get(key).map(|v| v.as_slice())
+    }
+
+    pub fn put_discussion_comments(
+        &mut self,
+        key: PrCacheKey,
+        comments: Vec<DiscussionComment>,
+    ) {
+        self.discussion_comments.insert(key, comments);
+    }
+
+    pub fn remove_discussion_comments(&mut self, key: &PrCacheKey) {
+        self.discussion_comments.remove(key);
+    }
+
+    pub fn invalidate_all(&mut self) {
+        self.pr_data.clear();
+        self.review_comments.clear();
+        self.discussion_comments.clear();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::{Branch, User};
+
+    fn make_test_pr(title: &str, updated_at: &str) -> PullRequest {
+        PullRequest {
+            number: 1,
+            title: title.to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: User {
+                login: "testuser".to_string(),
+            },
+            updated_at: updated_at.to_string(),
+        }
+    }
 
     #[test]
     fn test_sanitize_repo_name_valid() {
@@ -420,5 +276,149 @@ mod tests {
             sanitize_repo_name("simple-repo").unwrap(),
             "simple-repo".to_string()
         );
+    }
+
+    #[test]
+    fn test_session_cache_put_get_pr_data() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+
+        assert!(cache.get_pr_data(&key).is_none());
+
+        let pr = make_test_pr("test", "2024-01-01");
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Box::new(pr),
+                files: vec![],
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
+
+        let data = cache.get_pr_data(&key).unwrap();
+        assert_eq!(data.pr.title, "test");
+        assert!(data.files.is_empty());
+    }
+
+    #[test]
+    fn test_session_cache_put_get_review_comments() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+
+        assert!(cache.get_review_comments(&key).is_none());
+
+        cache.put_review_comments(key.clone(), vec![]);
+        let comments = cache.get_review_comments(&key).unwrap();
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_session_cache_put_get_discussion_comments() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+
+        assert!(cache.get_discussion_comments(&key).is_none());
+
+        cache.put_discussion_comments(key.clone(), vec![]);
+        let comments = cache.get_discussion_comments(&key).unwrap();
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_session_cache_remove_review_comments() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+
+        cache.put_review_comments(key.clone(), vec![]);
+        assert!(cache.get_review_comments(&key).is_some());
+
+        cache.remove_review_comments(&key);
+        assert!(cache.get_review_comments(&key).is_none());
+    }
+
+    #[test]
+    fn test_session_cache_remove_discussion_comments() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+
+        cache.put_discussion_comments(key.clone(), vec![]);
+        assert!(cache.get_discussion_comments(&key).is_some());
+
+        cache.remove_discussion_comments(&key);
+        assert!(cache.get_discussion_comments(&key).is_none());
+    }
+
+    #[test]
+    fn test_session_cache_invalidate_all() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
+        cache.put_review_comments(key.clone(), vec![]);
+        cache.put_discussion_comments(key.clone(), vec![]);
+
+        cache.invalidate_all();
+
+        assert!(cache.get_pr_data(&key).is_none());
+        assert!(cache.get_review_comments(&key).is_none());
+        assert!(cache.get_discussion_comments(&key).is_none());
+    }
+
+    #[test]
+    fn test_session_cache_multiple_prs() {
+        let mut cache = SessionCache::new();
+        let key1 = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+        let key2 = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 2,
+        };
+
+        cache.put_pr_data(
+            key1.clone(),
+            PrData {
+                pr: Box::new(make_test_pr("PR 1", "2024-01-01")),
+                files: vec![],
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
+        cache.put_pr_data(
+            key2.clone(),
+            PrData {
+                pr: Box::new(make_test_pr("PR 2", "2024-01-02")),
+                files: vec![],
+                pr_updated_at: "2024-01-02".to_string(),
+            },
+        );
+
+        assert_eq!(cache.get_pr_data(&key1).unwrap().pr.title, "PR 1");
+        assert_eq!(cache.get_pr_data(&key2).unwrap().pr.title, "PR 2");
     }
 }
