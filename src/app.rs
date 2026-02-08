@@ -1,12 +1,12 @@
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use lasso::{Rodeo, Spur};
 use ratatui::{backend::CrosstermBackend, style::Style, Terminal};
 use smallvec::SmallVec;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::io::Stdout;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -37,6 +37,9 @@ const MAX_HIGHLIGHTED_CACHE_ENTRIES: usize = 50;
 ///
 /// 大規模PRで全ファイルをクローンしないよう制限。
 const MAX_PREFETCH_FILES: usize = 50;
+
+/// PR番号と紐づいたレシーバー（発信元PRを追跡してクロスPRキャッシュ汚染を防止）
+type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
 
 /// コメントのdiff内位置を表す構造体
 #[derive(Debug, Clone)]
@@ -327,12 +330,14 @@ pub struct App {
     pub ai_rally_state: Option<AiRallyState>,
     pub working_dir: Option<String>,
     // Receivers
-    data_receiver: Option<mpsc::Receiver<DataLoadResult>>,
+    // PR-specific receivers carry the originating PR number to avoid
+    // cross-PR cache contamination when the user switches PRs mid-flight.
+    data_receiver: PrReceiver<DataLoadResult>,
     retry_sender: Option<mpsc::Sender<()>>,
-    comment_receiver: Option<mpsc::Receiver<Result<Vec<ReviewComment>, String>>>,
+    comment_receiver: PrReceiver<Result<Vec<ReviewComment>, String>>,
     diff_cache_receiver: Option<mpsc::Receiver<DiffCache>>,
     prefetch_receiver: Option<mpsc::Receiver<DiffCache>>,
-    discussion_comment_receiver: Option<mpsc::Receiver<Result<Vec<DiscussionComment>, String>>>,
+    discussion_comment_receiver: PrReceiver<Result<Vec<DiscussionComment>, String>>,
     rally_event_receiver: Option<mpsc::Receiver<RallyEvent>>,
     // Handle for aborting the rally orchestrator task
     rally_abort_handle: Option<AbortHandle>,
@@ -343,7 +348,7 @@ pub struct App {
     // Pending AI Rally flag (set when --ai-rally is passed with PR list mode)
     pending_ai_rally: bool,
     // Comment submission state
-    comment_submit_receiver: Option<mpsc::Receiver<CommentSubmitResult>>,
+    comment_submit_receiver: PrReceiver<CommentSubmitResult>,
     comment_submitting: bool,
     /// Last submission result: (success, message)
     pub submission_result: Option<(bool, String)>,
@@ -417,7 +422,7 @@ impl App {
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
-            data_receiver: Some(rx),
+            data_receiver: Some((pr_number, rx)),
             retry_sender: None,
             comment_receiver: None,
             diff_cache_receiver: None,
@@ -520,8 +525,8 @@ impl App {
     }
 
     /// データ受信チャンネルを設定
-    pub fn set_data_receiver(&mut self, rx: mpsc::Receiver<DataLoadResult>) {
-        self.data_receiver = Some(rx);
+    pub fn set_data_receiver(&mut self, pr_number: u32, rx: mpsc::Receiver<DataLoadResult>) {
+        self.data_receiver = Some((pr_number, rx));
     }
 
     pub fn set_retry_sender(&mut self, tx: mpsc::Sender<()>) {
@@ -636,12 +641,35 @@ impl App {
 
     /// バックグラウンドタスクからのデータ更新をポーリング
     fn poll_data_updates(&mut self) {
-        let Some(ref mut rx) = self.data_receiver else {
+        let Some((origin_pr, rx)) = self.data_receiver.as_mut() else {
             return;
         };
+        let origin_pr = *origin_pr;
 
         match rx.try_recv() {
-            Ok(result) => self.handle_data_result(result),
+            Ok(result) => {
+                // PR が切り替わっている場合はキャッシュのみ更新し、UI状態には反映しない
+                if self.pr_number == Some(origin_pr) {
+                    self.handle_data_result(origin_pr, result);
+                } else {
+                    // 異なるPRのデータ: セッションキャッシュにのみ格納
+                    if let DataLoadResult::Success { pr, files } = result {
+                        let cache_key = PrCacheKey {
+                            repo: self.repo.clone(),
+                            pr_number: origin_pr,
+                        };
+                        self.session_cache.put_pr_data(
+                            cache_key,
+                            PrData {
+                                pr: pr.clone(),
+                                files: files.clone(),
+                                pr_updated_at: pr.updated_at.clone(),
+                            },
+                        );
+                    }
+                    self.data_receiver = None;
+                }
+            }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 self.data_receiver = None;
@@ -651,49 +679,57 @@ impl App {
 
     /// コメント取得のポーリング
     fn poll_comment_updates(&mut self) {
-        let Some(ref mut rx) = self.comment_receiver else {
+        let Some((origin_pr, rx)) = self.comment_receiver.as_mut() else {
             return;
         };
+        let origin_pr = *origin_pr;
 
         match rx.try_recv() {
             Ok(Ok(comments)) => {
-                // セッションキャッシュに格納（clone して分配）
+                // セッションキャッシュに格納（発信元PRのキーで保存）
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
-                    pr_number: self.pr_number(),
+                    pr_number: origin_pr,
                 };
                 self.session_cache
                     .put_review_comments(cache_key, comments.clone());
-                self.review_comments = Some(comments);
-                self.selected_comment = 0;
-                self.comment_list_scroll_offset = 0;
-                self.comments_loading = false;
-                self.comment_receiver = None;
-                // Update comment positions if in diff view or side-by-side
-                if matches!(
-                    self.state,
-                    AppState::DiffView | AppState::SplitViewDiff | AppState::SplitViewFileList
-                ) {
-                    self.update_file_comment_positions();
-                    self.ensure_diff_cache();
+                // PR が切り替わっていなければ UI 状態にも反映
+                if self.pr_number == Some(origin_pr) {
+                    self.review_comments = Some(comments);
+                    self.selected_comment = 0;
+                    self.comment_list_scroll_offset = 0;
+                    self.comments_loading = false;
+                    // Update comment positions if in diff view or side-by-side
+                    if matches!(
+                        self.state,
+                        AppState::DiffView | AppState::SplitViewDiff | AppState::SplitViewFileList
+                    ) {
+                        self.update_file_comment_positions();
+                        self.ensure_diff_cache();
+                    }
                 }
+                self.comment_receiver = None;
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch comments: {}", e);
                 // Keep existing comments if any, or show empty
-                if self.review_comments.is_none() {
-                    self.review_comments = Some(vec![]);
+                if self.pr_number == Some(origin_pr) {
+                    if self.review_comments.is_none() {
+                        self.review_comments = Some(vec![]);
+                    }
+                    self.comments_loading = false;
                 }
-                self.comments_loading = false;
                 self.comment_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // Keep existing comments if any, or show empty
-                if self.review_comments.is_none() {
-                    self.review_comments = Some(vec![]);
+                if self.pr_number == Some(origin_pr) {
+                    if self.review_comments.is_none() {
+                        self.review_comments = Some(vec![]);
+                    }
+                    self.comments_loading = false;
                 }
-                self.comments_loading = false;
                 self.comment_receiver = None;
             }
         }
@@ -754,9 +790,7 @@ impl App {
             .files()
             .iter()
             .enumerate()
-            .filter(|(i, f)| {
-                f.patch.is_some() && !self.highlighted_cache_store.contains_key(i)
-            })
+            .filter(|(i, f)| f.patch.is_some() && !self.highlighted_cache_store.contains_key(i))
             .take(MAX_PREFETCH_FILES)
             .map(|(i, f)| (i, f.filename.clone(), f.patch.clone().unwrap()))
             .collect();
@@ -835,38 +869,46 @@ impl App {
 
     /// Discussion コメント取得のポーリング
     fn poll_discussion_comment_updates(&mut self) {
-        let Some(ref mut rx) = self.discussion_comment_receiver else {
+        let Some((origin_pr, rx)) = self.discussion_comment_receiver.as_mut() else {
             return;
         };
+        let origin_pr = *origin_pr;
 
         match rx.try_recv() {
             Ok(Ok(comments)) => {
-                // セッションキャッシュに格納（clone して分配）
+                // セッションキャッシュに格納（発信元PRのキーで保存）
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
-                    pr_number: self.pr_number(),
+                    pr_number: origin_pr,
                 };
                 self.session_cache
                     .put_discussion_comments(cache_key, comments.clone());
-                self.discussion_comments = Some(comments);
-                self.selected_discussion_comment = 0;
-                self.discussion_comments_loading = false;
+                // PR が切り替わっていなければ UI 状態にも反映
+                if self.pr_number == Some(origin_pr) {
+                    self.discussion_comments = Some(comments);
+                    self.selected_discussion_comment = 0;
+                    self.discussion_comments_loading = false;
+                }
                 self.discussion_comment_receiver = None;
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch discussion comments: {}", e);
-                if self.discussion_comments.is_none() {
-                    self.discussion_comments = Some(vec![]);
+                if self.pr_number == Some(origin_pr) {
+                    if self.discussion_comments.is_none() {
+                        self.discussion_comments = Some(vec![]);
+                    }
+                    self.discussion_comments_loading = false;
                 }
-                self.discussion_comments_loading = false;
                 self.discussion_comment_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                if self.discussion_comments.is_none() {
-                    self.discussion_comments = Some(vec![]);
+                if self.pr_number == Some(origin_pr) {
+                    if self.discussion_comments.is_none() {
+                        self.discussion_comments = Some(vec![]);
+                    }
+                    self.discussion_comments_loading = false;
                 }
-                self.discussion_comments_loading = false;
                 self.discussion_comment_receiver = None;
             }
         }
@@ -882,9 +924,10 @@ impl App {
             }
         }
 
-        let Some(ref mut rx) = self.comment_submit_receiver else {
+        let Some((origin_pr, rx)) = self.comment_submit_receiver.as_mut() else {
             return;
         };
+        let origin_pr = *origin_pr;
 
         match rx.try_recv() {
             Ok(CommentSubmitResult::Success) => {
@@ -895,12 +938,15 @@ impl App {
                 // インメモリキャッシュを破棄してコメントを再取得
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
-                    pr_number: self.pr_number(),
+                    pr_number: origin_pr,
                 };
                 self.session_cache.remove_review_comments(&cache_key);
-                self.review_comments = None;
-                self.load_review_comments();
-                self.update_file_comment_positions();
+                // PR が切り替わっていなければコメントを再取得
+                if self.pr_number == Some(origin_pr) {
+                    self.review_comments = None;
+                    self.load_review_comments();
+                    self.update_file_comment_positions();
+                }
             }
             Ok(CommentSubmitResult::Error(e)) => {
                 self.comment_submitting = false;
@@ -1027,7 +1073,7 @@ impl App {
         }
     }
 
-    fn handle_data_result(&mut self, result: DataLoadResult) {
+    fn handle_data_result(&mut self, origin_pr: u32, result: DataLoadResult) {
         match result {
             DataLoadResult::Success { pr, files } => {
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
@@ -1036,10 +1082,10 @@ impl App {
                 // Check if we need to start AI Rally (--ai-rally flag was passed)
                 let should_start_rally =
                     self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loading);
-                // セッションキャッシュに格納（clone して分配）
+                // セッションキャッシュに格納（発信元PRのキーで保存）
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
-                    pr_number: self.pr_number(),
+                    pr_number: origin_pr,
                 };
                 self.session_cache.put_pr_data(
                     cache_key,
@@ -2236,7 +2282,7 @@ impl App {
         let line_number = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
-        self.comment_submit_receiver = Some(rx);
+        self.comment_submit_receiver = Some((pr_number, rx));
         self.comment_submitting = true;
 
         tokio::spawn(async move {
@@ -2275,7 +2321,7 @@ impl App {
         let line_number = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
-        self.comment_submit_receiver = Some(rx);
+        self.comment_submit_receiver = Some((pr_number, rx));
         self.comment_submitting = true;
 
         tokio::spawn(async move {
@@ -2303,7 +2349,7 @@ impl App {
         let pr_number = self.pr_number();
 
         let (tx, rx) = mpsc::channel(1);
-        self.comment_submit_receiver = Some(rx);
+        self.comment_submit_receiver = Some((pr_number, rx));
         self.comment_submitting = true;
 
         tokio::spawn(async move {
@@ -2470,10 +2516,10 @@ impl App {
         // キャッシュミス: API取得
         self.comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
-        self.comment_receiver = Some(rx);
+        let pr_number = self.pr_number();
+        self.comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
-        let pr_number = self.pr_number();
 
         tokio::spawn(async move {
             // Fetch both review comments and reviews
@@ -2531,10 +2577,10 @@ impl App {
         // キャッシュミス: API取得
         self.discussion_comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
-        self.discussion_comment_receiver = Some(rx);
+        let pr_number = self.pr_number();
+        self.discussion_comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
-        let pr_number = self.pr_number();
 
         tokio::spawn(async move {
             match github::comment::fetch_discussion_comments(&repo, pr_number).await {
@@ -3169,8 +3215,7 @@ impl App {
             if cache.highlighted
                 && self.highlighted_cache_store.len() < MAX_HIGHLIGHTED_CACHE_ENTRIES
             {
-                self.highlighted_cache_store
-                    .insert(cache.file_index, cache);
+                self.highlighted_cache_store.insert(cache.file_index, cache);
             }
         }
 
@@ -3207,12 +3252,8 @@ impl App {
 
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
-            let mut cache = crate::ui::diff_view::build_diff_cache(
-                &patch,
-                &filename,
-                &theme,
-                &mut parser_pool,
-            );
+            let mut cache =
+                crate::ui::diff_view::build_diff_cache(&patch, &filename, &theme, &mut parser_pool);
             cache.file_index = file_index;
             let _ = tx.try_send(cache);
         });
@@ -3533,7 +3574,7 @@ impl App {
 
         // データ読み込みチャンネルを設定
         let (tx, rx) = mpsc::channel(2);
-        self.data_receiver = Some(rx);
+        self.data_receiver = Some((pr_number, rx));
 
         // リトライ用のチャンネルを設定
         let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
@@ -3568,8 +3609,17 @@ impl App {
             self.review_comments = None;
             self.discussion_comments = None;
             self.diff_cache = None;
+            // 全ての in-flight レシーバーをクリア（late response による panic 防止）
+            self.data_receiver = None;
+            self.retry_sender = None;
+            self.comment_receiver = None;
             self.diff_cache_receiver = None;
             self.prefetch_receiver = None;
+            self.discussion_comment_receiver = None;
+            self.comment_submit_receiver = None;
+            self.comment_submitting = false;
+            self.comments_loading = false;
+            self.discussion_comments_loading = false;
             self.highlighted_cache_store.clear();
             self.selected_file = 0;
             self.selected_line = 0;
@@ -3824,5 +3874,126 @@ mod tests {
 
         // After scrolling to last item, offset should be > 0
         assert!(offset > 0, "offset should have scrolled, got {}", offset);
+    }
+
+    #[test]
+    fn test_back_to_pr_list_clears_all_receivers() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        app.started_from_pr_list = true;
+
+        // data_receiver is already set by new_loading
+        assert!(app.data_receiver.is_some());
+
+        // Set up additional receivers to simulate in-flight requests
+        let (_comment_tx, comment_rx) = mpsc::channel(1);
+        app.comment_receiver = Some((1, comment_rx));
+        let (_disc_tx, disc_rx) = mpsc::channel(1);
+        app.discussion_comment_receiver = Some((1, disc_rx));
+        let (_submit_tx, submit_rx) = mpsc::channel(1);
+        app.comment_submit_receiver = Some((1, submit_rx));
+        app.comment_submitting = true;
+        app.comments_loading = true;
+        app.discussion_comments_loading = true;
+
+        app.back_to_pr_list();
+
+        // All receivers should be cleared
+        assert!(app.data_receiver.is_none());
+        assert!(app.comment_receiver.is_none());
+        assert!(app.discussion_comment_receiver.is_none());
+        assert!(app.comment_submit_receiver.is_none());
+        assert!(app.diff_cache_receiver.is_none());
+        assert!(app.prefetch_receiver.is_none());
+        assert!(app.retry_sender.is_none());
+        // Loading flags should be cleared
+        assert!(!app.comment_submitting);
+        assert!(!app.comments_loading);
+        assert!(!app.discussion_comments_loading);
+        // PR number should be None
+        assert!(app.pr_number.is_none());
+        assert_eq!(app.state, AppState::PullRequestList);
+    }
+
+    #[tokio::test]
+    async fn test_poll_data_updates_discards_stale_pr_data() {
+        let config = Config::default();
+        let (mut app, tx) = App::new_loading("owner/repo", 1, config);
+        app.started_from_pr_list = true;
+
+        // Simulate switching to PR #2 while PR #1 data is in-flight
+        // The data_receiver still carries origin_pr = 1
+        app.pr_number = Some(2);
+
+        // Send data for PR #1
+        let pr = PullRequest {
+            number: 1,
+            title: "PR 1".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        tx.send(DataLoadResult::Success {
+            pr: Box::new(pr),
+            files: vec![],
+        })
+        .await
+        .unwrap();
+
+        // Poll should NOT panic and should NOT apply PR #1 data to current UI state
+        app.poll_data_updates();
+
+        // data_receiver should be cleared (consumed the message)
+        assert!(app.data_receiver.is_none());
+        // data_state should still be Loading (PR #1 data was discarded from UI)
+        assert!(matches!(app.data_state, DataState::Loading));
+        // But session cache should have the data under PR #1 key
+        let cache_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+        assert!(app.session_cache.get_pr_data(&cache_key).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_poll_comment_updates_discards_stale_pr_comments() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        app.started_from_pr_list = true;
+
+        // Set up a comment receiver for PR #1
+        let (comment_tx, comment_rx) = mpsc::channel(1);
+        app.comment_receiver = Some((1, comment_rx));
+        app.comments_loading = true;
+
+        // Simulate switching to PR #2
+        app.pr_number = Some(2);
+
+        // Send comments for PR #1
+        comment_tx.send(Ok(vec![])).await.unwrap();
+
+        // Poll should NOT panic and should NOT apply PR #1 comments to UI
+        app.poll_comment_updates();
+
+        assert!(app.comment_receiver.is_none());
+        // comments_loading should NOT have been cleared (different PR)
+        assert!(app.comments_loading);
+        // Session cache should have the data under PR #1 key
+        let cache_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+        assert!(app.session_cache.get_review_comments(&cache_key).is_some());
     }
 }
