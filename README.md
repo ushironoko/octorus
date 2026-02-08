@@ -69,17 +69,16 @@ or --ai-rally
 |--------|-------------|
 | `-r, --repo <REPO>` | Repository name (e.g., "owner/repo") |
 | `-p, --pr <PR>` | Pull request number |
-| `--refresh` | Force refresh, ignore cache |
-| `--cache-ttl <SECS>` | Cache TTL in seconds (default: 300) |
+| `--ai-rally` | Start AI Rally mode directly |
+| `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
 
-### Initialize Configuration
+### Subcommands
 
-Create default config files and prompt templates:
-
-```bash
-or init          # Create config files (skip if exists)
-or init --force  # Overwrite existing files
-```
+| Subcommand | Description |
+|------------|-------------|
+| `or init` | Initialize configuration files and prompt templates |
+| `or init --force` | Overwrite existing configuration files |
+| `or clean` | Remove AI Rally session data |
 
 This creates:
 - `~/.config/octorus/config.toml` - Main configuration file
