@@ -33,8 +33,7 @@ pub fn build_plain_diff_cache(patch: &str) -> DiffCache {
     let mut interner = Rodeo::default();
     let lines: Vec<CachedDiffLine> = patch
         .lines()
-        .enumerate()
-        .map(|(_, line)| {
+        .map(|line| {
             let (line_type, content) = classify_line(line);
 
             let spans = match line_type {

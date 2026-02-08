@@ -1,7 +1,6 @@
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::cache;
 use crate::diff;
 use crate::github::{self, ChangedFile, PullRequest};
 
@@ -79,9 +78,6 @@ async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadRes
                 }
             }
 
-            if let Err(e) = cache::write_cache(repo, pr_number, &pr, &files) {
-                eprintln!("Warning: Failed to write cache: {}", e);
-            }
             let _ = tx
                 .send(DataLoadResult::Success {
                     pr: Box::new(pr),
