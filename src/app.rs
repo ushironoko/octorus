@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::io::Stdout;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
@@ -262,8 +263,8 @@ pub enum CommentTab {
 pub enum DataState {
     Loading,
     Loaded {
-        pr: Box<PullRequest>,
-        files: Vec<ChangedFile>,
+        pr: Arc<PullRequest>,
+        files: Arc<Vec<ChangedFile>>,
     },
     Error(String),
 }
@@ -654,6 +655,7 @@ impl App {
                 } else {
                     // 異なるPRのデータ: セッションキャッシュにのみ格納
                     if let DataLoadResult::Success { pr, files } = result {
+                        let pr: Arc<PullRequest> = pr.into();
                         let cache_key = PrCacheKey {
                             repo: self.repo.clone(),
                             pr_number: origin_pr,
@@ -661,9 +663,9 @@ impl App {
                         self.session_cache.put_pr_data(
                             cache_key,
                             PrData {
-                                pr: pr.clone(),
-                                files: files.clone(),
                                 pr_updated_at: pr.updated_at.clone(),
+                                pr,
+                                files: Arc::new(files),
                             },
                         );
                     }
@@ -1082,7 +1084,9 @@ impl App {
                 // Check if we need to start AI Rally (--ai-rally flag was passed)
                 let should_start_rally =
                     self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loading);
-                // セッションキャッシュに格納（発信元PRのキーで保存）
+                // Arc で共有所有権を持ち、キャッシュと DataState 間でデータ重複を回避
+                let pr: Arc<PullRequest> = pr.into();
+                let files: Arc<Vec<ChangedFile>> = Arc::new(files);
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
                     pr_number: origin_pr,
@@ -1090,8 +1094,8 @@ impl App {
                 self.session_cache.put_pr_data(
                     cache_key,
                     PrData {
-                        pr: pr.clone(),
-                        files: files.clone(),
+                        pr: Arc::clone(&pr),
+                        files: Arc::clone(&files),
                         pr_updated_at: pr.updated_at.clone(),
                     },
                 );

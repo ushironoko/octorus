@@ -167,7 +167,10 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     }
 
     // spawn_blocking タスク（プリフェッチ等）が巨大ファイル処理中の場合、
-    // tokio ランタイムの drop が完了を待ち続けるため、即座にプロセスを終了する
+    // tokio ランタイムの drop が完了を待ち続けるため、即座にプロセスを終了する。
+    // これにより Drop ベースのクリーンアップはスキップされるが、バックグラウンドタスクは
+    // cancel_token.cancel() で明示的に停止済みであり、残るのは spawn_blocking の
+    // tree-sitter パース処理のみ。OS がプロセス終了時にリソースを回収するため問題なし。
     let exit_code = if result.is_ok() { 0 } else { 1 };
     std::process::exit(exit_code);
 }
@@ -201,6 +204,9 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
         restore_terminal();
     }
 
+    // run_with_pr と同様、spawn_blocking タスクの完了待ちによるハングを防止するため
+    // 即座にプロセスを終了する。バックグラウンドタスクやサブプロセスの明示的な停止は
+    // app.run() 内で完了済み。
     let exit_code = if result.is_ok() { 0 } else { 1 };
     std::process::exit(exit_code);
 }

@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use xdg::BaseDirectories;
 
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{ChangedFile, PullRequest};
+
+/// セッションキャッシュが保持するPRデータの最大エントリ数。
+/// 超過時は最も古いエントリ（LRU）を削除してメモリ増加を防止する。
+const MAX_PR_CACHE_ENTRIES: usize = 5;
 
 /// Sanitize repository name to prevent path traversal attacks.
 /// Only allows alphanumeric characters, underscores, hyphens, and single dots (not ".." sequences).
@@ -75,13 +80,19 @@ pub struct PrCacheKey {
 }
 
 pub struct PrData {
-    pub pr: Box<PullRequest>,
-    pub files: Vec<ChangedFile>,
+    pub pr: Arc<PullRequest>,
+    pub files: Arc<Vec<ChangedFile>>,
     pub pr_updated_at: String,
 }
 
+/// インメモリセッションキャッシュ（LRU eviction 付き）。
+///
+/// PRデータは最大 `MAX_PR_CACHE_ENTRIES` 件まで保持し、超過時は最も古い
+/// エントリを削除する。コメントデータは対応するPRデータと連動して削除される。
 pub struct SessionCache {
     pr_data: HashMap<PrCacheKey, PrData>,
+    /// アクセス順序リスト（末尾が最新）。LRU eviction に使用。
+    access_order: Vec<PrCacheKey>,
     review_comments: HashMap<PrCacheKey, Vec<ReviewComment>>,
     discussion_comments: HashMap<PrCacheKey, Vec<DiscussionComment>>,
 }
@@ -96,17 +107,47 @@ impl SessionCache {
     pub fn new() -> Self {
         Self {
             pr_data: HashMap::new(),
+            access_order: Vec::new(),
             review_comments: HashMap::new(),
             discussion_comments: HashMap::new(),
         }
     }
 
-    pub fn get_pr_data(&self, key: &PrCacheKey) -> Option<&PrData> {
-        self.pr_data.get(key)
+    /// アクセス順序リストでキーを末尾に移動（最新としてマーク）
+    fn touch(&mut self, key: &PrCacheKey) {
+        if let Some(pos) = self.access_order.iter().position(|k| k == key) {
+            self.access_order.remove(pos);
+        }
+        self.access_order.push(key.clone());
+    }
+
+    /// LRU エントリを削除して容量を `MAX_PR_CACHE_ENTRIES` 以下に保つ
+    fn evict_if_needed(&mut self) {
+        while self.pr_data.len() > MAX_PR_CACHE_ENTRIES {
+            if let Some(oldest_key) = self.access_order.first().cloned() {
+                self.access_order.remove(0);
+                self.pr_data.remove(&oldest_key);
+                self.review_comments.remove(&oldest_key);
+                self.discussion_comments.remove(&oldest_key);
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn get_pr_data(&mut self, key: &PrCacheKey) -> Option<&PrData> {
+        if self.pr_data.contains_key(key) {
+            self.touch(key);
+            self.pr_data.get(key)
+        } else {
+            None
+        }
     }
 
     pub fn put_pr_data(&mut self, key: PrCacheKey, data: PrData) {
+        self.touch(&key);
         self.pr_data.insert(key, data);
+        self.evict_if_needed();
     }
 
     pub fn get_review_comments(&self, key: &PrCacheKey) -> Option<&[ReviewComment]> {
@@ -125,11 +166,7 @@ impl SessionCache {
         self.discussion_comments.get(key).map(|v| v.as_slice())
     }
 
-    pub fn put_discussion_comments(
-        &mut self,
-        key: PrCacheKey,
-        comments: Vec<DiscussionComment>,
-    ) {
+    pub fn put_discussion_comments(&mut self, key: PrCacheKey, comments: Vec<DiscussionComment>) {
         self.discussion_comments.insert(key, comments);
     }
 
@@ -139,8 +176,14 @@ impl SessionCache {
 
     pub fn invalidate_all(&mut self) {
         self.pr_data.clear();
+        self.access_order.clear();
         self.review_comments.clear();
         self.discussion_comments.clear();
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.pr_data.len()
     }
 }
 
@@ -292,8 +335,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Box::new(pr),
-                files: vec![],
+                pr: Arc::new(pr),
+                files: Arc::new(vec![]),
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -374,8 +417,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                pr: Arc::new(make_test_pr("test", "2024-01-01")),
+                files: Arc::new(vec![]),
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -404,21 +447,115 @@ mod tests {
         cache.put_pr_data(
             key1.clone(),
             PrData {
-                pr: Box::new(make_test_pr("PR 1", "2024-01-01")),
-                files: vec![],
+                pr: Arc::new(make_test_pr("PR 1", "2024-01-01")),
+                files: Arc::new(vec![]),
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
         cache.put_pr_data(
             key2.clone(),
             PrData {
-                pr: Box::new(make_test_pr("PR 2", "2024-01-02")),
-                files: vec![],
+                pr: Arc::new(make_test_pr("PR 2", "2024-01-02")),
+                files: Arc::new(vec![]),
                 pr_updated_at: "2024-01-02".to_string(),
             },
         );
 
         assert_eq!(cache.get_pr_data(&key1).unwrap().pr.title, "PR 1");
         assert_eq!(cache.get_pr_data(&key2).unwrap().pr.title, "PR 2");
+    }
+
+    #[test]
+    fn test_session_cache_lru_eviction() {
+        let mut cache = SessionCache::new();
+
+        // MAX_PR_CACHE_ENTRIES + 1 個のエントリを追加
+        for i in 0..=MAX_PR_CACHE_ENTRIES {
+            let key = PrCacheKey {
+                repo: "owner/repo".to_string(),
+                pr_number: i as u32,
+            };
+            cache.put_pr_data(
+                key.clone(),
+                PrData {
+                    pr: Arc::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
+                    files: Arc::new(vec![]),
+                    pr_updated_at: "2024-01-01".to_string(),
+                },
+            );
+            cache.put_review_comments(key, vec![]);
+        }
+
+        // 最大容量を超えないこと
+        assert_eq!(cache.len(), MAX_PR_CACHE_ENTRIES);
+
+        // 最初のエントリ（PR #0）が削除されていること
+        let evicted_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 0,
+        };
+        assert!(cache.get_pr_data(&evicted_key).is_none());
+        // 関連コメントも削除されていること
+        assert!(cache.get_review_comments(&evicted_key).is_none());
+
+        // 最後のエントリは残っていること
+        let last_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: MAX_PR_CACHE_ENTRIES as u32,
+        };
+        assert!(cache.get_pr_data(&last_key).is_some());
+    }
+
+    #[test]
+    fn test_session_cache_lru_access_order() {
+        let mut cache = SessionCache::new();
+
+        // MAX_PR_CACHE_ENTRIES 個のエントリを追加
+        for i in 0..MAX_PR_CACHE_ENTRIES {
+            let key = PrCacheKey {
+                repo: "owner/repo".to_string(),
+                pr_number: i as u32,
+            };
+            cache.put_pr_data(
+                key,
+                PrData {
+                    pr: Arc::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
+                    files: Arc::new(vec![]),
+                    pr_updated_at: "2024-01-01".to_string(),
+                },
+            );
+        }
+
+        // PR #0 にアクセスして最新に昇格
+        let key0 = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 0,
+        };
+        assert!(cache.get_pr_data(&key0).is_some());
+
+        // 新しいエントリを追加（PR #1 が evict されるはず）
+        let new_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 100,
+        };
+        cache.put_pr_data(
+            new_key.clone(),
+            PrData {
+                pr: Arc::new(make_test_pr("PR 100", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
+
+        // PR #0 はアクセスしたため残っている
+        assert!(cache.get_pr_data(&key0).is_some());
+        // PR #1 が削除されている
+        let key1 = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+        };
+        assert!(cache.get_pr_data(&key1).is_none());
+        // 新しいエントリは存在する
+        assert!(cache.get_pr_data(&new_key).is_some());
     }
 }
