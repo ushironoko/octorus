@@ -1084,6 +1084,14 @@ impl App {
     fn handle_data_result(&mut self, origin_pr: u32, result: DataLoadResult) {
         match result {
             DataLoadResult::Success { pr, files } => {
+                // ファイル数が減った場合、selected_file をクランプ
+                if !files.is_empty() {
+                    self.selected_file = self.selected_file.min(files.len() - 1);
+                } else {
+                    self.selected_file = 0;
+                }
+                self.file_list_scroll_offset =
+                    self.file_list_scroll_offset.min(self.selected_file);
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
                 // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
                 self.highlighted_cache_store.clear();
@@ -4007,5 +4015,68 @@ mod tests {
             pr_number: 1,
         };
         assert!(app.session_cache.get_review_comments(&cache_key).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_clamps_selected_file_when_files_shrink() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+        // Simulate initial state with 5 files, selected_file pointing to file index 4
+        let make_file = |name: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+        };
+
+        let initial_files: Vec<ChangedFile> = (0..5)
+            .map(|i| make_file(&format!("file_{}.rs", i)))
+            .collect();
+
+        let pr = Box::new(PullRequest {
+            number: 1,
+            title: "Test PR".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+
+        // Set initial loaded state with 5 files
+        app.data_state = DataState::Loaded {
+            pr: pr.clone(),
+            files: initial_files,
+        };
+        app.selected_file = 4; // Last file selected
+
+        // Now simulate refresh with only 2 files (file count shrank)
+        let fewer_files: Vec<ChangedFile> = (0..2)
+            .map(|i| make_file(&format!("file_{}.rs", i)))
+            .collect();
+
+        app.handle_data_result(
+            1,
+            DataLoadResult::Success {
+                pr,
+                files: fewer_files,
+            },
+        );
+
+        // selected_file should be clamped to 1 (last valid index for 2 files)
+        assert_eq!(app.selected_file, 1);
+        // Should be able to access the file without panic
+        assert!(app.files().get(app.selected_file).is_some());
     }
 }

@@ -69,7 +69,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
+    // Persist both offset and clamped selected index from ListState
+    // (render_stateful_widget may clamp selected if list shrank)
     app.file_list_scroll_offset = list_state.offset();
+    if let Some(sel) = list_state.selected() {
+        app.selected_file = sel;
+    }
 
     // Render scrollbar if there are more files than visible
     if total_files > 1 {
