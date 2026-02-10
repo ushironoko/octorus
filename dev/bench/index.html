@@ -321,7 +321,9 @@
           'diff_cache/',
           'diff_parsing/',
           'visible_range/visible_borrowed',
-          'highlighter/',
+          'highlighter/tree_sitter_rust',
+          'highlighter/tree_sitter_haskell',
+          'highlighter/tree_sitter_vue',
         ];
 
         // Reference benchmark prefixes (production code but synthetic execution).
@@ -337,6 +339,9 @@
           'diff_cache/build_cache_no_highlight',
           'diff_cache/build_cache',
           'highlighter/tree_sitter_rust',
+          'highlighter/tree_sitter_haskell',
+          'highlighter/tree_sitter_vue',
+          // Legacy names (still in historical data)
           'highlighter/tree_sitter_typescript',
           'highlighter/syntect_vue',
           'diff_parsing/',  // all diff_parsing groups last
