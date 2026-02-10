@@ -589,12 +589,14 @@
 
               const thead = document.createElement('thead');
               const headerRow = document.createElement('tr');
-              const headers = ['Benchmark', 'Value', 'Range', 'Unit'];
+              const headers = ['Benchmark', 'Value'];
               if (prevEntry) {
                 headers.push('Previous', 'Change');
               }
               if (firstEntry) {
                 headers.push('vs First');
+              }
+              headers.push('Range', 'Unit');
               }
               for (const h of headers) {
                 const th = document.createElement('th');
@@ -648,18 +650,6 @@
                     valueCell.textContent = formatValueFull(bench.value);
                     valueCell.title = bench.value + ' ' + bench.unit;
                     row.appendChild(valueCell);
-
-                    // Range
-                    const rangeCell = document.createElement('td');
-                    rangeCell.className = 'numeric';
-                    rangeCell.textContent = bench.range || '-';
-                    row.appendChild(rangeCell);
-
-                    // Unit
-                    const unitCell = document.createElement('td');
-                    unitCell.className = 'numeric';
-                    unitCell.textContent = bench.unit;
-                    row.appendChild(unitCell);
 
                     if (prevEntry) {
                       const prev = prevMap.get(bench.name);
@@ -716,6 +706,18 @@
                       }
                       row.appendChild(vsFirstCell);
                     }
+
+                    // Range
+                    const rangeCell = document.createElement('td');
+                    rangeCell.className = 'numeric';
+                    rangeCell.textContent = bench.range || '-';
+                    row.appendChild(rangeCell);
+
+                    // Unit
+                    const unitCell = document.createElement('td');
+                    unitCell.className = 'numeric';
+                    unitCell.textContent = bench.unit;
+                    row.appendChild(unitCell);
 
                     tbody.appendChild(row);
                   }
