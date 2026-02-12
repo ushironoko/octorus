@@ -102,7 +102,8 @@ impl ClaudeAdapter {
         session_id: Option<&str>,
     ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
-        cmd.arg("-p").arg(prompt);
+        // Use -p without prompt arg; prompt is piped via stdin to avoid OS ARG_MAX limit
+        cmd.arg("-p");
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
         cmd.arg("--json-schema").arg(schema);
@@ -116,10 +117,26 @@ impl ClaudeAdapter {
             cmd.current_dir(dir);
         }
 
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context("Failed to spawn claude process")?;
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "Failed to spawn claude process (command: {:?})",
+                cmd.as_std()
+            )
+        })?;
+
+        // Write prompt to stdin to avoid ARG_MAX limit
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(prompt.as_bytes())
+                .await
+                .context("Failed to write prompt to claude stdin")?;
+            drop(stdin); // Close stdin to signal EOF
+        }
 
         let stdout = child.stdout.take().expect("stdout should be available");
         let stderr = child.stderr.take().expect("stderr should be available");
@@ -299,7 +316,8 @@ impl ClaudeAdapter {
         allowed_tools: Option<&str>,
     ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
-        cmd.arg("-p").arg(message);
+        // Use -p without prompt arg; message is piped via stdin to avoid OS ARG_MAX limit
+        cmd.arg("-p");
         cmd.arg("--resume").arg(session_id);
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
@@ -308,10 +326,26 @@ impl ClaudeAdapter {
             cmd.arg("--allowedTools").arg(tools);
         }
 
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context("Failed to spawn claude process")?;
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "Failed to spawn claude process (command: {:?})",
+                cmd.as_std()
+            )
+        })?;
+
+        // Write message to stdin to avoid ARG_MAX limit
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(message.as_bytes())
+                .await
+                .context("Failed to write message to claude stdin")?;
+            drop(stdin); // Close stdin to signal EOF
+        }
 
         let stdout = child.stdout.take().expect("stdout should be available");
         let stderr = child.stderr.take().expect("stderr should be available");

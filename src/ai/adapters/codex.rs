@@ -163,10 +163,11 @@ impl CodexAdapter {
 
         // Handle session resume
         // Usage: codex exec resume <SESSION_ID> [PROMPT]
+        // Use "-" to read prompt from stdin (avoids OS ARG_MAX limit for large diffs)
         if let Some(sid) = session_id {
-            cmd.arg("exec").arg("resume").arg(sid).arg(prompt);
+            cmd.arg("exec").arg("resume").arg(sid).arg("-");
         } else {
-            cmd.arg("exec").arg(prompt);
+            cmd.arg("exec").arg("-");
         }
 
         cmd.arg("--json");
@@ -184,10 +185,26 @@ impl CodexAdapter {
             cmd.arg("--full-auto");
         }
 
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context("Failed to spawn codex process")?;
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "Failed to spawn codex process (command: {:?})",
+                cmd.as_std()
+            )
+        })?;
+
+        // Write prompt to stdin to avoid ARG_MAX limit
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(prompt.as_bytes())
+                .await
+                .context("Failed to write prompt to codex stdin")?;
+            drop(stdin); // Close stdin to signal EOF
+        }
 
         let stdout = child.stdout.take().expect("stdout should be available");
         let stderr = child.stderr.take().expect("stderr should be available");

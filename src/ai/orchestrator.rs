@@ -211,7 +211,7 @@ impl Orchestrator {
                 Err(e) => {
                     self.session.update_state(RallyState::Error);
                     let _ = write_session(&self.session);
-                    self.send_event(RallyEvent::Error(format!("Reviewer failed: {}", e)))
+                    self.send_event(RallyEvent::Error(format!("Reviewer failed: {:#}", e)))
                         .await;
                     self.send_event(RallyEvent::StateChanged(RallyState::Error))
                         .await;
@@ -312,7 +312,7 @@ impl Orchestrator {
                 Err(e) => {
                     self.session.update_state(RallyState::Error);
                     let _ = write_session(&self.session);
-                    self.send_event(RallyEvent::Error(format!("Reviewee failed: {}", e)))
+                    self.send_event(RallyEvent::Error(format!("Reviewee failed: {:#}", e)))
                         .await;
                     self.send_event(RallyEvent::StateChanged(RallyState::Error))
                         .await;
