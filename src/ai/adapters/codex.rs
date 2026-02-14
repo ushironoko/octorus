@@ -9,10 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::ai::adapter::{
-    AgentAdapter, CommentSeverity, Context, PermissionRequest, ReviewAction, ReviewComment,
-    RevieweeOutput, RevieweeStatus, ReviewerOutput,
-};
+use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, ReviewerOutput};
 use crate::ai::orchestrator::RallyEvent;
 
 // Codex requires additionalProperties: false for all objects in the schema
@@ -478,7 +475,7 @@ impl AgentAdapter for CodexAdapter {
 
         self.reviewer_session_id = Some(response.session_id.clone());
 
-        parse_reviewer_output(&response)
+        parse_reviewer_output(response.result.as_ref(), "codex")
     }
 
     async fn run_reviewee(&mut self, prompt: &str, context: &Context) -> Result<RevieweeOutput> {
@@ -496,7 +493,7 @@ impl AgentAdapter for CodexAdapter {
 
         self.reviewee_session_id = Some(response.session_id.clone());
 
-        parse_reviewee_output(&response)
+        parse_reviewee_output(response.result.as_ref(), "codex")
     }
 
     async fn continue_reviewer(&mut self, message: &str) -> Result<ReviewerOutput> {
@@ -510,7 +507,7 @@ impl AgentAdapter for CodexAdapter {
             .run_codex_streaming(message, REVIEWER_SCHEMA, false, None, Some(&session_id))
             .await?;
 
-        parse_reviewer_output(&response)
+        parse_reviewer_output(response.result.as_ref(), "codex")
     }
 
     async fn continue_reviewee(&mut self, message: &str) -> Result<RevieweeOutput> {
@@ -524,7 +521,7 @@ impl AgentAdapter for CodexAdapter {
             .run_codex_streaming(message, REVIEWEE_SCHEMA, true, None, Some(&session_id))
             .await?;
 
-        parse_reviewee_output(&response)
+        parse_reviewee_output(response.result.as_ref(), "codex")
     }
 
     fn add_reviewee_allowed_tool(&mut self, _tool: &str) {
@@ -604,83 +601,7 @@ struct CodexResponse {
     result: Option<serde_json::Value>,
 }
 
-use super::common::{RawRevieweeOutput, RawReviewerOutput};
-
-fn parse_reviewer_output(response: &CodexResponse) -> Result<ReviewerOutput> {
-    let result = response
-        .result
-        .as_ref()
-        .ok_or_else(|| anyhow!("No result in codex response"))?;
-
-    let raw: RawReviewerOutput =
-        serde_json::from_value(result.clone()).context("Failed to parse reviewer output")?;
-
-    let action = match raw.action.as_str() {
-        "approve" => ReviewAction::Approve,
-        "request_changes" => ReviewAction::RequestChanges,
-        "comment" => ReviewAction::Comment,
-        _ => return Err(anyhow!("Unknown review action: {}", raw.action)),
-    };
-
-    let comments = raw
-        .comments
-        .into_iter()
-        .map(|c| {
-            let severity = match c.severity.as_str() {
-                "critical" => CommentSeverity::Critical,
-                "major" => CommentSeverity::Major,
-                "minor" => CommentSeverity::Minor,
-                "suggestion" => CommentSeverity::Suggestion,
-                _ => CommentSeverity::Minor,
-            };
-            ReviewComment {
-                path: c.path,
-                line: c.line,
-                body: c.body,
-                severity,
-            }
-        })
-        .collect();
-
-    Ok(ReviewerOutput {
-        action,
-        summary: raw.summary,
-        comments,
-        blocking_issues: raw.blocking_issues,
-    })
-}
-
-fn parse_reviewee_output(response: &CodexResponse) -> Result<RevieweeOutput> {
-    let result = response
-        .result
-        .as_ref()
-        .ok_or_else(|| anyhow!("No result in codex response"))?;
-
-    let raw: RawRevieweeOutput =
-        serde_json::from_value(result.clone()).context("Failed to parse reviewee output")?;
-
-    let status = match raw.status.as_str() {
-        "completed" => RevieweeStatus::Completed,
-        "needs_clarification" => RevieweeStatus::NeedsClarification,
-        "needs_permission" => RevieweeStatus::NeedsPermission,
-        "error" => RevieweeStatus::Error,
-        _ => return Err(anyhow!("Unknown reviewee status: {}", raw.status)),
-    };
-
-    let permission_request = raw.permission_request.map(|p| PermissionRequest {
-        action: p.action,
-        reason: p.reason,
-    });
-
-    Ok(RevieweeOutput {
-        status,
-        summary: raw.summary,
-        files_modified: raw.files_modified,
-        question: raw.question,
-        permission_request,
-        error_details: raw.error_details,
-    })
-}
+use super::common::{parse_reviewee_output, parse_reviewer_output};
 
 #[cfg(test)]
 mod tests {
@@ -771,73 +692,5 @@ mod tests {
         let json = r#"{"type": "some.unknown.event", "data": "whatever"}"#;
         let event: CodexEvent = serde_json::from_str(json).unwrap();
         assert!(matches!(event, CodexEvent::Unknown));
-    }
-
-    #[test]
-    fn test_parse_reviewer_output() {
-        let response = CodexResponse {
-            session_id: "session_123".to_string(),
-            result: Some(serde_json::json!({
-                "action": "request_changes",
-                "summary": "Found some issues",
-                "comments": [
-                    {
-                        "path": "src/lib.rs",
-                        "line": 42,
-                        "body": "Consider using a constant here",
-                        "severity": "suggestion"
-                    }
-                ],
-                "blocking_issues": ["Missing error handling"]
-            })),
-        };
-
-        let output = parse_reviewer_output(&response).unwrap();
-        assert_eq!(output.action, ReviewAction::RequestChanges);
-        assert_eq!(output.summary, "Found some issues");
-        assert_eq!(output.comments.len(), 1);
-        assert_eq!(output.comments[0].path, "src/lib.rs");
-        assert_eq!(output.comments[0].line, 42);
-        assert_eq!(output.comments[0].severity, CommentSeverity::Suggestion);
-        assert_eq!(output.blocking_issues.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_reviewee_output() {
-        let response = CodexResponse {
-            session_id: "session_456".to_string(),
-            result: Some(serde_json::json!({
-                "status": "completed",
-                "summary": "Fixed all issues",
-                "files_modified": ["src/lib.rs", "src/main.rs"]
-            })),
-        };
-
-        let output = parse_reviewee_output(&response).unwrap();
-        assert_eq!(output.status, RevieweeStatus::Completed);
-        assert_eq!(output.summary, "Fixed all issues");
-        assert_eq!(output.files_modified.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_reviewee_needs_permission() {
-        let response = CodexResponse {
-            session_id: "session_789".to_string(),
-            result: Some(serde_json::json!({
-                "status": "needs_permission",
-                "summary": "Need to run a command",
-                "files_modified": [],
-                "permission_request": {
-                    "action": "run npm install",
-                    "reason": "Required to install new dependency"
-                }
-            })),
-        };
-
-        let output = parse_reviewee_output(&response).unwrap();
-        assert_eq!(output.status, RevieweeStatus::NeedsPermission);
-        assert!(output.permission_request.is_some());
-        let perm = output.permission_request.unwrap();
-        assert_eq!(perm.action, "run npm install");
     }
 }

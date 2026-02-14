@@ -6,10 +6,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::ai::adapter::{
-    AgentAdapter, Context, PermissionRequest, ReviewAction, ReviewComment, RevieweeOutput,
-    RevieweeStatus, ReviewerOutput,
-};
+use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, ReviewerOutput};
 use crate::ai::orchestrator::RallyEvent;
 use crate::config::AiConfig;
 
@@ -93,11 +90,12 @@ impl ClaudeAdapter {
         }
     }
 
+    // TODO: Consider using a builder/struct pattern for parameters if more options are added.
     async fn run_claude_streaming(
         &self,
         prompt: &str,
         schema: &str,
-        allowed_tools: &str,
+        allowed_tools: Option<&str>,
         working_dir: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<ClaudeResponse> {
@@ -107,7 +105,9 @@ impl ClaudeAdapter {
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
         cmd.arg("--json-schema").arg(schema);
-        cmd.arg("--allowedTools").arg(allowed_tools);
+        if let Some(tools) = allowed_tools {
+            cmd.arg("--allowedTools").arg(tools);
+        }
 
         if let Some(session) = session_id {
             cmd.arg("--resume").arg(session);
@@ -303,118 +303,6 @@ impl ClaudeAdapter {
             _ => {}
         }
     }
-
-    /// Continue an existing session with streaming output
-    ///
-    /// Uses stream-json format like run_claude_streaming for consistent behavior
-    #[allow(dead_code)]
-    async fn continue_session(
-        &self,
-        session_id: &str,
-        message: &str,
-        schema: &str,
-        allowed_tools: Option<&str>,
-    ) -> Result<ClaudeResponse> {
-        let mut cmd = Command::new("claude");
-        // Use -p without prompt arg; message is piped via stdin to avoid OS ARG_MAX limit
-        cmd.arg("-p");
-        cmd.arg("--resume").arg(session_id);
-        cmd.arg("--output-format").arg("stream-json");
-        cmd.arg("--verbose");
-        cmd.arg("--json-schema").arg(schema);
-        if let Some(tools) = allowed_tools {
-            cmd.arg("--allowedTools").arg(tools);
-        }
-
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = cmd.spawn().with_context(|| {
-            format!(
-                "Failed to spawn claude process (command: {:?})",
-                cmd.as_std()
-            )
-        })?;
-
-        // Write message to stdin to avoid ARG_MAX limit
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            stdin
-                .write_all(message.as_bytes())
-                .await
-                .context("Failed to write message to claude stdin")?;
-            drop(stdin); // Close stdin to signal EOF
-        }
-
-        let stdout = child.stdout.take().expect("stdout should be available");
-        let stderr = child.stderr.take().expect("stderr should be available");
-
-        let mut stdout_reader = BufReader::new(stdout).lines();
-        let mut stderr_reader = BufReader::new(stderr).lines();
-
-        let mut final_response: Option<ClaudeResponse> = None;
-        let mut error_lines = Vec::new();
-
-        // Process NDJSON stream
-        loop {
-            tokio::select! {
-                line = stdout_reader.next_line() => {
-                    match line {
-                        Ok(Some(l)) => {
-                            if l.trim().is_empty() {
-                                continue;
-                            }
-                            if let Ok(event) = serde_json::from_str::<StreamEvent>(&l) {
-                                self.handle_stream_event(&event).await;
-
-                                // Check if this is the final result
-                                if event.event_type == "result" {
-                                    let result_value = event
-                                        .structured_output
-                                        .clone()
-                                        .or_else(|| event.result.clone());
-                                    if let Some(result) = result_value {
-                                        final_response = Some(ClaudeResponse {
-                                            session_id: event.session_id.unwrap_or_default(),
-                                            result: Some(result),
-                                            cost_usd: event.cost_usd,
-                                            duration_ms: event.duration_ms,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => return Err(anyhow!("Error reading stdout: {}", e)),
-                    }
-                }
-                line = stderr_reader.next_line() => {
-                    match line {
-                        Ok(Some(l)) => error_lines.push(l),
-                        Ok(None) => {},
-                        Err(e) => return Err(anyhow!("Error reading stderr: {}", e)),
-                    }
-                }
-            }
-        }
-
-        let status = child
-            .wait()
-            .await
-            .context("Failed to wait for claude process")?;
-
-        if !status.success() {
-            let stderr_output = error_lines.join("\n");
-            return Err(anyhow!(
-                "Claude process failed with status {}: {}",
-                status,
-                stderr_output
-            ));
-        }
-
-        final_response.ok_or_else(|| anyhow!("No result received from claude"))
-    }
 }
 
 impl Default for ClaudeAdapter {
@@ -452,7 +340,7 @@ impl AgentAdapter for ClaudeAdapter {
             .run_claude_streaming(
                 prompt,
                 REVIEWER_SCHEMA,
-                &self.reviewer_allowed_tools,
+                Some(&self.reviewer_allowed_tools),
                 context.working_dir.as_deref(),
                 None,
             )
@@ -460,7 +348,7 @@ impl AgentAdapter for ClaudeAdapter {
 
         self.reviewer_session_id = Some(response.session_id.clone());
 
-        parse_reviewer_output(&response)
+        parse_reviewer_output(response.result.as_ref(), "claude")
     }
 
     async fn run_reviewee(&mut self, prompt: &str, context: &Context) -> Result<RevieweeOutput> {
@@ -491,7 +379,7 @@ impl AgentAdapter for ClaudeAdapter {
             .run_claude_streaming(
                 prompt,
                 REVIEWEE_SCHEMA,
-                &self.reviewee_allowed_tools,
+                Some(&self.reviewee_allowed_tools),
                 context.working_dir.as_deref(),
                 None,
             )
@@ -499,7 +387,7 @@ impl AgentAdapter for ClaudeAdapter {
 
         self.reviewee_session_id = Some(response.session_id.clone());
 
-        parse_reviewee_output(&response)
+        parse_reviewee_output(response.result.as_ref(), "claude")
     }
 
     async fn continue_reviewer(&mut self, message: &str) -> Result<ReviewerOutput> {
@@ -510,14 +398,15 @@ impl AgentAdapter for ClaudeAdapter {
             .clone();
 
         let response = self
-            .continue_session(
-                &session_id,
+            .run_claude_streaming(
                 message,
                 REVIEWER_SCHEMA,
                 Some(&self.reviewer_allowed_tools),
+                None, // --resume restores the original session's context
+                Some(&session_id),
             )
             .await?;
-        parse_reviewer_output(&response)
+        parse_reviewer_output(response.result.as_ref(), "claude")
     }
 
     async fn continue_reviewee(&mut self, message: &str) -> Result<RevieweeOutput> {
@@ -528,14 +417,15 @@ impl AgentAdapter for ClaudeAdapter {
             .clone();
 
         let response = self
-            .continue_session(
-                &session_id,
+            .run_claude_streaming(
                 message,
                 REVIEWEE_SCHEMA,
                 Some(&self.reviewee_allowed_tools),
+                None, // --resume restores the original session's context
+                Some(&session_id),
             )
             .await?;
-        parse_reviewee_output(&response)
+        parse_reviewee_output(response.result.as_ref(), "claude")
     }
 
     fn add_reviewee_allowed_tool(&mut self, tool: &str) {
@@ -628,112 +518,7 @@ struct ClaudeResponse {
     duration_ms: Option<u64>,
 }
 
-use super::common::{RawRevieweeOutput, RawReviewerOutput};
-
-fn parse_reviewer_output(response: &ClaudeResponse) -> Result<ReviewerOutput> {
-    let result = response
-        .result
-        .as_ref()
-        .ok_or_else(|| anyhow!("No result in claude response"))?;
-
-    let raw: RawReviewerOutput =
-        serde_json::from_value(result.clone()).context("Failed to parse reviewer output")?;
-
-    let action = match raw.action.as_str() {
-        "approve" => ReviewAction::Approve,
-        "request_changes" => ReviewAction::RequestChanges,
-        "comment" => ReviewAction::Comment,
-        _ => return Err(anyhow!("Unknown review action: {}", raw.action)),
-    };
-
-    let comments = raw
-        .comments
-        .into_iter()
-        .map(|c| {
-            let severity = match c.severity.as_str() {
-                "critical" => crate::ai::adapter::CommentSeverity::Critical,
-                "major" => crate::ai::adapter::CommentSeverity::Major,
-                "minor" => crate::ai::adapter::CommentSeverity::Minor,
-                "suggestion" => crate::ai::adapter::CommentSeverity::Suggestion,
-                _ => crate::ai::adapter::CommentSeverity::Minor,
-            };
-            ReviewComment {
-                path: c.path,
-                line: c.line,
-                body: c.body,
-                severity,
-            }
-        })
-        .collect();
-
-    Ok(ReviewerOutput {
-        action,
-        summary: raw.summary,
-        comments,
-        blocking_issues: raw.blocking_issues,
-    })
-}
-
-fn parse_reviewee_output(response: &ClaudeResponse) -> Result<RevieweeOutput> {
-    let result = response
-        .result
-        .as_ref()
-        .ok_or_else(|| anyhow!("No result in claude response"))?;
-
-    let raw: RawRevieweeOutput =
-        serde_json::from_value(result.clone()).context("Failed to parse reviewee output")?;
-
-    let status = match raw.status.as_str() {
-        "completed" => RevieweeStatus::Completed,
-        "needs_clarification" => RevieweeStatus::NeedsClarification,
-        "needs_permission" => RevieweeStatus::NeedsPermission,
-        "error" => RevieweeStatus::Error,
-        _ => return Err(anyhow!("Unknown reviewee status: {}", raw.status)),
-    };
-
-    let permission_request = raw.permission_request.map(|p| PermissionRequest {
-        action: p.action,
-        reason: p.reason,
-    });
-
-    Ok(RevieweeOutput {
-        status,
-        summary: raw.summary,
-        files_modified: raw.files_modified,
-        question: raw.question,
-        permission_request,
-        error_details: raw.error_details,
-    })
-}
-
-/// Summarize JSON value for display
-fn summarize_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => {
-            let keys: Vec<_> = map.keys().take(3).cloned().collect();
-            if keys.is_empty() {
-                "{}".to_string()
-            } else {
-                format!("{{{}: ...}}", keys.join(", "))
-            }
-        }
-        serde_json::Value::String(s) => summarize_text(s),
-        serde_json::Value::Array(arr) => format!("[{} items]", arr.len()),
-        _ => value.to_string(),
-    }
-}
-
-/// Summarize text for display (UTF-8 safe)
-fn summarize_text(s: &str) -> String {
-    let s = s.trim();
-    let char_count = s.chars().count();
-    if char_count <= 60 {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(57).collect();
-        format!("{}...", truncated)
-    }
-}
+use super::common::{parse_reviewee_output, parse_reviewer_output, summarize_json, summarize_text};
 
 #[cfg(test)]
 mod tests {
