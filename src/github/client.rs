@@ -97,9 +97,16 @@ pub async fn gh_api(endpoint: &str) -> Result<serde_json::Value> {
 /// Fetches all pages and merges into a single JSON array.
 /// Caller should include `per_page=100` in endpoint if desired.
 pub async fn gh_api_paginate(endpoint: &str) -> Result<serde_json::Value> {
-    let output =
-        gh_command(&["api", "--paginate", "--slurp", "--jq", "add // []", endpoint]).await?;
-    serde_json::from_str(&output).context("Failed to parse gh api paginated response as JSON")
+    let output = gh_command(&["api", "--paginate", "--slurp", endpoint]).await?;
+    let pages: Vec<serde_json::Value> =
+        serde_json::from_str(&output).context("Failed to parse gh api paginated response")?;
+    let mut result = Vec::new();
+    for page in pages {
+        if let serde_json::Value::Array(items) = page {
+            result.extend(items);
+        }
+    }
+    Ok(serde_json::Value::Array(result))
 }
 
 /// Field type for gh api command
