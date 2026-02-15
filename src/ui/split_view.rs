@@ -138,7 +138,7 @@ fn render_file_list_pane(
 
     // Footer
     let footer_text = if is_focused {
-        "j/k/↑↓: move | Enter/→/l: diff | ←/h/q: back"
+        "j/k/↑↓: move | Enter/→/l: diff | O: browser | ←/h/q: back"
     } else {
         "←/h: focus files"
     };

@@ -277,6 +277,7 @@ go_to_definition = ["g", "d"]
 | `comment_list` | `C` | Open comment list |
 | `ai_rally` | `A` | Start AI Rally |
 | `open_panel` | `Enter` | Open panel / select |
+| `open_in_browser` | `O` | Open PR in browser |
 | **Diff Operations** |||
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |

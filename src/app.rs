@@ -3501,6 +3501,16 @@ impl App {
             return Ok(());
         }
 
+        // ブラウザで開く（configurable、フィルターキーより先に評価）
+        if self.matches_single_key(&key, &kb.open_in_browser) {
+            if let Some(ref prs) = self.pr_list {
+                if let Some(pr) = prs.get(self.selected_pr) {
+                    self.open_pr_in_browser(pr.number);
+                }
+            }
+            return Ok(());
+        }
+
         // o: open PRのみ
         if key.code == KeyCode::Char('o') {
             if self.pr_list_state_filter != PrStateFilter::Open {
@@ -3531,16 +3541,6 @@ impl App {
         // r: リフレッシュ
         if self.matches_single_key(&key, &kb.refresh) {
             self.reload_pr_list();
-            return Ok(());
-        }
-
-        // O: ブラウザで開く
-        if self.matches_single_key(&key, &kb.open_in_browser) {
-            if let Some(ref prs) = self.pr_list {
-                if let Some(pr) = prs.get(self.selected_pr) {
-                    self.open_pr_in_browser(pr.number);
-                }
-            }
             return Ok(());
         }
 
