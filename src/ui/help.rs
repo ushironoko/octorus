@@ -87,6 +87,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.ai_rally.display(), key_width)
         )),
         Line::from(format!(
+            "{}  Open PR in browser",
+            fmt_key(&kb.open_in_browser.display(), key_width)
+        )),
+        Line::from(format!(
             "{}  Refresh (clear cache and reload)",
             fmt_key(&kb.refresh.display(), key_width)
         )),

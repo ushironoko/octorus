@@ -102,7 +102,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Footer
     let footer_text =
-        "j/k/↑↓: move | Enter: select | gg/G: top/bottom | o: open | c: closed | a: all | r: refresh | q: quit | ?: help";
+        "j/k/↑↓: move | Enter: select | gg/G: top/bottom | O: browser | o: open | c: closed | a: all | r: refresh | q: quit | ?: help";
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }

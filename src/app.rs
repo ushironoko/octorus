@@ -1305,6 +1305,14 @@ impl App {
             return Ok(());
         }
 
+        // Open in browser
+        if self.matches_single_key(&key, &kb.open_in_browser) {
+            if let Some(pr_number) = self.pr_number {
+                self.open_pr_in_browser(pr_number);
+            }
+            return Ok(());
+        }
+
         // Help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
@@ -1346,6 +1354,13 @@ impl App {
 
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
+            return Ok(true);
+        }
+
+        if self.matches_single_key(&key, &kb.open_in_browser) {
+            if let Some(pr_number) = self.pr_number {
+                self.open_pr_in_browser(pr_number);
+            }
             return Ok(true);
         }
 
@@ -2213,6 +2228,21 @@ impl App {
         self.discussion_comments_loading = false;
         // PRデータを再取得
         self.retry_load();
+    }
+
+    fn open_pr_in_browser(&self, pr_number: u32) {
+        let repo = self.repo.clone();
+        tokio::spawn(async move {
+            let _ = github::gh_command(&[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "-R",
+                &repo,
+                "--web",
+            ])
+            .await;
+        });
     }
 
     async fn handle_diff_view_input(
@@ -3501,6 +3531,16 @@ impl App {
         // r: リフレッシュ
         if self.matches_single_key(&key, &kb.refresh) {
             self.reload_pr_list();
+            return Ok(());
+        }
+
+        // O: ブラウザで開く
+        if self.matches_single_key(&key, &kb.open_in_browser) {
+            if let Some(ref prs) = self.pr_list {
+                if let Some(pr) = prs.get(self.selected_pr) {
+                    self.open_pr_in_browser(pr.number);
+                }
+            }
             return Ok(());
         }
 

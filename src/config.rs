@@ -82,6 +82,7 @@ pub struct KeybindingsConfig {
     // Diff operations
     pub go_to_definition: KeySequence,
     pub go_to_file: KeySequence,
+    pub open_in_browser: KeySequence,
 }
 
 impl Default for Config {
@@ -152,6 +153,7 @@ impl Default for KeybindingsConfig {
             // Diff operations
             go_to_definition: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('d')),
             go_to_file: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('f')),
+            open_in_browser: KeySequence::single(KeyBinding::char('O')),
         }
     }
 }
@@ -194,6 +196,7 @@ impl KeybindingsConfig {
             ("open_panel", &self.open_panel),
             ("go_to_definition", &self.go_to_definition),
             ("go_to_file", &self.go_to_file),
+            ("open_in_browser", &self.open_in_browser),
         ];
 
         for (name, seq) in &bindings {
@@ -319,6 +322,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("open_panel", &seq_to_value(&self.open_panel))?;
         map.serialize_entry("go_to_definition", &seq_to_value(&self.go_to_definition))?;
         map.serialize_entry("go_to_file", &seq_to_value(&self.go_to_file))?;
+        map.serialize_entry("open_in_browser", &seq_to_value(&self.open_in_browser))?;
 
         map.end()
     }
