@@ -8,6 +8,8 @@ use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::io;
 use std::path::Path;
 use std::panic;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -135,9 +137,10 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
     let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
     let (mut app, tx) = app::App::new_loading(repo, 0, config.clone());
     let working_dir = args.working_dir.clone();
+    let refresh_pending = Arc::new(AtomicBool::new(false));
 
     app.set_retry_sender(retry_tx.clone());
-    setup_local_watch(retry_tx, working_dir.clone());
+    setup_local_watch(retry_tx, working_dir.clone(), refresh_pending.clone());
     app.set_local_mode(true);
     app.set_local_auto_focus(args.auto_focus);
     setup_working_dir(&mut app, args);
@@ -157,8 +160,16 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
             _ = token_clone.cancelled() => {}
             _ = async {
                 while retry_rx.recv().await.is_some() {
-                    let tx_retry = tx.clone();
-                    loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
+                    refresh_pending.store(false, Ordering::Release);
+
+                    loop {
+                        let tx_retry = tx.clone();
+                        loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
+
+                        if !refresh_pending.swap(false, Ordering::AcqRel) {
+                            break;
+                        }
+                    }
                 }
             } => {}
         }
@@ -175,7 +186,11 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
     std::process::exit(exit_code);
 }
 
-fn setup_local_watch(refresh_tx: mpsc::Sender<()>, working_dir: Option<String>) {
+fn setup_local_watch(
+    refresh_tx: mpsc::Sender<()>,
+    working_dir: Option<String>,
+    refresh_pending: Arc<AtomicBool>,
+) {
     let watch_dir = working_dir.unwrap_or_else(|| {
         std::env::current_dir()
             .map(|path| path.to_string_lossy().to_string())
@@ -190,7 +205,7 @@ fn setup_local_watch(refresh_tx: mpsc::Sender<()>, working_dir: Option<String>) 
         let watch_dir = watch_dir;
         let refresh_tx = refresh_tx.clone();
         move || {
-            let callback = move |result: notify::Result<notify::Event>| {
+        let callback = move |result: notify::Result<notify::Event>| {
                 let Ok(event) = result else {
                     return;
                 };
@@ -200,7 +215,9 @@ fn setup_local_watch(refresh_tx: mpsc::Sender<()>, working_dir: Option<String>) 
                 });
 
                 if should_refresh {
-                    let _ = refresh_tx.try_send(());
+                    if !refresh_pending.swap(true, Ordering::AcqRel) {
+                        let _ = refresh_tx.try_send(());
+                    }
                 }
             };
 
