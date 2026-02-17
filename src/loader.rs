@@ -382,11 +382,37 @@ async fn run_git_untracked(working_dir: Option<&str>) -> Result<String> {
 }
 
 async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Result<String> {
-    run_git_command(
-        working_dir,
-        &["diff", "--no-ext-diff", "--no-color", "--no-index", "--", "/dev/null", filename],
-    )
-    .await
+    let mut command = Command::new("git");
+    command.args([
+        "diff",
+        "--no-ext-diff",
+        "--no-color",
+        "--no-index",
+        "--",
+        "/dev/null",
+        filename,
+    ]);
+
+    if let Some(dir) = working_dir {
+        command.current_dir(dir);
+    }
+
+    let output = command
+        .output()
+        .await
+        .context("failed to spawn git no-index diff command")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+
+    if stdout.trim().is_empty() && !output.stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        anyhow::bail!("git diff --no-index failed: {}", stderr.trim());
+    }
+
+    Ok(stdout)
 }
 
 #[cfg(test)]
@@ -506,5 +532,51 @@ mod tests {
         };
 
         assert!(files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_local_diff_for_untracked_file_returns_full_patch() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join("README.md"), "hello\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "README.md"],
+            "failed to add initial file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to commit initial file",
+        );
+
+        write_file(&workdir.join("src/new_feature.rs"), "pub fn hello() {\n    1 + 1\n}\n");
+
+        let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
+        fetch_local_diff("local".to_string(), Some(workdir.to_string_lossy().to_string()), tx).await;
+
+        let result = rx.recv().await.unwrap();
+        let files = match result {
+            DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
+        };
+
+        let new_file = files
+            .iter()
+            .find(|file| file.filename == "src/new_feature.rs")
+            .expect("untracked file should appear in local diff");
+
+        let patch = new_file.patch.as_deref().expect("untracked file should have a patch");
+        assert!(patch.contains("new file mode"));
+        assert!(patch.contains("+pub fn hello()"));
     }
 }

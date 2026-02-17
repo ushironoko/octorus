@@ -1106,7 +1106,7 @@ impl App {
             DataLoadResult::Success { pr, files } => {
                 let files = files;
                 let changed_file_index = if self.local_mode && self.local_auto_focus {
-                    self.find_changed_local_file_index(&files)
+                    self.find_changed_local_file_index(&files, self.selected_file)
                 } else {
                     None
                 };
@@ -1210,21 +1210,69 @@ impl App {
         hash_string(&signature)
     }
 
-    fn find_changed_local_file_index(&self, files: &[ChangedFile]) -> Option<usize> {
+    fn find_changed_local_file_index(
+        &self,
+        files: &[ChangedFile],
+        anchor_selected: usize,
+    ) -> Option<usize> {
         if self.local_file_signatures.is_empty() {
             // First local snapshot loaded: auto-focus the first file on first change.
             // This is useful when starting with a clean working tree and adding files.
             return (!files.is_empty()).then_some(0);
         }
 
-        files.iter().enumerate().find_map(|(idx, file)| {
-            let next_signature = Self::local_file_signature(file);
-            match self.local_file_signatures.get(&file.filename) {
-                Some(signature) if *signature == next_signature => None,
-                _ => Some(idx),
+        if files.is_empty() {
+            return None;
+        }
+
+        let anchor_selected = anchor_selected.min(files.len() - 1);
+        let changed_indices: Vec<usize> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, file)| {
+                let next_signature = Self::local_file_signature(file);
+                match self.local_file_signatures.get(&file.filename) {
+                    Some(signature) if *signature == next_signature => None,
+                    _ => Some(idx),
+                }
+            })
+            .collect();
+
+        if changed_indices.is_empty() {
+            return None;
+        }
+
+        if changed_indices.contains(&anchor_selected) {
+            return Some(anchor_selected);
+        }
+
+        if changed_indices.len() == 1 {
+            return changed_indices.into_iter().next();
+        }
+
+        let next = changed_indices.iter().copied().find(|idx| *idx > anchor_selected);
+        let prev = changed_indices
+            .iter()
+            .rev()
+            .copied()
+            .find(|idx| *idx < anchor_selected);
+
+        match (next, prev) {
+            (Some(next_idx), Some(prev_idx)) => {
+                let next_distance = next_idx.saturating_sub(anchor_selected);
+                let prev_distance = anchor_selected.saturating_sub(prev_idx);
+                if next_distance <= prev_distance {
+                    Some(next_idx)
+                } else {
+                    Some(prev_idx)
+                }
             }
-        })
+            (Some(next_idx), None) => Some(next_idx),
+            (None, Some(prev_idx)) => Some(prev_idx),
+            _ => None,
+        }
     }
+
 
     fn remember_local_file_signatures(&mut self, files: &[ChangedFile]) {
         self.local_file_signatures.clear();
@@ -4622,6 +4670,211 @@ mod tests {
         assert_eq!(
             app.selected_file, 0,
             "selected file should track file_b.rs by filename, not by index"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_auto_focus_selects_next_changed_file() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        app.set_local_mode(true);
+        app.set_local_auto_focus(true);
+        app.selected_file = 1;
+
+        let make_file = |name: &str, patch: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.to_string()),
+        };
+
+        let initial_files = vec![
+            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+        ];
+
+        let pr = Box::new(PullRequest {
+            number: 1,
+            title: "Test PR".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+
+        app.data_state = DataState::Loaded {
+            pr: pr.clone(),
+            files: initial_files.clone(),
+        };
+        app.remember_local_file_signatures(&initial_files);
+
+        app.handle_data_result(
+            1,
+            DataLoadResult::Success {
+                pr,
+                files: vec![
+                    make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"),
+                    make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+                    make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+                    make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"),
+                ],
+            },
+        );
+
+        assert_eq!(
+            app.selected_file, 3,
+            "auto-focus should prefer the next changed file after current selection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_auto_focus_prefers_nearest_changed_file() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        app.set_local_mode(true);
+        app.set_local_auto_focus(true);
+        app.selected_file = 3;
+
+        let make_file = |name: &str, patch: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.to_string()),
+        };
+
+        let initial_files = vec![
+            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+        ];
+
+        let pr = Box::new(PullRequest {
+            number: 1,
+            title: "Test PR".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+
+        app.data_state = DataState::Loaded {
+            pr: pr.clone(),
+            files: initial_files.clone(),
+        };
+        app.remember_local_file_signatures(&initial_files);
+
+        app.handle_data_result(
+            1,
+            DataLoadResult::Success {
+                pr,
+                files: vec![
+                    make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed before
+                    make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged
+                    make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged
+                    make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged
+                    make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed after
+                ],
+            },
+        );
+
+        assert_eq!(
+            app.selected_file, 4,
+            "auto-focus should move to the nearer changed file around current selection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_auto_focus_prefers_next_when_distances_are_tie() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        app.set_local_mode(true);
+        app.set_local_auto_focus(true);
+        app.selected_file = 2;
+
+        let make_file = |name: &str, patch: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.to_string()),
+        };
+
+        let initial_files = vec![
+            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+        ];
+
+        let pr = Box::new(PullRequest {
+            number: 1,
+            title: "Test PR".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+
+        app.data_state = DataState::Loaded {
+            pr: pr.clone(),
+            files: initial_files.clone(),
+        };
+        app.remember_local_file_signatures(&initial_files);
+
+        app.handle_data_result(
+            1,
+            DataLoadResult::Success {
+                pr,
+                files: vec![
+                    make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 0)
+                    make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed (index 1)
+                    make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 2)
+                    make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed (index 3)
+                    make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged (index 4)
+                ],
+            },
+        );
+
+        assert_eq!(
+            app.selected_file, 3,
+            "auto-focus should prefer the next file when before/after distances are equal"
         );
     }
 
