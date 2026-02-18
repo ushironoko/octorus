@@ -98,6 +98,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Toggle help",
             fmt_key(&kb.help.display(), key_width)
         )),
+        Line::from(format!(
+            "{}  Toggle local diff mode",
+            fmt_key(&kb.toggle_local_mode.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle auto-focus (local mode)",
+            fmt_key(&kb.toggle_auto_focus.display(), key_width)
+        )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
         Line::from(vec![Span::styled(

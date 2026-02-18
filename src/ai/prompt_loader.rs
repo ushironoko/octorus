@@ -217,6 +217,7 @@ mod tests {
             head_sha: "abc123".to_string(),
             base_branch: "main".to_string(),
             external_comments: Vec::new(),
+            local_mode: false,
         }
     }
 

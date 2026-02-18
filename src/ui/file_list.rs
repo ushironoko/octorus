@@ -36,14 +36,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     // Header
-    let pr_info = match &app.data_state {
-        DataState::Loaded { pr, .. } => {
-            format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
+    let pr_info = if app.is_local_mode() {
+        let af = if app.is_local_auto_focus() { " AF" } else { "" };
+        format!("[LOCAL{}] Local HEAD diff", af)
+    } else {
+        match &app.data_state {
+            DataState::Loaded { pr, .. } => {
+                format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
+            }
+            _ => match app.pr_number {
+                Some(n) => format!("PR #{}", n),
+                None => "PR".to_string(),
+            },
         }
-        _ => match app.pr_number {
-            Some(n) => format!("PR #{}", n),
-            None => "PR".to_string(),
-        },
     };
 
     let header =
@@ -127,16 +132,26 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     // Header
-    let header_text = match app.pr_number {
-        Some(n) => format!("PR #{} - Loading...", n),
-        None => "Loading...".to_string(),
+    let header_text = if app.is_local_mode() {
+        let af = if app.is_local_auto_focus() { " AF" } else { "" };
+        format!("[LOCAL{}] Loading...", af)
+    } else {
+        match app.pr_number {
+            Some(n) => format!("PR #{} - Loading...", n),
+            None => "Loading...".to_string(),
+        }
     };
     let header =
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
     // Loading message
-    let loading = Paragraph::new(format!("{} Loading PR data...", app.spinner_char()))
+    let loading_msg = if app.is_local_mode() {
+        format!("{} Loading local diff...", app.spinner_char())
+    } else {
+        format!("{} Loading PR data...", app.spinner_char())
+    };
+    let loading = Paragraph::new(loading_msg)
         .style(Style::default().fg(Color::Yellow))
         .alignment(Alignment::Center)
         .block(
@@ -164,9 +179,13 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         .split(frame.area());
 
     // Header
-    let header_text = match app.pr_number {
-        Some(n) => format!("PR #{} - Error", n),
-        None => "Error".to_string(),
+    let header_text = if app.is_local_mode() {
+        "[LOCAL] Error".to_string()
+    } else {
+        match app.pr_number {
+            Some(n) => format!("PR #{} - Error", n),
+            None => "Error".to_string(),
+        }
     };
     let header =
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));

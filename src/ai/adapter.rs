@@ -20,6 +20,8 @@ pub struct Context {
     pub base_branch: String,
     /// External tool comments (Copilot, CodeRabbit, etc.)
     pub external_comments: Vec<ExternalComment>,
+    /// ローカルモードかどうか（GitHub API 呼び出しをスキップ）
+    pub local_mode: bool,
 }
 
 /// Comment from external tools (bots)

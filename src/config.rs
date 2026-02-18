@@ -83,6 +83,10 @@ pub struct KeybindingsConfig {
     pub go_to_definition: KeySequence,
     pub go_to_file: KeySequence,
     pub open_in_browser: KeySequence,
+
+    // Local mode
+    pub toggle_local_mode: KeySequence,
+    pub toggle_auto_focus: KeySequence,
 }
 
 impl Default for Config {
@@ -154,6 +158,10 @@ impl Default for KeybindingsConfig {
             go_to_definition: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('d')),
             go_to_file: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('f')),
             open_in_browser: KeySequence::single(KeyBinding::char('O')),
+
+            // Local mode
+            toggle_local_mode: KeySequence::single(KeyBinding::char('L')),
+            toggle_auto_focus: KeySequence::single(KeyBinding::char('F')),
         }
     }
 }
@@ -197,6 +205,8 @@ impl KeybindingsConfig {
             ("go_to_definition", &self.go_to_definition),
             ("go_to_file", &self.go_to_file),
             ("open_in_browser", &self.open_in_browser),
+            ("toggle_local_mode", &self.toggle_local_mode),
+            ("toggle_auto_focus", &self.toggle_auto_focus),
         ];
 
         for (name, seq) in &bindings {
@@ -261,7 +271,11 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
     //
     // NOTE: 'comment' and 'suggestion' are NOT compatible - both are active in diff view
     // and comment panel contexts, so they must have different bindings.
-    let context_groups: &[&[&str]] = &[&["reply", "request_changes"]];
+    let context_groups: &[&[&str]] = &[
+        &["reply", "request_changes"],
+        &["toggle_local_mode", "move_right"], // L vs l: different cases
+        &["toggle_auto_focus", "go_to_file"], // F vs gf: different sequence lengths
+    ];
 
     for group in context_groups {
         if group.contains(&name1) && group.contains(&name2) {
@@ -323,6 +337,8 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("go_to_definition", &seq_to_value(&self.go_to_definition))?;
         map.serialize_entry("go_to_file", &seq_to_value(&self.go_to_file))?;
         map.serialize_entry("open_in_browser", &seq_to_value(&self.open_in_browser))?;
+        map.serialize_entry("toggle_local_mode", &seq_to_value(&self.toggle_local_mode))?;
+        map.serialize_entry("toggle_auto_focus", &seq_to_value(&self.toggle_auto_focus))?;
 
         map.end()
     }
