@@ -3004,6 +3004,9 @@ impl App {
 
     /// コメント入力を開始（組み込みTextArea）
     fn enter_comment_input(&mut self) {
+        if self.local_mode {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -3076,6 +3079,9 @@ impl App {
 
     /// サジェスチョン入力を開始（組み込みTextArea）
     fn enter_suggestion_input(&mut self) {
+        if self.local_mode {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -3116,6 +3122,9 @@ impl App {
     }
 
     fn open_comment_list(&mut self) {
+        if self.local_mode {
+            return;
+        }
         self.state = AppState::CommentList;
         self.discussion_comment_detail_mode = false;
         self.discussion_comment_detail_scroll = 0;
