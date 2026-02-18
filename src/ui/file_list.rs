@@ -9,8 +9,8 @@ use ratatui::{
     Frame,
 };
 
-use super::common::render_rally_status_bar;
-use crate::app::{App, DataState};
+use super::common::{build_pr_info, render_rally_status_bar};
+use crate::app::App;
 use crate::github::ChangedFile;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -36,20 +36,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     // Header
-    let pr_info = if app.is_local_mode() {
-        let af = if app.is_local_auto_focus() { " AF" } else { "" };
-        format!("[LOCAL{}] Local HEAD diff", af)
-    } else {
-        match &app.data_state {
-            DataState::Loaded { pr, .. } => {
-                format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
-            }
-            _ => match app.pr_number {
-                Some(n) => format!("PR #{}", n),
-                None => "PR".to_string(),
-            },
-        }
-    };
+    let pr_info = build_pr_info(app);
 
     let header =
         Paragraph::new(pr_info).block(Block::default().borders(Borders::ALL).title("octorus"));

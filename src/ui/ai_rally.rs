@@ -9,10 +9,14 @@ use ratatui::{
     Frame,
 };
 
+use super::common::build_pr_info;
 use crate::ai::{RallyState, ReviewAction, RevieweeStatus};
 use crate::app::{AiRallyState, App, LogEntry, LogEventType};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Build PR info before borrowing ai_rally_state to avoid borrow conflict
+    let pr_info = build_pr_info(app);
+
     let Some(rally_state) = &mut app.ai_rally_state else {
         return;
     };
@@ -20,13 +24,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
+            Constraint::Length(4), // Header (PR info + status)
             Constraint::Min(10),   // Main content
             Constraint::Length(3), // Status bar
         ])
         .split(frame.area());
 
-    render_header(frame, chunks[0], rally_state);
+    render_header(frame, chunks[0], rally_state, &pr_info);
     render_main_content(frame, chunks[1], rally_state);
     render_status_bar(frame, chunks[2], rally_state);
 
@@ -36,7 +40,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &str) {
     let state_text = match state.state {
         RallyState::Initializing => "Initializing...",
         RallyState::ReviewerReviewing => "Reviewer reviewing...",
@@ -63,15 +67,18 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         state.iteration, state.max_iterations
     );
 
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled("Status: ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            state_text,
-            Style::default()
-                .fg(state_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]))
+    let header = Paragraph::new(vec![
+        Line::from(Span::styled(pr_info, Style::default().fg(Color::White))),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                state_text,
+                Style::default()
+                    .fg(state_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ])
     .block(
         Block::default()
             .borders(Borders::ALL)
