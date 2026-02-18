@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 // Use modules from the library crate
+use octorus::app::RefreshRequest;
 use octorus::{app, cache, config, github, loader, syntax};
 
 // init is only used by the binary, not needed for benchmarks
@@ -134,7 +135,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -> Result<()> {
-    let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
+    let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
     let (mut app, tx) = app::App::new_loading(repo, 0, config.clone());
     let working_dir = args.working_dir.clone();
     let refresh_pending = Arc::new(AtomicBool::new(false));
@@ -159,15 +160,26 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
         tokio::select! {
             _ = token_clone.cancelled() => {}
             _ = async {
-                while retry_rx.recv().await.is_some() {
-                    refresh_pending.store(false, Ordering::Release);
+                while let Some(request) = retry_rx.recv().await {
+                    match request {
+                        RefreshRequest::LocalRefresh => {
+                            refresh_pending.store(false, Ordering::Release);
 
-                    loop {
-                        let tx_retry = tx.clone();
-                        loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
+                            loop {
+                                let tx_retry = tx.clone();
+                                loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
 
-                        if !refresh_pending.swap(false, Ordering::AcqRel) {
-                            break;
+                                if !refresh_pending.swap(false, Ordering::AcqRel) {
+                                    break;
+                                }
+                            }
+                        }
+                        RefreshRequest::PrRefresh { .. } => {
+                            // ローカルモードでは PrRefresh を無視する。
+                            // pr_number == 0 の擬似値で API 呼び出しすると無効なリクエストになるため、
+                            // LocalRefresh として処理する。
+                            let tx_retry = tx.clone();
+                            loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
                         }
                     }
                 }
@@ -187,7 +199,7 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
 }
 
 fn setup_local_watch(
-    refresh_tx: mpsc::Sender<()>,
+    refresh_tx: mpsc::Sender<RefreshRequest>,
     working_dir: Option<String>,
     refresh_pending: Arc<AtomicBool>,
 ) {
@@ -208,7 +220,7 @@ fn setup_local_watch(
                 let should_refresh = should_refresh_local_change(&event.paths, &event.kind);
 
                 if should_refresh && !refresh_pending.swap(true, Ordering::AcqRel) {
-                    let _ = refresh_tx.try_send(());
+                    let _ = refresh_tx.try_send(RefreshRequest::LocalRefresh);
                 }
             };
 
@@ -237,7 +249,8 @@ fn is_git_file(path: &Path) -> bool {
 /// Run the app with a specific PR number (existing flow)
 async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) -> Result<()> {
     // リトライ用のチャンネル
-    let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
+    let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
+    let refresh_pending = Arc::new(AtomicBool::new(false));
 
     // 常に Loading 状態で開始し、バックグラウンドで API 取得
     let (mut app, tx) = app::App::new_loading(repo, pr, config.clone());
@@ -257,6 +270,7 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     // バックグラウンドでAPI取得
     let repo_clone = repo.to_string();
     let pr_number = pr;
+    let working_dir = args.working_dir.clone();
 
     tokio::spawn(async move {
         tokio::select! {
@@ -264,10 +278,24 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
             _ = async {
                 loader::fetch_pr_data(repo_clone.clone(), pr_number, loader::FetchMode::Fresh, tx.clone()).await;
 
-                while retry_rx.recv().await.is_some() {
-                    let tx_retry = tx.clone();
-                    loader::fetch_pr_data(repo_clone.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
-                        .await;
+                while let Some(request) = retry_rx.recv().await {
+                    match request {
+                        RefreshRequest::PrRefresh { pr_number } => {
+                            let tx_retry = tx.clone();
+                            loader::fetch_pr_data(repo_clone.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
+                                .await;
+                        }
+                        RefreshRequest::LocalRefresh => {
+                            refresh_pending.store(false, Ordering::Release);
+                            loop {
+                                let tx_retry = tx.clone();
+                                loader::fetch_local_diff(repo_clone.clone(), working_dir.clone(), tx_retry).await;
+                                if !refresh_pending.swap(false, Ordering::AcqRel) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             } => {}
         }
@@ -294,7 +322,12 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
 
 /// Run the app with PR list (new flow)
 async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Result<()> {
+    // リトライ用のチャンネル（PR リスト画面から Local モードへの切替に対応）
+    let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
+    let refresh_pending = Arc::new(AtomicBool::new(false));
+
     let mut app = app::App::new_pr_list(repo, config);
+    app.set_retry_sender(retry_tx);
     setup_working_dir(&mut app, args);
 
     // Set pending AI Rally flag if --ai-rally was passed
@@ -303,7 +336,7 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     }
 
     // Start loading PR list
-    let (tx, rx) = mpsc::channel(2);
+    let (pr_list_tx, rx) = mpsc::channel(2);
     app.set_pr_list_receiver(rx);
 
     let repo_clone = repo.to_string();
@@ -311,11 +344,53 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
 
     tokio::spawn(async move {
         let result = github::fetch_pr_list(&repo_clone, state_filter, 30).await;
-        let _ = tx.send(result.map_err(|e| e.to_string())).await;
+        let _ = pr_list_tx.send(result.map_err(|e| e.to_string())).await;
+    });
+
+    // データ取得用チャンネル（Local モード切替時に使用）
+    let (data_tx, data_rx) = mpsc::channel(2);
+    app.set_data_receiver(0, data_rx);
+
+    // Cancellation token for graceful shutdown
+    let cancel_token = CancellationToken::new();
+    let token_clone = cancel_token.clone();
+
+    // リトライループ（Local/PR リフレッシュ対応）
+    let repo_for_retry = repo.to_string();
+    let working_dir = args.working_dir.clone();
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = token_clone.cancelled() => {}
+            _ = async {
+                while let Some(request) = retry_rx.recv().await {
+                    match request {
+                        RefreshRequest::PrRefresh { pr_number } => {
+                            let tx_retry = data_tx.clone();
+                            loader::fetch_pr_data(repo_for_retry.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
+                                .await;
+                        }
+                        RefreshRequest::LocalRefresh => {
+                            refresh_pending.store(false, Ordering::Release);
+                            loop {
+                                let tx_retry = data_tx.clone();
+                                loader::fetch_local_diff(repo_for_retry.clone(), working_dir.clone(), tx_retry).await;
+                                if !refresh_pending.swap(false, Ordering::AcqRel) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } => {}
+        }
     });
 
     // Run the app
     let result = app.run().await;
+
+    // Signal background tasks to stop
+    cancel_token.cancel();
 
     if result.is_err() {
         restore_terminal();

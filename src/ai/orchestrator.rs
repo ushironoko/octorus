@@ -759,6 +759,14 @@ impl Orchestrator {
 
     /// Post review to PR (summary comment + inline comments)
     async fn post_review_to_pr(&self, review: &ReviewerOutput) -> Result<()> {
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            self.send_event(RallyEvent::Log(
+                "Local mode: skipping review posting to PR".to_string(),
+            ))
+            .await;
+            return Ok(());
+        }
+
         let context = self
             .context
             .as_ref()
@@ -824,6 +832,14 @@ impl Orchestrator {
 
     /// Post fix summary comment to PR
     async fn post_fix_comment(&self, fix: &RevieweeOutput) -> Result<()> {
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            self.send_event(RallyEvent::Log(
+                "Local mode: skipping fix comment posting".to_string(),
+            ))
+            .await;
+            return Ok(());
+        }
+
         // Build comment body with files modified
         let files_list = if fix.files_modified.is_empty() {
             "No files modified".to_string()
@@ -854,6 +870,10 @@ impl Orchestrator {
 
     /// Fetch external comments from bots (Copilot, CodeRabbit, etc.)
     async fn fetch_external_comments(&self) -> Vec<ExternalComment> {
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            return Vec::new();
+        }
+
         let mut comments = Vec::new();
 
         // Fetch review comments (inline comments on diff)
@@ -895,6 +915,10 @@ impl Orchestrator {
     /// This update is for when the user manually pushes between iterations,
     /// or when external tools/CI update the PR branch.
     async fn update_head_sha(&mut self) -> Result<()> {
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            return Ok(());
+        }
+
         let pr = github::fetch_pr(&self.repo, self.pr_number).await?;
         if let Some(ref mut ctx) = self.context {
             ctx.head_sha = pr.head.sha.clone();
@@ -907,6 +931,13 @@ impl Orchestrator {
     /// This allows the reviewer to see uncommitted/unpushed changes made by the reviewee.
     /// Falls back to GitHub API if local git diff fails or returns empty.
     async fn fetch_current_diff(&self) -> Result<String> {
+        // ローカルモードでは git fetch をスキップし、直接 diff を取得
+        if let Some(ref ctx) = self.context {
+            if ctx.local_mode {
+                return self.fetch_local_working_diff(ctx).await;
+            }
+        }
+
         // Timeout for git operations (30 seconds)
         const GIT_TIMEOUT_SECS: u64 = 30;
 
@@ -985,6 +1016,67 @@ impl Orchestrator {
 
         // Fallback to GitHub API
         github::fetch_pr_diff(&self.repo, self.pr_number).await
+    }
+
+    /// ローカルモード専用の diff 取得
+    ///
+    /// `git diff HEAD` を最優先し、working tree + staged の最新変更を取得。
+    /// 空の場合は `origin/{base}...HEAD` でコミット済み差分を試行。
+    /// どちらも空の場合は空文字列を返す（stale な初期 diff にフォールバックしない）。
+    async fn fetch_local_working_diff(&self, ctx: &super::adapter::Context) -> Result<String> {
+        const GIT_TIMEOUT_SECS: u64 = 30;
+
+        let working_dir = ctx.working_dir.as_deref().unwrap_or(".");
+        let base_branch = &ctx.base_branch;
+
+        // 1. git diff HEAD（working tree + staged の最新変更を優先）
+        let git_diff_future = tokio::process::Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(working_dir)
+            .output();
+
+        match timeout(Duration::from_secs(GIT_TIMEOUT_SECS), git_diff_future).await {
+            Ok(Ok(output)) if output.status.success() => {
+                let diff = String::from_utf8_lossy(&output.stdout).to_string();
+                if !diff.trim().is_empty() {
+                    self.send_event(RallyEvent::Log(
+                        "Using local git diff HEAD for re-review".to_string(),
+                    ))
+                    .await;
+                    return Ok(diff);
+                }
+            }
+            _ => {}
+        }
+
+        // 2. Fallback: origin/{base}...HEAD（コミット済み差分）
+        let origin_ref = format!("origin/{}...HEAD", base_branch);
+        let git_diff_future = tokio::process::Command::new("git")
+            .args(["diff", &origin_ref])
+            .current_dir(working_dir)
+            .output();
+
+        if let Ok(Ok(output)) =
+            timeout(Duration::from_secs(GIT_TIMEOUT_SECS), git_diff_future).await
+        {
+            if output.status.success() {
+                let diff = String::from_utf8_lossy(&output.stdout).to_string();
+                if !diff.trim().is_empty() {
+                    self.send_event(RallyEvent::Log(
+                        "Using local git diff (origin base) for re-review".to_string(),
+                    ))
+                    .await;
+                    return Ok(diff);
+                }
+            }
+        }
+
+        // 両方空の場合は空文字列を返す（stale な ctx.diff にフォールバックしない）
+        self.send_event(RallyEvent::Log(
+            "Local diff is empty (no changes detected)".to_string(),
+        ))
+        .await;
+        Ok(String::new())
     }
 
     // For debugging and session inspection
