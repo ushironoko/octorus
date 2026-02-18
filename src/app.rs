@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::io::Stdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
@@ -24,6 +26,7 @@ use crate::loader::{CommentSubmitResult, DataLoadResult};
 use crate::syntax::ParserPool;
 use crate::ui;
 use crate::ui::text_area::{TextArea, TextAreaAction};
+use notify::Watcher;
 use std::time::Instant;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -258,6 +261,39 @@ pub enum CommentTab {
     Discussion,
 }
 
+/// リトライリクエストの種類（統一リトライループで使用）
+#[derive(Debug, Clone)]
+pub enum RefreshRequest {
+    PrRefresh { pr_number: u32 },
+    LocalRefresh,
+}
+
+/// ファイルウォッチャーのハンドル
+///
+/// `active` フラグで callback の処理を制御する。
+/// スレッド自体は `_thread` で保持され、プロセス終了まで生存する。
+pub struct WatcherHandle {
+    active: Arc<AtomicBool>,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+/// モード切替時のビュー状態スナップショット
+///
+/// データは `SessionCache` で管理するため、ここには UI 状態のみ保持。
+/// 全フィールドを `std::mem::replace` / `take()` で移動（Clone 不使用）。
+pub struct ViewSnapshot {
+    pub pr_number: Option<u32>,
+    pub selected_file: usize,
+    pub file_list_scroll_offset: usize,
+    pub selected_line: usize,
+    pub scroll_offset: usize,
+    pub diff_cache: Option<DiffCache>,
+    pub highlighted_cache_store: HashMap<usize, DiffCache>,
+    pub review_comments: Option<Vec<ReviewComment>>,
+    pub discussion_comments: Option<Vec<DiscussionComment>>,
+    pub local_file_signatures: HashMap<String, u64>,
+}
+
 /// PRデータの読み込み状態。
 ///
 /// `Loaded` のフィールドは `Arc` ではなく `Box`/`Vec` で保持する。
@@ -294,6 +330,16 @@ pub struct App {
     local_auto_focus: bool,
     /// 直近のローカルファイル署名（差分変更を検出）
     local_file_signatures: HashMap<String, u64>,
+    /// CLI で指定された元の PR 番号（モード復帰用）
+    original_pr_number: Option<u32>,
+    /// PR モードのスナップショット
+    saved_pr_snapshot: Option<ViewSnapshot>,
+    /// Local モードのスナップショット
+    saved_local_snapshot: Option<ViewSnapshot>,
+    /// ファイルウォッチャーハンドル（遅延生成）
+    watcher_handle: Option<WatcherHandle>,
+    /// ウォッチャー用 debounce フラグ（watcher スレッドと共有）
+    refresh_pending: Option<Arc<AtomicBool>>,
     pr_list_receiver: Option<mpsc::Receiver<Result<github::PrListPage, String>>>,
     /// DiffView で q/Esc を押した時の戻り先
     pub diff_view_return_state: AppState,
@@ -345,7 +391,7 @@ pub struct App {
     // PR-specific receivers carry the originating PR number to avoid
     // cross-PR cache contamination when the user switches PRs mid-flight.
     data_receiver: PrReceiver<DataLoadResult>,
-    retry_sender: Option<mpsc::Sender<()>>,
+    retry_sender: Option<mpsc::Sender<RefreshRequest>>,
     comment_receiver: PrReceiver<Result<Vec<ReviewComment>, String>>,
     diff_cache_receiver: Option<mpsc::Receiver<DiffCache>>,
     prefetch_receiver: Option<mpsc::Receiver<DiffCache>>,
@@ -406,6 +452,11 @@ impl App {
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
+            original_pr_number: Some(pr_number),
+            saved_pr_snapshot: None,
+            saved_local_snapshot: None,
+            watcher_handle: None,
+            refresh_pending: None,
             pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
@@ -535,6 +586,11 @@ impl App {
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
+            original_pr_number: None,
+            saved_pr_snapshot: None,
+            saved_local_snapshot: None,
+            watcher_handle: None,
+            refresh_pending: None,
             session_cache: SessionCache::new(),
         }
     }
@@ -549,7 +605,7 @@ impl App {
         self.data_receiver = Some((pr_number, rx));
     }
 
-    pub fn set_retry_sender(&mut self, tx: mpsc::Sender<()>) {
+    pub fn set_retry_sender(&mut self, tx: mpsc::Sender<RefreshRequest>) {
         self.retry_sender = Some(tx);
     }
 
@@ -605,6 +661,319 @@ impl App {
 
     pub fn set_local_auto_focus(&mut self, enable: bool) {
         self.local_auto_focus = enable;
+    }
+
+    pub fn is_local_mode(&self) -> bool {
+        self.local_mode
+    }
+
+    pub fn is_local_auto_focus(&self) -> bool {
+        self.local_auto_focus
+    }
+
+    fn toggle_local_mode(&mut self) {
+        // フォアグラウンド Rally 中はブロック
+        if matches!(self.state, AppState::AiRally) {
+            self.submission_result =
+                Some((false, "Cannot toggle mode during AI Rally".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        }
+
+        if self.local_mode {
+            // Local → PR
+            self.deactivate_watcher();
+            self.saved_local_snapshot = Some(self.save_view_snapshot());
+            self.local_mode = false;
+
+            if let Some(snapshot) = self.saved_pr_snapshot.take() {
+                let pr_number = snapshot.pr_number;
+                self.restore_view_snapshot(snapshot);
+
+                // data_receiver の origin_pr を更新
+                if let Some(pr) = pr_number {
+                    self.update_data_receiver_origin(pr);
+                }
+
+                // SessionCache からデータ復元
+                self.restore_data_from_cache();
+            } else if let Some(pr) = self.original_pr_number {
+                // original_pr_number で復帰
+                self.pr_number = Some(pr);
+                self.update_data_receiver_origin(pr);
+                self.restore_data_from_cache();
+            } else if self.started_from_pr_list {
+                self.back_to_pr_list();
+            } else {
+                // 復帰先がない → local に戻してエラー表示
+                self.local_mode = true;
+                self.saved_local_snapshot = None; // 戻す
+                if let Some(handle) = &self.watcher_handle {
+                    handle.active.store(true, Ordering::Release);
+                }
+                self.submission_result = Some((false, "No PR to return to".to_string()));
+                self.submission_result_time = Some(Instant::now());
+                return;
+            }
+
+            self.submission_result = Some((true, "Switched to PR mode".to_string()));
+        } else {
+            // PR → Local
+            let from_pr_list = matches!(self.state, AppState::PullRequestList);
+            self.saved_pr_snapshot = Some(self.save_view_snapshot());
+            self.local_mode = true;
+
+            // PR リストから来た場合は FileList に遷移
+            if from_pr_list {
+                self.state = AppState::FileList;
+            }
+
+            if let Some(snapshot) = self.saved_local_snapshot.take() {
+                self.restore_view_snapshot(snapshot);
+            } else {
+                // 初回: ビューリセット
+                self.selected_file = 0;
+                self.file_list_scroll_offset = 0;
+                self.selected_line = 0;
+                self.scroll_offset = 0;
+                self.diff_cache = None;
+                self.highlighted_cache_store.clear();
+                self.review_comments = None;
+                self.discussion_comments = None;
+            }
+
+            // restore_view_snapshot がスナップショットの pr_number で上書きする可能性があるため、
+            // Local モードでは常に 0 を強制
+            self.pr_number = Some(0);
+
+            // data_receiver の origin_pr を 0 (local) に更新
+            self.update_data_receiver_origin(0);
+            // stale な in-flight view 系 receiver をクリア
+            self.diff_cache_receiver = None;
+            self.prefetch_receiver = None;
+
+            // SessionCache からデータ復元
+            let cache_key = PrCacheKey {
+                repo: self.repo.clone(),
+                pr_number: 0,
+            };
+            if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
+                self.data_state = DataState::Loaded {
+                    pr: cached.pr.clone(),
+                    files: cached.files.clone(),
+                };
+                self.diff_line_count =
+                    Self::calc_diff_line_count(&cached.files, self.selected_file);
+                self.start_prefetch_all_files();
+            } else {
+                self.data_state = DataState::Loading;
+            }
+
+            self.activate_watcher();
+            // 常にバックグラウンドで最新データを取得
+            self.retry_load();
+
+            self.submission_result = Some((true, "Switched to Local mode".to_string()));
+        }
+
+        self.submission_result_time = Some(Instant::now());
+    }
+
+    /// data_receiver の origin_pr を更新（channel 自体は再作成しない）
+    fn update_data_receiver_origin(&mut self, pr_number: u32) {
+        if let Some((ref mut origin, _)) = self.data_receiver {
+            *origin = pr_number;
+        }
+    }
+
+    /// SessionCache からデータを復元し、ない場合は Loading + retry_load
+    fn restore_data_from_cache(&mut self) {
+        let pr_number = self.pr_number.unwrap_or(0);
+        let cache_key = PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number,
+        };
+        if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
+            self.data_state = DataState::Loaded {
+                pr: cached.pr.clone(),
+                files: cached.files.clone(),
+            };
+            self.diff_line_count = Self::calc_diff_line_count(&cached.files, self.selected_file);
+            self.start_prefetch_all_files();
+        } else {
+            self.data_state = DataState::Loading;
+        }
+        // 常にバックグラウンドで最新データを取得
+        self.retry_load();
+    }
+
+    /// ローカルブランチのベースブランチを検出
+    fn detect_local_base_branch(working_dir: Option<&str>) -> Option<String> {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["rev-parse", "--abbrev-ref", "@{upstream}"]);
+        if let Some(dir) = working_dir {
+            cmd.current_dir(dir);
+        }
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let upstream = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                // "origin/main" → "main"
+                if let Some(branch) = upstream.strip_prefix("origin/") {
+                    return Some(branch.to_string());
+                }
+                return Some(upstream);
+            }
+        }
+
+        // Fallback: origin/main or origin/master が存在するか確認
+        for candidate in &["main", "master"] {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["rev-parse", "--verify", &format!("origin/{}", candidate)]);
+            if let Some(dir) = working_dir {
+                cmd.current_dir(dir);
+            }
+            if let Ok(output) = cmd.output() {
+                if output.status.success() {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// 現在のビュー状態をスナップショットとして保存（O(1) 移動）
+    ///
+    /// データは `SessionCache` に格納済みのため、`data_state` は保存しない。
+    fn save_view_snapshot(&mut self) -> ViewSnapshot {
+        ViewSnapshot {
+            pr_number: self.pr_number,
+            selected_file: self.selected_file,
+            file_list_scroll_offset: self.file_list_scroll_offset,
+            selected_line: self.selected_line,
+            scroll_offset: self.scroll_offset,
+            diff_cache: self.diff_cache.take(),
+            highlighted_cache_store: std::mem::take(&mut self.highlighted_cache_store),
+            review_comments: self.review_comments.take(),
+            discussion_comments: self.discussion_comments.take(),
+            local_file_signatures: std::mem::take(&mut self.local_file_signatures),
+        }
+    }
+
+    /// スナップショットから UI 状態を復元（O(1) 移動）
+    ///
+    /// channel は触らない（永続チャンネルのため）。
+    /// データは `SessionCache` から別途取得する。
+    fn restore_view_snapshot(&mut self, snapshot: ViewSnapshot) {
+        self.pr_number = snapshot.pr_number;
+        self.selected_file = snapshot.selected_file;
+        self.file_list_scroll_offset = snapshot.file_list_scroll_offset;
+        self.selected_line = snapshot.selected_line;
+        self.scroll_offset = snapshot.scroll_offset;
+        self.diff_cache = snapshot.diff_cache;
+        self.highlighted_cache_store = snapshot.highlighted_cache_store;
+        self.review_comments = snapshot.review_comments;
+        self.discussion_comments = snapshot.discussion_comments;
+        self.local_file_signatures = snapshot.local_file_signatures;
+
+        // stale な in-flight view 系 receiver をクリア
+        self.diff_cache_receiver = None;
+        self.prefetch_receiver = None;
+        self.comment_receiver = None;
+        self.discussion_comment_receiver = None;
+        self.comment_submit_receiver = None;
+        self.comment_submitting = false;
+        self.comments_loading = false;
+        self.discussion_comments_loading = false;
+    }
+
+    /// ファイルウォッチャーを有効化（初回は作成、2回目以降は active フラグを ON）
+    fn activate_watcher(&mut self) {
+        if let Some(ref handle) = self.watcher_handle {
+            handle.active.store(true, Ordering::Release);
+            return;
+        }
+
+        // retry_sender が必要
+        let Some(ref retry_sender) = self.retry_sender else {
+            return;
+        };
+
+        let refresh_pending = self
+            .refresh_pending
+            .get_or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+
+        let watch_dir = self.working_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+
+        let active = Arc::new(AtomicBool::new(true));
+        let active_clone = active.clone();
+        let refresh_tx = retry_sender.clone();
+
+        let thread = std::thread::spawn(move || {
+            let callback = move |result: notify::Result<notify::Event>| {
+                if !active_clone.load(Ordering::Acquire) {
+                    return;
+                }
+
+                let Ok(event) = result else {
+                    return;
+                };
+
+                let dominated_by_git = event
+                    .paths
+                    .iter()
+                    .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
+                let is_access = matches!(event.kind, notify::EventKind::Access(_));
+
+                if !is_access && !dominated_by_git && !refresh_pending.swap(true, Ordering::AcqRel)
+                {
+                    let _ = refresh_tx.try_send(RefreshRequest::LocalRefresh);
+                }
+            };
+
+            let Ok(mut watcher) =
+                notify::RecommendedWatcher::new(callback, notify::Config::default())
+            else {
+                return;
+            };
+
+            let _ = watcher.watch(
+                std::path::Path::new(&watch_dir),
+                notify::RecursiveMode::Recursive,
+            );
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        });
+
+        self.watcher_handle = Some(WatcherHandle {
+            active,
+            _thread: thread,
+        });
+    }
+
+    /// ファイルウォッチャーを無効化（active フラグを OFF）
+    fn deactivate_watcher(&mut self) {
+        if let Some(ref handle) = self.watcher_handle {
+            handle.active.store(false, Ordering::Release);
+        }
+    }
+
+    fn toggle_auto_focus(&mut self) {
+        self.local_auto_focus = !self.local_auto_focus;
+        let msg = if self.local_auto_focus {
+            "Auto-focus: ON"
+        } else {
+            "Auto-focus: OFF"
+        };
+        self.submission_result = Some((true, msg.to_string()));
+        self.submission_result_time = Some(Instant::now());
     }
 
     /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
@@ -669,34 +1038,39 @@ impl App {
 
     /// バックグラウンドタスクからのデータ更新をポーリング
     fn poll_data_updates(&mut self) {
-        let Some((origin_pr, rx)) = self.data_receiver.as_mut() else {
+        let Some((_origin_pr, rx)) = self.data_receiver.as_mut() else {
             return;
         };
-        let origin_pr = *origin_pr;
 
         match rx.try_recv() {
             Ok(result) => {
-                // PR が切り替わっている場合はキャッシュのみ更新し、UI状態には反映しない
-                if self.pr_number == Some(origin_pr) {
-                    self.handle_data_result(origin_pr, result);
-                } else {
+                // メッセージ自体から発信元PR番号を取得（mutable な origin_pr に依存しない）
+                let source_pr = match &result {
+                    DataLoadResult::Success { pr, .. } => Some(pr.number),
+                    DataLoadResult::Error(_) => None,
+                };
+
+                if source_pr == self.pr_number || source_pr.is_none() {
+                    // 現在のPR/モードに一致 → UI状態に反映
+                    let pr_number = self.pr_number.unwrap_or(0);
+                    self.handle_data_result(pr_number, result);
+                } else if let DataLoadResult::Success { pr, files } = result {
                     // 異なるPRのデータ: セッションキャッシュにのみ格納
-                    if let DataLoadResult::Success { pr, files } = result {
-                        let cache_key = PrCacheKey {
-                            repo: self.repo.clone(),
-                            pr_number: origin_pr,
-                        };
-                        self.session_cache.put_pr_data(
-                            cache_key,
-                            PrData {
-                                pr_updated_at: pr.updated_at.clone(),
-                                pr,
-                                files,
-                            },
-                        );
-                    }
-                    self.data_receiver = None;
+                    // receiver は破棄しない（永続チャンネルを維持）
+                    let cache_key = PrCacheKey {
+                        repo: self.repo.clone(),
+                        pr_number: pr.number,
+                    };
+                    self.session_cache.put_pr_data(
+                        cache_key,
+                        PrData {
+                            pr_updated_at: pr.updated_at.clone(),
+                            pr,
+                            files,
+                        },
+                    );
                 }
+                // Note: stale な結果でも receiver は維持する（永続リトライループ対応）
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1142,7 +1516,18 @@ impl App {
                 if changed_file_index.is_some() {
                     self.file_list_scroll_offset =
                         self.file_list_scroll_offset.min(self.selected_file);
-                    if matches!(self.state, AppState::FileList | AppState::SplitViewFileList) {
+
+                    // BG rally 中は state 遷移をスキップ（ファイル選択のみ更新）
+                    let rally_running_in_bg = self
+                        .ai_rally_state
+                        .as_ref()
+                        .map(|s| s.state.is_active())
+                        .unwrap_or(false)
+                        && !matches!(self.state, AppState::AiRally);
+
+                    if !rally_running_in_bg
+                        && matches!(self.state, AppState::FileList | AppState::SplitViewFileList)
+                    {
                         self.state = AppState::SplitViewDiff;
                     }
                     self.sync_diff_to_selected_file();
@@ -1187,6 +1572,15 @@ impl App {
                 }
                 if let Some(local_files) = local_files_for_signature {
                     self.remember_local_file_signatures(&local_files);
+                }
+                // Local モードのデータ処理完了後、ウォッチャーの debounce フラグをリセット。
+                // app.rs の activate_watcher で作成した refresh_pending は main.rs の
+                // リトライループとは別の Arc であるため、ここで明示的にリセットしないと
+                // 最初のファイル変更イベント以降 watcher がサイレントになる。
+                if self.local_mode {
+                    if let Some(ref pending) = self.refresh_pending {
+                        pending.store(false, Ordering::Release);
+                    }
                 }
                 // ファイル選択変更後も差分キャッシュを即座に復旧して
                 // split view 側の「Loading diff...」が発生しないようにする
@@ -1352,8 +1746,18 @@ impl App {
 
     fn retry_load(&mut self) {
         if let Some(ref tx) = self.retry_sender {
-            self.data_state = DataState::Loading;
-            let _ = tx.try_send(());
+            // 既にデータがある場合は Loading に戻さない（バックグラウンド更新のみ）
+            if !matches!(self.data_state, DataState::Loaded { .. }) {
+                self.data_state = DataState::Loading;
+            }
+            let request = if self.local_mode {
+                RefreshRequest::LocalRefresh
+            } else {
+                RefreshRequest::PrRefresh {
+                    pr_number: self.pr_number.unwrap_or(0),
+                }
+            };
+            let _ = tx.try_send(request);
         }
     }
 
@@ -1447,6 +1851,20 @@ impl App {
             return Ok(());
         }
 
+        // Toggle local mode
+        if self.matches_single_key(&key, &kb.toggle_local_mode) {
+            self.toggle_local_mode();
+            return Ok(());
+        }
+
+        // Toggle auto-focus (local mode only)
+        if self.matches_single_key(&key, &kb.toggle_auto_focus) {
+            if self.local_mode {
+                self.toggle_auto_focus();
+            }
+            return Ok(());
+        }
+
         // Help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
@@ -1494,6 +1912,20 @@ impl App {
         if self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
+            }
+            return Ok(true);
+        }
+
+        // Toggle local mode
+        if self.matches_single_key(&key, &kb.toggle_local_mode) {
+            self.toggle_local_mode();
+            return Ok(true);
+        }
+
+        // Toggle auto-focus (local mode only)
+        if self.matches_single_key(&key, &kb.toggle_auto_focus) {
+            if self.local_mode {
+                self.toggle_auto_focus();
             }
             return Ok(true);
         }
@@ -2284,6 +2716,13 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let base_branch = if self.local_mode {
+            Self::detect_local_base_branch(self.working_dir.as_deref())
+                .unwrap_or_else(|| "main".to_string())
+        } else {
+            pr.base.ref_name.clone()
+        };
+
         let context = Context {
             repo: self.repo.clone(),
             pr_number: self.pr_number(),
@@ -2292,8 +2731,9 @@ impl App {
             diff,
             working_dir: self.working_dir.clone(),
             head_sha: pr.head.sha.clone(),
-            base_branch: pr.base.ref_name.clone(),
+            base_branch,
             external_comments: Vec::new(),
+            local_mode: self.local_mode,
         };
 
         let (event_tx, event_rx) = mpsc::channel(100);
@@ -2360,7 +2800,8 @@ impl App {
         self.discussion_comments = None;
         self.comments_loading = false;
         self.discussion_comments_loading = false;
-        // PRデータを再取得
+        // 強制的に Loading 状態にしてから再取得
+        self.data_state = DataState::Loading;
         self.retry_load();
     }
 
@@ -3672,6 +4113,12 @@ impl App {
             return Ok(());
         }
 
+        // Toggle local mode
+        if self.matches_single_key(&key, &kb.toggle_local_mode) {
+            self.toggle_local_mode();
+            return Ok(());
+        }
+
         // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::PullRequestList;
@@ -3746,13 +4193,15 @@ impl App {
             self.start_ai_rally_on_load = true;
         }
 
+        // data_receiver の origin_pr を更新（channel 自体は再作成しない）
+        self.update_data_receiver_origin(pr_number);
+
         // インメモリキャッシュを確認し、Hit/Missに応じて分岐
         let cache_key = PrCacheKey {
             repo: self.repo.clone(),
             pr_number,
         };
-        let fetch_mode = if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
-            let pr_updated_at = cached.pr_updated_at.clone();
+        if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
             let diff_line_count = Self::calc_diff_line_count(&cached.files, 0);
             self.data_state = DataState::Loaded {
                 pr: cached.pr.clone(),
@@ -3765,52 +4214,32 @@ impl App {
                 self.start_ai_rally_on_load = false;
                 self.start_ai_rally();
             }
-            crate::loader::FetchMode::CheckUpdate(pr_updated_at)
         } else {
             self.data_state = DataState::Loading;
-            crate::loader::FetchMode::Fresh
-        };
+        }
 
-        // データ読み込みチャンネルを設定
-        let (tx, rx) = mpsc::channel(2);
-        self.data_receiver = Some((pr_number, rx));
-
-        // リトライ用のチャンネルを設定
-        let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
-        self.retry_sender = Some(retry_tx);
-
-        let repo = self.repo.clone();
-
-        tokio::spawn(async move {
-            // Initial fetch
-            crate::loader::fetch_pr_data(repo.clone(), pr_number, fetch_mode, tx.clone()).await;
-
-            // Retry loop
-            while retry_rx.recv().await.is_some() {
-                let tx_retry = tx.clone();
-                crate::loader::fetch_pr_data(
-                    repo.clone(),
-                    pr_number,
-                    crate::loader::FetchMode::Fresh,
-                    tx_retry,
-                )
-                .await;
-            }
-        });
+        // 永続リトライループ経由で fetch 開始
+        self.retry_load();
     }
 
     /// FileListからPR一覧に戻る
     pub fn back_to_pr_list(&mut self) {
         if self.started_from_pr_list {
+            // Local モードから戻る場合はスナップショット保存 + watcher 停止
+            if self.local_mode {
+                self.saved_local_snapshot = Some(self.save_view_snapshot());
+                self.deactivate_watcher();
+                self.local_mode = false;
+            }
+
             // PR固有の状態をリセット
             self.pr_number = None;
             self.data_state = DataState::Loading;
             self.review_comments = None;
             self.discussion_comments = None;
             self.diff_cache = None;
-            // 全ての in-flight レシーバーをクリア（late response による panic 防止）
-            self.data_receiver = None;
-            self.retry_sender = None;
+            // in-flight view 系レシーバーをクリア（late response による panic 防止）
+            // data_receiver / retry_sender は永続のため維持
             self.comment_receiver = None;
             self.diff_cache_receiver = None;
             self.prefetch_receiver = None;
@@ -3902,6 +4331,11 @@ impl App {
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
+            original_pr_number: None,
+            saved_pr_snapshot: None,
+            saved_local_snapshot: None,
+            watcher_handle: None,
+            refresh_pending: None,
         }
     }
 
@@ -4159,7 +4593,7 @@ mod tests {
     }
 
     #[test]
-    fn test_back_to_pr_list_clears_all_receivers() {
+    fn test_back_to_pr_list_clears_view_receivers() {
         let config = Config::default();
         let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
         app.started_from_pr_list = true;
@@ -4177,17 +4611,20 @@ mod tests {
         app.comment_submitting = true;
         app.comments_loading = true;
         app.discussion_comments_loading = true;
+        let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(1);
+        app.retry_sender = Some(retry_tx);
 
         app.back_to_pr_list();
 
-        // All receivers should be cleared
-        assert!(app.data_receiver.is_none());
+        // data_receiver / retry_sender は永続のため維持
+        assert!(app.data_receiver.is_some());
+        assert!(app.retry_sender.is_some());
+        // view 系 receivers はクリア
         assert!(app.comment_receiver.is_none());
         assert!(app.discussion_comment_receiver.is_none());
         assert!(app.comment_submit_receiver.is_none());
         assert!(app.diff_cache_receiver.is_none());
         assert!(app.prefetch_receiver.is_none());
-        assert!(app.retry_sender.is_none());
         // Loading flags should be cleared
         assert!(!app.comment_submitting);
         assert!(!app.comments_loading);
@@ -4195,6 +4632,102 @@ mod tests {
         // PR number should be None
         assert!(app.pr_number.is_none());
         assert_eq!(app.state, AppState::PullRequestList);
+    }
+
+    #[test]
+    fn test_back_to_pr_list_from_local_mode_resets_local_state() {
+        let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+        let (_data_tx, data_rx) = mpsc::channel(2);
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 0, config);
+        app.started_from_pr_list = true;
+        app.local_mode = true;
+        app.pr_number = Some(0);
+        app.retry_sender = Some(retry_tx);
+        app.data_receiver = Some((0, data_rx));
+        app.selected_file = 2;
+
+        app.back_to_pr_list();
+
+        // local_mode がリセットされている
+        assert!(!app.local_mode);
+        // Local スナップショットが保存されている
+        assert!(app.saved_local_snapshot.is_some());
+        assert_eq!(app.state, AppState::PullRequestList);
+        assert!(app.pr_number.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pr_list_local_toggle_round_trip() {
+        // PR一覧 → L(Local) → q(PR一覧) → L(Local) の往復でデータが正常に表示されるか
+        let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(8);
+        let (_data_tx, data_rx) = mpsc::channel(2);
+        let mut app = App::new_for_test();
+        app.started_from_pr_list = true;
+        app.state = AppState::PullRequestList;
+        app.pr_number = None;
+        app.original_pr_number = None;
+        app.retry_sender = Some(retry_tx);
+        app.data_receiver = Some((0, data_rx));
+
+        // SessionCache に Local diff データを事前格納
+        let local_pr = PullRequest {
+            number: 0,
+            title: "Local HEAD diff".to_string(),
+            body: None,
+            state: "local".to_string(),
+            head: crate::github::Branch {
+                ref_name: "HEAD".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "local".to_string(),
+                sha: "local".to_string(),
+            },
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let local_files = vec![ChangedFile {
+            filename: "src/main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
+        }];
+        app.session_cache.put_pr_data(
+            PrCacheKey {
+                repo: "test/repo".to_string(),
+                pr_number: 0,
+            },
+            PrData {
+                pr: Box::new(local_pr),
+                files: local_files,
+                pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+        );
+
+        // Step 1: PR一覧 → L (Local モード)
+        app.toggle_local_mode();
+        assert!(app.local_mode);
+        assert_eq!(app.pr_number, Some(0));
+        assert_eq!(app.state, AppState::FileList);
+        assert!(matches!(app.data_state, DataState::Loaded { .. }));
+
+        // Step 2: q → PR一覧に戻る
+        app.back_to_pr_list();
+        assert!(!app.local_mode);
+        assert_eq!(app.state, AppState::PullRequestList);
+        assert!(app.saved_local_snapshot.is_some());
+
+        // Step 3: L → 再度 Local モード（1回目で正しく Local に入る）
+        app.toggle_local_mode();
+        assert!(app.local_mode);
+        assert_eq!(app.pr_number, Some(0));
+        assert_eq!(app.state, AppState::FileList);
+        // SessionCache から即時表示
+        assert!(matches!(app.data_state, DataState::Loaded { .. }));
     }
 
     #[tokio::test]
@@ -4236,8 +4769,8 @@ mod tests {
         // Poll should NOT panic and should NOT apply PR #1 data to current UI state
         app.poll_data_updates();
 
-        // data_receiver should be cleared (consumed the message)
-        assert!(app.data_receiver.is_none());
+        // data_receiver should be kept alive (persistent channel for future refreshes)
+        assert!(app.data_receiver.is_some());
         // data_state should still be Loading (PR #1 data was discarded from UI)
         assert!(matches!(app.data_state, DataState::Loading));
         // But session cache should have the data under PR #1 key
@@ -4915,5 +5448,180 @@ mod tests {
         assert_eq!(app.state, AppState::SplitViewDiff);
         assert_eq!(app.selected_file, 0);
         assert_eq!(app.files().len(), 1);
+    }
+
+    #[test]
+    fn test_toggle_auto_focus() {
+        let mut app = App::new_for_test();
+        app.local_mode = true;
+        assert!(!app.local_auto_focus);
+
+        app.toggle_auto_focus();
+        assert!(app.local_auto_focus);
+        assert!(app.submission_result.is_some());
+        assert!(app.submission_result.as_ref().unwrap().1.contains("ON"));
+
+        app.toggle_auto_focus();
+        assert!(!app.local_auto_focus);
+        assert!(app.submission_result.as_ref().unwrap().1.contains("OFF"));
+    }
+
+    #[test]
+    fn test_toggle_local_mode_blocks_during_ai_rally() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+
+        app.toggle_local_mode();
+        assert!(!app.local_mode);
+        assert!(app.submission_result.as_ref().unwrap().1.contains("Cannot"));
+    }
+
+    #[test]
+    fn test_save_and_restore_view_snapshot() {
+        let mut app = App::new_for_test();
+        app.selected_file = 5;
+        app.file_list_scroll_offset = 2;
+        app.selected_line = 10;
+        app.scroll_offset = 3;
+
+        let snapshot = app.save_view_snapshot();
+
+        // save_view_snapshot does not move data_state (ViewSnapshot has no data_state)
+        // App state fields should be reset after save
+        assert!(app.diff_cache.is_none());
+
+        // Modify app state
+        app.selected_file = 0;
+        app.selected_line = 0;
+
+        // Restore
+        app.restore_view_snapshot(snapshot);
+        assert_eq!(app.selected_file, 5);
+        assert_eq!(app.file_list_scroll_offset, 2);
+        assert_eq!(app.selected_line, 10);
+        assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[test]
+    fn test_toggle_local_mode_pr_to_local_and_back() {
+        let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+        let (_data_tx, data_rx) = mpsc::channel(2);
+        let mut app = App::new_for_test();
+        app.retry_sender = Some(retry_tx);
+        app.data_receiver = Some((42, data_rx));
+        app.original_pr_number = Some(42);
+        app.pr_number = Some(42);
+        app.selected_file = 3;
+
+        // PR → Local
+        app.toggle_local_mode();
+        assert!(app.local_mode);
+        assert_eq!(app.pr_number, Some(0));
+        assert!(app.saved_pr_snapshot.is_some());
+        assert!(app.submission_result.as_ref().unwrap().1.contains("Local"));
+
+        // Local → PR
+        app.toggle_local_mode();
+        assert!(!app.local_mode);
+        assert!(app.saved_local_snapshot.is_some());
+        // saved_pr_snapshot が復元されたので取得済み
+        assert!(app.saved_pr_snapshot.is_none());
+        assert_eq!(app.selected_file, 3); // 復元された値
+        assert!(app.submission_result.as_ref().unwrap().1.contains("PR"));
+    }
+
+    #[test]
+    fn test_toggle_local_mode_no_pr_to_return() {
+        let mut app = App::new_for_test();
+        app.original_pr_number = None;
+        app.started_from_pr_list = false;
+        app.local_mode = true;
+
+        // Local → PR: 復帰先がない
+        app.toggle_local_mode();
+        // local_mode のまま（エラートースト）
+        assert!(app.local_mode);
+        assert!(app.submission_result.as_ref().unwrap().1.contains("No PR"));
+    }
+
+    #[test]
+    fn test_retry_load_sends_correct_request_type() {
+        let (tx, mut rx) = mpsc::channel::<RefreshRequest>(1);
+        let mut app = App::new_for_test();
+        app.retry_sender = Some(tx);
+
+        // PR mode
+        app.local_mode = false;
+        app.pr_number = Some(42);
+        app.retry_load();
+        let req = rx.try_recv().unwrap();
+        assert!(matches!(req, RefreshRequest::PrRefresh { pr_number: 42 }));
+
+        // Local mode
+        app.local_mode = true;
+        app.data_state = DataState::Loading; // reset from retry_load
+        app.retry_load();
+        let req = rx.try_recv().unwrap();
+        assert!(matches!(req, RefreshRequest::LocalRefresh));
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_rally() {
+        let mut app = App::new_for_test();
+        app.local_mode = true;
+        app.local_auto_focus = true;
+        app.state = AppState::FileList;
+
+        // Set up BG rally state (active but not in AiRally AppState)
+        app.ai_rally_state = Some(AiRallyState {
+            iteration: 1,
+            max_iterations: 10,
+            state: crate::ai::RallyState::ReviewerReviewing,
+            history: vec![],
+            logs: vec![],
+            log_scroll_offset: 0,
+            selected_log_index: None,
+            showing_log_detail: false,
+            pending_question: None,
+            pending_permission: None,
+            last_visible_log_height: 0,
+        });
+
+        let pr = Box::new(make_local_pr());
+        let files = vec![ChangedFile {
+            filename: "new.rs".to_string(),
+            status: "added".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -0,0 +1,1 @@\n+new content".to_string()),
+        }];
+
+        app.handle_data_result(0, DataLoadResult::Success { pr, files });
+
+        // State should NOT transition to SplitViewDiff during BG rally
+        assert_eq!(app.state, AppState::FileList);
+        // But file selection IS updated
+        assert_eq!(app.selected_file, 0);
+    }
+
+    fn make_local_pr() -> PullRequest {
+        PullRequest {
+            number: 0,
+            title: "Local diff".to_string(),
+            body: None,
+            state: "local".to_string(),
+            base: crate::github::Branch {
+                ref_name: "local".to_string(),
+                sha: "".to_string(),
+            },
+            head: crate::github::Branch {
+                ref_name: "HEAD".to_string(),
+                sha: "".to_string(),
+            },
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            updated_at: "".to_string(),
+        }
     }
 }
