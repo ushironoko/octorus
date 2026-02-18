@@ -2918,7 +2918,6 @@ impl App {
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
         let position = ctx.diff_position;
-        let line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
@@ -2931,7 +2930,6 @@ impl App {
                 &commit_id,
                 &filename,
                 position,
-                line,
                 &body,
             )
             .await;
@@ -2959,7 +2957,6 @@ impl App {
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
         let position = ctx.diff_position;
-        let line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
@@ -2972,7 +2969,6 @@ impl App {
                 &commit_id,
                 &filename,
                 position,
-                line,
                 &body,
             )
             .await;

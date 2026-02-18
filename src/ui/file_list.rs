@@ -100,11 +100,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         "A: AI Rally"
     };
     let footer_text = if app.is_local_mode() {
-        if app.has_background_rally() {
-            "j/k/↑↓: move | Enter/→/l: split view | A: Resume Rally | R: refresh | q: quit | ?: help".to_string()
-        } else {
-            "j/k/↑↓: move | Enter/→/l: split view | R: refresh | q: quit | ?: help".to_string()
-        }
+        format!(
+            "j/k/↑↓: move | Enter/→/l: split view | {} | R: refresh | q: quit | ?: help",
+            ai_rally_text
+        )
     } else {
         format!(
             "j/k/↑↓: move | Enter/→/l: split view | O: browser | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",

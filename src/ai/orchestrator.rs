@@ -836,7 +836,6 @@ impl Orchestrator {
                 &context.head_sha,
                 &comment.path,
                 position,
-                comment.line,
                 &body_with_prefix,
             )
             .await
