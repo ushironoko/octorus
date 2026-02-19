@@ -21,7 +21,8 @@ Vim スタイルのキーバインドで操作する GitHub PR レビュー用 T
 - レビューコメントの一覧表示と該当行へのジャンプ
 - レビュー送信（Approve / Request Changes / Comment）
 - インテリジェントキャッシュによる高速起動
-- 作業ツリー変更をリアルタイムで監視して `git diff` を即時プレビュー
+- **Local Diff Mode**: ローカルの `git diff HEAD` をファイルウォッチャーでリアルタイムプレビュー — PR 不要
+- PR モードと Local モードをその場で切替可能（`L` キー）
 - カスタマイズ可能なキーバインドとエディタ
 - **AI Rally**: AI エージェントによる自動 PR レビュー＆修正サイクル
 
@@ -108,6 +109,8 @@ or --local
 | `C` | レビューコメント一覧を表示 |
 | `R` | 強制リフレッシュ（キャッシュ破棄） |
 | `A` | AI Rally を開始 |
+| `L` | Local Diff Mode の切替 |
+| `F` | Auto-focus の切替（Local Mode 時） |
 | `?` | ヘルプを表示/非表示 |
 | `q` | 終了 |
 
@@ -283,6 +286,9 @@ go_to_definition = ["g", "d"]
 | `comment_list` | `C` | コメント一覧を開く |
 | `ai_rally` | `A` | AI Rally を開始 |
 | `open_panel` | `Enter` | パネルを開く / 選択 |
+| `open_in_browser` | `O` | PR をブラウザで開く |
+| `toggle_local_mode` | `L` | Local Diff Mode の切替 |
+| `toggle_auto_focus` | `F` | Auto-focus の切替（Local Mode 時） |
 | **Diff 操作** |||
 | `go_to_definition` | `gd` | 定義へジャンプ |
 | `go_to_file` | `gf` | $EDITOR でファイルを開く |
@@ -317,6 +323,62 @@ AI Rally はカスタマイズ可能なプロンプトテンプレートを使�
 | `{{external_comments}}` | 外部ツールからのコメント | reviewee |
 | `{{changes_summary}}` | 変更内容のサマリー | rereview |
 | `{{updated_diff}}` | 修正後の diff | rereview |
+
+## Local Diff Mode
+
+Local Diff Mode は、プルリクエストなしでローカルの未コミット変更（`git diff HEAD`）を TUI 上で直接プレビューする機能です。ファイルウォッチャーがリアルタイムで変更を検知し、diff を自動更新します。
+
+### 起動方法
+
+```bash
+# Local Diff Mode で起動
+or --local
+
+# Auto-focus 付き: 更新のたびに変更ファイルへ自動ジャンプ
+or --local --auto-focus
+```
+
+### リアルタイムファイル監視
+
+Local Mode では、作業ディレクトリのファイル変更を監視します（`.git/` 内部やアクセスのみのイベントは無視）。ファイルを保存すると、diff 画面が自動的に更新されます。
+
+### Auto-focus
+
+`--auto-focus` を有効にする（または `F` キーでトグルする）と、最も直近に変更されたファイルを自動的に選択・フォーカスします。ファイル一覧にいる場合は、自動的に Split View の diff 画面に遷移します。選択アルゴリズムは、現在のカーソル位置から最も近い変更ファイルを選択します。
+
+ヘッダーには Local Mode 時は `[LOCAL]`、Auto-focus 有効時は `[LOCAL AF]` と表示されます。
+
+### PR モードとの切替
+
+`L` キーでいつでも PR モードと Local モードを切り替えられます:
+
+```
+PR mode ──[L]──► Local mode
+  │                │
+  │  UI 状態を      │  ファイルウォッチャー起動
+  │  保存/復元      │  git diff HEAD を表示
+  │                │
+Local mode ──[L]──► PR mode
+```
+
+モード切替時に UI 状態（選択ファイル、スクロール位置）は保持されます。PR から切り替えた場合、Local Mode で `L` を押すとキャッシュされた PR データと共にその PR に復帰します。
+
+### PR モードとの違い
+
+Local Mode では PR が存在しないため、以下の機能は**無効**になります:
+
+| 機能 | 利用可否 |
+|------|---------|
+| 変更ファイル一覧の閲覧 | ✅ |
+| シンタックスハイライト付き diff | ✅ |
+| Split View | ✅ |
+| 定義へジャンプ (`gd`) | ✅ |
+| エディタでファイルを開く (`gf`) | ✅ |
+| インラインコメントの追加 | ❌ |
+| サジェスチョンの追加 | ❌ |
+| レビュー送信 | ❌ |
+| コメント一覧の表示 | ❌ |
+| PR をブラウザで開く (`O`) | ❌ |
 
 ## AI Rally
 

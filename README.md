@@ -21,7 +21,8 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 - View and navigate review comments with jump-to-line
 - Submit reviews (Approve / Request Changes / Comment)
 - Fast startup with intelligent caching
-- Watch local working tree changes in real time and preview `git diff` instantly
+- **Local Diff Mode**: Preview local `git diff HEAD` in real time with file watcher — no PR required
+- Toggle between PR mode and Local mode on the fly (`L` key)
 - Configurable keybindings and editor
 - **AI Rally**: Automated PR review and fix cycle using AI agents
 
@@ -108,6 +109,8 @@ This creates:
 | `C` | View review comments |
 | `R` | Force refresh (discard cache) |
 | `A` | Start AI Rally |
+| `L` | Toggle local diff mode |
+| `F` | Toggle auto-focus (local mode) |
 | `?` | Toggle help |
 | `q` | Quit |
 
@@ -284,6 +287,8 @@ go_to_definition = ["g", "d"]
 | `ai_rally` | `A` | Start AI Rally |
 | `open_panel` | `Enter` | Open panel / select |
 | `open_in_browser` | `O` | Open PR in browser |
+| `toggle_local_mode` | `L` | Toggle local diff mode |
+| `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
 | **Diff Operations** |||
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |
@@ -318,6 +323,62 @@ Templates support variable substitution with `{{variable}}` syntax:
 | `{{external_comments}}` | Comments from external tools | reviewee |
 | `{{changes_summary}}` | Summary of changes made | rereview |
 | `{{updated_diff}}` | Updated diff after fixes | rereview |
+
+## Local Diff Mode
+
+Local Diff Mode lets you preview your uncommitted changes (`git diff HEAD`) directly in the TUI — no pull request required. A file watcher detects changes in real time and refreshes the diff automatically.
+
+### Starting Local Diff Mode
+
+```bash
+# Start in local diff mode
+or --local
+
+# With auto-focus: automatically jump to the changed file on each update
+or --local --auto-focus
+```
+
+### Real-Time File Watching
+
+When running in local mode, octorus watches your working directory for file changes (ignoring `.git/` internals and access-only events). As soon as you save a file, the diff view updates automatically.
+
+### Auto-Focus
+
+When `--auto-focus` is enabled (or toggled with `F`), octorus automatically selects and focuses the file that changed most recently. If you're in the file list, it transitions to the split view diff. The selection algorithm picks the nearest changed file relative to your current cursor position.
+
+The header displays `[LOCAL]` in local mode, or `[LOCAL AF]` when auto-focus is active.
+
+### Switching Between PR and Local Mode
+
+You can toggle between PR mode and Local mode at any time by pressing `L`:
+
+```
+PR mode ──[L]──► Local mode
+  │                │
+  │  UI state is   │  Starts file watcher
+  │  saved/restored│  Shows git diff HEAD
+  │                │
+Local mode ──[L]──► PR mode
+```
+
+Your UI state (selected file, scroll position) is preserved across mode switches. If you started from a PR, pressing `L` in local mode returns you to that PR with its cached data.
+
+### Differences from PR Mode
+
+The following features are **disabled** in local mode since there is no associated pull request:
+
+| Feature | Available? |
+|---------|-----------|
+| Browse changed files | ✅ |
+| Syntax-highlighted diff | ✅ |
+| Split view | ✅ |
+| Go to definition (`gd`) | ✅ |
+| Open file in editor (`gf`) | ✅ |
+| Add inline comments | ❌ |
+| Add suggestions | ❌ |
+| Submit reviews | ❌ |
+| View comment list | ❌ |
+| Open PR in browser (`O`) | ❌ |
 
 ## AI Rally
 
