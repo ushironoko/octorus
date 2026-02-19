@@ -47,6 +47,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         RallyState::RevieweeFix => "Reviewee fixing...",
         RallyState::WaitingForClarification => "Waiting for clarification",
         RallyState::WaitingForPermission => "Waiting for permission",
+        RallyState::WaitingForPostConfirmation => "Waiting for post confirmation",
         RallyState::Completed => "Completed!",
         RallyState::Aborted => "Aborted",
         RallyState::Error => "Error",
@@ -56,7 +57,9 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         RallyState::Initializing => Color::Blue,
         RallyState::ReviewerReviewing => Color::Yellow,
         RallyState::RevieweeFix => Color::Cyan,
-        RallyState::WaitingForClarification | RallyState::WaitingForPermission => Color::Magenta,
+        RallyState::WaitingForClarification
+        | RallyState::WaitingForPermission
+        | RallyState::WaitingForPostConfirmation => Color::Magenta,
         RallyState::Completed => Color::Green,
         RallyState::Aborted => Color::Yellow,
         RallyState::Error => Color::Red,
@@ -90,10 +93,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
 }
 
 fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
-    // Add waiting prompt area when in clarification/permission state
+    // Add waiting prompt area when in clarification/permission/post-confirmation state
     let is_waiting = matches!(
         state.state,
-        RallyState::WaitingForClarification | RallyState::WaitingForPermission
+        RallyState::WaitingForClarification
+            | RallyState::WaitingForPermission
+            | RallyState::WaitingForPostConfirmation
     );
 
     let chunks = if is_waiting {
@@ -149,6 +154,39 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                 format!("Action: {}\nReason: {}", action, reason),
                 "Press 'y' to approve, 'n' to deny, 'q' to abort",
             )
+        }
+        RallyState::WaitingForPostConfirmation => {
+            if let Some(ref info) = state.pending_review_post {
+                let summary = truncate_string(&info.summary, 120);
+                (
+                    " Review Post Confirmation ",
+                    format!(
+                        "Action: {}\nSummary: {}\nComments: {}",
+                        info.action, summary, info.comment_count
+                    ),
+                    "Press 'y' to post to PR, 'n' to skip, 'q' to abort",
+                )
+            } else if let Some(ref info) = state.pending_fix_post {
+                let summary = truncate_string(&info.summary, 120);
+                let files_display = if info.files_modified.len() <= 5 {
+                    info.files_modified.join(", ")
+                } else {
+                    let shown: Vec<&str> =
+                        info.files_modified.iter().take(5).map(|s| s.as_str()).collect();
+                    format!(
+                        "{} (+{} more)",
+                        shown.join(", "),
+                        info.files_modified.len() - 5
+                    )
+                };
+                (
+                    " Fix Post Confirmation ",
+                    format!("Summary: {}\nFiles: {}", summary, files_display),
+                    "Press 'y' to post to PR, 'n' to skip, 'q' to abort",
+                )
+            } else {
+                return;
+            }
         }
         _ => return,
     };
@@ -446,6 +484,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
             }
             RallyState::WaitingForPermission => {
                 "y: Approve | n: Deny | j/k/↑↓: select | Enter: detail | q: Abort"
+            }
+            RallyState::WaitingForPostConfirmation => {
+                "y: Post to PR | n: Skip | j/k/↑↓: select | Enter: detail | q: Abort"
             }
             RallyState::Completed => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
             RallyState::Aborted => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",

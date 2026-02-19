@@ -33,6 +33,10 @@ pub struct AiConfig {
     /// Use Claude Code's --allowedTools format (e.g., "Skill", "Bash(git push:*)").
     #[serde(default)]
     pub reviewee_additional_tools: Vec<String>,
+    /// If true, AI Rally posts reviews/fix comments to PR without confirmation.
+    /// Default is false (confirmation prompt before posting).
+    #[serde(default)]
+    pub auto_post: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +114,7 @@ impl Default for AiConfig {
             prompt_dir: None,
             reviewer_additional_tools: Vec::new(),
             reviewee_additional_tools: Vec::new(),
+            auto_post: false,
         }
     }
 }
@@ -434,7 +439,8 @@ mod tests {
           "timeout_secs": 600,
           "prompt_dir": null,
           "reviewer_additional_tools": [],
-          "reviewee_additional_tools": []
+          "reviewee_additional_tools": [],
+          "auto_post": false
         }
         "#);
     }
@@ -457,7 +463,8 @@ mod tests {
           "timeout_secs": 300,
           "prompt_dir": null,
           "reviewer_additional_tools": [],
-          "reviewee_additional_tools": []
+          "reviewee_additional_tools": [],
+          "auto_post": false
         }
         "#);
     }
@@ -483,8 +490,25 @@ mod tests {
           ],
           "reviewee_additional_tools": [
             "Bash(git push:*)"
-          ]
+          ],
+          "auto_post": false
         }
         "#);
+    }
+
+    #[test]
+    fn test_parse_ai_config_auto_post_true() {
+        let toml_str = r#"
+            [ai]
+            auto_post = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.ai.auto_post);
+    }
+
+    #[test]
+    fn test_parse_ai_config_auto_post_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.ai.auto_post);
     }
 }

@@ -36,6 +36,7 @@ pub enum RallyState {
     RevieweeFix,
     WaitingForClarification,
     WaitingForPermission,
+    WaitingForPostConfirmation,
     Completed,
     Aborted,
     Error,
@@ -74,6 +75,8 @@ pub enum RallyEvent {
     ClarificationNeeded(String),
     PermissionNeeded(String, String), // action, reason
     Approved(String),                 // summary
+    ReviewPostConfirmNeeded(ReviewPostInfo),
+    FixPostConfirmNeeded(FixPostInfo),
     Error(String),
     Log(String),
     // Streaming events from Claude
@@ -95,6 +98,21 @@ pub enum RallyResult {
     Error { iteration: u32, error: String },
 }
 
+/// Lightweight DTO for review post confirmation (sent via RallyEvent)
+#[derive(Debug, Clone)]
+pub struct ReviewPostInfo {
+    pub action: String,
+    pub summary: String,
+    pub comment_count: usize,
+}
+
+/// Lightweight DTO for fix post confirmation (sent via RallyEvent)
+#[derive(Debug, Clone)]
+pub struct FixPostInfo {
+    pub summary: String,
+    pub files_modified: Vec<String>,
+}
+
 /// Command sent from TUI to Orchestrator
 #[derive(Debug)]
 pub enum OrchestratorCommand {
@@ -104,6 +122,8 @@ pub enum OrchestratorCommand {
     PermissionResponse(bool),
     /// User chose to skip clarification (continue with best judgment)
     SkipClarification,
+    /// User approved or skipped post confirmation
+    PostConfirmResponse(bool),
     /// User requested abort (stop the rally entirely)
     Abort,
 }
@@ -243,8 +263,15 @@ impl Orchestrator {
                 warn!("Failed to update head_sha before posting review: {}", e);
             }
 
-            // Post review to PR
-            if let Err(e) = self.post_review_to_pr(&review_result).await {
+            // Post review to PR (with confirmation if auto_post is false)
+            if let Err(e) = self.maybe_post_review_to_pr(&review_result).await {
+                // Check if abort was triggered during post confirmation
+                if self.session.state == RallyState::Aborted {
+                    return Ok(RallyResult::Aborted {
+                        iteration,
+                        reason: e.to_string(),
+                    });
+                }
                 warn!("Failed to post review to PR: {}", e);
                 self.send_event(RallyEvent::Log(format!(
                     "Warning: Failed to post review to PR: {}",
@@ -343,8 +370,15 @@ impl Orchestrator {
                     // Store the fix result for the next re-review
                     self.last_fix = Some(fix_result.clone());
 
-                    // Post fix summary to PR
-                    if let Err(e) = self.post_fix_comment(&fix_result).await {
+                    // Post fix summary to PR (with confirmation if auto_post is false)
+                    if let Err(e) = self.maybe_post_fix_comment(&fix_result).await {
+                        // Check if abort was triggered during post confirmation
+                        if self.session.state == RallyState::Aborted {
+                            return Ok(RallyResult::Aborted {
+                                iteration,
+                                reason: e.to_string(),
+                            });
+                        }
                         warn!("Failed to post fix comment to PR: {}", e);
                         self.send_event(RallyEvent::Log(format!(
                             "Warning: Failed to post fix comment to PR: {}",
@@ -370,92 +404,102 @@ impl Orchestrator {
                         ))
                         .await;
 
-                        // Wait for user command
-                        match self.wait_for_command().await {
-                            Some(OrchestratorCommand::ClarificationResponse(answer)) => {
-                                // Handle clarification response
-                                if let Err(e) = self.handle_clarification_response(&answer).await {
-                                    self.session.update_state(RallyState::Error);
-                                    let _ = write_session(&self.session);
-                                    self.send_event(RallyEvent::Error(e.to_string())).await;
-                                    self.send_event(RallyEvent::StateChanged(RallyState::Error))
-                                        .await;
-                                    return Ok(RallyResult::Error {
-                                        iteration,
-                                        error: e.to_string(),
-                                    });
-                                }
-                                // Continue to next iteration
-                            }
-                            Some(OrchestratorCommand::SkipClarification) => {
-                                // Clarification skipped - continue with best judgment
-                                self.send_event(RallyEvent::Log(format!(
-                                    "Clarification skipped for: {}. Continuing with best judgment...",
-                                    question
-                                )))
-                                .await;
-
-                                let prompt = build_clarification_skipped_prompt(question);
-                                match self.reviewee_adapter.continue_reviewee(&prompt).await {
-                                    Ok(output) => {
-                                        // Write history entry for the follow-up fix
-                                        if let Err(e) = write_history_entry(
-                                            &self.repo,
-                                            self.pr_number,
-                                            iteration,
-                                            &HistoryEntryType::Fix(output.clone()),
-                                        ) {
-                                            warn!("Failed to write follow-up fix history: {}", e);
-                                        }
-
-                                        // Post fix comment to PR
-                                        if let Err(e) = self.post_fix_comment(&output).await {
-                                            warn!(
-                                                "Failed to post follow-up fix comment to PR: {}",
-                                                e
-                                            );
-                                        }
-
-                                        self.send_event(RallyEvent::FixCompleted(output.clone()))
+                        // Wait for user command (loop to skip stale/invalid commands)
+                        loop {
+                            match self.wait_for_command().await {
+                                Some(OrchestratorCommand::ClarificationResponse(answer)) => {
+                                    // Handle clarification response
+                                    if let Err(e) = self.handle_clarification_response(&answer).await {
+                                        self.session.update_state(RallyState::Error);
+                                        let _ = write_session(&self.session);
+                                        self.send_event(RallyEvent::Error(e.to_string())).await;
+                                        self.send_event(RallyEvent::StateChanged(RallyState::Error))
                                             .await;
-                                        self.last_fix = Some(output);
+                                        return Ok(RallyResult::Error {
+                                            iteration,
+                                            error: e.to_string(),
+                                        });
                                     }
-                                    Err(e) => {
-                                        self.last_fix = None;
-                                        self.send_event(RallyEvent::Log(format!(
-                                            "Error continuing after clarification skip: {}. Proceeding to re-review.",
-                                            e
-                                        )))
-                                        .await;
-                                    }
+                                    // Continue to next iteration
+                                    break;
                                 }
+                                Some(OrchestratorCommand::SkipClarification) => {
+                                    // Clarification skipped - continue with best judgment
+                                    self.send_event(RallyEvent::Log(format!(
+                                        "Clarification skipped for: {}. Continuing with best judgment...",
+                                        question
+                                    )))
+                                    .await;
 
-                                // Notify TUI of state change
-                                self.session.update_state(RallyState::RevieweeFix);
-                                self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+                                    let prompt = build_clarification_skipped_prompt(question);
+                                    match self.reviewee_adapter.continue_reviewee(&prompt).await {
+                                        Ok(output) => {
+                                            // Write history entry for the follow-up fix
+                                            if let Err(e) = write_history_entry(
+                                                &self.repo,
+                                                self.pr_number,
+                                                iteration,
+                                                &HistoryEntryType::Fix(output.clone()),
+                                            ) {
+                                                warn!("Failed to write follow-up fix history: {}", e);
+                                            }
+
+                                            // Post fix comment to PR (with confirmation if auto_post is false)
+                                            if let Err(e) = self.maybe_post_fix_comment(&output).await {
+                                                // Check if abort was triggered during post confirmation
+                                                if self.session.state == RallyState::Aborted {
+                                                    return Ok(RallyResult::Aborted {
+                                                        iteration,
+                                                        reason: e.to_string(),
+                                                    });
+                                                }
+                                                warn!(
+                                                    "Failed to post follow-up fix comment to PR: {}",
+                                                    e
+                                                );
+                                            }
+
+                                            self.send_event(RallyEvent::FixCompleted(output.clone()))
+                                                .await;
+                                            self.last_fix = Some(output);
+                                        }
+                                        Err(e) => {
+                                            self.last_fix = None;
+                                            self.send_event(RallyEvent::Log(format!(
+                                                "Error continuing after clarification skip: {}. Proceeding to re-review.",
+                                                e
+                                            )))
+                                            .await;
+                                        }
+                                    }
+
+                                    // Notify TUI of state change
+                                    self.session.update_state(RallyState::RevieweeFix);
+                                    self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+                                        .await;
+                                    let _ = write_session(&self.session);
+                                    // Continue loop
+                                    break;
+                                }
+                                Some(OrchestratorCommand::Abort) | None => {
+                                    // True abort - user cancelled or channel closed
+                                    let reason = "Clarification cancelled by user".to_string();
+                                    self.session.update_state(RallyState::Aborted);
+                                    let _ = write_session(&self.session);
+                                    self.send_event(RallyEvent::Log(reason.clone())).await;
+                                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                        .await;
+                                    return Ok(RallyResult::Aborted { iteration, reason });
+                                }
+                                _ => {
+                                    // Stale/invalid command for this state (e.g. PostConfirmResponse) - ignore and re-wait
+                                    warn!("Received invalid command during WaitingForClarification, ignoring");
+                                    self.send_event(RallyEvent::Log(
+                                        "Received invalid command, still waiting for clarification...".to_string(),
+                                    ))
                                     .await;
-                                let _ = write_session(&self.session);
-                                // Continue loop
-                            }
-                            Some(OrchestratorCommand::Abort) | None => {
-                                // True abort - user cancelled or channel closed
-                                let reason = "Clarification cancelled by user".to_string();
-                                self.session.update_state(RallyState::Aborted);
-                                let _ = write_session(&self.session);
-                                self.send_event(RallyEvent::Log(reason.clone())).await;
-                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
-                                    .await;
-                                return Ok(RallyResult::Aborted { iteration, reason });
-                            }
-                            Some(OrchestratorCommand::PermissionResponse(_)) => {
-                                // Ignore invalid command
-                                let reason = format!("Clarification needed: {}", question);
-                                self.session.update_state(RallyState::Aborted);
-                                let _ = write_session(&self.session);
-                                self.send_event(RallyEvent::Log(reason.clone())).await;
-                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
-                                    .await;
-                                return Ok(RallyResult::Aborted { iteration, reason });
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -473,103 +517,111 @@ impl Orchestrator {
                         self.send_event(RallyEvent::StateChanged(RallyState::WaitingForPermission))
                             .await;
 
-                        // Wait for user command
-                        match self.wait_for_command().await {
-                            Some(OrchestratorCommand::PermissionResponse(approved)) => {
-                                if approved {
-                                    // Handle permission granted
-                                    if let Err(e) =
-                                        self.handle_permission_granted(&perm.action).await
-                                    {
-                                        self.session.update_state(RallyState::Error);
-                                        let _ = write_session(&self.session);
-                                        self.send_event(RallyEvent::Error(e.to_string())).await;
-                                        self.send_event(RallyEvent::StateChanged(
-                                            RallyState::Error,
-                                        ))
-                                        .await;
-                                        return Ok(RallyResult::Error {
-                                            iteration,
-                                            error: e.to_string(),
-                                        });
-                                    }
-                                    // Continue to next iteration
-                                } else {
-                                    // Permission denied - continue without this permission
-                                    self.send_event(RallyEvent::Log(format!(
-                                        "Permission denied for: {}. Continuing without it...",
-                                        perm.action
-                                    )))
-                                    .await;
-
-                                    let prompt =
-                                        build_permission_denied_prompt(&perm.action, &perm.reason);
-                                    match self.reviewee_adapter.continue_reviewee(&prompt).await {
-                                        Ok(output) => {
-                                            // Write history entry for the follow-up fix
-                                            if let Err(e) = write_history_entry(
-                                                &self.repo,
-                                                self.pr_number,
-                                                iteration,
-                                                &HistoryEntryType::Fix(output.clone()),
-                                            ) {
-                                                warn!(
-                                                    "Failed to write follow-up fix history: {}",
-                                                    e
-                                                );
-                                            }
-
-                                            // Post fix comment to PR
-                                            if let Err(e) = self.post_fix_comment(&output).await {
-                                                warn!("Failed to post follow-up fix comment to PR: {}", e);
-                                            }
-
-                                            self.send_event(RallyEvent::FixCompleted(
-                                                output.clone(),
+                        // Wait for user command (loop to skip stale/invalid commands)
+                        loop {
+                            match self.wait_for_command().await {
+                                Some(OrchestratorCommand::PermissionResponse(approved)) => {
+                                    if approved {
+                                        // Handle permission granted
+                                        if let Err(e) =
+                                            self.handle_permission_granted(&perm.action).await
+                                        {
+                                            self.session.update_state(RallyState::Error);
+                                            let _ = write_session(&self.session);
+                                            self.send_event(RallyEvent::Error(e.to_string())).await;
+                                            self.send_event(RallyEvent::StateChanged(
+                                                RallyState::Error,
                                             ))
                                             .await;
-                                            self.last_fix = Some(output);
+                                            return Ok(RallyResult::Error {
+                                                iteration,
+                                                error: e.to_string(),
+                                            });
                                         }
-                                        Err(e) => {
-                                            // Clear last_fix to prevent referencing stale value
-                                            self.last_fix = None;
-                                            self.send_event(RallyEvent::Log(format!(
-                                                "Error continuing after permission denial: {}. Proceeding to re-review.",
-                                                e
-                                            )))
-                                            .await;
-                                        }
-                                    }
+                                        // Continue to next iteration
+                                    } else {
+                                        // Permission denied - continue without this permission
+                                        self.send_event(RallyEvent::Log(format!(
+                                            "Permission denied for: {}. Continuing without it...",
+                                            perm.action
+                                        )))
+                                        .await;
 
-                                    // Notify TUI of state change
-                                    self.session.update_state(RallyState::RevieweeFix);
-                                    self.send_event(RallyEvent::StateChanged(
-                                        RallyState::RevieweeFix,
+                                        let prompt =
+                                            build_permission_denied_prompt(&perm.action, &perm.reason);
+                                        match self.reviewee_adapter.continue_reviewee(&prompt).await {
+                                            Ok(output) => {
+                                                // Write history entry for the follow-up fix
+                                                if let Err(e) = write_history_entry(
+                                                    &self.repo,
+                                                    self.pr_number,
+                                                    iteration,
+                                                    &HistoryEntryType::Fix(output.clone()),
+                                                ) {
+                                                    warn!(
+                                                        "Failed to write follow-up fix history: {}",
+                                                        e
+                                                    );
+                                                }
+
+                                                // Post fix comment to PR (with confirmation if auto_post is false)
+                                                if let Err(e) = self.maybe_post_fix_comment(&output).await {
+                                                    // Check if abort was triggered during post confirmation
+                                                    if self.session.state == RallyState::Aborted {
+                                                        return Ok(RallyResult::Aborted {
+                                                            iteration,
+                                                            reason: e.to_string(),
+                                                        });
+                                                    }
+                                                    warn!("Failed to post follow-up fix comment to PR: {}", e);
+                                                }
+
+                                                self.send_event(RallyEvent::FixCompleted(
+                                                    output.clone(),
+                                                ))
+                                                .await;
+                                                self.last_fix = Some(output);
+                                            }
+                                            Err(e) => {
+                                                // Clear last_fix to prevent referencing stale value
+                                                self.last_fix = None;
+                                                self.send_event(RallyEvent::Log(format!(
+                                                    "Error continuing after permission denial: {}. Proceeding to re-review.",
+                                                    e
+                                                )))
+                                                .await;
+                                            }
+                                        }
+
+                                        // Notify TUI of state change
+                                        self.session.update_state(RallyState::RevieweeFix);
+                                        self.send_event(RallyEvent::StateChanged(
+                                            RallyState::RevieweeFix,
+                                        ))
+                                        .await;
+                                        let _ = write_session(&self.session);
+                                        // Continue loop
+                                    }
+                                    break;
+                                }
+                                Some(OrchestratorCommand::Abort) | None => {
+                                    let reason = format!("Permission aborted: {}", perm.action);
+                                    self.session.update_state(RallyState::Aborted);
+                                    let _ = write_session(&self.session);
+                                    self.send_event(RallyEvent::Log(reason.clone())).await;
+                                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                        .await;
+                                    return Ok(RallyResult::Aborted { iteration, reason });
+                                }
+                                _ => {
+                                    // Stale/invalid command for this state (e.g. PostConfirmResponse) - ignore and re-wait
+                                    warn!("Received invalid command during WaitingForPermission, ignoring");
+                                    self.send_event(RallyEvent::Log(
+                                        "Received invalid command, still waiting for permission...".to_string(),
                                     ))
                                     .await;
-                                    let _ = write_session(&self.session);
-                                    // Continue loop
+                                    continue;
                                 }
-                            }
-                            Some(OrchestratorCommand::Abort) | None => {
-                                let reason = format!("Permission aborted: {}", perm.action);
-                                self.session.update_state(RallyState::Aborted);
-                                let _ = write_session(&self.session);
-                                self.send_event(RallyEvent::Log(reason.clone())).await;
-                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
-                                    .await;
-                                return Ok(RallyResult::Aborted { iteration, reason });
-                            }
-                            Some(OrchestratorCommand::ClarificationResponse(_))
-                            | Some(OrchestratorCommand::SkipClarification) => {
-                                // Ignore invalid command
-                                let reason = format!("Permission needed: {}", perm.action);
-                                self.session.update_state(RallyState::Aborted);
-                                let _ = write_session(&self.session);
-                                self.send_event(RallyEvent::Log(reason.clone())).await;
-                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
-                                    .await;
-                                return Ok(RallyResult::Aborted { iteration, reason });
                             }
                         }
                     }
@@ -755,6 +807,130 @@ impl Orchestrator {
 
     async fn send_event(&self, event: RallyEvent) {
         let _ = self.event_sender.send(event).await;
+    }
+
+    /// Wrapper that optionally asks for user confirmation before posting review.
+    /// - local_mode: skip posting entirely
+    /// - auto_post: post directly without confirmation
+    /// - otherwise: send confirmation event and wait for user response
+    async fn maybe_post_review_to_pr(&mut self, review: &ReviewerOutput) -> Result<()> {
+        // local_mode is handled inside post_review_to_pr
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            return self.post_review_to_pr(review).await;
+        }
+
+        if self.config.auto_post {
+            return self.post_review_to_pr(review).await;
+        }
+
+        // Send confirmation event with lightweight DTO
+        let info = ReviewPostInfo {
+            action: format!("{:?}", review.action),
+            summary: review.summary.clone(),
+            comment_count: review.comments.len(),
+        };
+
+        self.session
+            .update_state(RallyState::WaitingForPostConfirmation);
+        let _ = write_session(&self.session);
+        self.send_event(RallyEvent::ReviewPostConfirmNeeded(info))
+            .await;
+        self.send_event(RallyEvent::StateChanged(
+            RallyState::WaitingForPostConfirmation,
+        ))
+        .await;
+
+        // Wait for user response (loop to ignore invalid commands)
+        loop {
+            match self.wait_for_command().await {
+                Some(OrchestratorCommand::PostConfirmResponse(true)) => {
+                    self.send_event(RallyEvent::Log(
+                        "User approved review posting".to_string(),
+                    ))
+                    .await;
+                    return self.post_review_to_pr(review).await;
+                }
+                Some(OrchestratorCommand::PostConfirmResponse(false)) => {
+                    self.send_event(RallyEvent::Log(
+                        "User skipped review posting".to_string(),
+                    ))
+                    .await;
+                    return Ok(());
+                }
+                Some(OrchestratorCommand::Abort) | None => {
+                    self.session.update_state(RallyState::Aborted);
+                    let _ = write_session(&self.session);
+                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                        .await;
+                    return Err(anyhow!("Review posting aborted by user"));
+                }
+                _ => {
+                    // Invalid command for this state - warn and re-wait
+                    warn!("Received invalid command during WaitingForPostConfirmation, ignoring");
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Wrapper that optionally asks for user confirmation before posting fix comment.
+    async fn maybe_post_fix_comment(&mut self, fix: &RevieweeOutput) -> Result<()> {
+        // local_mode is handled inside post_fix_comment
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            return self.post_fix_comment(fix).await;
+        }
+
+        if self.config.auto_post {
+            return self.post_fix_comment(fix).await;
+        }
+
+        // Send confirmation event with lightweight DTO
+        let info = FixPostInfo {
+            summary: fix.summary.clone(),
+            files_modified: fix.files_modified.clone(),
+        };
+
+        self.session
+            .update_state(RallyState::WaitingForPostConfirmation);
+        let _ = write_session(&self.session);
+        self.send_event(RallyEvent::FixPostConfirmNeeded(info))
+            .await;
+        self.send_event(RallyEvent::StateChanged(
+            RallyState::WaitingForPostConfirmation,
+        ))
+        .await;
+
+        // Wait for user response (loop to ignore invalid commands)
+        loop {
+            match self.wait_for_command().await {
+                Some(OrchestratorCommand::PostConfirmResponse(true)) => {
+                    self.send_event(RallyEvent::Log(
+                        "User approved fix comment posting".to_string(),
+                    ))
+                    .await;
+                    return self.post_fix_comment(fix).await;
+                }
+                Some(OrchestratorCommand::PostConfirmResponse(false)) => {
+                    self.send_event(RallyEvent::Log(
+                        "User skipped fix comment posting".to_string(),
+                    ))
+                    .await;
+                    return Ok(());
+                }
+                Some(OrchestratorCommand::Abort) | None => {
+                    self.session.update_state(RallyState::Aborted);
+                    let _ = write_session(&self.session);
+                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                        .await;
+                    return Err(anyhow!("Fix comment posting aborted by user"));
+                }
+                _ => {
+                    // Invalid command for this state - warn and re-wait
+                    warn!("Received invalid command during WaitingForPostConfirmation, ignoring");
+                    continue;
+                }
+            }
+        }
     }
 
     /// Post review to PR (summary comment + inline comments)
@@ -1149,6 +1325,24 @@ mod tests {
         let cmd = OrchestratorCommand::SkipClarification;
         assert!(matches!(cmd, OrchestratorCommand::SkipClarification));
 
+        // Test PostConfirmResponse approved
+        let cmd = OrchestratorCommand::PostConfirmResponse(true);
+        match cmd {
+            OrchestratorCommand::PostConfirmResponse(approved) => {
+                assert!(approved);
+            }
+            _ => panic!("Expected PostConfirmResponse"),
+        }
+
+        // Test PostConfirmResponse skipped
+        let cmd = OrchestratorCommand::PostConfirmResponse(false);
+        match cmd {
+            OrchestratorCommand::PostConfirmResponse(approved) => {
+                assert!(!approved);
+            }
+            _ => panic!("Expected PostConfirmResponse"),
+        }
+
         // Test Abort
         let cmd = OrchestratorCommand::Abort;
         assert!(matches!(cmd, OrchestratorCommand::Abort));
@@ -1260,6 +1454,40 @@ mod tests {
         assert!(!is_bot_user("bot")); // "bot" alone is not a bot suffix
     }
 
+    #[tokio::test]
+    async fn test_command_channel_post_confirm_approved() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        tx.send(OrchestratorCommand::PostConfirmResponse(true))
+            .await
+            .unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            OrchestratorCommand::PostConfirmResponse(approved) => {
+                assert!(approved, "Post should be approved");
+            }
+            _ => panic!("Expected PostConfirmResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_post_confirm_skipped() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        tx.send(OrchestratorCommand::PostConfirmResponse(false))
+            .await
+            .unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            OrchestratorCommand::PostConfirmResponse(approved) => {
+                assert!(!approved, "Post should be skipped");
+            }
+            _ => panic!("Expected PostConfirmResponse"),
+        }
+    }
+
     #[test]
     fn test_rally_state_is_active() {
         assert!(RallyState::Initializing.is_active());
@@ -1267,6 +1495,7 @@ mod tests {
         assert!(RallyState::RevieweeFix.is_active());
         assert!(RallyState::WaitingForClarification.is_active());
         assert!(RallyState::WaitingForPermission.is_active());
+        assert!(RallyState::WaitingForPostConfirmation.is_active());
         assert!(!RallyState::Completed.is_active());
         assert!(!RallyState::Aborted.is_active());
         assert!(!RallyState::Error.is_active());
@@ -1279,8 +1508,31 @@ mod tests {
         assert!(!RallyState::RevieweeFix.is_finished());
         assert!(!RallyState::WaitingForClarification.is_finished());
         assert!(!RallyState::WaitingForPermission.is_finished());
+        assert!(!RallyState::WaitingForPostConfirmation.is_finished());
         assert!(RallyState::Completed.is_finished());
         assert!(RallyState::Aborted.is_finished());
         assert!(RallyState::Error.is_finished());
+    }
+
+    #[test]
+    fn test_review_post_info() {
+        let info = ReviewPostInfo {
+            action: "Approve".to_string(),
+            summary: "Looks good".to_string(),
+            comment_count: 3,
+        };
+        assert_eq!(info.action, "Approve");
+        assert_eq!(info.summary, "Looks good");
+        assert_eq!(info.comment_count, 3);
+    }
+
+    #[test]
+    fn test_fix_post_info() {
+        let info = FixPostInfo {
+            summary: "Fixed issues".to_string(),
+            files_modified: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+        };
+        assert_eq!(info.summary, "Fixed issues");
+        assert_eq!(info.files_modified.len(), 2);
     }
 }

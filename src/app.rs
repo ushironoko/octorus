@@ -219,6 +219,10 @@ pub struct AiRallyState {
     pub pending_question: Option<String>,
     /// Pending permission request from reviewee
     pub pending_permission: Option<PermissionInfo>,
+    /// Pending review post confirmation
+    pub pending_review_post: Option<crate::ai::orchestrator::ReviewPostInfo>,
+    /// Pending fix post confirmation
+    pub pending_fix_post: Option<crate::ai::orchestrator::FixPostInfo>,
     /// Last rendered visible log height (updated by UI render)
     pub last_visible_log_height: usize,
 }
@@ -1385,6 +1389,16 @@ impl App {
                         match &event {
                             RallyEvent::StateChanged(state) => {
                                 rally_state.state = *state;
+                                // Clear pending post info on terminal states
+                                if matches!(
+                                    state,
+                                    RallyState::Completed
+                                        | RallyState::Aborted
+                                        | RallyState::Error
+                                ) {
+                                    rally_state.pending_review_post = None;
+                                    rally_state.pending_fix_post = None;
+                                }
                             }
                             RallyEvent::IterationStarted(i) => {
                                 rally_state.iteration = *i;
@@ -1452,6 +1466,28 @@ impl App {
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!("Permission needed: {} - {}", action, reason),
+                                ));
+                            }
+                            RallyEvent::ReviewPostConfirmNeeded(info) => {
+                                rally_state.pending_review_post = Some(info.clone());
+                                rally_state.pending_fix_post = None; // exclusive
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!(
+                                        "Review post confirmation needed: {} ({} comments)",
+                                        info.action, info.comment_count
+                                    ),
+                                ));
+                            }
+                            RallyEvent::FixPostConfirmNeeded(info) => {
+                                rally_state.pending_fix_post = Some(info.clone());
+                                rally_state.pending_review_post = None; // exclusive
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!(
+                                        "Fix post confirmation needed: {} file(s) modified",
+                                        info.files_modified.len()
+                                    ),
                                 ));
                             }
                             _ => {}
@@ -2402,7 +2438,9 @@ impl App {
                 if let Some(ref state) = self.ai_rally_state {
                     if matches!(
                         state.state,
-                        RallyState::WaitingForClarification | RallyState::WaitingForPermission
+                        RallyState::WaitingForClarification
+                            | RallyState::WaitingForPermission
+                            | RallyState::WaitingForPostConfirmation
                     ) {
                         self.send_rally_command(OrchestratorCommand::Abort);
                     }
@@ -2448,6 +2486,20 @@ impl App {
                         // Open editor synchronously (restore terminal first)
                         self.open_clarification_editor_sync(&question, terminal)?;
                     }
+                    RallyState::WaitingForPostConfirmation => {
+                        // Approve posting
+                        self.send_rally_command(OrchestratorCommand::PostConfirmResponse(true));
+                        if let Some(ref mut rally_state) = self.ai_rally_state {
+                            rally_state.pending_review_post = None;
+                            rally_state.pending_fix_post = None;
+                            // Transition state immediately to prevent duplicate sends
+                            rally_state.state = RallyState::RevieweeFix;
+                            rally_state.push_log(LogEntry::new(
+                                LogEventType::Info,
+                                "Post approved, posting to PR...".to_string(),
+                            ));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2484,6 +2536,20 @@ impl App {
                                 LogEventType::Info,
                                 "Clarification skipped, continuing with best judgment..."
                                     .to_string(),
+                            ));
+                        }
+                    }
+                    RallyState::WaitingForPostConfirmation => {
+                        // Skip posting
+                        self.send_rally_command(OrchestratorCommand::PostConfirmResponse(false));
+                        if let Some(ref mut rally_state) = self.ai_rally_state {
+                            rally_state.pending_review_post = None;
+                            rally_state.pending_fix_post = None;
+                            // Transition state immediately to prevent duplicate sends
+                            rally_state.state = RallyState::RevieweeFix;
+                            rally_state.push_log(LogEntry::new(
+                                LogEventType::Info,
+                                "Post skipped, continuing...".to_string(),
                             ));
                         }
                     }
@@ -2765,6 +2831,8 @@ impl App {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
+            pending_review_post: None,
+            pending_fix_post: None,
             last_visible_log_height: 10,
         });
 
@@ -5639,6 +5707,8 @@ mod tests {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
+            pending_review_post: None,
+            pending_fix_post: None,
             last_visible_log_height: 0,
         });
 
