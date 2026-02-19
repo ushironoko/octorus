@@ -207,6 +207,7 @@ editor = "vi"
 
 [diff]
 # Syntax highlighting theme for diff view
+# See "Theme" section below for available options
 theme = "base16-ocean.dark"
 
 [keybindings]
@@ -323,6 +324,51 @@ Templates support variable substitution with `{{variable}}` syntax:
 | `{{external_comments}}` | Comments from external tools | reviewee |
 | `{{changes_summary}}` | Summary of changes made | rereview |
 | `{{updated_diff}}` | Updated diff after fixes | rereview |
+
+### Theme
+
+The `[diff]` section's `theme` option controls the syntax highlighting color scheme in the diff view.
+
+#### Built-in Themes
+
+| Theme | Description |
+|-------|-------------|
+| `base16-ocean.dark` | Dark theme based on Base16 Ocean (default) |
+| `base16-ocean.light` | Light theme based on Base16 Ocean |
+| `base16-eighties.dark` | Dark theme based on Base16 Eighties |
+| `base16-mocha.dark` | Dark theme based on Base16 Mocha |
+| `Dracula` | Dracula color scheme |
+| `InspiredGitHub` | Light theme inspired by GitHub |
+| `Solarized (dark)` | Solarized dark |
+| `Solarized (light)` | Solarized light |
+
+```toml
+[diff]
+theme = "Dracula"
+```
+
+Theme names are **case-insensitive** (`dracula`, `Dracula`, and `DRACULA` all work).
+
+If a specified theme is not found, it falls back to `base16-ocean.dark`.
+
+#### Custom Themes
+
+You can add custom themes by placing `.tmTheme` (TextMate theme) files in `~/.config/octorus/themes/`:
+
+```
+~/.config/octorus/themes/
+├── MyCustomTheme.tmTheme
+└── nord.tmTheme
+```
+
+The filename (without `.tmTheme` extension) becomes the theme name:
+
+```toml
+[diff]
+theme = "MyCustomTheme"
+```
+
+Custom themes with the same name as a built-in theme will override it.
 
 ## Local Diff Mode
 

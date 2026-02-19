@@ -207,6 +207,7 @@ editor = "vi"
 
 [diff]
 # diff 画面のシンタックスハイライトテーマ
+# 利用可能なテーマについては下記「テーマ」セクションを参照
 theme = "base16-ocean.dark"
 
 [keybindings]
@@ -323,6 +324,51 @@ AI Rally はカスタマイズ可能なプロンプトテンプレートを使�
 | `{{external_comments}}` | 外部ツールからのコメント | reviewee |
 | `{{changes_summary}}` | 変更内容のサマリー | rereview |
 | `{{updated_diff}}` | 修正後の diff | rereview |
+
+### テーマ
+
+`[diff]` セクションの `theme` オプションで、diff 画面のシンタックスハイライトの配色を設定できます。
+
+#### 組み込みテーマ
+
+| テーマ | 説明 |
+|-------|-------------|
+| `base16-ocean.dark` | Base16 Ocean ベースのダークテーマ（デフォルト） |
+| `base16-ocean.light` | Base16 Ocean ベースのライトテーマ |
+| `base16-eighties.dark` | Base16 Eighties ベースのダークテーマ |
+| `base16-mocha.dark` | Base16 Mocha ベースのダークテーマ |
+| `Dracula` | Dracula カラースキーム |
+| `InspiredGitHub` | GitHub 風のライトテーマ |
+| `Solarized (dark)` | Solarized ダーク |
+| `Solarized (light)` | Solarized ライト |
+
+```toml
+[diff]
+theme = "Dracula"
+```
+
+テーマ名は**大文字・小文字を区別しません**（`dracula`、`Dracula`、`DRACULA` のいずれでも動作します）。
+
+指定したテーマが見つからない場合は `base16-ocean.dark` にフォールバックします。
+
+#### カスタムテーマ
+
+`~/.config/octorus/themes/` に `.tmTheme`（TextMate テーマ）ファイルを配置することで、カスタムテーマを追加できます:
+
+```
+~/.config/octorus/themes/
+├── MyCustomTheme.tmTheme
+└── nord.tmTheme
+```
+
+ファイル名（`.tmTheme` 拡張子を除いた部分）がテーマ名になります:
+
+```toml
+[diff]
+theme = "MyCustomTheme"
+```
+
+組み込みテーマと同名のカスタムテーマは、組み込みテーマを上書きします。
 
 ## Local Diff Mode
 
