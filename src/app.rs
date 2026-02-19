@@ -2925,12 +2925,7 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::create_review_comment(
-                &repo,
-                pr_number,
-                &commit_id,
-                &filename,
-                position,
-                &body,
+                &repo, pr_number, &commit_id, &filename, position, &body,
             )
             .await;
 
@@ -2964,12 +2959,7 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::create_review_comment(
-                &repo,
-                pr_number,
-                &commit_id,
-                &filename,
-                position,
-                &body,
+                &repo, pr_number, &commit_id, &filename, position, &body,
             )
             .await;
 
@@ -3062,12 +3052,37 @@ impl App {
     ) -> Result<()> {
         ui::restore_terminal(terminal)?;
 
-        let body = crate::editor::open_review_editor(&self.config.editor)?;
+        let editor_result = crate::editor::open_review_editor(&self.config.editor);
 
+        // エディタの成否に関わらずターミナルを再セットアップ
         *terminal = ui::setup_terminal()?;
 
+        let body = match editor_result {
+            Ok(body) => body,
+            Err(e) => {
+                self.submission_result = Some((false, format!("Editor failed: {}", e)));
+                self.submission_result_time = Some(Instant::now());
+                return Ok(());
+            }
+        };
+
         if let Some(body) = body {
-            github::submit_review(&self.repo, self.pr_number(), action, &body).await?;
+            match github::submit_review(&self.repo, self.pr_number(), action, &body).await {
+                Ok(()) => {
+                    let action_str = match action {
+                        ReviewAction::Approve => "approved",
+                        ReviewAction::RequestChanges => "changes requested",
+                        ReviewAction::Comment => "commented",
+                    };
+                    self.submission_result =
+                        Some((true, format!("Review submitted ({})", action_str)));
+                    self.submission_result_time = Some(Instant::now());
+                }
+                Err(e) => {
+                    self.submission_result = Some((false, format!("Review failed: {}", e)));
+                    self.submission_result_time = Some(Instant::now());
+                }
+            }
         }
         Ok(())
     }
