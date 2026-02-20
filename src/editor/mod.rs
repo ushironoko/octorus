@@ -22,10 +22,10 @@ struct EditorTemplate<'a> {
 /// Supports quoted arguments (e.g. `emacsclient -c -a ""`) via `shell_words::split`.
 fn resolve_and_split_editor(configured: Option<&str>) -> Result<(String, Vec<String>)> {
     let raw = configured
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.trim().is_empty())
         .map(String::from)
-        .or_else(|| env::var("VISUAL").ok().filter(|s| !s.is_empty()))
-        .or_else(|| env::var("EDITOR").ok().filter(|s| !s.is_empty()))
+        .or_else(|| env::var("VISUAL").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| env::var("EDITOR").ok().filter(|s| !s.trim().is_empty()))
         .unwrap_or_else(|| "vi".to_string());
 
     let parts = shell_words::split(&raw)?;
@@ -221,10 +221,14 @@ mod tests {
 
     #[test]
     fn test_resolve_empty_string_falls_through() {
-        // Empty string should be treated as "not configured" and fall through
-        // to env vars. We can't easily test env var fallback without serial,
-        // so just ensure it doesn't panic.
         let result = resolve_and_split_editor(Some(""));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_whitespace_only_falls_through() {
+        // Whitespace-only should be treated as unset, not cause "empty editor command"
+        let result = resolve_and_split_editor(Some("   "));
         assert!(result.is_ok());
     }
 
