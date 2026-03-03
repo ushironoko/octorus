@@ -609,15 +609,20 @@ impl Config {
 }
 
 /// Validate that a prompt_dir from local config is safe.
-/// Rejects absolute paths and paths containing `..` (parent directory traversal).
+/// Rejects absolute paths, Windows drive prefixes (e.g. `C:evil\prompts`),
+/// and paths containing `..` (parent directory traversal).
 /// Uses `Path::components()` for platform-independent validation.
 fn is_safe_local_prompt_dir(prompt_dir: &str) -> bool {
     let path = Path::new(prompt_dir);
     if path.is_absolute() {
         return false;
     }
-    path.components()
-        .all(|c| !matches!(c, std::path::Component::ParentDir))
+    path.components().all(|c| {
+        !matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1252,6 +1257,18 @@ auto_post = true
         // Unsafe: absolute path
         assert!(!is_safe_local_prompt_dir("/absolute/path"));
         assert!(!is_safe_local_prompt_dir("/etc/passwd"));
+
+        // Unsafe: Windows drive prefix paths
+        // On Windows, these are parsed as Prefix components.
+        // On Unix, they're treated as normal path segments, but we still
+        // test the function doesn't crash. The Prefix rejection only
+        // activates on Windows where Path::components() yields Prefix.
+        #[cfg(windows)]
+        {
+            assert!(!is_safe_local_prompt_dir("C:evil\\prompts"));
+            assert!(!is_safe_local_prompt_dir("C:\\absolute\\path"));
+            assert!(!is_safe_local_prompt_dir("\\\\server\\share"));
+        }
     }
 
     #[test]

@@ -177,22 +177,17 @@ pub async fn run_headless_rally_local(
     run_headless_with_context(repo, 0, config, context, accept_local_overrides).await
 }
 
-/// Core headless execution logic shared between PR and local modes.
-async fn run_headless_with_context(
-    repo: &str,
-    pr_number: u32,
-    config: &Config,
-    context: Context,
-    accept_local_overrides: bool,
-) -> Result<bool> {
-    // Check for sensitive local config overrides
+/// Collect sensitive local overrides from config and local prompt files.
+///
+/// Returns a list of override descriptions. If non-empty and `accept_local_overrides`
+/// is false, the caller should refuse to proceed.
+fn collect_sensitive_overrides(config: &Config) -> Vec<Cow<'static, str>> {
     let mut sensitive_overrides: Vec<Cow<'static, str>> = SENSITIVE_AI_KEYS
         .iter()
         .filter(|key| config.local_overrides.contains(**key))
         .map(|s| Cow::Borrowed(*s))
         .collect();
 
-    // Check for local prompt overrides
     let prompt_loader = PromptLoader::new(&config.ai, &config.project_root);
     for (filename, source) in prompt_loader.resolve_all_sources() {
         if let PromptSource::Local(path) = source {
@@ -203,6 +198,21 @@ async fn run_headless_with_context(
             )));
         }
     }
+
+    sensitive_overrides
+}
+
+/// Core headless execution logic shared between PR and local modes.
+async fn run_headless_with_context(
+    repo: &str,
+    pr_number: u32,
+    config: &Config,
+    context: Context,
+    accept_local_overrides: bool,
+) -> Result<bool> {
+    // Check for sensitive local config overrides
+    let sensitive_overrides = collect_sensitive_overrides(config);
+    let prompt_loader = PromptLoader::new(&config.ai, &config.project_root);
 
     if !sensitive_overrides.is_empty() && !accept_local_overrides {
         eprintln!(
@@ -951,5 +961,83 @@ mod tests {
           "summary": "Agent crashed"
         }
         "#);
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_empty_when_no_local_overrides() {
+        let config = Config::default();
+        let overrides = collect_sensitive_overrides(&config);
+        assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_detects_ai_config_keys() {
+        let mut config = Config::default();
+        config
+            .local_overrides
+            .insert("ai.reviewer".to_string());
+        config
+            .local_overrides
+            .insert("ai.reviewee_additional_tools".to_string());
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert_eq!(overrides.len(), 2);
+        assert!(overrides.iter().any(|o| o.as_ref() == "ai.reviewer"));
+        assert!(overrides
+            .iter()
+            .any(|o| o.as_ref() == "ai.reviewee_additional_tools"));
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_ignores_non_sensitive_keys() {
+        let mut config = Config::default();
+        // Non-sensitive keys should not appear
+        config
+            .local_overrides
+            .insert("diff.theme".to_string());
+        config
+            .local_overrides
+            .insert("keybindings.move_down".to_string());
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_detects_local_prompt_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let prompts_dir = project_root.join(".octorus/prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("reviewer.md"), "custom prompt").unwrap();
+
+        let mut config = Config::default();
+        config.project_root = project_root;
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert_eq!(overrides.len(), 1);
+        assert!(overrides[0].as_ref().contains("local prompt: reviewer.md"));
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_combines_config_and_prompt_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let prompts_dir = project_root.join(".octorus/prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("reviewee.md"), "custom").unwrap();
+
+        let mut config = Config::default();
+        config.project_root = project_root;
+        config
+            .local_overrides
+            .insert("ai.auto_post".to_string());
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert_eq!(overrides.len(), 2);
+        assert!(overrides.iter().any(|o| o.as_ref() == "ai.auto_post"));
+        assert!(overrides
+            .iter()
+            .any(|o| o.as_ref().contains("local prompt: reviewee.md")));
     }
 }

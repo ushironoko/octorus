@@ -45,13 +45,25 @@ pub struct PromptLoader {
 impl PromptLoader {
     /// Create a new PromptLoader with the given config and project root
     pub fn new(config: &AiConfig, project_root: &Path) -> Self {
-        // Resolve prompt_dir: make relative paths absolute against project_root
-        let prompt_dir = config.prompt_dir.as_ref().map(|p| {
+        // Resolve prompt_dir: make relative paths absolute against project_root.
+        // Reject paths with Windows drive prefixes (e.g. `C:evil\prompts`) which
+        // are not absolute but have different `join` semantics that could escape
+        // the intended repo-local scope.
+        let prompt_dir = config.prompt_dir.as_ref().and_then(|p| {
             let path = PathBuf::from(p);
             if path.is_absolute() {
-                path
+                Some(path)
+            } else if path.components().any(|c| {
+                matches!(c, std::path::Component::Prefix(_))
+            }) {
+                // Reject Windows drive-prefixed paths in relative position
+                tracing::warn!(
+                    "prompt_dir '{}' rejected: contains Windows drive prefix",
+                    p
+                );
+                None
             } else {
-                project_root.join(path)
+                Some(project_root.join(path))
             }
         });
 
