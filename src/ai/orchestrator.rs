@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -160,7 +159,7 @@ impl Orchestrator {
         config: AiConfig,
         event_sender: mpsc::Sender<RallyEvent>,
         command_receiver: Option<mpsc::Receiver<OrchestratorCommand>>,
-        project_root: &Path,
+        prompt_loader: PromptLoader,
     ) -> Result<Self> {
         let mut reviewer_adapter = create_adapter(&config.reviewer, &config)?;
         let mut reviewee_adapter = create_adapter(&config.reviewee, &config)?;
@@ -170,7 +169,6 @@ impl Orchestrator {
         reviewee_adapter.set_event_sender(event_sender.clone());
 
         let session = RallySession::new(repo, pr_number);
-        let prompt_loader = PromptLoader::new(&config, project_root);
 
         Ok(Self {
             repo: repo.to_string(),

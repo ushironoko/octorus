@@ -93,6 +93,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
 }
 
 fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
+    // Show config warning if pending
+    if state.pending_config_warning.is_some() {
+        render_config_warning(frame, area, state);
+        return;
+    }
+
     // Add waiting prompt area when in clarification/permission/post-confirmation state
     let is_waiting = matches!(
         state.state,
@@ -128,6 +134,52 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) 
     } else {
         render_logs(frame, chunks[1], state);
     }
+}
+
+fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+    let warnings = match &state.pending_config_warning {
+        Some(w) => w,
+        None => return,
+    };
+
+    let mut lines = vec![
+        Line::from(vec![Span::styled(
+            "Local .octorus/ overrides detected that affect AI behavior:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+    ];
+
+    for (key, value) in warnings {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}: ", key), Style::default().fg(Color::Red)),
+            Span::styled(value.clone(), Style::default().fg(Color::White)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "These overrides could alter AI agent behavior in unexpected ways.",
+        Style::default().fg(Color::Yellow),
+    )]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "Press 'y' to accept and continue, 'n'/'q'/Esc to cancel",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    let warning = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Local Override Security Warning ")
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+
+    frame.render_widget(warning, area);
 }
 
 fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
@@ -479,7 +531,9 @@ fn render_log_detail_modal(frame: &mut Frame, state: &AiRallyState) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
-    let help_text = if state.showing_log_detail {
+    let help_text = if state.pending_config_warning.is_some() {
+        "y: Accept and continue | n/q: Cancel and return"
+    } else if state.showing_log_detail {
         "Esc/Enter/q: Close detail"
     } else {
         match state.state {

@@ -7,6 +7,18 @@ use xdg::BaseDirectories;
 
 use crate::keybinding::{KeyBinding, KeySequence, NamedKey};
 
+/// Security-sensitive AI config keys that require user confirmation
+/// when overridden by local `.octorus/config.toml`.
+/// Shared between TUI (`App::start_ai_rally`) and headless (`run_headless_with_context`).
+pub const SENSITIVE_AI_KEYS: &[&str] = &[
+    "ai.reviewer_additional_tools",
+    "ai.reviewee_additional_tools",
+    "ai.auto_post",
+    "ai.reviewer",
+    "ai.reviewee",
+    "ai.prompt_dir",
+];
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -479,13 +491,14 @@ impl Config {
     /// Load config by merging global and local TOML files.
     /// Local values override global values at the TOML table level (deep merge).
     ///
-    /// DESIGN NOTE: All keys including `editor`, `ai.*_additional_tools`, and
-    /// `ai.auto_post` are intentionally allowed in local config. Project-local
-    /// `.octorus/config.toml` enables per-repository customization of tool
-    /// permissions (e.g. allowing `git push` only in trusted repos). This is
-    /// analogous to `.editorconfig` or `.vscode/settings.json` — the user
-    /// explicitly runs `or` in the repo, implying trust. Do NOT add key
-    /// stripping or filtering here.
+    /// SECURITY NOTE: Local `.octorus/config.toml` has a 3-tier trust model:
+    /// - **Stripped**: `editor` is removed before merge (command injection risk)
+    /// - **Confirmation required**: `ai.*_additional_tools`, `ai.auto_post`,
+    ///   `ai.reviewer`, `ai.reviewee` — tracked in `local_overrides` and
+    ///   guarded by TUI confirmation / headless `--accept-local-overrides`
+    /// - **Validated**: `ai.prompt_dir` — path traversal checks applied
+    ///
+    /// All other keys (theme, keybindings, etc.) are freely overridable.
     pub fn load_from_paths(
         global_path: &Path,
         local_path: &Path,
@@ -499,11 +512,24 @@ impl Config {
             toml::Value::Table(toml::map::Map::new())
         };
 
+        let mut stripped_local_value: Option<toml::Value> = None;
         if local_path.exists() {
             let local_content = fs::read_to_string(local_path)
                 .context("Failed to read local config file (.octorus/config.toml)")?;
-            let local_value: toml::Value = toml::from_str(&local_content)
+            let mut local_value: toml::Value = toml::from_str(&local_content)
                 .context("Failed to parse local config file (.octorus/config.toml)")?;
+
+            // Strip `editor` key from local config to prevent command injection.
+            // Editor preference is a user-level setting, not a per-repository concern.
+            if let toml::Value::Table(ref mut t) = local_value {
+                if t.remove("editor").is_some() {
+                    tracing::warn!(
+                        "editor key in local .octorus/config.toml is ignored for security"
+                    );
+                }
+            }
+
+            stripped_local_value = Some(local_value.clone());
             deep_merge_toml(&mut base_value, local_value);
         }
 
@@ -521,7 +547,29 @@ impl Config {
         } else {
             None
         };
-        config.local_overrides = Self::collect_local_override_keys(local_path);
+        config.local_overrides = match stripped_local_value {
+            Some(ref v) => Self::collect_override_keys_from_value(v),
+            None => HashSet::new(),
+        };
+
+        // Validate local prompt_dir: reject absolute paths and path traversal
+        if config.local_overrides.contains("ai.prompt_dir") {
+            if let Some(ref dir) = config.ai.prompt_dir {
+                if !is_safe_local_prompt_dir(dir) {
+                    tracing::warn!(
+                        "ai.prompt_dir '{}' in local config rejected (path traversal or absolute)",
+                        dir
+                    );
+                    config.ai.prompt_dir = None;
+                }
+            }
+        }
+
+        // Clamp AI config values to hard limits to prevent resource exhaustion
+        const MAX_ITERATIONS_LIMIT: u32 = 100;
+        const MAX_TIMEOUT_SECS_LIMIT: u64 = 7200; // 2 hours
+        config.ai.max_iterations = config.ai.max_iterations.min(MAX_ITERATIONS_LIMIT);
+        config.ai.timeout_secs = config.ai.timeout_secs.min(MAX_TIMEOUT_SECS_LIMIT);
 
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
@@ -533,14 +581,11 @@ impl Config {
         Ok(config)
     }
 
-    /// Parse the local config file and collect dotted key paths that are set.
-    /// Returns an empty set if the file doesn't exist or is unparseable.
-    fn collect_local_override_keys(local_path: &Path) -> HashSet<String> {
+    /// Collect dotted key paths from a (stripped) TOML value.
+    /// Used to determine which keys were overridden by the local config.
+    fn collect_override_keys_from_value(value: &toml::Value) -> HashSet<String> {
         let mut overrides = HashSet::new();
-        let Ok(content) = fs::read_to_string(local_path) else {
-            return overrides;
-        };
-        let Ok(toml::Value::Table(table)) = content.parse::<toml::Value>() else {
+        let toml::Value::Table(table) = value else {
             return overrides;
         };
         if table.contains_key("editor") {
@@ -561,6 +606,23 @@ impl Config {
             .map(|dirs| dirs.get_config_home().join("config.toml"))
             .unwrap_or_else(|_| PathBuf::from("config.toml"))
     }
+}
+
+/// Validate that a prompt_dir from local config is safe.
+/// Rejects absolute paths, Windows drive prefixes (e.g. `C:evil\prompts`),
+/// and paths containing `..` (parent directory traversal).
+/// Uses `Path::components()` for platform-independent validation.
+fn is_safe_local_prompt_dir(prompt_dir: &str) -> bool {
+    let path = Path::new(prompt_dir);
+    if path.is_absolute() {
+        return false;
+    }
+    path.components().all(|c| {
+        !matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1121,5 +1183,238 @@ tab_width = 0
         let config =
             Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.project_root, dir.path());
+    }
+
+    #[test]
+    fn test_local_editor_is_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, r#"editor = "vim""#).unwrap();
+        fs::write(&local, r#"editor = "malicious; rm -rf /""#).unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        // Global editor should be preserved, local editor should be stripped
+        assert_eq!(config.editor.as_deref(), Some("vim"));
+        // local_overrides should NOT contain "editor"
+        assert!(!config.local_overrides.contains("editor"));
+    }
+
+    #[test]
+    fn test_local_editor_stripped_global_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(&local, r#"editor = "malicious""#).unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        // No global editor, local editor stripped -> None
+        assert!(config.editor.is_none());
+    }
+
+    #[test]
+    fn test_local_overrides_tracks_ai_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+reviewer = "codex"
+reviewee_additional_tools = ["Bash(git push:*)"]
+auto_post = true
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(config.local_overrides.contains("ai.reviewer"));
+        assert!(config.local_overrides.contains("ai.reviewee_additional_tools"));
+        assert!(config.local_overrides.contains("ai.auto_post"));
+    }
+
+    #[test]
+    fn test_is_safe_local_prompt_dir() {
+        // Safe paths
+        assert!(is_safe_local_prompt_dir(".octorus/prompts"));
+        assert!(is_safe_local_prompt_dir("prompts"));
+        assert!(is_safe_local_prompt_dir("my/prompts/dir"));
+
+        // Unsafe: path traversal
+        assert!(!is_safe_local_prompt_dir("../../evil"));
+        assert!(!is_safe_local_prompt_dir("foo/../bar"));
+        assert!(!is_safe_local_prompt_dir(".."));
+
+        // Unsafe: absolute path
+        assert!(!is_safe_local_prompt_dir("/absolute/path"));
+        assert!(!is_safe_local_prompt_dir("/etc/passwd"));
+
+        // Unsafe: Windows drive prefix paths
+        // On Windows, these are parsed as Prefix components.
+        // On Unix, they're treated as normal path segments, but we still
+        // test the function doesn't crash. The Prefix rejection only
+        // activates on Windows where Path::components() yields Prefix.
+        #[cfg(windows)]
+        {
+            assert!(!is_safe_local_prompt_dir("C:evil\\prompts"));
+            assert!(!is_safe_local_prompt_dir("C:\\absolute\\path"));
+            assert!(!is_safe_local_prompt_dir("\\\\server\\share"));
+        }
+    }
+
+    #[test]
+    fn test_local_prompt_dir_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+prompt_dir = "../../evil"
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        // Traversal path should be rejected, prompt_dir reset to None
+        assert!(config.ai.prompt_dir.is_none());
+    }
+
+    #[test]
+    fn test_local_prompt_dir_absolute_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+prompt_dir = "/absolute/path"
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(config.ai.prompt_dir.is_none());
+    }
+
+    #[test]
+    fn test_global_prompt_dir_absolute_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+prompt_dir = "/home/user/prompts"
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        // Global config absolute paths are allowed
+        assert_eq!(config.ai.prompt_dir.as_deref(), Some("/home/user/prompts"));
+    }
+
+    #[test]
+    fn test_local_prompt_dir_safe_path_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+prompt_dir = ".octorus/prompts"
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.prompt_dir.as_deref(), Some(".octorus/prompts"));
+    }
+
+    #[test]
+    fn test_max_iterations_clamped_to_hard_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+max_iterations = 999999
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.max_iterations, 100);
+    }
+
+    #[test]
+    fn test_timeout_secs_clamped_to_hard_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+timeout_secs = 999999
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.timeout_secs, 7200);
+    }
+
+    #[test]
+    fn test_normal_iterations_and_timeout_not_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+max_iterations = 50
+timeout_secs = 3600
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.max_iterations, 50);
+        assert_eq!(config.ai.timeout_secs, 3600);
     }
 }

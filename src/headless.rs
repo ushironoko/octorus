@@ -2,12 +2,17 @@ use anyhow::Result;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use std::borrow::Cow;
+
 use crate::ai::adapter::{
     CommentSeverity, Context, ReviewAction, RevieweeOutput, RevieweeStatus, ReviewerOutput,
 };
 use crate::ai::orchestrator::{Orchestrator, OrchestratorCommand, RallyEvent, RallyState};
+use crate::ai::prompt_loader::{PromptLoader, PromptSource};
 use crate::config::Config;
 use crate::github;
+
+use crate::config::SENSITIVE_AI_KEYS;
 
 /// Run AI Rally in headless mode (no TUI).
 ///
@@ -19,6 +24,7 @@ pub async fn run_headless_rally(
     pr_number: u32,
     config: &Config,
     working_dir: Option<&str>,
+    accept_local_overrides: bool,
 ) -> Result<bool> {
     eprintln!("[Headless] Fetching PR #{} from {}...", pr_number, repo);
 
@@ -64,7 +70,7 @@ pub async fn run_headless_rally(
         file_patches,
     };
 
-    run_headless_with_context(repo, pr_number, config, context).await
+    run_headless_with_context(repo, pr_number, config, context, accept_local_overrides).await
 }
 
 /// Run AI Rally in headless mode for local diff.
@@ -76,6 +82,7 @@ pub async fn run_headless_rally_local(
     repo: &str,
     config: &Config,
     working_dir: Option<&str>,
+    accept_local_overrides: bool,
 ) -> Result<bool> {
     eprintln!("[Headless] Running local diff rally...");
 
@@ -167,7 +174,32 @@ pub async fn run_headless_rally_local(
         file_patches: Vec::new(),
     };
 
-    run_headless_with_context(repo, 0, config, context).await
+    run_headless_with_context(repo, 0, config, context, accept_local_overrides).await
+}
+
+/// Collect sensitive local overrides from config and local prompt files.
+///
+/// Returns a list of override descriptions. If non-empty and `accept_local_overrides`
+/// is false, the caller should refuse to proceed.
+fn collect_sensitive_overrides(config: &Config) -> Vec<Cow<'static, str>> {
+    let mut sensitive_overrides: Vec<Cow<'static, str>> = SENSITIVE_AI_KEYS
+        .iter()
+        .filter(|key| config.local_overrides.contains(**key))
+        .map(|s| Cow::Borrowed(*s))
+        .collect();
+
+    let prompt_loader = PromptLoader::new(&config.ai, &config.project_root);
+    for (filename, source) in prompt_loader.resolve_all_sources() {
+        if let PromptSource::Local(path) = source {
+            sensitive_overrides.push(Cow::Owned(format!(
+                "local prompt: {} ({})",
+                filename,
+                path.display()
+            )));
+        }
+    }
+
+    sensitive_overrides
 }
 
 /// Core headless execution logic shared between PR and local modes.
@@ -176,7 +208,33 @@ async fn run_headless_with_context(
     pr_number: u32,
     config: &Config,
     context: Context,
+    accept_local_overrides: bool,
 ) -> Result<bool> {
+    // Check for sensitive local config overrides
+    let sensitive_overrides = collect_sensitive_overrides(config);
+    let prompt_loader = PromptLoader::new(&config.ai, &config.project_root);
+
+    if !sensitive_overrides.is_empty() && !accept_local_overrides {
+        eprintln!(
+            "[Headless] WARNING: Local .octorus/ overrides detected that affect AI behavior:"
+        );
+        for key in &sensitive_overrides {
+            eprintln!("  - {}", key);
+        }
+        eprintln!(
+            "[Headless] Use --accept-local-overrides to explicitly allow these overrides."
+        );
+        anyhow::bail!(
+            "Refusing to run AI Rally with local overrides: {}. \
+             Use --accept-local-overrides to bypass this check.",
+            sensitive_overrides
+                .iter()
+                .map(|s| s.as_ref())
+                .collect::<Vec<&str>>()
+                .join(", ")
+        );
+    }
+
     let (event_tx, mut event_rx) = mpsc::channel(100);
     let (cmd_tx, cmd_rx) = mpsc::channel(10);
 
@@ -188,7 +246,7 @@ async fn run_headless_with_context(
         config.ai.clone(),
         event_tx,
         Some(cmd_rx),
-        &config.project_root,
+        prompt_loader,
     )?;
     orchestrator.set_context(context);
 
@@ -903,5 +961,83 @@ mod tests {
           "summary": "Agent crashed"
         }
         "#);
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_empty_when_no_local_overrides() {
+        let config = Config::default();
+        let overrides = collect_sensitive_overrides(&config);
+        assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_detects_ai_config_keys() {
+        let mut config = Config::default();
+        config
+            .local_overrides
+            .insert("ai.reviewer".to_string());
+        config
+            .local_overrides
+            .insert("ai.reviewee_additional_tools".to_string());
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert_eq!(overrides.len(), 2);
+        assert!(overrides.iter().any(|o| o.as_ref() == "ai.reviewer"));
+        assert!(overrides
+            .iter()
+            .any(|o| o.as_ref() == "ai.reviewee_additional_tools"));
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_ignores_non_sensitive_keys() {
+        let mut config = Config::default();
+        // Non-sensitive keys should not appear
+        config
+            .local_overrides
+            .insert("diff.theme".to_string());
+        config
+            .local_overrides
+            .insert("keybindings.move_down".to_string());
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_detects_local_prompt_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let prompts_dir = project_root.join(".octorus/prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("reviewer.md"), "custom prompt").unwrap();
+
+        let mut config = Config::default();
+        config.project_root = project_root;
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert_eq!(overrides.len(), 1);
+        assert!(overrides[0].as_ref().contains("local prompt: reviewer.md"));
+    }
+
+    #[test]
+    fn test_collect_sensitive_overrides_combines_config_and_prompt_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let prompts_dir = project_root.join(".octorus/prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("reviewee.md"), "custom").unwrap();
+
+        let mut config = Config::default();
+        config.project_root = project_root;
+        config
+            .local_overrides
+            .insert("ai.auto_post".to_string());
+
+        let overrides = collect_sensitive_overrides(&config);
+        assert_eq!(overrides.len(), 2);
+        assert!(overrides.iter().any(|o| o.as_ref() == "ai.auto_post"));
+        assert!(overrides
+            .iter()
+            .any(|o| o.as_ref().contains("local prompt: reviewee.md")));
     }
 }

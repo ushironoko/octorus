@@ -464,7 +464,17 @@ timeout_secs = 600
 # NOTE: git push はデフォルトで無効。リモートへの自動プッシュを許可する場合のみ設定
 ```
 
-**ローカル設定のセキュリティポリシー**: `.octorus/config.toml` では `editor`、`ai.*_additional_tools`、`ai.auto_post` を含む**全てのキー**がオーバーライド可能。リポジトリ単位でツール権限を絞ったり拡大したりするユースケースがあるため、キーのフィルタリングやストリップは行わない。これは `.editorconfig` や `.vscode/settings.json` と同じ信頼モデル（ユーザーがそのリポジトリで `or` を実行する = 信頼している）。
+**ローカル設定のセキュリティポリシー**: `.octorus/config.toml` は3層の信頼モデルで管理:
+
+| 層 | キー | 動作 |
+|----|------|------|
+| **Stripped** | `editor` | ローカル設定から自動除去（コマンドインジェクション防止） |
+| **Confirmation** | `ai.reviewer`, `ai.reviewee`, `ai.*_additional_tools`, `ai.auto_post` | TUI: 確認画面表示、Headless: `--accept-local-overrides` 必須 |
+| **Validated** | `ai.prompt_dir` | 絶対パス・`..` 拒否、`.octorus/prompts/` のシンボリックリンク拒否 |
+| **Free** | その他 (theme, keybindings 等) | 制限なし |
+
+- `max_iterations` は最大100、`timeout_secs` は最大7200（2時間）にクランプ
+- `sanitize_repo_name()` は ASCII 英数字のみ許可（Unicode ホモグリフ攻撃防止）
 
 **推奨構成**: Codex は細粒度のツール制御ができないため、以下の構成を推奨:
 

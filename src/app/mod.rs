@@ -8,6 +8,8 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
+use crate::ai::prompt_loader::PromptLoader;
+use crate::ai::Context as AiContext;
 use crate::cache::SessionCache;
 use crate::config::Config;
 use crate::filter::ListFilter;
@@ -161,6 +163,10 @@ pub struct App {
     rally_abort_handle: Option<AbortHandle>,
     // Command sender to communicate with the orchestrator
     rally_command_sender: Option<mpsc::Sender<OrchestratorCommand>>,
+    // Context saved while waiting for config warning confirmation
+    pending_rally_context: Option<AiContext>,
+    // PromptLoader saved while waiting for config warning confirmation
+    pending_rally_prompt_loader: Option<PromptLoader>,
     // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
     start_ai_rally_on_load: bool,
     // Pending AI Rally flag (set when --ai-rally is passed with PR list mode)
@@ -279,6 +285,8 @@ impl App {
             rally_event_receiver: None,
             rally_abort_handle: None,
             rally_command_sender: None,
+            pending_rally_context: None,
+            pending_rally_prompt_loader: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             comment_submit_receiver: None,
@@ -364,6 +372,8 @@ impl App {
             rally_event_receiver: None,
             rally_abort_handle: None,
             rally_command_sender: None,
+            pending_rally_context: None,
+            pending_rally_prompt_loader: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             comment_submit_receiver: None,
@@ -576,6 +586,8 @@ impl App {
             rally_event_receiver: None,
             rally_abort_handle: None,
             rally_command_sender: None,
+            pending_rally_context: None,
+            pending_rally_prompt_loader: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             comment_submit_receiver: None,

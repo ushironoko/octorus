@@ -52,6 +52,13 @@ struct Args {
     /// Working directory for AI agents (default: current directory)
     #[arg(long)]
     working_dir: Option<String>,
+
+    /// Accept local .octorus/ overrides for AI settings in headless mode.
+    /// Without this flag, headless AI Rally will refuse to run if the local config
+    /// overrides security-sensitive keys (ai.reviewer, ai.reviewee, ai.*_additional_tools,
+    /// ai.auto_post, ai.prompt_dir) or local prompt files are detected in .octorus/prompts/.
+    #[arg(long, default_value = "false")]
+    accept_local_overrides: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -156,7 +163,7 @@ async fn main() -> Result<()> {
     if args.ai_rally && args.pr.is_some() {
         let pr = args.pr.unwrap();
         let working_dir = resolve_working_dir(&args);
-        match headless::run_headless_rally(&repo, pr, &config, working_dir.as_deref()).await {
+        match headless::run_headless_rally(&repo, pr, &config, working_dir.as_deref(), args.accept_local_overrides).await {
             Ok(approved) => std::process::exit(if approved { 0 } else { 1 }),
             Err(e) => {
                 headless::write_error_json(&e.to_string());
@@ -167,7 +174,7 @@ async fn main() -> Result<()> {
     }
     if args.local && args.ai_rally {
         let working_dir = resolve_working_dir(&args);
-        match headless::run_headless_rally_local(&repo, &config, working_dir.as_deref()).await {
+        match headless::run_headless_rally_local(&repo, &config, working_dir.as_deref(), args.accept_local_overrides).await {
             Ok(approved) => std::process::exit(if approved { 0 } else { 1 }),
             Err(e) => {
                 headless::write_error_json(&e.to_string());
