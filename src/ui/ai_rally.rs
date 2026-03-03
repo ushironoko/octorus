@@ -166,7 +166,7 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState) {
     )]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
-        "Press 'y' to accept and continue, 'n' or 'q' to cancel",
+        "Press 'y' to accept and continue, 'n'/'q'/Esc to cancel",
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
