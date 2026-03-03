@@ -33,6 +33,16 @@ impl App {
 
         match key.code {
             KeyCode::Char('b') => {
+                // Ignore background key while config warning is pending
+                // (no orchestrator running yet)
+                if self
+                    .ai_rally_state
+                    .as_ref()
+                    .and_then(|s| s.pending_config_warning.as_ref())
+                    .is_some()
+                {
+                    return Ok(());
+                }
                 // バックグラウンドで実行を継続したままFileListに戻る
                 // abort()を呼ばない、状態も保持したまま
                 self.state = AppState::FileList;
@@ -357,6 +367,7 @@ impl App {
         self.ai_rally_state = None;
         self.rally_command_sender = None;
         self.rally_event_receiver = None;
+        self.pending_rally_context = None;
         self.pending_rally_prompt_loader = None;
         if let Some(handle) = self.rally_abort_handle.take() {
             handle.abort();
@@ -444,17 +455,6 @@ impl App {
                 .unwrap_or(false)
     }
 
-    /// Security-sensitive AI config keys that require user confirmation
-    /// when overridden by local `.octorus/config.toml`.
-    const SENSITIVE_AI_KEYS: &'static [&'static str] = &[
-        "ai.reviewer_additional_tools",
-        "ai.reviewee_additional_tools",
-        "ai.auto_post",
-        "ai.reviewer",
-        "ai.reviewee",
-        "ai.prompt_dir",
-    ];
-
     pub(crate) fn start_ai_rally(&mut self) {
         // Get PR data for context
         let Some(pr) = self.pr() else {
@@ -495,7 +495,7 @@ impl App {
         };
 
         // Check for sensitive local config overrides
-        let mut warnings: Vec<(String, String)> = Self::SENSITIVE_AI_KEYS
+        let mut warnings: Vec<(String, String)> = crate::config::SENSITIVE_AI_KEYS
             .iter()
             .filter(|key| self.config.local_overrides.contains(**key))
             .map(|key| {

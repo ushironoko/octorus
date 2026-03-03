@@ -12,15 +12,7 @@ use crate::ai::prompt_loader::{PromptLoader, PromptSource};
 use crate::config::Config;
 use crate::github;
 
-/// Security-sensitive AI config keys (same as App::SENSITIVE_AI_KEYS).
-const SENSITIVE_AI_KEYS: &[&str] = &[
-    "ai.reviewer_additional_tools",
-    "ai.reviewee_additional_tools",
-    "ai.auto_post",
-    "ai.reviewer",
-    "ai.reviewee",
-    "ai.prompt_dir",
-];
+use crate::config::SENSITIVE_AI_KEYS;
 
 /// Run AI Rally in headless mode (no TUI).
 ///

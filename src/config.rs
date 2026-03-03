@@ -7,6 +7,18 @@ use xdg::BaseDirectories;
 
 use crate::keybinding::{KeyBinding, KeySequence, NamedKey};
 
+/// Security-sensitive AI config keys that require user confirmation
+/// when overridden by local `.octorus/config.toml`.
+/// Shared between TUI (`App::start_ai_rally`) and headless (`run_headless_with_context`).
+pub const SENSITIVE_AI_KEYS: &[&str] = &[
+    "ai.reviewer_additional_tools",
+    "ai.reviewee_additional_tools",
+    "ai.auto_post",
+    "ai.reviewer",
+    "ai.reviewee",
+    "ai.prompt_dir",
+];
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
