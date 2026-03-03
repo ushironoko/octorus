@@ -5,6 +5,7 @@ use std::io::Stdout;
 use tokio::sync::mpsc;
 
 use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
+use crate::ai::prompt_loader::{PromptLoader, PromptSource};
 use crate::ai::{Context, Orchestrator, RallyState};
 use crate::ui;
 
@@ -37,6 +38,18 @@ impl App {
                 self.state = AppState::FileList;
             }
             KeyCode::Char('q') | KeyCode::Esc => {
+                // If waiting for config warning confirmation, reject and return
+                if self
+                    .ai_rally_state
+                    .as_ref()
+                    .and_then(|s| s.pending_config_warning.as_ref())
+                    .is_some()
+                {
+                    self.pending_rally_context = None;
+                    self.cleanup_rally_state();
+                    self.state = AppState::FileList;
+                    return Ok(());
+                }
                 // Send abort command to orchestrator if in waiting state
                 if let Some(ref state) = self.ai_rally_state {
                     if matches!(
@@ -57,6 +70,24 @@ impl App {
                 self.state = AppState::FileList;
             }
             KeyCode::Char('y') => {
+                // If waiting for config warning confirmation, approve and spawn orchestrator
+                if self
+                    .ai_rally_state
+                    .as_ref()
+                    .and_then(|s| s.pending_config_warning.as_ref())
+                    .is_some()
+                {
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        rally_state.pending_config_warning = None;
+                    }
+                    if let Some(context) = self.pending_rally_context.take() {
+                        if let Some(prompt_loader) = self.pending_rally_prompt_loader.take() {
+                            self.spawn_rally_orchestrator(context, prompt_loader);
+                        }
+                    }
+                    return Ok(());
+                }
+
                 // Grant permission or open clarification editor
                 let current_state = self
                     .ai_rally_state
@@ -107,6 +138,19 @@ impl App {
                 }
             }
             KeyCode::Char('n') => {
+                // If waiting for config warning confirmation, reject and return
+                if self
+                    .ai_rally_state
+                    .as_ref()
+                    .and_then(|s| s.pending_config_warning.as_ref())
+                    .is_some()
+                {
+                    self.pending_rally_context = None;
+                    self.cleanup_rally_state();
+                    self.state = AppState::FileList;
+                    return Ok(());
+                }
+
                 // Deny permission or skip clarification
                 let current_state = self
                     .ai_rally_state
@@ -313,6 +357,7 @@ impl App {
         self.ai_rally_state = None;
         self.rally_command_sender = None;
         self.rally_event_receiver = None;
+        self.pending_rally_prompt_loader = None;
         if let Some(handle) = self.rally_abort_handle.take() {
             handle.abort();
         }
@@ -399,6 +444,17 @@ impl App {
                 .unwrap_or(false)
     }
 
+    /// Security-sensitive AI config keys that require user confirmation
+    /// when overridden by local `.octorus/config.toml`.
+    const SENSITIVE_AI_KEYS: &'static [&'static str] = &[
+        "ai.reviewer_additional_tools",
+        "ai.reviewee_additional_tools",
+        "ai.auto_post",
+        "ai.reviewer",
+        "ai.reviewee",
+        "ai.prompt_dir",
+    ];
+
     pub(crate) fn start_ai_rally(&mut self) {
         // Get PR data for context
         let Some(pr) = self.pr() else {
@@ -438,12 +494,26 @@ impl App {
             file_patches,
         };
 
-        let (event_tx, event_rx) = mpsc::channel(100);
-        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+        // Check for sensitive local config overrides
+        let mut warnings: Vec<(String, String)> = Self::SENSITIVE_AI_KEYS
+            .iter()
+            .filter(|key| self.config.local_overrides.contains(**key))
+            .map(|key| {
+                let value = self.get_config_value_for_key(key);
+                (key.to_string(), value)
+            })
+            .collect();
 
-        // Store channels first to prevent race conditions
-        self.rally_event_receiver = Some(event_rx);
-        self.rally_command_sender = Some(cmd_tx);
+        // Check for local prompt overrides
+        let prompt_loader = PromptLoader::new(&self.config.ai, &self.config.project_root);
+        for (filename, source) in prompt_loader.resolve_all_sources() {
+            if let PromptSource::Local(path) = source {
+                warnings.push((
+                    format!("local prompt: {}", filename),
+                    path.display().to_string(),
+                ));
+            }
+        }
 
         // Initialize rally state
         self.ai_rally_state = Some(AiRallyState {
@@ -460,15 +530,48 @@ impl App {
             pending_review_post: None,
             pending_fix_post: None,
             last_visible_log_height: 10,
+            pending_config_warning: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings)
+            },
         });
 
         self.state = AppState::AiRally;
+
+        if self
+            .ai_rally_state
+            .as_ref()
+            .and_then(|s| s.pending_config_warning.as_ref())
+            .is_some()
+        {
+            // Save context and prompt_loader for later use after user confirmation
+            self.pending_rally_context = Some(context);
+            self.pending_rally_prompt_loader = Some(prompt_loader);
+            return;
+        }
+
+        self.spawn_rally_orchestrator(context, prompt_loader);
+    }
+
+    /// Spawn the orchestrator task. Called after user confirms config warnings
+    /// or when no warnings are present.
+    pub(crate) fn spawn_rally_orchestrator(
+        &mut self,
+        context: Context,
+        prompt_loader: PromptLoader,
+    ) {
+        let (event_tx, event_rx) = mpsc::channel(100);
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+
+        // Store channels first to prevent race conditions
+        self.rally_event_receiver = Some(event_rx);
+        self.rally_command_sender = Some(cmd_tx);
 
         // Spawn the orchestrator and store the abort handle
         let config = self.config.ai.clone();
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
-        let project_root = self.config.project_root.clone();
 
         let handle = tokio::spawn(async move {
             let orchestrator_result = Orchestrator::new(
@@ -477,18 +580,14 @@ impl App {
                 config,
                 event_tx.clone(),
                 Some(cmd_rx),
-                &project_root,
+                prompt_loader,
             );
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);
-                    // Note: orchestrator.run() already emits RallyEvent::Error and
-                    // StateChanged(Error) when it fails, so we don't emit them again here
-                    // to avoid duplicate error logs in the UI
                     let _ = orchestrator.run().await;
                 }
                 Err(e) => {
-                    // Send error via event channel so it displays in TUI
                     let _ = event_tx
                         .send(RallyEvent::Error(format!(
                             "Failed to create orchestrator: {}",
@@ -501,5 +600,27 @@ impl App {
 
         // Store the abort handle so we can cancel the task when user presses 'q'
         self.rally_abort_handle = Some(handle.abort_handle());
+    }
+
+    /// Get the current config value for a given dotted key (for display in warnings)
+    fn get_config_value_for_key(&self, key: &str) -> String {
+        match key {
+            "ai.reviewer_additional_tools" => {
+                format!("{:?}", self.config.ai.reviewer_additional_tools)
+            }
+            "ai.reviewee_additional_tools" => {
+                format!("{:?}", self.config.ai.reviewee_additional_tools)
+            }
+            "ai.auto_post" => format!("{}", self.config.ai.auto_post),
+            "ai.reviewer" => self.config.ai.reviewer.clone(),
+            "ai.reviewee" => self.config.ai.reviewee.clone(),
+            "ai.prompt_dir" => self
+                .config
+                .ai
+                .prompt_dir
+                .clone()
+                .unwrap_or_else(|| "(none)".to_string()),
+            _ => "(unknown)".to_string(),
+        }
     }
 }

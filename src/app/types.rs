@@ -220,6 +220,10 @@ pub struct AiRallyState {
     pub pending_fix_post: Option<crate::ai::orchestrator::FixPostInfo>,
     /// Last rendered visible log height (updated by UI render)
     pub last_visible_log_height: usize,
+    /// Pending local config security warning (key, value) pairs.
+    /// When Some, the orchestrator has NOT been started yet — the user must
+    /// approve ('y') or reject ('n'/'q') the overrides before proceeding.
+    pub pending_config_warning: Option<Vec<(String, String)>>,
 }
 
 impl AiRallyState {

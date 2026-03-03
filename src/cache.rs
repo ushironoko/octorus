@@ -28,7 +28,7 @@ pub fn sanitize_repo_name(repo: &str) -> Result<String> {
     // Validate that the result contains only safe characters
     // Allow: alphanumeric, underscore, hyphen, single dot (for names like "foo.js")
     for c in sanitized.chars() {
-        if !c.is_alphanumeric() && c != '_' && c != '-' && c != '.' {
+        if !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.' {
             return Err(anyhow::anyhow!(
                 "Invalid repository name: contains invalid character '{}'",
                 c
@@ -320,11 +320,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_repo_name_unicode() {
-        // Note: The current implementation uses is_alphanumeric() which accepts
-        // Unicode alphanumeric characters. This is intentional to support
-        // international repository names on GitHub.
-        // Japanese characters are alphanumeric in Unicode
-        assert!(sanitize_repo_name("owner/日本語").is_ok());
+        // Only ASCII alphanumeric characters are allowed to prevent Unicode
+        // homoglyph attacks and path traversal via Unicode normalization.
+        // Japanese characters are rejected
+        assert!(sanitize_repo_name("owner/日本語").is_err());
 
         // Emoji are not alphanumeric
         assert!(sanitize_repo_name("owner/repo🚀").is_err());

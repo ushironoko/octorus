@@ -2,12 +2,25 @@ use anyhow::Result;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use std::borrow::Cow;
+
 use crate::ai::adapter::{
     CommentSeverity, Context, ReviewAction, RevieweeOutput, RevieweeStatus, ReviewerOutput,
 };
 use crate::ai::orchestrator::{Orchestrator, OrchestratorCommand, RallyEvent, RallyState};
+use crate::ai::prompt_loader::{PromptLoader, PromptSource};
 use crate::config::Config;
 use crate::github;
+
+/// Security-sensitive AI config keys (same as App::SENSITIVE_AI_KEYS).
+const SENSITIVE_AI_KEYS: &[&str] = &[
+    "ai.reviewer_additional_tools",
+    "ai.reviewee_additional_tools",
+    "ai.auto_post",
+    "ai.reviewer",
+    "ai.reviewee",
+    "ai.prompt_dir",
+];
 
 /// Run AI Rally in headless mode (no TUI).
 ///
@@ -19,6 +32,7 @@ pub async fn run_headless_rally(
     pr_number: u32,
     config: &Config,
     working_dir: Option<&str>,
+    accept_local_overrides: bool,
 ) -> Result<bool> {
     eprintln!("[Headless] Fetching PR #{} from {}...", pr_number, repo);
 
@@ -64,7 +78,7 @@ pub async fn run_headless_rally(
         file_patches,
     };
 
-    run_headless_with_context(repo, pr_number, config, context).await
+    run_headless_with_context(repo, pr_number, config, context, accept_local_overrides).await
 }
 
 /// Run AI Rally in headless mode for local diff.
@@ -76,6 +90,7 @@ pub async fn run_headless_rally_local(
     repo: &str,
     config: &Config,
     working_dir: Option<&str>,
+    accept_local_overrides: bool,
 ) -> Result<bool> {
     eprintln!("[Headless] Running local diff rally...");
 
@@ -167,7 +182,7 @@ pub async fn run_headless_rally_local(
         file_patches: Vec::new(),
     };
 
-    run_headless_with_context(repo, 0, config, context).await
+    run_headless_with_context(repo, 0, config, context, accept_local_overrides).await
 }
 
 /// Core headless execution logic shared between PR and local modes.
@@ -176,7 +191,48 @@ async fn run_headless_with_context(
     pr_number: u32,
     config: &Config,
     context: Context,
+    accept_local_overrides: bool,
 ) -> Result<bool> {
+    // Check for sensitive local config overrides
+    let mut sensitive_overrides: Vec<Cow<'static, str>> = SENSITIVE_AI_KEYS
+        .iter()
+        .filter(|key| config.local_overrides.contains(**key))
+        .map(|s| Cow::Borrowed(*s))
+        .collect();
+
+    // Check for local prompt overrides
+    let prompt_loader = PromptLoader::new(&config.ai, &config.project_root);
+    for (filename, source) in prompt_loader.resolve_all_sources() {
+        if let PromptSource::Local(path) = source {
+            sensitive_overrides.push(Cow::Owned(format!(
+                "local prompt: {} ({})",
+                filename,
+                path.display()
+            )));
+        }
+    }
+
+    if !sensitive_overrides.is_empty() && !accept_local_overrides {
+        eprintln!(
+            "[Headless] WARNING: Local .octorus/ overrides detected that affect AI behavior:"
+        );
+        for key in &sensitive_overrides {
+            eprintln!("  - {}", key);
+        }
+        eprintln!(
+            "[Headless] Use --accept-local-overrides to explicitly allow these overrides."
+        );
+        anyhow::bail!(
+            "Refusing to run AI Rally with local overrides: {}. \
+             Use --accept-local-overrides to bypass this check.",
+            sensitive_overrides
+                .iter()
+                .map(|s| s.as_ref())
+                .collect::<Vec<&str>>()
+                .join(", ")
+        );
+    }
+
     let (event_tx, mut event_rx) = mpsc::channel(100);
     let (cmd_tx, cmd_rx) = mpsc::channel(10);
 
@@ -188,7 +244,7 @@ async fn run_headless_with_context(
         config.ai.clone(),
         event_tx,
         Some(cmd_rx),
-        &config.project_root,
+        prompt_loader,
     )?;
     orchestrator.set_context(context);
 

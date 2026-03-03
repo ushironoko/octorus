@@ -54,7 +54,7 @@ impl PromptLoader {
 
         let local_prompts_dir = {
             let path = project_root.join(".octorus/prompts");
-            if path.is_dir() {
+            if Self::is_safe_local_dir(&path, project_root) {
                 Some(path)
             } else {
                 None
@@ -79,7 +79,8 @@ impl PromptLoader {
     pub fn resolve_source(&self, filename: &str) -> PromptSource {
         if let Some(ref dir) = self.local_prompts_dir {
             let path = dir.join(filename);
-            if Self::is_readable_file(&path) {
+            // Reject symlinks for local prompts to prevent path traversal
+            if Self::is_readable_file_no_symlink(&path) {
                 return PromptSource::Local(path);
             }
         }
@@ -98,9 +99,47 @@ impl PromptLoader {
         PromptSource::Embedded
     }
 
+    /// Check that a local prompts directory is safe:
+    /// - Must not be a symlink (prevents pointing to external directories)
+    /// - Must be a real directory
+    /// - Resolved path must stay under project_root
+    fn is_safe_local_dir(path: &Path, project_root: &Path) -> bool {
+        // Reject symlinked directories using symlink_metadata (does NOT follow symlinks)
+        match path.symlink_metadata() {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    // Either a symlink or not a directory
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+
+        // Ensure the canonicalized path stays under project_root
+        if let (Ok(canonical), Ok(canonical_root)) = (path.canonicalize(), project_root.canonicalize()) {
+            if !canonical.starts_with(&canonical_root) {
+                return false;
+            }
+        } else {
+            // If canonicalization fails, reject
+            return false;
+        }
+
+        true
+    }
+
     /// Check that a path is a regular file and can be opened for reading.
     fn is_readable_file(path: &Path) -> bool {
         path.is_file() && std::fs::File::open(path).is_ok()
+    }
+
+    /// Check that a path is a regular file (not a symlink) and can be read.
+    /// Used for local prompts to prevent symlink-based path traversal.
+    fn is_readable_file_no_symlink(path: &Path) -> bool {
+        match path.symlink_metadata() {
+            Ok(metadata) => metadata.is_file() && std::fs::File::open(path).is_ok(),
+            Err(_) => false,
+        }
     }
 
     /// Resolve sources for all standard prompt files.
@@ -264,9 +303,14 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
     ///
     /// Order: local .octorus/prompts/ → config.prompt_dir → global prompts → embedded default
     fn load_template(&self, filename: &str, default: &str) -> String {
-        // 1. Project-local .octorus/prompts/ (highest priority)
-        if let Some(content) = Self::try_load_from(&self.local_prompts_dir, filename) {
-            return content;
+        // 1. Project-local .octorus/prompts/ (highest priority, reject symlinks)
+        if let Some(ref dir) = self.local_prompts_dir {
+            let path = dir.join(filename);
+            if Self::is_readable_file_no_symlink(&path) {
+                if let Some(content) = Self::try_load_from(&self.local_prompts_dir, filename) {
+                    return content;
+                }
+            }
         }
         // 2. config.prompt_dir (explicit path)
         if let Some(content) = Self::try_load_from(&self.prompt_dir, filename) {
@@ -594,6 +638,139 @@ mod tests {
         for (_, source) in &sources {
             assert_eq!(*source, PromptSource::Embedded);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_rejected_for_local_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_dir = dir.path().join("local_prompts");
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        // Create a real file elsewhere
+        let target_file = dir.path().join("secret.md");
+        std::fs::write(&target_file, "secret content").unwrap();
+
+        // Create a symlink in local prompts dir
+        std::os::unix::fs::symlink(&target_file, local_dir.join("reviewer.md")).unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: Some(local_dir),
+            global_prompts_dir: None,
+        };
+
+        // Symlink should be rejected for local prompts
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(source, PromptSource::Embedded);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_local_prompts_directory_rejected() {
+        // Regression test: a symlinked .octorus/prompts directory should be rejected,
+        // even though the files inside it are real (not symlinks).
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        // Create external prompts directory with a real file
+        let external_dir = dir.path().join("external_prompts");
+        std::fs::create_dir_all(&external_dir).unwrap();
+        std::fs::write(external_dir.join("reviewer.md"), "malicious prompt").unwrap();
+
+        // Create .octorus/ directory
+        let octorus_dir = project_root.join(".octorus");
+        std::fs::create_dir_all(&octorus_dir).unwrap();
+
+        // Symlink .octorus/prompts -> external directory
+        std::os::unix::fs::symlink(&external_dir, octorus_dir.join("prompts")).unwrap();
+
+        let config = AiConfig::default();
+        let loader = PromptLoader::new(&config, &project_root);
+
+        // Symlinked directory should be rejected: local_prompts_dir should be None
+        assert!(loader.local_prompts_dir.is_none());
+
+        // Prompt resolution should NOT resolve as Local
+        let source = loader.resolve_source("reviewer.md");
+        assert!(!matches!(source, PromptSource::Local(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_real_local_prompts_directory_accepted() {
+        // Real (non-symlink) .octorus/prompts directory should be accepted
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let prompts_dir = project_root.join(".octorus/prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("reviewer.md"), "custom prompt").unwrap();
+
+        let config = AiConfig::default();
+        let loader = PromptLoader::new(&config, &project_root);
+
+        // Real directory should be accepted
+        assert!(loader.local_prompts_dir.is_some());
+
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(source, PromptSource::Local(prompts_dir.join("reviewer.md")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_allowed_for_global_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = dir.path().join("global_prompts");
+        std::fs::create_dir_all(&global_dir).unwrap();
+
+        // Create a real file elsewhere
+        let target_file = dir.path().join("real.md");
+        std::fs::write(&target_file, "global prompt content").unwrap();
+
+        // Create a symlink in global prompts dir (should be allowed)
+        std::os::unix::fs::symlink(&target_file, global_dir.join("reviewer.md")).unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: None,
+            global_prompts_dir: Some(global_dir.clone()),
+        };
+
+        // Symlink should be allowed for global prompts
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(
+            source,
+            PromptSource::Global(global_dir.join("reviewer.md"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_local_load_template_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_dir = dir.path().join("local_prompts");
+        let global_dir = dir.path().join("global_prompts");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        std::fs::create_dir_all(&global_dir).unwrap();
+
+        // Create real global prompt
+        std::fs::write(global_dir.join("reviewer.md"), "global content").unwrap();
+
+        // Create symlink in local prompts (should be skipped)
+        let target = dir.path().join("target.md");
+        std::fs::write(&target, "symlink content").unwrap();
+        std::os::unix::fs::symlink(&target, local_dir.join("reviewer.md")).unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: Some(local_dir),
+            global_prompts_dir: Some(global_dir),
+        };
+
+        // load_template should skip symlinked local and fall through to global
+        let content = loader.load_template("reviewer.md", "default");
+        assert_eq!(content, "global content");
     }
 
     #[test]
