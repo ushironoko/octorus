@@ -37,6 +37,9 @@ pub struct PromptLoader {
     prompt_dir: Option<PathBuf>,
     local_prompts_dir: Option<PathBuf>,
     global_prompts_dir: Option<PathBuf>,
+    /// Project root for re-validating local_prompts_dir on each access.
+    /// Guards against directory symlink swap (e.g. via `git switch` during AI Rally).
+    project_root: PathBuf,
 }
 
 impl PromptLoader {
@@ -69,6 +72,7 @@ impl PromptLoader {
             prompt_dir,
             local_prompts_dir,
             global_prompts_dir,
+            project_root: project_root.to_path_buf(),
         }
     }
 
@@ -78,15 +82,20 @@ impl PromptLoader {
     /// actually load.
     pub fn resolve_source(&self, filename: &str) -> PromptSource {
         if let Some(ref dir) = self.local_prompts_dir {
-            let path = dir.join(filename);
-            // Reject symlinks for local prompts to prevent path traversal
-            if Self::is_readable_file_no_symlink(&path) {
-                return PromptSource::Local(path);
+            // Re-validate directory on every access to guard against symlink swap
+            // (e.g. reviewee agent running `git switch` to a branch with symlinked dir)
+            if Self::is_safe_local_dir(dir, &self.project_root) {
+                let path = dir.join(filename);
+                // Reject symlinks for local prompts to prevent path traversal
+                if Self::is_readable_file_no_symlink(&path) {
+                    return PromptSource::Local(path);
+                }
             }
         }
         if let Some(ref dir) = self.prompt_dir {
             let path = dir.join(filename);
-            if Self::is_readable_file(&path) {
+            // Reject symlinks for prompt_dir files (may originate from local config)
+            if Self::is_readable_file_no_symlink(&path) {
                 return PromptSource::PromptDir(path);
             }
         }
@@ -305,16 +314,24 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
     fn load_template(&self, filename: &str, default: &str) -> String {
         // 1. Project-local .octorus/prompts/ (highest priority, reject symlinks)
         if let Some(ref dir) = self.local_prompts_dir {
-            let path = dir.join(filename);
-            if Self::is_readable_file_no_symlink(&path) {
-                if let Some(content) = Self::try_load_from(&self.local_prompts_dir, filename) {
-                    return content;
+            // Re-validate directory on every access to guard against symlink swap
+            if Self::is_safe_local_dir(dir, &self.project_root) {
+                let path = dir.join(filename);
+                if Self::is_readable_file_no_symlink(&path) {
+                    if let Some(content) = Self::try_load_from(&self.local_prompts_dir, filename) {
+                        return content;
+                    }
                 }
             }
         }
-        // 2. config.prompt_dir (explicit path)
-        if let Some(content) = Self::try_load_from(&self.prompt_dir, filename) {
-            return content;
+        // 2. config.prompt_dir (explicit path, reject symlinked files)
+        if let Some(ref dir) = self.prompt_dir {
+            let path = dir.join(filename);
+            if Self::is_readable_file_no_symlink(&path) {
+                if let Some(content) = Self::try_load_from(&self.prompt_dir, filename) {
+                    return content;
+                }
+            }
         }
         // 3. Global ~/.config/octorus/prompts/
         if let Some(content) = Self::try_load_from(&self.global_prompts_dir, filename) {
@@ -518,6 +535,7 @@ mod tests {
             prompt_dir: None,
             local_prompts_dir: None,
             global_prompts_dir: None,
+            project_root: PathBuf::from("/tmp"),
         }
     }
 
@@ -583,6 +601,7 @@ mod tests {
             prompt_dir: None,
             local_prompts_dir: Some(local_dir.clone()),
             global_prompts_dir: None,
+            project_root: dir.path().to_path_buf(),
         };
         let source = loader.resolve_source("reviewer.md");
         assert_eq!(source, PromptSource::Local(local_dir.join("reviewer.md")));
@@ -599,6 +618,7 @@ mod tests {
             prompt_dir: Some(prompt_dir.clone()),
             local_prompts_dir: None,
             global_prompts_dir: None,
+            project_root: dir.path().to_path_buf(),
         };
         let source = loader.resolve_source("reviewer.md");
         assert_eq!(
@@ -618,6 +638,7 @@ mod tests {
             prompt_dir: None,
             local_prompts_dir: None,
             global_prompts_dir: Some(global_dir.clone()),
+            project_root: dir.path().to_path_buf(),
         };
         let source = loader.resolve_source("reviewer.md");
         assert_eq!(
@@ -658,6 +679,7 @@ mod tests {
             prompt_dir: None,
             local_prompts_dir: Some(local_dir),
             global_prompts_dir: None,
+            project_root: dir.path().to_path_buf(),
         };
 
         // Symlink should be rejected for local prompts
@@ -735,6 +757,7 @@ mod tests {
             prompt_dir: None,
             local_prompts_dir: None,
             global_prompts_dir: Some(global_dir.clone()),
+            project_root: dir.path().to_path_buf(),
         };
 
         // Symlink should be allowed for global prompts
@@ -766,6 +789,7 @@ mod tests {
             prompt_dir: None,
             local_prompts_dir: Some(local_dir),
             global_prompts_dir: Some(global_dir),
+            project_root: dir.path().to_path_buf(),
         };
 
         // load_template should skip symlinked local and fall through to global
