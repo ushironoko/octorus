@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::common::build_pr_info;
 use crate::ai::{RallyState, ReviewAction, RevieweeStatus};
-use crate::app::{AiRallyState, App, LogEntry, LogEventType};
+use crate::app::{AiRallyState, App, LogEntry, LogEventType, PauseState};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     // Build PR info before borrowing ai_rally_state to avoid borrow conflict
@@ -41,7 +41,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &str) {
-    let state_text = match state.state {
+    let base_state_text = match state.state {
         RallyState::Initializing => "Initializing...",
         RallyState::ReviewerReviewing => "Reviewer reviewing...",
         RallyState::RevieweeFix => "Reviewee fixing...",
@@ -53,16 +53,26 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         RallyState::Error => "Error",
     };
 
-    let state_color = match state.state {
-        RallyState::Initializing => Color::Blue,
-        RallyState::ReviewerReviewing => Color::Yellow,
-        RallyState::RevieweeFix => Color::Cyan,
-        RallyState::WaitingForClarification
-        | RallyState::WaitingForPermission
-        | RallyState::WaitingForPostConfirmation => Color::Magenta,
-        RallyState::Completed => Color::Green,
-        RallyState::Aborted => Color::Yellow,
-        RallyState::Error => Color::Red,
+    let state_text = match state.pause_state {
+        PauseState::PauseRequested => format!("{} (Pausing...)", base_state_text),
+        PauseState::Paused => format!("{} (PAUSED)", base_state_text),
+        PauseState::Running => base_state_text.to_string(),
+    };
+
+    let state_color = if state.pause_state == PauseState::Paused {
+        Color::Yellow
+    } else {
+        match state.state {
+            RallyState::Initializing => Color::Blue,
+            RallyState::ReviewerReviewing => Color::Yellow,
+            RallyState::RevieweeFix => Color::Cyan,
+            RallyState::WaitingForClarification
+            | RallyState::WaitingForPermission
+            | RallyState::WaitingForPostConfirmation => Color::Magenta,
+            RallyState::Completed => Color::Green,
+            RallyState::Aborted => Color::Yellow,
+            RallyState::Error => Color::Red,
+        }
     };
 
     let title = format!(
@@ -535,6 +545,10 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         "y: Accept and continue | n/q: Cancel and return"
     } else if state.showing_log_detail {
         "Esc/Enter/q: Close detail"
+    } else if state.pause_state == PauseState::Paused {
+        "p: Resume | j/k/↑↓: select | Enter: detail | b: Background | q: Abort"
+    } else if state.pause_state == PauseState::PauseRequested {
+        "p: Cancel pause | j/k/↑↓: select | Enter: detail | b: Background | q: Abort"
     } else {
         match state.state {
             RallyState::WaitingForClarification => {
@@ -551,7 +565,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
             RallyState::Error => {
                 "r: Retry | j/k/↑↓: select | Enter: detail | b: Background | q: Close"
             }
-            _ => "j/k/↑↓: select | Enter: detail | b: Background | q: Abort",
+            _ => "p: Pause | j/k/↑↓: select | Enter: detail | b: Background | q: Abort",
         }
     };
 

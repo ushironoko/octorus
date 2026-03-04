@@ -198,6 +198,17 @@ pub struct PermissionInfo {
     pub reason: String,
 }
 
+/// Pause state for AI Rally (TUI-side tracking)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseState {
+    /// Rally is running normally
+    Running,
+    /// Pause requested, waiting for checkpoint
+    PauseRequested,
+    /// Actually paused at checkpoint
+    Paused,
+}
+
 /// State for AI Rally view
 #[derive(Debug, Clone)]
 pub struct AiRallyState {
@@ -225,6 +236,8 @@ pub struct AiRallyState {
     /// When Some, the orchestrator has NOT been started yet — the user must
     /// approve ('y') or reject ('n'/'q') the overrides before proceeding.
     pub pending_config_warning: Option<Vec<(String, String)>>,
+    /// Current pause state
+    pub pause_state: PauseState,
 }
 
 impl AiRallyState {

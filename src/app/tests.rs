@@ -1958,6 +1958,7 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
         pending_fix_post: None,
         last_visible_log_height: 0,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
 
     let pr = Box::new(make_local_pr());
@@ -2870,6 +2871,7 @@ fn test_ai_rally_state_push_log_auto_follow() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     };
 
     // No selection = tail, should auto-follow
@@ -2902,6 +2904,7 @@ fn test_ai_rally_state_push_log_no_auto_follow() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     };
 
     // User is NOT at tail, should not auto-follow
@@ -2930,6 +2933,7 @@ fn test_ai_rally_state_is_selection_at_tail() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     };
 
     // At tail: selected_log_index == logs.len() - 1
@@ -3721,6 +3725,7 @@ fn test_cleanup_rally_state() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     let (cmd_tx, _cmd_rx) = mpsc::channel(10);
     app.rally_command_sender = Some(cmd_tx);
@@ -3753,6 +3758,7 @@ fn test_is_rally_running_in_background_not_in_rally() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(app.is_rally_running_in_background());
 }
@@ -3776,6 +3782,7 @@ fn test_is_rally_running_in_background_in_rally() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.is_rally_running_in_background());
 }
@@ -3807,6 +3814,7 @@ fn test_is_rally_running_in_background_finished() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.is_rally_running_in_background());
 }
@@ -3830,6 +3838,7 @@ fn test_has_background_rally_true() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(app.has_background_rally());
 }
@@ -3853,6 +3862,7 @@ fn test_has_background_rally_false_in_rally() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.has_background_rally());
 }
@@ -3884,6 +3894,7 @@ fn test_is_background_rally_finished_completed() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(app.is_background_rally_finished());
 }
@@ -3907,6 +3918,7 @@ fn test_is_background_rally_finished_running() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.is_background_rally_finished());
 }
@@ -3931,6 +3943,7 @@ fn test_adjust_log_scroll_selection_above() {
         pending_fix_post: None,
         last_visible_log_height: 5,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
 
     app.adjust_log_scroll_to_selection();
@@ -3959,12 +3972,240 @@ fn test_adjust_log_scroll_selection_below() {
         pending_fix_post: None,
         last_visible_log_height: 5,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
 
     app.adjust_log_scroll_to_selection();
 
     let rally_state = app.ai_rally_state.as_ref().unwrap();
     assert!(rally_state.log_scroll_offset > 1);
+}
+
+// ===================================================================
+// 9.5. Pause lifecycle edge-case tests
+// ===================================================================
+
+#[test]
+fn test_pause_state_reset_on_approve_state_change() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // When reviewer approves immediately after pause is requested,
+    // pause_state should be reset to Running via StateChanged(Completed).
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    // Simulate: reviewer approved → StateChanged(Completed) arrives
+    event_tx
+        .try_send(RallyEvent::StateChanged(RallyState::Completed))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::Completed);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on Completed"
+    );
+}
+
+#[test]
+fn test_pause_state_reset_on_waiting_for_clarification() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // When pause is requested during RevieweeFix and reviewee returns
+    // NeedsClarification, pause_state should be reset via
+    // StateChanged(WaitingForClarification).
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::RevieweeFix,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    // Simulate: reviewee needs clarification
+    event_tx
+        .try_send(RallyEvent::StateChanged(
+            RallyState::WaitingForClarification,
+        ))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::WaitingForClarification);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on WaitingForClarification"
+    );
+}
+
+#[test]
+fn test_pause_state_reset_on_waiting_for_permission() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // Similar to above but for WaitingForPermission
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::RevieweeFix,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    event_tx
+        .try_send(RallyEvent::StateChanged(
+            RallyState::WaitingForPermission,
+        ))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::WaitingForPermission);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on WaitingForPermission"
+    );
+}
+
+#[test]
+fn test_pause_state_reset_on_waiting_for_post_confirmation() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // When pause is requested and state transitions to WaitingForPostConfirmation,
+    // pause_state should be reset to Running to avoid stale "Pausing..." display.
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::RevieweeFix,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    event_tx
+        .try_send(RallyEvent::StateChanged(
+            RallyState::WaitingForPostConfirmation,
+        ))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::WaitingForPostConfirmation);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on WaitingForPostConfirmation"
+    );
+}
+
+#[test]
+fn test_pause_state_preserved_on_active_state_change() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // PauseRequested should NOT be reset when transitioning between
+    // active states (e.g. ReviewerReviewing → RevieweeFix)
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    event_tx
+        .try_send(RallyEvent::StateChanged(RallyState::RevieweeFix))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::RevieweeFix);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::PauseRequested,
+        "pause_state should remain PauseRequested during active state transitions"
+    );
 }
 
 // ===================================================================

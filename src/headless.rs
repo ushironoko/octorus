@@ -401,8 +401,11 @@ async fn run_headless_event_loop(
                 let truncated = truncate_str(&result, 200);
                 eprintln!("  < {}: {}", name, truncated);
             }
-            // Suppress AgentThinking and AgentText to prevent noise and JSON leakage
-            RallyEvent::AgentThinking(_) | RallyEvent::AgentText(_) => {}
+            // Suppress AgentThinking, AgentText, and pause events (headless can't pause)
+            RallyEvent::AgentThinking(_)
+            | RallyEvent::AgentText(_)
+            | RallyEvent::Paused
+            | RallyEvent::Resumed => {}
             // Auto-skip clarification (headless can't interact)
             RallyEvent::ClarificationNeeded(question) => {
                 eprintln!("  [Clarification needed] {}", question);
