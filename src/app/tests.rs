@@ -4121,6 +4121,51 @@ fn test_pause_state_reset_on_waiting_for_permission() {
 }
 
 #[test]
+fn test_pause_state_reset_on_waiting_for_post_confirmation() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // When pause is requested and state transitions to WaitingForPostConfirmation,
+    // pause_state should be reset to Running to avoid stale "Pausing..." display.
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::RevieweeFix,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    event_tx
+        .try_send(RallyEvent::StateChanged(
+            RallyState::WaitingForPostConfirmation,
+        ))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::WaitingForPostConfirmation);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on WaitingForPostConfirmation"
+    );
+}
+
+#[test]
 fn test_pause_state_preserved_on_active_state_change() {
     use crate::ai::orchestrator::RallyEvent;
     use crate::ai::RallyState;

@@ -750,6 +750,7 @@ impl App {
                                         | RallyState::Error
                                         | RallyState::WaitingForClarification
                                         | RallyState::WaitingForPermission
+                                        | RallyState::WaitingForPostConfirmation
                                 ) {
                                     rally_state.pause_state = PauseState::Running;
                                 }
