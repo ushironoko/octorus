@@ -322,6 +322,50 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('p') => {
+                // Ignore while config warning is pending
+                if self
+                    .ai_rally_state
+                    .as_ref()
+                    .and_then(|s| s.pending_config_warning.as_ref())
+                    .is_some()
+                {
+                    return Ok(());
+                }
+
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    // Only allow pause toggle during active agent execution
+                    if !matches!(
+                        rally_state.state,
+                        RallyState::ReviewerReviewing | RallyState::RevieweeFix
+                    ) {
+                        return Ok(());
+                    }
+
+                    match rally_state.pause_state {
+                        PauseState::Running => {
+                            rally_state.pause_state = PauseState::PauseRequested;
+                            self.send_rally_command(OrchestratorCommand::Pause);
+                            if let Some(ref mut rs) = self.ai_rally_state {
+                                rs.push_log(LogEntry::new(
+                                    LogEventType::Info,
+                                    "Pausing after current step...".to_string(),
+                                ));
+                            }
+                        }
+                        PauseState::PauseRequested | PauseState::Paused => {
+                            rally_state.pause_state = PauseState::Running;
+                            self.send_rally_command(OrchestratorCommand::Resume);
+                            if let Some(ref mut rs) = self.ai_rally_state {
+                                rs.push_log(LogEntry::new(
+                                    LogEventType::Info,
+                                    "Resuming...".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -535,6 +579,7 @@ impl App {
             } else {
                 Some(warnings)
             },
+            pause_state: PauseState::Running,
         });
 
         self.state = AppState::AiRally;

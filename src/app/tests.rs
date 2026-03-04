@@ -1958,6 +1958,7 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
         pending_fix_post: None,
         last_visible_log_height: 0,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
 
     let pr = Box::new(make_local_pr());
@@ -2870,6 +2871,7 @@ fn test_ai_rally_state_push_log_auto_follow() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     };
 
     // No selection = tail, should auto-follow
@@ -2902,6 +2904,7 @@ fn test_ai_rally_state_push_log_no_auto_follow() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     };
 
     // User is NOT at tail, should not auto-follow
@@ -2930,6 +2933,7 @@ fn test_ai_rally_state_is_selection_at_tail() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     };
 
     // At tail: selected_log_index == logs.len() - 1
@@ -3721,6 +3725,7 @@ fn test_cleanup_rally_state() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     let (cmd_tx, _cmd_rx) = mpsc::channel(10);
     app.rally_command_sender = Some(cmd_tx);
@@ -3753,6 +3758,7 @@ fn test_is_rally_running_in_background_not_in_rally() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(app.is_rally_running_in_background());
 }
@@ -3776,6 +3782,7 @@ fn test_is_rally_running_in_background_in_rally() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.is_rally_running_in_background());
 }
@@ -3807,6 +3814,7 @@ fn test_is_rally_running_in_background_finished() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.is_rally_running_in_background());
 }
@@ -3830,6 +3838,7 @@ fn test_has_background_rally_true() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(app.has_background_rally());
 }
@@ -3853,6 +3862,7 @@ fn test_has_background_rally_false_in_rally() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.has_background_rally());
 }
@@ -3884,6 +3894,7 @@ fn test_is_background_rally_finished_completed() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(app.is_background_rally_finished());
 }
@@ -3907,6 +3918,7 @@ fn test_is_background_rally_finished_running() {
         pending_fix_post: None,
         last_visible_log_height: 10,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
     assert!(!app.is_background_rally_finished());
 }
@@ -3931,6 +3943,7 @@ fn test_adjust_log_scroll_selection_above() {
         pending_fix_post: None,
         last_visible_log_height: 5,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
 
     app.adjust_log_scroll_to_selection();
@@ -3959,6 +3972,7 @@ fn test_adjust_log_scroll_selection_below() {
         pending_fix_post: None,
         last_visible_log_height: 5,
         pending_config_warning: None,
+        pause_state: PauseState::Running,
     });
 
     app.adjust_log_scroll_to_selection();

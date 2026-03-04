@@ -832,6 +832,12 @@ impl App {
                                     ),
                                 ));
                             }
+                            RallyEvent::Paused => {
+                                rally_state.pause_state = PauseState::Paused;
+                            }
+                            RallyEvent::Resumed => {
+                                rally_state.pause_state = PauseState::Running;
+                            }
                             _ => {}
                         }
                         rally_state.history.push(event);
