@@ -304,6 +304,9 @@ impl Orchestrator {
 
             // Check for approval
             if review_result.action == ReviewAction::Approve {
+                // Clear any pending pause before entering terminal state
+                self.paused = false;
+
                 self.session.update_state(RallyState::Completed);
                 if let Err(e) = write_session(&self.session) {
                     warn!("Failed to write session: {}", e);

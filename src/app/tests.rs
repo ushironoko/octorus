@@ -3982,6 +3982,188 @@ fn test_adjust_log_scroll_selection_below() {
 }
 
 // ===================================================================
+// 9.5. Pause lifecycle edge-case tests
+// ===================================================================
+
+#[test]
+fn test_pause_state_reset_on_approve_state_change() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // When reviewer approves immediately after pause is requested,
+    // pause_state should be reset to Running via StateChanged(Completed).
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    // Simulate: reviewer approved → StateChanged(Completed) arrives
+    event_tx
+        .try_send(RallyEvent::StateChanged(RallyState::Completed))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::Completed);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on Completed"
+    );
+}
+
+#[test]
+fn test_pause_state_reset_on_waiting_for_clarification() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // When pause is requested during RevieweeFix and reviewee returns
+    // NeedsClarification, pause_state should be reset via
+    // StateChanged(WaitingForClarification).
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::RevieweeFix,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    // Simulate: reviewee needs clarification
+    event_tx
+        .try_send(RallyEvent::StateChanged(
+            RallyState::WaitingForClarification,
+        ))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::WaitingForClarification);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on WaitingForClarification"
+    );
+}
+
+#[test]
+fn test_pause_state_reset_on_waiting_for_permission() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // Similar to above but for WaitingForPermission
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::RevieweeFix,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    event_tx
+        .try_send(RallyEvent::StateChanged(
+            RallyState::WaitingForPermission,
+        ))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::WaitingForPermission);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::Running,
+        "pause_state must be reset to Running on WaitingForPermission"
+    );
+}
+
+#[test]
+fn test_pause_state_preserved_on_active_state_change() {
+    use crate::ai::orchestrator::RallyEvent;
+    use crate::ai::RallyState;
+
+    // PauseRequested should NOT be reset when transitioning between
+    // active states (e.g. ReviewerReviewing → RevieweeFix)
+    let mut app = App::new_for_test();
+    let (event_tx, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+        pending_config_warning: None,
+        pause_state: PauseState::PauseRequested,
+    });
+
+    event_tx
+        .try_send(RallyEvent::StateChanged(RallyState::RevieweeFix))
+        .unwrap();
+
+    app.poll_rally_events();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert_eq!(rally_state.state, RallyState::RevieweeFix);
+    assert_eq!(
+        rally_state.pause_state,
+        PauseState::PauseRequested,
+        "pause_state should remain PauseRequested during active state transitions"
+    );
+}
+
+// ===================================================================
 // 10. symbol.rs tests
 // ===================================================================
 
