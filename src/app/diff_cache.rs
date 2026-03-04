@@ -57,10 +57,21 @@ impl App {
     pub fn ensure_diff_cache(&mut self) {
         let file_index = self.selected_file;
         let markdown_rich = self.markdown_rich;
+        // IMPORTANT: markdown_rich フラグはmarkdownファイルのハイライト結果にのみ影響する。
+        // 非markdownファイルでは build_diff_cache() の出力が同一になるため、フラグの
+        // 不一致を理由にキャッシュを破棄してはならない。破棄すると、PR description view
+        // 等でフラグを切り替えた際に全ファイルのプリフェッチ済みキャッシュが無駄に失われ、
+        // ファイル表示時にハイライトなしの状態が一瞬見えるデグレが発生する。
+        let is_md = self
+            .files()
+            .get(file_index)
+            .map(|f| crate::language::is_markdown_ext_from_filename(&f.filename))
+            .unwrap_or(false);
 
         // 1. 現在の diff_cache が有効か確認（O(1)）
         if let Some(ref cache) = self.diff_cache {
-            if cache.file_index == file_index && cache.markdown_rich == markdown_rich {
+            let md_ok = !is_md || cache.markdown_rich == markdown_rich;
+            if cache.file_index == file_index && md_ok {
                 let Some(file) = self.files().get(file_index) else {
                     self.diff_cache = None;
                     return;
@@ -99,9 +110,11 @@ impl App {
         let filename = file.filename.clone();
 
         // 2. ストアにハイライト済みキャッシュがあるか確認
+        //    md_ok: 非markdownファイルでは markdown_rich の不一致を無視する（上記コメント参照）
         if let Some(cached) = self.highlighted_cache_store.remove(&file_index) {
             let current_hash = hash_string(&patch);
-            if cached.patch_hash == current_hash && cached.markdown_rich == markdown_rich {
+            let md_ok = !is_md || cached.markdown_rich == markdown_rich;
+            if cached.patch_hash == current_hash && md_ok {
                 self.diff_cache = Some(cached);
                 return; // ストアから復元、バックグラウンド構築不要
             }
@@ -137,15 +150,22 @@ impl App {
 
     /// PR description 画面を開く
     pub(crate) fn open_pr_description(&mut self) {
+        self.previous_state = self.state;
+        self.state = AppState::PrDescription;
+        self.pr_description_scroll_offset = 0;
+        self.rebuild_pr_description_cache();
+    }
+
+    /// PR description のキャッシュを再構築する（スクロール位置・状態遷移は変更しない）
+    ///
+    /// open_pr_description() から分離されている理由: markdown_rich トグル時にスクロール位置を
+    /// 維持したままキャッシュのみ再構築する必要があるため。
+    pub(crate) fn rebuild_pr_description_cache(&mut self) {
         let body = self
             .pr()
             .and_then(|pr| pr.body.as_deref())
             .unwrap_or("")
             .to_string();
-
-        self.previous_state = self.state;
-        self.state = AppState::PrDescription;
-        self.pr_description_scroll_offset = 0;
 
         // キャッシュの再利用判定: body_hash + markdown_rich
         let body_hash = hash_string(&body);

@@ -249,6 +249,20 @@ impl App {
             return Ok(());
         }
 
+        // Toggle markdown rich display
+        // IMPORTANT: ここでは toggle_markdown_rich() を呼ばず、フラグ反転と PR description
+        // キャッシュの再構築のみ行う。toggle_markdown_rich() は prefetch_receiver の破棄や
+        // highlighted_cache_store のmarkdownエントリ削除など DiffView 向けの副作用を持つため、
+        // PR description view から呼ぶとファイル diff のプリフェッチ済みキャッシュが失われる。
+        // ファイル diff に戻った際は ensure_diff_cache() が markdown_rich の不整合を検出し、
+        // markdownファイルのみ自動再構築する。
+        if self.matches_single_key(&key, &kb.toggle_markdown_rich) {
+            self.markdown_rich = !self.markdown_rich;
+            self.pr_description_cache = None;
+            self.rebuild_pr_description_cache();
+            return Ok(());
+        }
+
         // Scroll
         if Self::is_shift_char_shortcut(&key, 'j') {
             // Page down (J / Shift+j)
