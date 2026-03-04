@@ -131,6 +131,7 @@ or --local
 | `c` | Comment only |
 | `C` | レビューコメント一覧を表示 |
 | `R` | 強制リフレッシュ（キャッシュ破棄） |
+| `d` | PR の説明文を表示 |
 | `A` | AI Rally を開始 |
 | `L` | Local Diff Mode の切替 |
 | `F` | Auto-focus の切替（Local Mode 時） |
@@ -343,6 +344,7 @@ go_to_definition = ["g", "d"]
 | `toggle_local_mode` | `L` | Local Diff Mode の切替 |
 | `toggle_auto_focus` | `F` | Auto-focus の切替（Local Mode 時） |
 | `toggle_markdown_rich` | `M` | Markdown リッチ表示の切替 |
+| `pr_description` | `d` | PR の説明文を表示 |
 | **Diff 操作** |||
 | `go_to_definition` | `gd` | 定義へジャンプ |
 | `go_to_file` | `gf` | $EDITOR でファイルを開く |
@@ -655,6 +657,7 @@ reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 | `b` | バックグラウンド実行（ファイル一覧に戻る） |
 | `y` | 許可を付与 / 回答を入力 |
 | `n` | 許可を拒否 / スキップ |
+| `p` | Rally の一時停止 / 再開 |
 | `r` | リトライ（エラー時） |
 | `q` / `Esc` | Rally を中止して終了 |
 

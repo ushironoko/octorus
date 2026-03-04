@@ -130,6 +130,7 @@ This creates:
 | `c` | Comment only |
 | `C` | View review comments |
 | `R` | Force refresh (discard cache) |
+| `d` | View PR description |
 | `A` | Start AI Rally |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
@@ -342,6 +343,7 @@ go_to_definition = ["g", "d"]
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
 | `toggle_markdown_rich` | `M` | Toggle Markdown rich display |
+| `pr_description` | `d` | View PR description |
 | **Diff Operations** |||
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |
@@ -654,6 +656,7 @@ To enable, add `"Bash(git push:*)"` to `reviewee_additional_tools`.
 | `b` | Run in background (return to file list) |
 | `y` | Grant permission / Enter clarification |
 | `n` | Deny permission / Skip clarification |
+| `p` | Pause / Resume rally |
 | `r` | Retry (on error) |
 | `q` / `Esc` | Abort and exit rally |
 
