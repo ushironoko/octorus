@@ -26,8 +26,11 @@ impl App {
                 }
 
                 // PR一覧画面は独自のLoading処理があるためスキップ
-                // Help画面はデータ状態に依存しないためスキップ
-                if self.state != AppState::PullRequestList && self.state != AppState::Help {
+                // Help画面・PrDescription画面はデータ状態に依存しないためスキップ
+                if self.state != AppState::PullRequestList
+                    && self.state != AppState::Help
+                    && self.state != AppState::PrDescription
+                {
                     // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
                         match key.code {
@@ -73,6 +76,9 @@ impl App {
                     }
                     AppState::SplitViewDiff => {
                         self.handle_split_view_diff_input(key, terminal).await?
+                    }
+                    AppState::PrDescription => {
+                        self.handle_pr_description_input(key, terminal)?
                     }
                 }
             }
@@ -281,6 +287,12 @@ impl App {
             return Ok(());
         }
 
+        // PR description (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
+            self.open_pr_description();
+            return Ok(());
+        }
+
         // Help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
@@ -336,6 +348,12 @@ impl App {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
             }
+            return Ok(true);
+        }
+
+        // PR description (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
+            self.open_pr_description();
             return Ok(true);
         }
 

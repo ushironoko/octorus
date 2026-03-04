@@ -147,6 +147,7 @@ pub enum AppState {
     AiRally,
     SplitViewFileList,
     SplitViewDiff,
+    PrDescription,
 }
 
 /// Variant for diff view handling (fullscreen vs split pane)

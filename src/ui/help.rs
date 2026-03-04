@@ -392,6 +392,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.comment_list.display(), key_width)
         )),
         Line::from(format!(
+            "{}  View PR description",
+            fmt_key(&kb.pr_description.display(), key_width)
+        )),
+        Line::from(format!(
             "{}  Start AI Rally",
             fmt_key(&kb.ai_rally.display(), key_width)
         )),

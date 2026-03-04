@@ -4991,3 +4991,235 @@ fn test_config_tab_scroll_with_jk() {
     app.apply_help_scroll(make_key(KeyCode::Char('k')), 30);
     assert_eq!(app.config_scroll_offset, 1);
 }
+
+// ============================================================
+// PR Description tests
+// ============================================================
+
+#[test]
+fn test_open_pr_description_state_transition() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("# Hello\nWorld".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+    app.state = AppState::FileList;
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert_eq!(app.previous_state, AppState::FileList);
+    assert_eq!(app.pr_description_scroll_offset, 0);
+    assert!(app.pr_description_cache.is_some());
+}
+
+#[test]
+fn test_open_pr_description_from_split_view() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("description body".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+    app.state = AppState::SplitViewFileList;
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert_eq!(app.previous_state, AppState::SplitViewFileList);
+}
+
+#[test]
+fn test_open_pr_description_body_none() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert!(app.pr_description_cache.is_none());
+}
+
+#[test]
+fn test_open_pr_description_body_empty() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert!(app.pr_description_cache.is_none());
+}
+
+#[test]
+fn test_toggle_markdown_rich_clears_pr_description_cache() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("# Title\nBody".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    // Build cache
+    app.open_pr_description();
+    assert!(app.pr_description_cache.is_some());
+
+    // Toggle markdown rich should clear the cache
+    app.toggle_markdown_rich();
+    assert!(app.pr_description_cache.is_none());
+}
+
+#[test]
+fn test_pr_description_cache_reuse() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("Same body".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    // First open
+    app.open_pr_description();
+    assert!(app.pr_description_cache.is_some());
+    let first_hash = app.pr_description_cache.as_ref().unwrap().patch_hash;
+
+    // Go back
+    app.state = AppState::FileList;
+
+    // Second open - should reuse cache (same body hash)
+    app.open_pr_description();
+    assert!(app.pr_description_cache.is_some());
+    assert_eq!(
+        app.pr_description_cache.as_ref().unwrap().patch_hash,
+        first_hash
+    );
+}

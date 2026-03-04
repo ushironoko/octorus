@@ -134,4 +134,106 @@ impl App {
             let _ = tx.try_send(cache);
         });
     }
+
+    /// PR description 画面を開く
+    pub(crate) fn open_pr_description(&mut self) {
+        let body = self
+            .pr()
+            .and_then(|pr| pr.body.as_deref())
+            .unwrap_or("")
+            .to_string();
+
+        self.previous_state = self.state;
+        self.state = AppState::PrDescription;
+        self.pr_description_scroll_offset = 0;
+
+        // キャッシュの再利用判定: body_hash + markdown_rich
+        let body_hash = hash_string(&body);
+        let markdown_rich = self.markdown_rich;
+        if let Some(ref cache) = self.pr_description_cache {
+            if cache.patch_hash == body_hash && cache.markdown_rich == markdown_rich {
+                return; // キャッシュ有効
+            }
+        }
+
+        if body.is_empty() {
+            self.pr_description_cache = None;
+            return;
+        }
+
+        let patch = build_pr_description_patch(&body);
+        let tab_width = self.config.diff.tab_width;
+        let theme = self.config.diff.theme.clone();
+
+        let mut parser_pool = ParserPool::new();
+        let mut cache = crate::ui::diff_view::build_diff_cache(
+            &patch,
+            "description.md",
+            &theme,
+            &mut parser_pool,
+            markdown_rich,
+            tab_width,
+        );
+        cache.file_index = usize::MAX; // sentinel value
+        cache.patch_hash = body_hash;
+        self.pr_description_cache = Some(cache);
+    }
+}
+
+/// PR body を全行 context 行の疑似 patch に変換する
+pub fn build_pr_description_patch(body: &str) -> String {
+    let body = body.replace("\r\n", "\n");
+    let line_count = body.lines().count().max(1);
+    let mut patch = format!("@@ -1,{} +1,{} @@\n", line_count, line_count);
+    for line in body.lines() {
+        patch.push(' ');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    patch
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_body() {
+        let patch = build_pr_description_patch("Hello\nWorld");
+        assert_eq!(patch, "@@ -1,2 +1,2 @@\n Hello\n World\n");
+    }
+
+    #[test]
+    fn test_single_line() {
+        let patch = build_pr_description_patch("Single line");
+        assert_eq!(patch, "@@ -1,1 +1,1 @@\n Single line\n");
+    }
+
+    #[test]
+    fn test_empty_body() {
+        let patch = build_pr_description_patch("");
+        // empty body produces no content lines, line_count.max(1) = 1
+        assert_eq!(patch, "@@ -1,1 +1,1 @@\n");
+    }
+
+    #[test]
+    fn test_crlf_conversion() {
+        let patch = build_pr_description_patch("Line1\r\nLine2\r\nLine3");
+        assert_eq!(patch, "@@ -1,3 +1,3 @@\n Line1\n Line2\n Line3\n");
+    }
+
+    #[test]
+    fn test_lines_starting_with_plus_minus() {
+        let patch = build_pr_description_patch("+added\n-removed\n normal");
+        assert_eq!(
+            patch,
+            "@@ -1,3 +1,3 @@\n +added\n -removed\n  normal\n"
+        );
+    }
+
+    #[test]
+    fn test_empty_lines_in_body() {
+        let patch = build_pr_description_patch("Hello\n\nWorld");
+        assert_eq!(patch, "@@ -1,3 +1,3 @@\n Hello\n \n World\n");
+    }
 }

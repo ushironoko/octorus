@@ -198,6 +198,10 @@ pub struct App {
     pub session_cache: SessionCache,
     /// Markdown リッチ表示モード（見出し太字・斜体等を適用）
     markdown_rich: bool,
+    /// PR description 画面のスクロールオフセット
+    pub pr_description_scroll_offset: usize,
+    /// PR description 用の DiffCache（マークダウンリッチ表示）
+    pub pr_description_cache: Option<DiffCache>,
     /// PR一覧のキーワードフィルタ
     pub pr_list_filter: Option<ListFilter>,
     /// ファイル一覧のキーワードフィルタ
@@ -303,6 +307,8 @@ impl App {
             symbol_popup: None,
             session_cache: SessionCache::new(),
             markdown_rich: false,
+            pr_description_scroll_offset: 0,
+            pr_description_cache: None,
             pr_list_filter: None,
             file_list_filter: None,
             batch_diff_receiver: None,
@@ -399,6 +405,8 @@ impl App {
             refresh_pending: None,
             session_cache: SessionCache::new(),
             markdown_rich: false,
+            pr_description_scroll_offset: 0,
+            pr_description_cache: None,
             pr_list_filter: None,
             file_list_filter: None,
             batch_diff_receiver: None,
@@ -613,6 +621,8 @@ impl App {
             watcher_handle: None,
             refresh_pending: None,
             markdown_rich: false,
+            pr_description_scroll_offset: 0,
+            pr_description_cache: None,
             pr_list_filter: None,
             file_list_filter: None,
             batch_diff_receiver: None,
