@@ -25,8 +25,8 @@ mod types;
 pub use types::{
     AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState, DiffCache,
     HelpTab, InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry, LogEventType,
-    MultilineSelection, PermissionInfo, RefreshRequest, ReviewAction, SymbolPopupState,
-    ViewSnapshot, WatcherHandle, hash_string,
+    MultilineSelection, PauseState, PermissionInfo, RefreshRequest, ReviewAction,
+    SymbolPopupState, ViewSnapshot, WatcherHandle, hash_string,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;

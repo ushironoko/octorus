@@ -86,6 +86,10 @@ pub enum RallyEvent {
     FixPostConfirmNeeded(FixPostInfo),
     Error(String),
     Log(String),
+    /// Orchestrator has paused at a checkpoint
+    Paused,
+    /// Orchestrator has resumed from paused state
+    Resumed,
     // Streaming events from Claude
     AgentThinking(String),           // thinking content
     AgentToolUse(String, String),    // tool_name, input_summary
@@ -133,6 +137,10 @@ pub enum OrchestratorCommand {
     PostConfirmResponse(bool),
     /// User requested abort (stop the rally entirely)
     Abort,
+    /// User requested pause (take effect at next checkpoint)
+    Pause,
+    /// User requested resume from paused state
+    Resume,
 }
 
 /// Main orchestrator for AI rally
@@ -150,6 +158,8 @@ pub struct Orchestrator {
     prompt_loader: PromptLoader,
     /// Command receiver for TUI commands
     command_receiver: Option<mpsc::Receiver<OrchestratorCommand>>,
+    /// Whether a pause has been requested (checked at checkpoints)
+    paused: bool,
 }
 
 impl Orchestrator {
@@ -183,6 +193,7 @@ impl Orchestrator {
             event_sender,
             prompt_loader,
             command_receiver,
+            paused: false,
         })
     }
 
@@ -293,6 +304,9 @@ impl Orchestrator {
 
             // Check for approval
             if review_result.action == ReviewAction::Approve {
+                // Clear any pending pause before entering terminal state
+                self.paused = false;
+
                 self.session.update_state(RallyState::Completed);
                 if let Err(e) = write_session(&self.session) {
                     warn!("Failed to write session: {}", e);
@@ -307,6 +321,11 @@ impl Orchestrator {
                     iteration,
                     summary: review_result.summary,
                 });
+            }
+
+            // Checkpoint: pause before starting reviewee if requested
+            if let Some(result) = self.check_pause_at_checkpoint(iteration).await {
+                return Ok(result);
             }
 
             // Run reviewee to fix issues
@@ -396,6 +415,11 @@ impl Orchestrator {
                             e
                         )))
                         .await;
+                    }
+
+                    // Checkpoint: pause before next iteration if requested
+                    if let Some(result) = self.check_pause_at_checkpoint(iteration).await {
+                        return Ok(result);
                     }
 
                     // Continue to next iteration
@@ -695,6 +719,72 @@ impl Orchestrator {
     async fn wait_for_command(&mut self) -> Option<OrchestratorCommand> {
         let rx = self.command_receiver.as_mut()?;
         rx.recv().await
+    }
+
+    /// Check for pause request at a checkpoint and block until resumed if paused.
+    ///
+    /// Called at natural boundaries (after reviewer completes, after reviewee completes)
+    /// to allow the user to inspect state before proceeding.
+    /// Returns `Some(RallyResult)` if the rally should terminate (e.g. abort), `None` to continue.
+    async fn check_pause_at_checkpoint(&mut self, iteration: u32) -> Option<RallyResult> {
+        // 1. Drain Pause/Resume/Abort commands from the channel
+        if let Some(ref mut rx) = self.command_receiver {
+            loop {
+                match rx.try_recv() {
+                    Ok(OrchestratorCommand::Pause) => self.paused = true,
+                    Ok(OrchestratorCommand::Resume) => self.paused = false,
+                    Ok(OrchestratorCommand::Abort) => {
+                        self.session.update_state(RallyState::Aborted);
+                        let _ = write_session(&self.session);
+                        self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                            .await;
+                        return Some(RallyResult::Aborted {
+                            iteration,
+                            reason: "Aborted by user".to_string(),
+                        });
+                    }
+                    Ok(_) => continue, // stale commands from previous Waiting* states
+                    Err(_) => break,   // empty or disconnected
+                }
+            }
+        }
+
+        // 2. Not paused → continue
+        if !self.paused {
+            return None;
+        }
+
+        // 3. Paused → notify TUI and block
+        self.send_event(RallyEvent::Paused).await;
+        self.send_event(RallyEvent::Log(
+            "Rally paused. Press 'p' to resume.".to_string(),
+        ))
+        .await;
+
+        // 4. Wait for Resume or Abort
+        loop {
+            match self.wait_for_command().await {
+                Some(OrchestratorCommand::Resume) => {
+                    self.paused = false;
+                    self.send_event(RallyEvent::Resumed).await;
+                    self.send_event(RallyEvent::Log("Rally resumed.".to_string()))
+                        .await;
+                    return None;
+                }
+                Some(OrchestratorCommand::Abort) | None => {
+                    self.session.update_state(RallyState::Aborted);
+                    let _ = write_session(&self.session);
+                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                        .await;
+                    return Some(RallyResult::Aborted {
+                        iteration,
+                        reason: "Aborted while paused".to_string(),
+                    });
+                }
+                Some(OrchestratorCommand::Pause) => continue, // already paused
+                Some(_) => continue,                           // stale commands
+            }
+        }
     }
 
     /// Handle clarification response from user

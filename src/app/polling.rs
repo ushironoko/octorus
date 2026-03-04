@@ -741,6 +741,19 @@ impl App {
                                     rally_state.pending_review_post = None;
                                     rally_state.pending_fix_post = None;
                                 }
+                                // Reset pause state on non-active or waiting states
+                                // to prevent stale "Pausing..." / pause controls
+                                if matches!(
+                                    state,
+                                    RallyState::Completed
+                                        | RallyState::Aborted
+                                        | RallyState::Error
+                                        | RallyState::WaitingForClarification
+                                        | RallyState::WaitingForPermission
+                                        | RallyState::WaitingForPostConfirmation
+                                ) {
+                                    rally_state.pause_state = PauseState::Running;
+                                }
                             }
                             RallyEvent::IterationStarted(i) => {
                                 rally_state.iteration = *i;
@@ -831,6 +844,12 @@ impl App {
                                         info.files_modified.len()
                                     ),
                                 ));
+                            }
+                            RallyEvent::Paused => {
+                                rally_state.pause_state = PauseState::Paused;
+                            }
+                            RallyEvent::Resumed => {
+                                rally_state.pause_state = PauseState::Running;
                             }
                             _ => {}
                         }
