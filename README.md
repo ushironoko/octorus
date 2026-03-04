@@ -105,380 +105,18 @@ or --local
 
 | Subcommand | Description |
 |------------|-------------|
-| `or init` | Initialize configuration files and prompt templates |
+| `or init` | Initialize global configuration files and prompt templates |
+| `or init --local` | Initialize project-local `.octorus/` config and prompts |
 | `or init --force` | Overwrite existing configuration files |
 | `or clean` | Remove AI Rally session data |
 
-This creates:
+`or init` creates global config:
 - `~/.config/octorus/config.toml` - Main configuration file
 - `~/.config/octorus/prompts/` - Prompt template directory
-  - `reviewer.md` - Reviewer agent prompt template
-  - `reviewee.md` - Reviewee agent prompt template
-  - `rereview.md` - Re-review prompt template
 
-### Keybindings
-
-#### File List View
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Move down |
-| `k` / `↑` | Move up |
-| `Enter` / `→` / `l` | Open split view |
-| `a` | Approve PR |
-| `r` | Request changes |
-| `c` | Comment only |
-| `C` | View review comments |
-| `R` | Force refresh (discard cache) |
-| `d` | View PR description |
-| `A` | Start AI Rally |
-| `L` | Toggle local diff mode |
-| `F` | Toggle auto-focus (local mode) |
-| `?` | Toggle help |
-| `q` | Quit |
-
-#### Split View
-
-The split view shows the file list (left, 35%) and a diff preview (right, 65%). The focused pane is highlighted with a yellow border.
-
-**File List Focus:**
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Move file selection (diff follows) |
-| `k` / `↑` | Move file selection (diff follows) |
-| `Enter` / `→` / `l` | Focus diff pane |
-| `←` / `h` / `q` | Back to file list |
-
-**Diff Focus:**
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Scroll diff |
-| `k` / `↑` | Scroll diff |
-| `gd` | Go to definition |
-| `gf` | Open file in $EDITOR |
-| `gg` / `G` | Jump to first/last line |
-| `Ctrl-o` | Jump back |
-| `Ctrl-d` | Page down |
-| `Ctrl-u` | Page up |
-| `n` | Jump to next comment |
-| `N` | Jump to previous comment |
-| `c` | Add comment at line |
-| `s` | Add suggestion at line |
-| `Shift+Enter` | Enter multiline selection mode |
-| `Enter` | Open comment panel |
-| `Tab` / `→` / `l` | Open fullscreen diff view |
-| `←` / `h` | Focus file list |
-| `q` | Back to file list |
-
-#### Diff View
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Move down |
-| `k` / `↑` | Move up |
-| `gd` | Go to definition |
-| `gf` | Open file in $EDITOR |
-| `gg` / `G` | Jump to first/last line |
-| `Ctrl-o` | Jump back |
-| `n` | Jump to next comment |
-| `N` | Jump to previous comment |
-| `Ctrl-d` | Page down |
-| `Ctrl-u` | Page up |
-| `c` | Add comment at line |
-| `s` | Add suggestion at line |
-| `Shift+Enter` | Enter multiline selection mode |
-| `M` | Toggle Markdown rich display |
-| `Enter` | Open comment panel |
-| `←` / `h` / `q` / `Esc` | Back to previous view |
-
-**Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
-
-**Multiline Selection Mode:**
-
-Press `Shift+Enter` to enter multiline selection mode. Select a range of lines, then create a comment or suggestion spanning the entire range.
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Extend selection down |
-| `k` / `↑` | Extend selection up |
-| `Enter` / `c` | Comment on selection |
-| `s` | Suggest on selection |
-| `Esc` | Cancel selection |
-
-**Comment Panel (when focused):**
-
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Scroll panel |
-| `c` | Add comment |
-| `s` | Add suggestion |
-| `r` | Reply to comment |
-| `Tab` / `Shift-Tab` | Select reply target |
-| `n` / `N` | Jump to next/prev comment |
-| `Esc` / `q` | Close panel |
-
-#### Input Mode (Comment/Suggestion/Reply)
-
-When adding a comment, suggestion, or reply, you enter the built-in text input mode:
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+S` | Submit |
-| `Esc` | Cancel |
-
-Multi-line input is supported. Press `Enter` to insert a newline.
-
-#### Comment List View
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Move down |
-| `k` / `↑` | Move up |
-| `Enter` | Jump to file/line |
-| `q` / `Esc` | Back to file list |
-
-## Configuration
-
-Run `or init` to create default config files, or create `~/.config/octorus/config.toml` manually:
-
-```toml
-# Editor for writing review body.
-# Resolved in order: this value → $VISUAL → $EDITOR → vi
-# Supports arguments: editor = "code --wait"
-# editor = "vim"
-
-[diff]
-# Syntax highlighting theme for diff view
-# See "Theme" section below for available options
-theme = "base16-ocean.dark"
-# Number of spaces per tab character in diff view (minimum: 1)
-tab_width = 4
-# Show background color on added/removed lines (default: true)
-# bg_color = false
-
-[keybindings]
-# See "Configurable Keybindings" section below for all options
-approve = "a"
-request_changes = "r"
-comment = "c"
-suggestion = "s"
-
-[ai]
-# AI agent to use for reviewer/reviewee
-# Supported: "claude" (Claude Code), "codex" (OpenAI Codex CLI)
-reviewer = "claude"
-reviewee = "claude"
-
-# Maximum iterations before stopping
-max_iterations = 10
-
-# Timeout per agent execution (seconds)
-timeout_secs = 600
-
-# Custom prompt directory (default: ~/.config/octorus/prompts/)
-# prompt_dir = "/custom/path/to/prompts"
-
-# Additional tools for reviewer (Claude only)
-# Use Claude Code's --allowedTools format
-# reviewer_additional_tools = []
-
-# Additional tools for reviewee (Claude only)
-# Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
-# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
-
-# Auto-post review/fix comments to PR without confirmation prompt
-# Default is false (asks for confirmation before posting)
-# auto_post = true
-```
-
-### Configurable Keybindings
-
-All keybindings can be customized in the `[keybindings]` section. Three formats are supported:
-
-```toml
-[keybindings]
-# Simple key
-move_down = "j"
-
-# Key with modifiers
-page_down = { key = "d", ctrl = true }
-
-# Two-key sequence
-go_to_definition = ["g", "d"]
-```
-
-#### Available Keybindings
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| **Navigation** |||
-| `move_down` | `j` | Move down |
-| `move_up` | `k` | Move up |
-| `move_left` | `h` | Move left / back |
-| `move_right` | `l` | Move right / select |
-| `page_down` | `Ctrl+d` | Page down |
-| `page_up` | `Ctrl+u` | Page up |
-| `jump_to_first` | `gg` | Jump to first line |
-| `jump_to_last` | `G` | Jump to last line |
-| `jump_back` | `Ctrl+o` | Jump to previous position |
-| `next_comment` | `n` | Jump to next comment |
-| `prev_comment` | `N` | Jump to previous comment |
-| **Actions** |||
-| `approve` | `a` | Approve PR |
-| `request_changes` | `r` | Request changes |
-| `comment` | `c` | Add comment |
-| `suggestion` | `s` | Add suggestion |
-| `reply` | `r` | Reply to comment |
-| `refresh` | `R` | Force refresh |
-| `submit` | `Ctrl+s` | Submit input |
-| **Mode Switching** |||
-| `quit` | `q` | Quit / back |
-| `help` | `?` | Toggle help |
-| `comment_list` | `C` | Open comment list |
-| `ai_rally` | `A` | Start AI Rally |
-| `open_panel` | `Enter` | Open panel / select |
-| `open_in_browser` | `O` | Open PR in browser |
-| `toggle_local_mode` | `L` | Toggle local diff mode |
-| `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
-| `toggle_markdown_rich` | `M` | Toggle Markdown rich display |
-| `pr_description` | `d` | View PR description |
-| **Diff Operations** |||
-| `go_to_definition` | `gd` | Go to definition |
-| `go_to_file` | `gf` | Open file in $EDITOR |
-
-**Note**: Arrow keys (`↑/↓/←/→`) always work as alternatives to Vim-style keys and cannot be remapped.
-
-### Customizing Prompt Templates
-
-AI Rally uses customizable prompt templates. Run `or init` to generate default templates, then edit them as needed:
-
-```
-~/.config/octorus/prompts/
-├── reviewer.md    # Prompt for the reviewer agent
-├── reviewee.md    # Prompt for the reviewee agent
-└── rereview.md    # Prompt for re-review iterations
-```
-
-Templates support variable substitution with `{{variable}}` syntax:
-
-| Variable | Description | Available In |
-|----------|-------------|--------------|
-| `{{repo}}` | Repository name (e.g., "owner/repo") | All |
-| `{{pr_number}}` | Pull request number | All |
-| `{{pr_title}}` | Pull request title | All |
-| `{{pr_body}}` | Pull request description | reviewer |
-| `{{diff}}` | PR diff content | reviewer |
-| `{{iteration}}` | Current iteration number | All |
-| `{{review_summary}}` | Summary from reviewer | reviewee |
-| `{{review_action}}` | Review action (Approve/RequestChanges/Comment) | reviewee |
-| `{{review_comments}}` | List of review comments | reviewee |
-| `{{blocking_issues}}` | List of blocking issues | reviewee |
-| `{{external_comments}}` | Comments from external tools | reviewee |
-| `{{changes_summary}}` | Summary of changes made | rereview |
-| `{{updated_diff}}` | Updated diff after fixes | rereview |
-
-### Theme
-
-The `[diff]` section's `theme` option controls the syntax highlighting color scheme in the diff view.
-
-#### Built-in Themes
-
-| Theme | Description |
-|-------|-------------|
-| `base16-ocean.dark` | Dark theme based on Base16 Ocean (default) |
-| `base16-ocean.light` | Light theme based on Base16 Ocean |
-| `base16-eighties.dark` | Dark theme based on Base16 Eighties |
-| `base16-mocha.dark` | Dark theme based on Base16 Mocha |
-| `Dracula` | Dracula color scheme |
-| `InspiredGitHub` | Light theme inspired by GitHub |
-| `Solarized (dark)` | Solarized dark |
-| `Solarized (light)` | Solarized light |
-
-```toml
-[diff]
-theme = "Dracula"
-```
-
-Theme names are **case-insensitive** (`dracula`, `Dracula`, and `DRACULA` all work).
-
-If a specified theme is not found, it falls back to `base16-ocean.dark`.
-
-#### Custom Themes
-
-You can add custom themes by placing `.tmTheme` (TextMate theme) files in `~/.config/octorus/themes/`:
-
-```
-~/.config/octorus/themes/
-├── MyCustomTheme.tmTheme
-└── nord.tmTheme
-```
-
-The filename (without `.tmTheme` extension) becomes the theme name:
-
-```toml
-[diff]
-theme = "MyCustomTheme"
-```
-
-Custom themes with the same name as a built-in theme will override it.
-
-## Local Diff Mode
-
-Local Diff Mode lets you preview your uncommitted changes (`git diff HEAD`) directly in the TUI — no pull request required. A file watcher detects changes in real time and refreshes the diff automatically.
-
-### Starting Local Diff Mode
-
-```bash
-# Start in local diff mode
-or --local
-
-# With auto-focus: automatically jump to the changed file on each update
-or --local --auto-focus
-```
-
-### Real-Time File Watching
-
-When running in local mode, octorus watches your working directory for file changes (ignoring `.git/` internals and access-only events). As soon as you save a file, the diff view updates automatically.
-
-### Auto-Focus
-
-When `--auto-focus` is enabled (or toggled with `F`), octorus automatically selects and focuses the file that changed most recently. If you're in the file list, it transitions to the split view diff. The selection algorithm picks the nearest changed file relative to your current cursor position.
-
-The header displays `[LOCAL]` in local mode, or `[LOCAL AF]` when auto-focus is active.
-
-### Switching Between PR and Local Mode
-
-You can toggle between PR mode and Local mode at any time by pressing `L`:
-
-```
-PR mode ──[L]──► Local mode
-  │                │
-  │  UI state is   │  Starts file watcher
-  │  saved/restored│  Shows git diff HEAD
-  │                │
-Local mode ──[L]──► PR mode
-```
-
-Your UI state (selected file, scroll position) is preserved across mode switches. If you started from a PR, pressing `L` in local mode returns you to that PR with its cached data.
-
-### Differences from PR Mode
-
-The following features are **disabled** in local mode since there is no associated pull request:
-
-| Feature | Available? |
-|---------|-----------|
-| Browse changed files | ✅ |
-| Syntax-highlighted diff | ✅ |
-| Split view | ✅ |
-| Go to definition (`gd`) | ✅ |
-| Open file in editor (`gf`) | ✅ |
-| Add inline comments | ❌ |
-| Add suggestions | ❌ |
-| Submit reviews | ❌ |
-| View comment list | ❌ |
-| Open PR in browser (`O`) | ❌ |
+`or init --local` creates project-local config:
+- `.octorus/config.toml` - Project-local configuration (overrides global)
+- `.octorus/prompts/` - Project-local prompt templates
 
 ## AI Rally
 
@@ -644,7 +282,357 @@ reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 **Breaking Change (v0.2.0)**: `git push` is now disabled by default.
 To enable, add `"Bash(git push:*)"` to `reviewee_additional_tools`.
 
-### Keybindings (AI Rally View)
+## Local Diff Mode
+
+Local Diff Mode lets you preview your uncommitted changes (`git diff HEAD`) directly in the TUI — no pull request required. A file watcher detects changes in real time and refreshes the diff automatically.
+
+### Starting Local Diff Mode
+
+```bash
+# Start in local diff mode
+or --local
+
+# With auto-focus: automatically jump to the changed file on each update
+or --local --auto-focus
+```
+
+### Real-Time File Watching
+
+When running in local mode, octorus watches your working directory for file changes (ignoring `.git/` internals and access-only events). As soon as you save a file, the diff view updates automatically.
+
+### Auto-Focus
+
+When `--auto-focus` is enabled (or toggled with `F`), octorus automatically selects and focuses the file that changed most recently. If you're in the file list, it transitions to the split view diff. The selection algorithm picks the nearest changed file relative to your current cursor position.
+
+The header displays `[LOCAL]` in local mode, or `[LOCAL AF]` when auto-focus is active.
+
+### Switching Between PR and Local Mode
+
+You can toggle between PR mode and Local mode at any time by pressing `L`:
+
+```
+PR mode ──[L]──► Local mode
+  │                │
+  │  UI state is   │  Starts file watcher
+  │  saved/restored│  Shows git diff HEAD
+  │                │
+Local mode ──[L]──► PR mode
+```
+
+Your UI state (selected file, scroll position) is preserved across mode switches. If you started from a PR, pressing `L` in local mode returns you to that PR with its cached data.
+
+### Differences from PR Mode
+
+The following features are **disabled** in local mode since there is no associated pull request:
+
+| Feature | Available? |
+|---------|-----------|
+| Browse changed files | ✅ |
+| Syntax-highlighted diff | ✅ |
+| Split view | ✅ |
+| Go to definition (`gd`) | ✅ |
+| Open file in editor (`gf`) | ✅ |
+| Add inline comments | ❌ |
+| Add suggestions | ❌ |
+| Submit reviews | ❌ |
+| View comment list | ❌ |
+| Open PR in browser (`O`) | ❌ |
+
+## Configuration
+
+### Global Configuration
+
+Run `or init` to create default config files, or create `~/.config/octorus/config.toml` manually:
+
+```toml
+# Editor for writing review body.
+# Resolved in order: this value → $VISUAL → $EDITOR → vi
+# Supports arguments: editor = "code --wait"
+# editor = "vim"
+
+[diff]
+# Syntax highlighting theme for diff view
+# See "Theme" section below for available options
+theme = "base16-ocean.dark"
+# Number of spaces per tab character in diff view (minimum: 1)
+tab_width = 4
+# Show background color on added/removed lines (default: true)
+# bg_color = false
+
+[keybindings]
+# See "Configurable Keybindings" section below for all options
+approve = "a"
+request_changes = "r"
+comment = "c"
+suggestion = "s"
+
+[ai]
+# AI agent to use for reviewer/reviewee
+# Supported: "claude" (Claude Code), "codex" (OpenAI Codex CLI)
+reviewer = "claude"
+reviewee = "claude"
+
+# Maximum iterations before stopping
+max_iterations = 10
+
+# Timeout per agent execution (seconds)
+timeout_secs = 600
+
+# Custom prompt directory (default: ~/.config/octorus/prompts/)
+# prompt_dir = "/custom/path/to/prompts"
+
+# Additional tools for reviewer (Claude only)
+# Use Claude Code's --allowedTools format
+# reviewer_additional_tools = []
+
+# Additional tools for reviewee (Claude only)
+# Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
+# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
+
+# Auto-post review/fix comments to PR without confirmation prompt
+# Default is false (asks for confirmation before posting)
+# auto_post = true
+```
+
+### Project-Local Configuration
+
+You can create project-local configuration under `.octorus/` in your repository root. This allows per-project settings that can be shared with your team via version control.
+
+```bash
+or init --local
+```
+
+This generates:
+
+```
+.octorus/
+├── config.toml        # Project-local config (overrides global)
+└── prompts/
+    ├── reviewer.md    # Project-specific reviewer prompt
+    ├── reviewee.md    # Project-specific reviewee prompt
+    └── rereview.md    # Project-specific re-review prompt
+```
+
+**Override behavior**: Local values are deep-merged on top of global config. Only specify keys you want to override — unspecified keys inherit from global config.
+
+```toml
+# .octorus/config.toml — only override what you need
+[ai]
+max_iterations = 5
+timeout_secs = 300
+```
+
+**Prompt resolution order** (highest priority first):
+1. `.octorus/prompts/` (project-local)
+2. `ai.prompt_dir` (custom directory from config)
+3. `~/.config/octorus/prompts/` (global)
+4. Built-in defaults
+
+> **Warning**: When you clone or fork a repository that contains `.octorus/`, be aware that those settings were chosen by the repository owner — not by you. octorus applies the following safeguards to protect you:
+>
+> - **`editor` is always ignored** in local config. It cannot be set per-project.
+> - **AI-related settings** (`ai.reviewer`, `ai.reviewee`, `ai.*_additional_tools`, `ai.auto_post`) and **local prompt files** will trigger a confirmation dialog before AI Rally starts. In headless mode, you must explicitly pass `--accept-local-overrides` to allow them.
+> - **`ai.prompt_dir`** cannot use absolute paths or `..` in local config.
+> - Symlinks under `.octorus/prompts/` are not followed.
+
+### Customizing Prompt Templates
+
+AI Rally uses customizable prompt templates. Run `or init` to generate default templates, then edit them as needed:
+
+```
+~/.config/octorus/prompts/
+├── reviewer.md    # Prompt for the reviewer agent
+├── reviewee.md    # Prompt for the reviewee agent
+└── rereview.md    # Prompt for re-review iterations
+```
+
+Templates support variable substitution with `{{variable}}` syntax:
+
+| Variable | Description | Available In |
+|----------|-------------|--------------|
+| `{{repo}}` | Repository name (e.g., "owner/repo") | All |
+| `{{pr_number}}` | Pull request number | All |
+| `{{pr_title}}` | Pull request title | All |
+| `{{pr_body}}` | Pull request description | reviewer |
+| `{{diff}}` | PR diff content | reviewer |
+| `{{iteration}}` | Current iteration number | All |
+| `{{review_summary}}` | Summary from reviewer | reviewee |
+| `{{review_action}}` | Review action (Approve/RequestChanges/Comment) | reviewee |
+| `{{review_comments}}` | List of review comments | reviewee |
+| `{{blocking_issues}}` | List of blocking issues | reviewee |
+| `{{external_comments}}` | Comments from external tools | reviewee |
+| `{{changes_summary}}` | Summary of changes made | rereview |
+| `{{updated_diff}}` | Updated diff after fixes | rereview |
+
+### Theme
+
+The `[diff]` section's `theme` option controls the syntax highlighting color scheme in the diff view.
+
+#### Built-in Themes
+
+| Theme | Description |
+|-------|-------------|
+| `base16-ocean.dark` | Dark theme based on Base16 Ocean (default) |
+| `base16-ocean.light` | Light theme based on Base16 Ocean |
+| `base16-eighties.dark` | Dark theme based on Base16 Eighties |
+| `base16-mocha.dark` | Dark theme based on Base16 Mocha |
+| `Dracula` | Dracula color scheme |
+| `InspiredGitHub` | Light theme inspired by GitHub |
+| `Solarized (dark)` | Solarized dark |
+| `Solarized (light)` | Solarized light |
+
+```toml
+[diff]
+theme = "Dracula"
+```
+
+Theme names are **case-insensitive** (`dracula`, `Dracula`, and `DRACULA` all work).
+
+If a specified theme is not found, it falls back to `base16-ocean.dark`.
+
+#### Custom Themes
+
+You can add custom themes by placing `.tmTheme` (TextMate theme) files in `~/.config/octorus/themes/`:
+
+```
+~/.config/octorus/themes/
+├── MyCustomTheme.tmTheme
+└── nord.tmTheme
+```
+
+The filename (without `.tmTheme` extension) becomes the theme name:
+
+```toml
+[diff]
+theme = "MyCustomTheme"
+```
+
+Custom themes with the same name as a built-in theme will override it.
+
+## Keybindings
+
+### File List View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Enter` / `→` / `l` | Open split view |
+| `a` | Approve PR |
+| `r` | Request changes |
+| `c` | Comment only |
+| `C` | View review comments |
+| `R` | Force refresh (discard cache) |
+| `d` | View PR description |
+| `A` | Start AI Rally |
+| `L` | Toggle local diff mode |
+| `F` | Toggle auto-focus (local mode) |
+| `?` | Toggle help |
+| `q` | Quit |
+
+### Split View
+
+The split view shows the file list (left, 35%) and a diff preview (right, 65%). The focused pane is highlighted with a yellow border.
+
+**File List Focus:**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move file selection (diff follows) |
+| `k` / `↑` | Move file selection (diff follows) |
+| `Enter` / `→` / `l` | Focus diff pane |
+| `←` / `h` / `q` | Back to file list |
+
+**Diff Focus:**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll diff |
+| `k` / `↑` | Scroll diff |
+| `gd` | Go to definition |
+| `gf` | Open file in $EDITOR |
+| `gg` / `G` | Jump to first/last line |
+| `Ctrl-o` | Jump back |
+| `Ctrl-d` | Page down |
+| `Ctrl-u` | Page up |
+| `n` | Jump to next comment |
+| `N` | Jump to previous comment |
+| `c` | Add comment at line |
+| `s` | Add suggestion at line |
+| `Shift+Enter` | Enter multiline selection mode |
+| `Enter` | Open comment panel |
+| `Tab` / `→` / `l` | Open fullscreen diff view |
+| `←` / `h` | Focus file list |
+| `q` | Back to file list |
+
+### Diff View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `gd` | Go to definition |
+| `gf` | Open file in $EDITOR |
+| `gg` / `G` | Jump to first/last line |
+| `Ctrl-o` | Jump back |
+| `n` | Jump to next comment |
+| `N` | Jump to previous comment |
+| `Ctrl-d` | Page down |
+| `Ctrl-u` | Page up |
+| `c` | Add comment at line |
+| `s` | Add suggestion at line |
+| `Shift+Enter` | Enter multiline selection mode |
+| `M` | Toggle Markdown rich display |
+| `Enter` | Open comment panel |
+| `←` / `h` / `q` / `Esc` | Back to previous view |
+
+**Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
+
+**Multiline Selection Mode:**
+
+Press `Shift+Enter` to enter multiline selection mode. Select a range of lines, then create a comment or suggestion spanning the entire range.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Extend selection down |
+| `k` / `↑` | Extend selection up |
+| `Enter` / `c` | Comment on selection |
+| `s` | Suggest on selection |
+| `Esc` | Cancel selection |
+
+**Comment Panel (when focused):**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll panel |
+| `c` | Add comment |
+| `s` | Add suggestion |
+| `r` | Reply to comment |
+| `Tab` / `Shift-Tab` | Select reply target |
+| `n` / `N` | Jump to next/prev comment |
+| `Esc` / `q` | Close panel |
+
+### Input Mode (Comment/Suggestion/Reply)
+
+When adding a comment, suggestion, or reply, you enter the built-in text input mode:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+S` | Submit |
+| `Esc` | Cancel |
+
+Multi-line input is supported. Press `Enter` to insert a newline.
+
+### Comment List View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Enter` | Jump to file/line |
+| `q` / `Esc` | Back to file list |
+
+### AI Rally View
 
 | Key | Action |
 |-----|--------|
@@ -659,6 +647,63 @@ To enable, add `"Bash(git push:*)"` to `reviewee_additional_tools`.
 | `p` | Pause / Resume rally |
 | `r` | Retry (on error) |
 | `q` / `Esc` | Abort and exit rally |
+
+### Configurable Keybindings
+
+All keybindings can be customized in the `[keybindings]` section. Three formats are supported:
+
+```toml
+[keybindings]
+# Simple key
+move_down = "j"
+
+# Key with modifiers
+page_down = { key = "d", ctrl = true }
+
+# Two-key sequence
+go_to_definition = ["g", "d"]
+```
+
+#### Available Keybindings
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| **Navigation** |||
+| `move_down` | `j` | Move down |
+| `move_up` | `k` | Move up |
+| `move_left` | `h` | Move left / back |
+| `move_right` | `l` | Move right / select |
+| `page_down` | `Ctrl+d` | Page down |
+| `page_up` | `Ctrl+u` | Page up |
+| `jump_to_first` | `gg` | Jump to first line |
+| `jump_to_last` | `G` | Jump to last line |
+| `jump_back` | `Ctrl+o` | Jump to previous position |
+| `next_comment` | `n` | Jump to next comment |
+| `prev_comment` | `N` | Jump to previous comment |
+| **Actions** |||
+| `approve` | `a` | Approve PR |
+| `request_changes` | `r` | Request changes |
+| `comment` | `c` | Add comment |
+| `suggestion` | `s` | Add suggestion |
+| `reply` | `r` | Reply to comment |
+| `refresh` | `R` | Force refresh |
+| `submit` | `Ctrl+s` | Submit input |
+| **Mode Switching** |||
+| `quit` | `q` | Quit / back |
+| `help` | `?` | Toggle help |
+| `comment_list` | `C` | Open comment list |
+| `ai_rally` | `A` | Start AI Rally |
+| `open_panel` | `Enter` | Open panel / select |
+| `open_in_browser` | `O` | Open PR in browser |
+| `toggle_local_mode` | `L` | Toggle local diff mode |
+| `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
+| `toggle_markdown_rich` | `M` | Toggle Markdown rich display |
+| `pr_description` | `d` | View PR description |
+| **Diff Operations** |||
+| `go_to_definition` | `gd` | Go to definition |
+| `go_to_file` | `gf` | Open file in $EDITOR |
+
+**Note**: Arrow keys (`↑/↓/←/→`) always work as alternatives to Vim-style keys and cannot be remapped.
 
 ## License
 
