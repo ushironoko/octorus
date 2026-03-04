@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::diff::LineType;
 use crate::ui::common::build_pr_info;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -54,7 +55,16 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         return;
     };
 
-    let total_lines = cache.lines.len();
+    // Header行(hunk header)をスキップして本文行のみ収集
+    let body_line_indices: Vec<usize> = cache
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, cached)| cached.line_type != LineType::Header)
+        .map(|(i, _)| i)
+        .collect();
+
+    let total_lines = body_line_indices.len();
     let max_scroll = total_lines.saturating_sub(content_height);
     if app.pr_description_scroll_offset > max_scroll {
         app.pr_description_scroll_offset = max_scroll;
@@ -74,8 +84,9 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let end = (start + content_height).min(total_lines);
 
     // render_cached_lines を使うが、context行の先頭スペース(diff marker)を除去する
-    let lines: Vec<Line<'_>> = cache.lines[start..end]
+    let lines: Vec<Line<'_>> = body_line_indices[start..end]
         .iter()
+        .map(|&idx| &cache.lines[idx])
         .map(|cached| {
             let spans: Vec<Span<'_>> = cached
                 .spans
@@ -123,8 +134,9 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let kb = &app.config.keybindings;
     let footer_text = format!(
-        " {}/Esc: close | j/k: scroll | J/K: page | g/G: top/bottom | o: open in browser",
-        kb.quit.display()
+        " {}/Esc: close | j/k: scroll | J/K: page | g/G: top/bottom | {}: open in browser",
+        kb.quit.display(),
+        kb.open_in_browser.display()
     );
     let footer = Paragraph::new(Line::from(Span::styled(
         footer_text,
