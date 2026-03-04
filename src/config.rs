@@ -142,6 +142,9 @@ pub struct KeybindingsConfig {
 
     // Multiline selection (fallback for Shift+Enter)
     pub multiline_select: KeySequence,
+
+    // PR description
+    pub pr_description: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -218,6 +221,9 @@ impl Default for KeybindingsConfig {
 
             // Multiline selection (fallback for Shift+Enter)
             multiline_select: KeySequence::single(KeyBinding::char('V')),
+
+            // PR description
+            pr_description: KeySequence::single(KeyBinding::char('d')),
         }
     }
 }
@@ -266,6 +272,7 @@ impl KeybindingsConfig {
             ("toggle_markdown_rich", &self.toggle_markdown_rich),
             ("filter", &self.filter),
             ("multiline_select", &self.multiline_select),
+            ("pr_description", &self.pr_description),
         ];
 
         for (name, seq) in &bindings {
@@ -404,6 +411,7 @@ impl Serialize for KeybindingsConfig {
         )?;
         map.serialize_entry("filter", &seq_to_value(&self.filter))?;
         map.serialize_entry("multiline_select", &seq_to_value(&self.multiline_select))?;
+        map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
 
         map.end()
     }
@@ -1416,5 +1424,30 @@ timeout_secs = 3600
             Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.max_iterations, 50);
         assert_eq!(config.ai.timeout_secs, 3600);
+    }
+
+    #[test]
+    fn test_pr_description_keybinding_default() {
+        let config = KeybindingsConfig::default();
+        assert_eq!(config.pr_description.display(), "d");
+    }
+
+    #[test]
+    fn test_pr_description_keybinding_custom() {
+        let toml_str = r#"
+            [keybindings]
+            pr_description = "D"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keybindings.pr_description.display(), "D");
+    }
+
+    #[test]
+    fn test_pr_description_keybinding_serialize_roundtrip() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("pr_description"));
+        let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.pr_description.display(), "d");
     }
 }

@@ -475,6 +475,12 @@ impl App {
             }
         }
 
+        // PR description (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
+            self.open_pr_description();
+            return Ok(());
+        }
+
         // Common single-key bindings
 
         // Shift+Enter or fallback key (V): 複数行選択モードに入る

@@ -5232,3 +5232,469 @@ fn test_config_tab_scroll_with_jk() {
     app.apply_help_scroll(make_key(KeyCode::Char('k')), 30);
     assert_eq!(app.config_scroll_offset, 1);
 }
+
+// ============================================================
+// PR Description tests
+// ============================================================
+
+#[test]
+fn test_open_pr_description_state_transition() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("# Hello\nWorld".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+    app.state = AppState::FileList;
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert_eq!(app.previous_state, AppState::FileList);
+    assert_eq!(app.pr_description_scroll_offset, 0);
+    assert!(app.pr_description_cache.is_some());
+}
+
+#[test]
+fn test_open_pr_description_from_split_view() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("description body".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+    app.state = AppState::SplitViewFileList;
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert_eq!(app.previous_state, AppState::SplitViewFileList);
+}
+
+#[test]
+fn test_open_pr_description_body_none() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert!(app.pr_description_cache.is_none());
+}
+
+#[test]
+fn test_open_pr_description_body_empty() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    app.open_pr_description();
+
+    assert_eq!(app.state, AppState::PrDescription);
+    assert!(app.pr_description_cache.is_none());
+}
+
+#[test]
+fn test_toggle_markdown_rich_clears_pr_description_cache() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("# Title\nBody".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    // Build cache
+    app.open_pr_description();
+    assert!(app.pr_description_cache.is_some());
+
+    // Toggle markdown rich should clear the cache
+    app.toggle_markdown_rich();
+    assert!(app.pr_description_cache.is_none());
+}
+
+#[test]
+fn test_pr_description_cache_reuse() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("Same body".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    // First open
+    app.open_pr_description();
+    assert!(app.pr_description_cache.is_some());
+    let first_hash = app.pr_description_cache.as_ref().unwrap().patch_hash;
+
+    // Go back
+    app.state = AppState::FileList;
+
+    // Second open - should reuse cache (same body hash)
+    app.open_pr_description();
+    assert!(app.pr_description_cache.is_some());
+    assert_eq!(
+        app.pr_description_cache.as_ref().unwrap().patch_hash,
+        first_hash
+    );
+}
+
+// --- ensure_diff_cache: markdown_rich と非markdownファイルのキャッシュ保持テスト ---
+
+/// ensure_diff_cache ステージ1: 非markdownファイルでは markdown_rich 不一致でもキャッシュを保持する。
+/// markdown_rich は markdown ファイルのハイライトにのみ影響するため、非markdownのキャッシュを
+/// 破棄するとプリフェッチ済みキャッシュが無駄に失われるデグレが発生する。
+#[test]
+fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+    app.markdown_rich = false;
+
+    // markdown_rich=true で構築されたハイライト済みキャッシュをセット
+    let mut cache =
+        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    cache.file_index = 0;
+    cache.highlighted = true;
+    cache.markdown_rich = true; // 現在の app.markdown_rich (false) と不一致
+    app.diff_cache = Some(cache);
+
+    // ensure_diff_cache は非markdown なので markdown_rich 不一致を無視してキャッシュを維持
+    app.ensure_diff_cache();
+    assert!(
+        app.diff_cache.as_ref().is_some_and(|c| c.highlighted),
+        "non-md file: highlighted cache should be preserved despite markdown_rich mismatch"
+    );
+}
+
+/// ensure_diff_cache ステージ2: ストア内の非markdownキャッシュも markdown_rich 不一致で破棄しない
+#[test]
+fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+    app.markdown_rich = false;
+    app.diff_cache = None;
+
+    // ストアに markdown_rich=true のキャッシュを配置
+    let mut store_cache =
+        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    store_cache.file_index = 0;
+    store_cache.highlighted = true;
+    store_cache.markdown_rich = true;
+    app.highlighted_cache_store.insert(0, store_cache);
+
+    app.ensure_diff_cache();
+
+    // ストアから復元されるはず（markdown_rich 不一致は無視）
+    assert!(
+        app.diff_cache.as_ref().is_some_and(|c| c.highlighted),
+        "non-md file: store cache should be restored despite markdown_rich mismatch"
+    );
+}
+
+/// ensure_diff_cache: markdownファイルでは markdown_rich 不一致時にキャッシュを再構築する
+#[tokio::test]
+async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "README.md".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+# Hello".to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+    app.markdown_rich = true;
+
+    // markdown_rich=false で構築されたキャッシュをセット
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+# Hello", 4);
+    cache.file_index = 0;
+    cache.highlighted = true;
+    cache.markdown_rich = false; // 現在の app.markdown_rich (true) と不一致
+    app.diff_cache = Some(cache);
+
+    app.ensure_diff_cache();
+
+    // markdown ファイルなので markdown_rich 不一致 → 再構築（plain に戻る）
+    assert!(
+        app.diff_cache
+            .as_ref()
+            .is_some_and(|c| !c.highlighted),
+        "md file: cache should be rebuilt (plain) on markdown_rich mismatch"
+    );
+}
+
+/// PR description view での markdown_rich トグルが prefetch_receiver と
+/// highlighted_cache_store を温存することを検証する。
+/// toggle_markdown_rich() を使うとこれらが破棄されるため、PR description view では
+/// フラグ反転 + PR description キャッシュ再構築のみ行う設計。
+#[tokio::test]
+async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("# Description\nBody text".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![ChangedFile {
+            filename: "main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+            viewed: false,
+        }],
+    };
+
+    // プリフェッチ済みキャッシュをストアに配置
+    let mut rs_cache =
+        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    rs_cache.file_index = 0;
+    rs_cache.highlighted = true;
+    app.highlighted_cache_store.insert(0, rs_cache);
+
+    // prefetch_receiver をセット
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    app.prefetch_receiver = Some(rx);
+
+    // PR description を開く
+    app.open_pr_description();
+    assert_eq!(app.state, AppState::PrDescription);
+
+    // M キーと同等の処理: フラグ反転 + PR description キャッシュ再構築
+    app.markdown_rich = !app.markdown_rich;
+    app.pr_description_cache = None;
+    app.rebuild_pr_description_cache();
+
+    // prefetch_receiver は温存されていること
+    assert!(
+        app.prefetch_receiver.is_some(),
+        "prefetch_receiver should be preserved after toggling rich in PR description view"
+    );
+    // ストアのキャッシュも温存されていること
+    assert!(
+        app.highlighted_cache_store.contains_key(&0),
+        "highlighted_cache_store should be preserved after toggling rich in PR description view"
+    );
+    // PR description キャッシュは再構築されていること
+    assert!(
+        app.pr_description_cache.is_some(),
+        "pr_description_cache should be rebuilt"
+    );
+}
+
+/// rebuild_pr_description_cache がスクロール位置を維持することを検証する。
+/// open_pr_description() はスクロールを 0 にリセットするが、rebuild はリセットしない。
+#[test]
+fn test_rebuild_pr_description_cache_preserves_scroll() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: Some("line1\nline2\nline3\nline4\nline5".to_string()),
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![],
+    };
+
+    app.open_pr_description();
+    assert_eq!(app.pr_description_scroll_offset, 0);
+
+    // スクロールしてから rebuild
+    app.pr_description_scroll_offset = 3;
+    app.markdown_rich = !app.markdown_rich;
+    app.pr_description_cache = None;
+    app.rebuild_pr_description_cache();
+
+    assert_eq!(
+        app.pr_description_scroll_offset, 3,
+        "rebuild_pr_description_cache should not reset scroll offset"
+    );
+    assert!(app.pr_description_cache.is_some());
+}

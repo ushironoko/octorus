@@ -220,6 +220,85 @@ impl App {
         Ok(())
     }
 
+    pub(crate) fn handle_pr_description_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let terminal_height = terminal.size()?.height;
+        // Viewport overhead: header (3) + body borders (2) + footer (1) = 6
+        let visible_lines = terminal_height.saturating_sub(6) as usize;
+        let half_page = (visible_lines / 2).max(1);
+
+        let kb = &self.config.keybindings;
+
+        // Close
+        if self.matches_single_key(&key, &kb.quit)
+            || self.matches_single_key(&key, &kb.help)
+            || key.code == KeyCode::Esc
+        {
+            self.state = self.previous_state;
+            return Ok(());
+        }
+
+        // Open in browser
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
+            if let Some(pr_number) = self.pr_number {
+                self.open_pr_in_browser(pr_number);
+            }
+            return Ok(());
+        }
+
+        // Toggle markdown rich display
+        // IMPORTANT: ここでは toggle_markdown_rich() を呼ばず、フラグ反転と PR description
+        // キャッシュの再構築のみ行う。toggle_markdown_rich() は prefetch_receiver の破棄や
+        // highlighted_cache_store のmarkdownエントリ削除など DiffView 向けの副作用を持つため、
+        // PR description view から呼ぶとファイル diff のプリフェッチ済みキャッシュが失われる。
+        // ファイル diff に戻った際は ensure_diff_cache() が markdown_rich の不整合を検出し、
+        // markdownファイルのみ自動再構築する。
+        if self.matches_single_key(&key, &kb.toggle_markdown_rich) {
+            self.markdown_rich = !self.markdown_rich;
+            self.pr_description_cache = None;
+            self.rebuild_pr_description_cache();
+            return Ok(());
+        }
+
+        // Scroll
+        if Self::is_shift_char_shortcut(&key, 'j') {
+            // Page down (J / Shift+j)
+            self.pr_description_scroll_offset = self
+                .pr_description_scroll_offset
+                .saturating_add(visible_lines.max(1));
+        } else if Self::is_shift_char_shortcut(&key, 'k') {
+            // Page up (K / Shift+k)
+            self.pr_description_scroll_offset = self
+                .pr_description_scroll_offset
+                .saturating_sub(visible_lines.max(1));
+        } else if Self::is_shift_char_shortcut(&key, 'g') {
+            // Jump to bottom (G / Shift+g)
+            self.pr_description_scroll_offset = usize::MAX;
+        } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
+            self.pr_description_scroll_offset =
+                self.pr_description_scroll_offset.saturating_add(1);
+        } else if matches!(key.code, KeyCode::Char('k') | KeyCode::Up) {
+            self.pr_description_scroll_offset =
+                self.pr_description_scroll_offset.saturating_sub(1);
+        } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.pr_description_scroll_offset = self
+                .pr_description_scroll_offset
+                .saturating_add(half_page);
+        } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.pr_description_scroll_offset = self
+                .pr_description_scroll_offset
+                .saturating_sub(half_page);
+        } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
+            // Jump to top (g without modifiers)
+            self.pr_description_scroll_offset = 0;
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn handle_help_input(
         &mut self,
         key: event::KeyEvent,

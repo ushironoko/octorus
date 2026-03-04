@@ -963,6 +963,11 @@ impl App {
                     },
                 );
                 self.data_state = DataState::Loaded { pr, files };
+                // PRデータが更新されたため、PR description キャッシュを無効化・再構築
+                self.pr_description_cache = None;
+                if self.state == AppState::PrDescription {
+                    self.rebuild_pr_description_cache();
+                }
                 // ファイル一覧が変わったため、フィルタを再適用（stale indices 防止）
                 if self.file_list_filter.is_some() {
                     self.reapply_filter("file");
