@@ -3000,6 +3000,114 @@ mod priming_diff_tests {
         );
     }
 
+    /// Go ファイルのタブインデント付き diff が plain cache で正しく展開されることを検証 (#123)
+    #[test]
+    fn test_snapshot_go_tab_indentation_plain() {
+        use insta::assert_snapshot;
+
+        let patch = "@@ -10,3 +10,12 @@ func (s *Session) getSnapshotData(snapshot int) (*SnapshotData, error) {\n \treturn sd, nil\n }\n \n+// handleGetExportSymbolOfSymbol returns the export symbol.\n+func (s *Session) handleGetExportSymbolOfSymbol(ctx context.Context, params *GetExportSymbolOfSymbolParams) (*SymbolResponse, error) {\n+\tsd, err := s.getSnapshotData(params.Snapshot)\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}\n+\n+\treturn sd.registerSymbol(symbol), nil\n+}";
+
+        let cache = build_plain_diff_cache(patch, 4);
+        assert_snapshot!(format_diff_cache_spans(&cache), @r###"
+        L0: "@@ -10,3 +10,12 @@ func (s *Session) getSnapshotData(snapshot int) (*SnapshotData, error) {" [fg:Cyan]
+        L1: " " [default] | "    return sd, nil" [default]
+        L2: " " [default] | "}" [default]
+        L3: " " [default] | "" [default]
+        L4: "+" [fg:Green] | "// handleGetExportSymbolOfSymbol returns the export symbol." [fg:Green]
+        L5: "+" [fg:Green] | "func (s *Session) handleGetExportSymbolOfSymbol(ctx context.Context, params *GetExportSymbolOfSymbolParams) (*SymbolResponse, error) {" [fg:Green]
+        L6: "+" [fg:Green] | "    sd, err := s.getSnapshotData(params.Snapshot)" [fg:Green]
+        L7: "+" [fg:Green] | "    if err != nil {" [fg:Green]
+        L8: "+" [fg:Green] | "        return nil, err" [fg:Green]
+        L9: "+" [fg:Green] | "    }" [fg:Green]
+        L10: "+" [fg:Green] | "" [fg:Green]
+        L11: "+" [fg:Green] | "    return sd.registerSymbol(symbol), nil" [fg:Green]
+        L12: "+" [fg:Green] | "}" [fg:Green]
+        "###);
+    }
+
+    /// Go ファイルのタブインデント付き diff が CST (tree-sitter) パスで正しく展開されることを検証 (#123)
+    #[test]
+    fn test_snapshot_go_tab_indentation_highlighted() {
+        use insta::assert_snapshot;
+
+        let patch = "@@ -10,3 +10,12 @@ func (s *Session) getSnapshotData(snapshot int) (*SnapshotData, error) {\n \treturn sd, nil\n }\n \n+// handleGetExportSymbolOfSymbol returns the export symbol.\n+func (s *Session) handleGetExportSymbolOfSymbol(ctx context.Context, params *GetExportSymbolOfSymbolParams) (*SymbolResponse, error) {\n+\tsd, err := s.getSnapshotData(params.Snapshot)\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}\n+\n+\treturn sd.registerSymbol(symbol), nil\n+}";
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "session.go",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
+
+        assert!(cache.highlighted, "Go should use CST highlighting");
+        assert_snapshot!(format_diff_cache_spans(&cache), @r###"
+        L0: "@@ -10,3 +10,12 @@ func (s *Session) getSnapshotData(snapshot int) (*SnapshotData, error) {" [fg:Cyan]
+        L1: " " [default] | "    " [default] | "return" [fg:Rgb(180, 142, 173)] | " " [default] | "sd" [fg:Rgb(191, 97, 106)] | ", " [default] | "nil" [fg:Rgb(208, 135, 112)]
+        L2: " " [default] | "}" [default]
+        L3: " " [default] | "" [default]
+        L4: "+" [fg:Green] | "// handleGetExportSymbolOfSymbol returns the export symbol." [fg:Rgb(101, 115, 126)]
+        L5: "+" [fg:Green] | "func" [fg:Rgb(180, 142, 173)] | " (" [default] | "s" [fg:Rgb(191, 97, 106)] | " " [default] | "*" [fg:Rgb(192, 197, 206)] | "Session" [fg:Rgb(180, 142, 173)] | ") " [default] | "handleGetExportSymbolOfSymbol" [fg:Rgb(191, 97, 106)] | "(" [default] | "ctx" [fg:Rgb(191, 97, 106)] | " context." [default] | "Context" [fg:Rgb(180, 142, 173)] | ", " [default] | "params" [fg:Rgb(191, 97, 106)] | " " [default] | "*" [fg:Rgb(192, 197, 206)] | "GetExportSymbolOfSymbolParams" [fg:Rgb(180, 142, 173)] | ") (" [default] | "*" [fg:Rgb(192, 197, 206)] | "SymbolResponse" [fg:Rgb(180, 142, 173)] | ", " [default] | "error" [fg:Rgb(180, 142, 173)] | ") {" [default]
+        L6: "+" [fg:Green] | "    " [default] | "sd" [fg:Rgb(191, 97, 106)] | ", " [default] | "err" [fg:Rgb(191, 97, 106)] | " " [default] | ":=" [fg:Rgb(192, 197, 206)] | " " [default] | "s" [fg:Rgb(191, 97, 106)] | "." [default] | "getSnapshotData" [fg:Rgb(191, 97, 106)] | "(" [default] | "params" [fg:Rgb(191, 97, 106)] | "." [default] | "Snapshot" [fg:Rgb(191, 97, 106)] | ")" [default]
+        L7: "+" [fg:Green] | "    " [default] | "if" [fg:Rgb(180, 142, 173)] | " " [default] | "err" [fg:Rgb(191, 97, 106)] | " " [default] | "!=" [fg:Rgb(192, 197, 206)] | " " [default] | "nil" [fg:Rgb(208, 135, 112)] | " {" [default]
+        L8: "+" [fg:Green] | "        " [default] | "return" [fg:Rgb(180, 142, 173)] | " " [default] | "nil" [fg:Rgb(208, 135, 112)] | ", " [default] | "err" [fg:Rgb(191, 97, 106)]
+        L9: "+" [fg:Green] | "    }" [default]
+        L10: "+" [fg:Green] | "" [default]
+        L11: "+" [fg:Green] | "    " [default] | "return" [fg:Rgb(180, 142, 173)] | " " [default] | "sd" [fg:Rgb(191, 97, 106)] | "." [default] | "registerSymbol" [fg:Rgb(191, 97, 106)] | "(" [default] | "symbol" [fg:Rgb(191, 97, 106)] | "), " [default] | "nil" [fg:Rgb(208, 135, 112)]
+        L12: "+" [fg:Green] | "}" [default]
+        "###);
+    }
+
+    /// Go ファイルの render_cached_lines 出力でタブインデントが保持されることを検証 (#123)
+    #[test]
+    fn test_snapshot_go_tab_indentation_render() {
+        use insta::assert_snapshot;
+        use std::collections::HashSet;
+
+        let patch = "@@ -10,3 +10,12 @@ func (s *Session) getSnapshotData(snapshot int) (*SnapshotData, error) {\n \treturn sd, nil\n }\n \n+// handleGetExportSymbolOfSymbol returns the export symbol.\n+func (s *Session) handleGetExportSymbolOfSymbol(ctx context.Context, params *GetExportSymbolOfSymbolParams) (*SymbolResponse, error) {\n+\tsd, err := s.getSnapshotData(params.Snapshot)\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}\n+\n+\treturn sd.registerSymbol(symbol), nil\n+}";
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "session.go",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
+
+        let comment_lines = HashSet::new();
+        let rendered = render_cached_lines(&cache, 0..cache.lines.len(), 0, &comment_lines, false, None);
+
+        let snapshot: String = rendered
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                format!("L{}: {:?}", i, text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_snapshot!(snapshot, @r###"
+        L0: "@@ -10,3 +10,12 @@ func (s *Session) getSnapshotData(snapshot int) (*SnapshotData, error) {"
+        L1: "     return sd, nil"
+        L2: " }"
+        L3: " "
+        L4: "+// handleGetExportSymbolOfSymbol returns the export symbol."
+        L5: "+func (s *Session) handleGetExportSymbolOfSymbol(ctx context.Context, params *GetExportSymbolOfSymbolParams) (*SymbolResponse, error) {"
+        L6: "+    sd, err := s.getSnapshotData(params.Snapshot)"
+        L7: "+    if err != nil {"
+        L8: "+        return nil, err"
+        L9: "+    }"
+        L10: "+"
+        L11: "+    return sd.registerSymbol(symbol), nil"
+        L12: "+}"
+        "###);
+    }
+
     #[test]
     fn test_patch_hash_uses_original() {
         // patch_hash should be computed from the original patch (before tab expansion)
