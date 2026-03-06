@@ -131,7 +131,8 @@ pub async fn fetch_commit_diff(repo: &str, sha: &str) -> Result<String> {
 /// ローカル git log からコミット一覧を取得（ページネーション対応）
 ///
 /// デフォルトブランチ（main/master）からの差分コミットを返す。
-/// range 内の全コミットを取得し、`offset` / `limit` で Rust 側でページネーションする。
+/// `git rev-list --count` で総数を取得し、`--skip` / `--max-count` で
+/// 必要なページ分のみ取得する（全件取得を回避）。
 pub async fn fetch_local_commits(
     working_dir: Option<&str>,
     offset: u32,
@@ -144,11 +145,37 @@ pub async fn fetch_local_commits(
         .map(|b| format!("{}..HEAD", b))
         .unwrap_or_else(|| "HEAD".to_string());
 
+    // Phase 1: 総コミット数を取得（SHA のみカウント、高速）
+    let total = match count_commits(working_dir, &range).await {
+        Ok(n) => n,
+        Err(_) => {
+            // range が無効の場合は HEAD のみでフォールバック
+            count_commits(working_dir, "HEAD").await.unwrap_or(0)
+        }
+    };
+
+    if total == 0 || offset as usize >= total {
+        return Ok(CommitListPage {
+            items: vec![],
+            has_more: false,
+        });
+    }
+
+    let has_more = (offset + limit) < total as u32;
+
+    // Phase 2: 必要なページ分のみ取得
+    // git log は newest-first で出力するため、oldest-first の offset/limit を
+    // newest-first の --skip/--max-count に変換してから Rust 側で reverse する。
+    let remaining = total.saturating_sub(offset as usize);
+    let max_count = (limit as usize).min(remaining);
+    let skip = total.saturating_sub(offset as usize + max_count);
+
     let mut cmd = tokio::process::Command::new("git");
     cmd.args([
         "log",
         "--format=%H%x00%s%x00%an%x00%aI",
-        "--reverse",
+        &format!("--skip={}", skip),
+        &format!("--max-count={}", max_count),
         &range,
     ]);
     if let Some(dir) = working_dir {
@@ -157,12 +184,13 @@ pub async fn fetch_local_commits(
     let output = cmd.output().await.context("Failed to run git log")?;
 
     if !output.status.success() {
-        // range が無効の場合は HEAD から取得
+        // range が無効の場合は HEAD のみでフォールバック
         let mut cmd2 = tokio::process::Command::new("git");
         cmd2.args([
             "log",
             "--format=%H%x00%s%x00%an%x00%aI",
-            "--reverse",
+            &format!("--skip={}", skip),
+            &format!("--max-count={}", max_count),
         ]);
         if let Some(dir) = working_dir {
             cmd2.current_dir(dir);
@@ -175,10 +203,32 @@ pub async fn fetch_local_commits(
             let stderr = String::from_utf8_lossy(&output2.stderr);
             anyhow::bail!("git log fallback failed: {}", stderr.trim());
         }
-        return parse_git_log_page(&output2.stdout, offset, limit);
+        let mut items = parse_git_log_output(&output2.stdout);
+        items.reverse();
+        return Ok(CommitListPage { items, has_more });
     }
 
-    parse_git_log_page(&output.stdout, offset, limit)
+    let mut items = parse_git_log_output(&output.stdout);
+    items.reverse(); // newest-first → oldest-first
+    Ok(CommitListPage { items, has_more })
+}
+
+/// range 内のコミット総数を取得（SHA カウントのみ、高速）
+async fn count_commits(working_dir: Option<&str>, range: &str) -> Result<usize> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["rev-list", "--count", range]);
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().await.context("Failed to count commits")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git rev-list --count failed: {}", stderr.trim());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim()
+        .parse()
+        .context("Failed to parse commit count")
 }
 
 /// デフォルトブランチ（origin/main or origin/master）を検出
@@ -218,6 +268,8 @@ fn parse_git_log_output(stdout: &[u8]) -> Vec<PrCommit> {
         .collect()
 }
 
+/// テスト用: 全件パース済みデータから offset/limit でページ切り出し
+#[cfg(test)]
 fn parse_git_log_page(stdout: &[u8], offset: u32, limit: u32) -> Result<CommitListPage> {
     let all = parse_git_log_output(stdout);
     let has_more = all.len() > (offset + limit) as usize;
