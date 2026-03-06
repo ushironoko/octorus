@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::common::{build_pr_info, render_rally_status_bar};
+use super::common::{build_ci_status_span, build_pr_info, render_rally_status_bar};
 use crate::app::App;
 use crate::github::ChangedFile;
 
@@ -39,9 +39,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Header
     let pr_info = build_pr_info(app);
+    let ci_span = build_ci_status_span(app);
 
-    let header =
-        Paragraph::new(pr_info).block(Block::default().borders(Borders::ALL).title("octorus"));
+    let header = Paragraph::new(Line::from(vec![Span::raw(pr_info), ci_span]))
+        .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
     // File list
@@ -182,8 +183,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         )
     } else {
         format!(
-            "j/k/↑↓: move | Enter/→/l: split view | {} | v: viewed | V: viewed dir | O: browser | {}: description | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
-            filter_hint, app.config.keybindings.pr_description.display(), ai_rally_text
+            "j/k/↑↓: move | Enter/→/l: split view | {} | v: viewed | V: viewed dir | O: browser | {}: description | {}: CI checks | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
+            filter_hint, app.config.keybindings.pr_description.display(), app.config.keybindings.ci_checks.display(), ai_rally_text
         )
     };
     let footer_line = super::footer::build_footer_line(app, &help_text);

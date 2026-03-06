@@ -221,9 +221,7 @@ async fn run_headless_with_context(
         for key in &sensitive_overrides {
             eprintln!("  - {}", key);
         }
-        eprintln!(
-            "[Headless] Use --accept-local-overrides to explicitly allow these overrides."
-        );
+        eprintln!("[Headless] Use --accept-local-overrides to explicitly allow these overrides.");
         anyhow::bail!(
             "Refusing to run AI Rally with local overrides: {}. \
              Use --accept-local-overrides to bypass this check.",
@@ -976,9 +974,7 @@ mod tests {
     #[test]
     fn test_collect_sensitive_overrides_detects_ai_config_keys() {
         let mut config = Config::default();
-        config
-            .local_overrides
-            .insert("ai.reviewer".to_string());
+        config.local_overrides.insert("ai.reviewer".to_string());
         config
             .local_overrides
             .insert("ai.reviewee_additional_tools".to_string());
@@ -995,9 +991,7 @@ mod tests {
     fn test_collect_sensitive_overrides_ignores_non_sensitive_keys() {
         let mut config = Config::default();
         // Non-sensitive keys should not appear
-        config
-            .local_overrides
-            .insert("diff.theme".to_string());
+        config.local_overrides.insert("diff.theme".to_string());
         config
             .local_overrides
             .insert("keybindings.move_down".to_string());
@@ -1032,9 +1026,7 @@ mod tests {
 
         let mut config = Config::default();
         config.project_root = project_root;
-        config
-            .local_overrides
-            .insert("ai.auto_post".to_string());
+        config.local_overrides.insert("ai.auto_post".to_string());
 
         let overrides = collect_sensitive_overrides(&config);
         assert_eq!(overrides.len(), 2);

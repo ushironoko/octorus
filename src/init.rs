@@ -144,10 +144,7 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
 
     // Create .octorus directory if needed
     if !octorus_dir.exists() {
-        println!(
-            "Creating local config directory: {}",
-            octorus_dir.display()
-        );
+        println!("Creating local config directory: {}", octorus_dir.display());
         fs::create_dir_all(&octorus_dir).context("Failed to create .octorus directory")?;
     }
 
@@ -184,16 +181,12 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
 
     println!();
     println!("Local initialization complete!");
-    println!(
-        "Project-local config: {}",
-        config_path.display()
-    );
-    println!(
-        "Project-local prompts: {}",
-        prompts_dir.display()
-    );
+    println!("Project-local config: {}", config_path.display());
+    println!("Project-local prompts: {}", prompts_dir.display());
     println!();
-    println!("\x1b[36mTip:\x1b[0m Commit .octorus/ to share project-specific settings with your team.");
+    println!(
+        "\x1b[36mTip:\x1b[0m Commit .octorus/ to share project-specific settings with your team."
+    );
     println!("     Or add .octorus/ to .gitignore for personal-only configuration.");
     println!();
     println!("\x1b[33mWarning:\x1b[0m .octorus/config.toml can override \x1b[1mALL\x1b[0m settings including editor,");

@@ -782,7 +782,7 @@ impl Orchestrator {
                     });
                 }
                 Some(OrchestratorCommand::Pause) => continue, // already paused
-                Some(_) => continue,                           // stale commands
+                Some(_) => continue,                          // stale commands
             }
         }
     }

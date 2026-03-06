@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::github::PullRequestSummary;
+use crate::github::{CiStatus, PullRequestSummary};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_filter_bar = app.pr_list_filter.as_ref().is_some_and(|f| f.input_active);
@@ -188,7 +188,7 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         "Space /: filter | "
     };
     let footer_text = format!(
-        "j/k/↑↓: move | Enter: select | {}gg/G: top/bottom | O: browser | o: open | c: closed | a: all | r: refresh | q: quit | ?: help",
+        "j/k/↑↓: move | Enter: select | {}gg/G: top/bottom | O: browser | S: CI checks | o: open | c: closed | a: all | r: refresh | q: quit | ?: help",
         filter_hint
     );
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
@@ -252,6 +252,15 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
             };
             let labels_span = Span::styled(labels_str, Style::default().fg(Color::Blue));
 
+            // CI status icon
+            let ci_status = CiStatus::from_rollup(&pr.status_check_rollup);
+            let ci_span = match ci_status {
+                CiStatus::Success => Span::styled("  ✓", Style::default().fg(Color::Green)),
+                CiStatus::Failure => Span::styled("  ✕", Style::default().fg(Color::Red)),
+                CiStatus::Pending => Span::styled("  ○", Style::default().fg(Color::Yellow)),
+                CiStatus::None => Span::raw(""),
+            };
+
             let line = Line::from(vec![
                 number_span,
                 Span::raw("  "),
@@ -259,6 +268,7 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
                 Span::raw("  "),
                 author_span,
                 labels_span,
+                ci_span,
             ]);
 
             ListItem::new(line)

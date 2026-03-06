@@ -14,7 +14,7 @@ use crate::cache::SessionCache;
 use crate::config::Config;
 use crate::filter::ListFilter;
 use crate::github::comment::{DiscussionComment, ReviewComment};
-use crate::github::{self, PrStateFilter, PullRequestSummary};
+use crate::github::{self, CheckItem, CiStatus, PrStateFilter, PullRequestSummary};
 use crate::keybinding::KeyBinding;
 use crate::loader::{CommentSubmitResult, DataLoadResult, SingleFileDiffResult};
 use crate::ui;
@@ -23,25 +23,25 @@ use std::time::Instant;
 
 mod types;
 pub use types::{
-    AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState, DiffCache,
-    HelpTab, InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry, LogEventType,
-    MultilineSelection, PauseState, PermissionInfo, RefreshRequest, ReviewAction,
-    SymbolPopupState, ViewSnapshot, WatcherHandle, hash_string,
+    hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState,
+    DiffCache, HelpTab, InputMode, InternedSpan, JumpLocation, LineInputContext, LogEntry,
+    LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest, ReviewAction,
+    SymbolPopupState, ViewSnapshot, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
 
-mod polling;
+mod ai_rally;
+mod comments;
+mod diff_cache;
+mod filter;
 mod input;
 mod input_diff;
 mod input_text;
-mod comments;
-mod diff_cache;
-mod ai_rally;
 mod key_sequence;
-mod filter;
-mod pr_list;
 mod local_mode;
+mod polling;
+mod pr_list;
 mod symbol;
 #[cfg(test)]
 mod tests;
@@ -212,6 +212,16 @@ pub struct App {
     lazy_diff_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
     /// 現在オンデマンドロード要求中のファイル名（重複リクエスト防止）
     lazy_diff_pending_file: Option<String>,
+    // CI Checks state
+    pub checks: Option<Vec<CheckItem>>,
+    pub selected_check: usize,
+    pub checks_scroll_offset: usize,
+    pub checks_loading: bool,
+    pub checks_target_pr: Option<u32>,
+    pub checks_return_state: AppState,
+    pub ci_status: Option<CiStatus>,
+    checks_receiver: PrReceiver<Result<Vec<CheckItem>, String>>,
+    ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
 }
 
 impl App {
@@ -314,6 +324,15 @@ impl App {
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
+            checks: None,
+            selected_check: 0,
+            checks_scroll_offset: 0,
+            checks_loading: false,
+            checks_target_pr: None,
+            checks_return_state: AppState::FileList,
+            ci_status: None,
+            checks_receiver: None,
+            ci_status_receiver: None,
         };
 
         (app, tx)
@@ -412,6 +431,15 @@ impl App {
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
+            checks: None,
+            selected_check: 0,
+            checks_scroll_offset: 0,
+            checks_loading: false,
+            checks_target_pr: None,
+            checks_return_state: AppState::FileList,
+            ci_status: None,
+            checks_receiver: None,
+            ci_status_receiver: None,
         }
     }
 
@@ -456,6 +484,8 @@ impl App {
             self.poll_comment_submit_updates();
             self.poll_mark_viewed_updates();
             self.poll_rally_events();
+            self.poll_checks_updates();
+            self.poll_ci_status_updates();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -628,6 +658,15 @@ impl App {
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
+            checks: None,
+            selected_check: 0,
+            checks_scroll_offset: 0,
+            checks_loading: false,
+            checks_target_pr: None,
+            checks_return_state: AppState::FileList,
+            ci_status: None,
+            checks_receiver: None,
+            ci_status_receiver: None,
         }
     }
 

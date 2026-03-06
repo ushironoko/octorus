@@ -26,7 +26,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Tab header
-            Constraint::Min(0),   // Content
+            Constraint::Min(0),    // Content
             Constraint::Length(1), // Footer
         ])
         .split(frame.area());
@@ -187,7 +187,12 @@ fn render_help_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Build a config value line with optional "(local)" override marker.
-fn config_value_line(label: &str, value: &str, key: &str, overrides: &std::collections::HashSet<String>) -> Line<'static> {
+fn config_value_line(
+    label: &str,
+    value: &str,
+    key: &str,
+    overrides: &std::collections::HashSet<String>,
+) -> Line<'static> {
     let label_width = 20;
     if overrides.contains(key) {
         Line::from(vec![
@@ -269,8 +274,18 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )]),
         config_value_line("Theme", &config.diff.theme, "diff.theme", overrides),
-        config_value_line("Tab width", &config.diff.tab_width.to_string(), "diff.tab_width", overrides),
-        config_value_line("Background color", &config.diff.bg_color.to_string(), "diff.bg_color", overrides),
+        config_value_line(
+            "Tab width",
+            &config.diff.tab_width.to_string(),
+            "diff.tab_width",
+            overrides,
+        ),
+        config_value_line(
+            "Background color",
+            &config.diff.bg_color.to_string(),
+            "diff.bg_color",
+            overrides,
+        ),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Editor",
@@ -288,10 +303,30 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         )]),
         config_value_line("Reviewer", &config.ai.reviewer, "ai.reviewer", overrides),
         config_value_line("Reviewee", &config.ai.reviewee, "ai.reviewee", overrides),
-        config_value_line("Max iterations", &config.ai.max_iterations.to_string(), "ai.max_iterations", overrides),
-        config_value_line("Timeout (secs)", &config.ai.timeout_secs.to_string(), "ai.timeout_secs", overrides),
-        config_value_line("Auto post", &config.ai.auto_post.to_string(), "ai.auto_post", overrides),
-        config_value_line("Prompt dir", &prompt_dir_display, "ai.prompt_dir", overrides),
+        config_value_line(
+            "Max iterations",
+            &config.ai.max_iterations.to_string(),
+            "ai.max_iterations",
+            overrides,
+        ),
+        config_value_line(
+            "Timeout (secs)",
+            &config.ai.timeout_secs.to_string(),
+            "ai.timeout_secs",
+            overrides,
+        ),
+        config_value_line(
+            "Auto post",
+            &config.ai.auto_post.to_string(),
+            "ai.auto_post",
+            overrides,
+        ),
+        config_value_line(
+            "Prompt dir",
+            &prompt_dir_display,
+            "ai.prompt_dir",
+            overrides,
+        ),
     ];
 
     // Reviewer additional tools (always show so local overrides to empty are visible)
@@ -394,6 +429,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  View PR description",
             fmt_key(&kb.pr_description.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  View CI checks",
+            fmt_key(&kb.ci_checks.display(), key_width)
         )),
         Line::from(format!(
             "{}  Start AI Rally",
@@ -607,10 +646,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Suggest on selection",
             fmt_key(&kb.suggestion.display(), key_width)
         )),
-        Line::from(format!(
-            "{}  Cancel selection",
-            fmt_key("Esc", key_width)
-        )),
+        Line::from(format!("{}  Cancel selection", fmt_key("Esc", key_width))),
         Line::from(format!(
             "{}  Toggle markdown rich display",
             fmt_key(&kb.toggle_markdown_rich.display(), key_width)
