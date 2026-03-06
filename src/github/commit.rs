@@ -131,8 +131,7 @@ pub async fn fetch_commit_diff(repo: &str, sha: &str) -> Result<String> {
 /// ローカル git log からコミット一覧を取得（ページネーション対応）
 ///
 /// デフォルトブランチ（main/master）からの差分コミットを返す。
-/// `offset` で先頭からスキップする件数、`limit` で取得件数を指定。
-/// `limit + 1` 件を要求して `has_more` を判定する。
+/// range 内の全コミットを取得し、`offset` / `limit` で Rust 側でページネーションする。
 pub async fn fetch_local_commits(
     working_dir: Option<&str>,
     offset: u32,
@@ -145,13 +144,11 @@ pub async fn fetch_local_commits(
         .map(|b| format!("{}..HEAD", b))
         .unwrap_or_else(|| "HEAD".to_string());
 
-    let fetch_count = offset + limit + 1;
     let mut cmd = tokio::process::Command::new("git");
     cmd.args([
         "log",
         "--format=%H%x00%s%x00%an%x00%aI",
         "--reverse",
-        &format!("-{}", fetch_count),
         &range,
     ]);
     if let Some(dir) = working_dir {
@@ -166,7 +163,6 @@ pub async fn fetch_local_commits(
             "log",
             "--format=%H%x00%s%x00%an%x00%aI",
             "--reverse",
-            &format!("-{}", fetch_count),
         ]);
         if let Some(dir) = working_dir {
             cmd2.current_dir(dir);
@@ -343,5 +339,52 @@ mod tests {
             date: String::new(),
         };
         assert_eq!(commit.short_sha(), "abc1234");
+    }
+
+    /// 50件のコミットデータを生成し、ページ境界が重複しないことを検証
+    #[test]
+    fn test_parse_git_log_page_non_overlapping_pagination() {
+        // 50件のコミットを生成（git log --reverse 相当: 古い順）
+        let lines: Vec<String> = (0..50)
+            .map(|i| format!("sha{:03}\x00commit {}\x00author\x002024-01-01T00:00:00Z", i, i))
+            .collect();
+        let stdout = lines.join("\n");
+        let bytes = stdout.as_bytes();
+
+        let limit = 20u32;
+
+        // ページ1: offset=0
+        let page1 = parse_git_log_page(bytes, 0, limit).unwrap();
+        assert_eq!(page1.items.len(), 20);
+        assert!(page1.has_more);
+        assert_eq!(page1.items[0].message, "commit 0");
+        assert_eq!(page1.items[19].message, "commit 19");
+
+        // ページ2: offset=20
+        let page2 = parse_git_log_page(bytes, 20, limit).unwrap();
+        assert_eq!(page2.items.len(), 20);
+        assert!(page2.has_more);
+        assert_eq!(page2.items[0].message, "commit 20");
+        assert_eq!(page2.items[19].message, "commit 39");
+
+        // ページ3: offset=40（残り10件）
+        let page3 = parse_git_log_page(bytes, 40, limit).unwrap();
+        assert_eq!(page3.items.len(), 10);
+        assert!(!page3.has_more);
+        assert_eq!(page3.items[0].message, "commit 40");
+        assert_eq!(page3.items[9].message, "commit 49");
+
+        // ページ間で重複がないことを検証
+        let page1_shas: Vec<&str> = page1.items.iter().map(|c| c.sha.as_str()).collect();
+        let page2_shas: Vec<&str> = page2.items.iter().map(|c| c.sha.as_str()).collect();
+        let page3_shas: Vec<&str> = page3.items.iter().map(|c| c.sha.as_str()).collect();
+
+        for sha in &page1_shas {
+            assert!(!page2_shas.contains(sha), "page1 and page2 overlap: {}", sha);
+            assert!(!page3_shas.contains(sha), "page1 and page3 overlap: {}", sha);
+        }
+        for sha in &page2_shas {
+            assert!(!page3_shas.contains(sha), "page2 and page3 overlap: {}", sha);
+        }
     }
 }
