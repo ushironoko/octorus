@@ -278,19 +278,15 @@ impl App {
             // Jump to bottom (G / Shift+g)
             self.pr_description_scroll_offset = usize::MAX;
         } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
-            self.pr_description_scroll_offset =
-                self.pr_description_scroll_offset.saturating_add(1);
+            self.pr_description_scroll_offset = self.pr_description_scroll_offset.saturating_add(1);
         } else if matches!(key.code, KeyCode::Char('k') | KeyCode::Up) {
-            self.pr_description_scroll_offset =
-                self.pr_description_scroll_offset.saturating_sub(1);
+            self.pr_description_scroll_offset = self.pr_description_scroll_offset.saturating_sub(1);
         } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.pr_description_scroll_offset = self
-                .pr_description_scroll_offset
-                .saturating_add(half_page);
+            self.pr_description_scroll_offset =
+                self.pr_description_scroll_offset.saturating_add(half_page);
         } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.pr_description_scroll_offset = self
-                .pr_description_scroll_offset
-                .saturating_sub(half_page);
+            self.pr_description_scroll_offset =
+                self.pr_description_scroll_offset.saturating_sub(half_page);
         } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
             // Jump to top (g without modifiers)
             self.pr_description_scroll_offset = 0;

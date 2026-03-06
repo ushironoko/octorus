@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
-use crate::github::ChangedFile;
+use crate::github::{ChangedFile, CiStatus};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
 use crate::syntax::ParserPool;
 
@@ -681,7 +681,11 @@ impl App {
         }
     }
 
-    pub(crate) fn apply_viewed_state_to_files(&mut self, marked_paths: &[String], set_viewed: bool) {
+    pub(crate) fn apply_viewed_state_to_files(
+        &mut self,
+        marked_paths: &[String],
+        set_viewed: bool,
+    ) {
         if marked_paths.is_empty() {
             return;
         }
@@ -990,6 +994,39 @@ impl App {
                 } else {
                     self.start_prefetch_all_files();
                 }
+                // CLI 直接指定時: ci_status をバックグラウンドで取得
+                if !self.local_mode && self.ci_status.is_none() && self.ci_status_receiver.is_none()
+                {
+                    let (tx, rx) = mpsc::channel(1);
+                    self.ci_status_receiver = Some(rx);
+                    let repo = self.repo.clone();
+                    tokio::spawn(async move {
+                        let status = match crate::github::fetch_pr_checks(&repo, origin_pr).await {
+                            Ok(checks) => {
+                                use crate::github::CiStatus;
+                                if checks.is_empty() {
+                                    CiStatus::None
+                                } else {
+                                    let has_pending = checks
+                                        .iter()
+                                        .any(|c| c.bucket.as_deref() == Some("pending"));
+                                    let has_fail = checks.iter().any(|c| {
+                                        matches!(c.bucket.as_deref(), Some("fail") | Some("cancel"))
+                                    });
+                                    if has_fail {
+                                        CiStatus::Failure
+                                    } else if has_pending {
+                                        CiStatus::Pending
+                                    } else {
+                                        CiStatus::Success
+                                    }
+                                }
+                            }
+                            Err(_) => CiStatus::None,
+                        };
+                        let _ = tx.send(status).await;
+                    });
+                }
                 if should_start_rally {
                     self.start_ai_rally_on_load = false; // Clear the flag
                     self.start_ai_rally();
@@ -1162,4 +1199,52 @@ impl App {
         }
     }
 
+    pub(crate) fn poll_checks_updates(&mut self) {
+        let Some((origin_pr, ref mut rx)) = self.checks_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(items)) => {
+                // クロスPR汚染防止
+                if self.checks_target_pr == Some(origin_pr) {
+                    self.checks = Some(items);
+                    self.checks_loading = false;
+                }
+                self.checks_receiver = None;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Failed to fetch PR checks: {}", e);
+                if self.checks_target_pr == Some(origin_pr) {
+                    self.checks = Some(vec![]);
+                    self.checks_loading = false;
+                }
+                self.checks_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                if self.checks_target_pr == Some(origin_pr) {
+                    self.checks_loading = false;
+                }
+                self.checks_receiver = None;
+            }
+        }
+    }
+
+    pub(crate) fn poll_ci_status_updates(&mut self) {
+        let Some(ref mut rx) = self.ci_status_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(status) => {
+                self.ci_status = Some(status);
+                self.ci_status_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.ci_status_receiver = None;
+            }
+        }
+    }
 }

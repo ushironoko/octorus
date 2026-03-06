@@ -1,4 +1,5 @@
 mod ai_rally;
+mod checks_list;
 mod comment_list;
 mod common;
 pub mod diff_view;
@@ -74,10 +75,11 @@ pub fn cleanup_keyboard_enhancement() {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // PR一覧画面・ヘルプ画面・PR description画面はデータ状態に依存しないためスキップ
+    // PR一覧画面・ヘルプ画面・PR description画面・CI Checks画面はデータ状態に依存しないためスキップ
     if app.state != AppState::PullRequestList
         && app.state != AppState::Help
         && app.state != AppState::PrDescription
+        && app.state != AppState::ChecksList
     {
         // Loading状態の場合は専用画面を表示
         if matches!(app.data_state, DataState::Loading) {
@@ -100,6 +102,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::AiRally => ai_rally::render(frame, app),
         AppState::SplitViewFileList | AppState::SplitViewDiff => split_view::render(frame, app),
         AppState::PrDescription => pr_description::render(frame, app),
+        AppState::ChecksList => checks_list::render(frame, app),
         AppState::GitLogSplitCommitList | AppState::GitLogSplitDiff => {
             git_log::render_split(frame, app)
         }

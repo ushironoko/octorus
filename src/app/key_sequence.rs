@@ -1,7 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 
-use crate::keybinding::{event_to_keybinding, KeyBinding, KeySequence, SequenceMatch, SEQUENCE_TIMEOUT};
+use crate::keybinding::{
+    event_to_keybinding, KeyBinding, KeySequence, SequenceMatch, SEQUENCE_TIMEOUT,
+};
 
 use super::App;
 

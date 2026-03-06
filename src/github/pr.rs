@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::client::{gh_api, gh_api_graphql, gh_api_paginate, gh_command, FieldValue};
+use super::client::{
+    gh_api, gh_api_graphql, gh_api_paginate, gh_command, gh_command_allow_exit_codes, FieldValue,
+};
 use crate::app::ReviewAction;
 
 /// PR状態フィルタ（型安全）
@@ -41,6 +43,72 @@ impl PrStateFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusCheckRollupItem {
+    #[serde(rename = "__typename")]
+    pub type_name: String,
+    pub name: Option<String>,
+    pub status: Option<String>,
+    pub conclusion: Option<String>,
+    pub context: Option<String>,
+    pub state: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiStatus {
+    Success,
+    Failure,
+    Pending,
+    None,
+}
+
+impl CiStatus {
+    pub fn from_rollup(items: &[StatusCheckRollupItem]) -> Self {
+        if items.is_empty() {
+            return Self::None;
+        }
+        let mut has_pending = false;
+        for item in items {
+            match item.type_name.as_str() {
+                "CheckRun" => match item.conclusion.as_deref() {
+                    Some("SUCCESS") | Some("NEUTRAL") | Some("SKIPPED") => {}
+                    Some(_) => return Self::Failure,
+                    None => {
+                        has_pending = true;
+                    }
+                },
+                "StatusContext" => match item.state.as_deref() {
+                    Some("SUCCESS") => {}
+                    Some("PENDING") | Some("EXPECTED") => has_pending = true,
+                    Some(_) => return Self::Failure,
+                    None => {}
+                },
+                _ => {}
+            }
+        }
+        if has_pending {
+            Self::Pending
+        } else {
+            Self::Success
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckItem {
+    pub name: String,
+    pub state: String,
+    pub bucket: Option<String>,
+    pub link: Option<String>,
+    #[serde(default)]
+    pub workflow: String,
+    pub description: Option<String>,
+    #[serde(rename = "startedAt")]
+    pub started_at: Option<String>,
+    #[serde(rename = "completedAt")]
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequestSummary {
     pub number: u32,
     pub title: String,
@@ -51,6 +119,8 @@ pub struct PullRequestSummary {
     pub labels: Vec<Label>,
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
+    #[serde(default, rename = "statusCheckRollup")]
+    pub status_check_rollup: Vec<StatusCheckRollupItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,7 +379,7 @@ pub async fn fetch_pr_list(repo: &str, state: PrStateFilter, limit: u32) -> Resu
         "-s",
         state.as_gh_arg(),
         "--json",
-        "number,title,state,author,isDraft,labels,updatedAt",
+        "number,title,state,author,isDraft,labels,updatedAt,statusCheckRollup",
         "--limit",
         &(limit + 1).to_string(),
     ])
@@ -340,7 +410,7 @@ pub async fn fetch_pr_list_with_offset(
         "-s",
         state.as_gh_arg(),
         "--json",
-        "number,title,state,author,isDraft,labels,updatedAt",
+        "number,title,state,author,isDraft,labels,updatedAt,statusCheckRollup",
         "--limit",
         &fetch_count.to_string(),
     ])
@@ -360,6 +430,23 @@ pub async fn fetch_pr_list_with_offset(
         .collect();
 
     Ok(PrListPage { items, has_more })
+}
+
+pub async fn fetch_pr_checks(repo: &str, pr_number: u32) -> Result<Vec<CheckItem>> {
+    let output = gh_command_allow_exit_codes(
+        &[
+            "pr",
+            "checks",
+            &pr_number.to_string(),
+            "-R",
+            repo,
+            "--json",
+            "name,state,bucket,link,workflow,description,startedAt,completedAt",
+        ],
+        &[8], // exit code 8 = checks pending
+    )
+    .await?;
+    serde_json::from_str(&output).context("Failed to parse PR checks response")
 }
 
 #[cfg(test)]
@@ -385,5 +472,150 @@ mod tests {
         assert_eq!(PrStateFilter::Open.next(), PrStateFilter::Closed);
         assert_eq!(PrStateFilter::Closed.next(), PrStateFilter::All);
         assert_eq!(PrStateFilter::All.next(), PrStateFilter::Open);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_empty() {
+        assert_eq!(CiStatus::from_rollup(&[]), CiStatus::None);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_all_success() {
+        let items = vec![
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("build".to_string()),
+                status: Some("COMPLETED".to_string()),
+                conclusion: Some("SUCCESS".to_string()),
+                context: None,
+                state: None,
+            },
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("lint".to_string()),
+                status: Some("COMPLETED".to_string()),
+                conclusion: Some("NEUTRAL".to_string()),
+                context: None,
+                state: None,
+            },
+        ];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Success);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_failure() {
+        let items = vec![
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("build".to_string()),
+                status: Some("COMPLETED".to_string()),
+                conclusion: Some("SUCCESS".to_string()),
+                context: None,
+                state: None,
+            },
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("test".to_string()),
+                status: Some("COMPLETED".to_string()),
+                conclusion: Some("FAILURE".to_string()),
+                context: None,
+                state: None,
+            },
+        ];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Failure);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_pending() {
+        let items = vec![
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("build".to_string()),
+                status: Some("COMPLETED".to_string()),
+                conclusion: Some("SUCCESS".to_string()),
+                context: None,
+                state: None,
+            },
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("deploy".to_string()),
+                status: Some("IN_PROGRESS".to_string()),
+                conclusion: None,
+                context: None,
+                state: None,
+            },
+        ];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Pending);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_status_context() {
+        let items = vec![StatusCheckRollupItem {
+            type_name: "StatusContext".to_string(),
+            name: None,
+            status: None,
+            conclusion: None,
+            context: Some("ci/test".to_string()),
+            state: Some("PENDING".to_string()),
+        }];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Pending);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_skipped() {
+        let items = vec![StatusCheckRollupItem {
+            type_name: "CheckRun".to_string(),
+            name: Some("skip-check".to_string()),
+            status: Some("COMPLETED".to_string()),
+            conclusion: Some("SKIPPED".to_string()),
+            context: None,
+            state: None,
+        }];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Success);
+    }
+
+    #[test]
+    fn test_check_item_deserialize() {
+        let json = r#"{
+            "name": "build",
+            "state": "SUCCESS",
+            "bucket": "pass",
+            "link": "https://example.com/run/1",
+            "workflow": "CI",
+            "description": "Build succeeded",
+            "startedAt": "2024-01-01T00:00:00Z",
+            "completedAt": "2024-01-01T00:05:00Z"
+        }"#;
+        let item: CheckItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.name, "build");
+        assert_eq!(item.bucket.as_deref(), Some("pass"));
+        assert_eq!(item.link.as_deref(), Some("https://example.com/run/1"));
+    }
+
+    #[test]
+    fn test_check_item_deserialize_minimal() {
+        let json = r#"{
+            "name": "test",
+            "state": "PENDING",
+            "workflow": ""
+        }"#;
+        let item: CheckItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.name, "test");
+        assert!(item.bucket.is_none());
+        assert!(item.link.is_none());
+    }
+
+    #[test]
+    fn test_status_check_rollup_item_deserialize() {
+        let json = r#"{
+            "__typename": "CheckRun",
+            "name": "build",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS"
+        }"#;
+        let item: StatusCheckRollupItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.type_name, "CheckRun");
+        assert_eq!(item.name.as_deref(), Some("build"));
+        assert_eq!(item.conclusion.as_deref(), Some("SUCCESS"));
     }
 }

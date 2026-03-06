@@ -1,12 +1,14 @@
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
+    text::Span,
     widgets::Paragraph,
     Frame,
 };
 
 use crate::ai::RallyState;
 use crate::app::{App, DataState};
+use crate::github::CiStatus;
 
 /// Build PR info string for header display (shared between file_list and ai_rally)
 pub fn build_pr_info(app: &App) -> String {
@@ -23,6 +25,18 @@ pub fn build_pr_info(app: &App) -> String {
                 None => "PR".to_string(),
             },
         }
+    }
+}
+
+/// Build CI status span with color for header display
+pub fn build_ci_status_span(app: &App) -> Span<'static> {
+    match app.ci_status {
+        Some(CiStatus::Success) => Span::styled("  ✓ CI passed", Style::default().fg(Color::Green)),
+        Some(CiStatus::Failure) => Span::styled("  ✕ CI failed", Style::default().fg(Color::Red)),
+        Some(CiStatus::Pending) => {
+            Span::styled("  ○ CI pending", Style::default().fg(Color::Yellow))
+        }
+        Some(CiStatus::None) | None => Span::raw(""),
     }
 }
 

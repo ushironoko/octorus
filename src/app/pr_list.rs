@@ -7,6 +7,8 @@ use crate::filter::ListFilter;
 use crate::github::{self, PrStateFilter};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
+use crate::github::CiStatus;
+
 use super::{App, AppState, DataState};
 
 impl App {
@@ -210,6 +212,19 @@ impl App {
             return Ok(());
         }
 
+        // CI Checks
+        if self.matches_single_key(&key, &kb.ci_checks) {
+            if self.is_filter_selection_empty("pr") {
+                return Ok(());
+            }
+            if let Some(ref prs) = self.pr_list {
+                if let Some(pr) = prs.get(self.selected_pr) {
+                    self.open_checks_list(pr.number);
+                }
+            }
+            return Ok(());
+        }
+
         // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::PullRequestList;
@@ -280,6 +295,22 @@ impl App {
         self.diff_cache = None;
         self.selected_file = 0;
         self.file_list_scroll_offset = 0;
+        self.checks = None;
+        self.checks_loading = false;
+        self.checks_target_pr = None;
+        self.checks_receiver = None;
+
+        // Compute ci_status from PR summary's statusCheckRollup
+        if let Some(ref prs) = self.pr_list {
+            if let Some(pr_summary) = prs.iter().find(|p| p.number == pr_number) {
+                let status = CiStatus::from_rollup(&pr_summary.status_check_rollup);
+                self.ci_status = Some(status);
+            } else {
+                self.ci_status = None;
+            }
+        } else {
+            self.ci_status = None;
+        }
 
         // Apply pending AI Rally flag
         if self.pending_ai_rally {
@@ -350,6 +381,12 @@ impl App {
             self.selected_line = 0;
             self.scroll_offset = 0;
             self.file_list_filter = None;
+            self.checks = None;
+            self.checks_loading = false;
+            self.checks_target_pr = None;
+            self.checks_receiver = None;
+            self.ci_status = None;
+            self.ci_status_receiver = None;
 
             self.state = AppState::PullRequestList;
         }

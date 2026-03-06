@@ -149,6 +149,7 @@ pub enum AppState {
     SplitViewFileList,
     SplitViewDiff,
     PrDescription,
+    ChecksList,
     GitLogSplitCommitList,
     GitLogSplitDiff,
     GitLogDiffView,
@@ -422,4 +423,3 @@ impl GitLogState {
         }
     }
 }
-

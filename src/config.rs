@@ -146,6 +146,9 @@ pub struct KeybindingsConfig {
     // PR description
     pub pr_description: KeySequence,
 
+    // CI Checks
+    pub ci_checks: KeySequence,
+
     // Git log
     pub git_log: KeySequence,
 }
@@ -228,6 +231,9 @@ impl Default for KeybindingsConfig {
             // PR description
             pr_description: KeySequence::single(KeyBinding::char('d')),
 
+            // CI Checks
+            ci_checks: KeySequence::single(KeyBinding::char('S')),
+
             // Git log
             git_log: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('l')),
         }
@@ -279,6 +285,7 @@ impl KeybindingsConfig {
             ("filter", &self.filter),
             ("multiline_select", &self.multiline_select),
             ("pr_description", &self.pr_description),
+            ("ci_checks", &self.ci_checks),
             ("git_log", &self.git_log),
         ];
 
@@ -419,6 +426,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("filter", &seq_to_value(&self.filter))?;
         map.serialize_entry("multiline_select", &seq_to_value(&self.multiline_select))?;
         map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
+        map.serialize_entry("ci_checks", &seq_to_value(&self.ci_checks))?;
         map.serialize_entry("git_log", &seq_to_value(&self.git_log))?;
 
         map.end()
@@ -940,8 +948,7 @@ max_iterations = 5
         .unwrap();
         fs::write(&local, "").unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.reviewer, "codex");
         assert_eq!(config.ai.max_iterations, 5);
     }
@@ -970,8 +977,7 @@ max_iterations = 3
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.reviewer, "codex"); // inherited from global
         assert_eq!(config.ai.max_iterations, 3); // overridden by local
     }
@@ -1002,8 +1008,7 @@ timeout_secs = 300
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.reviewer, "codex");
         assert_eq!(config.ai.reviewee, "claude");
         assert_eq!(config.ai.max_iterations, 10);
@@ -1033,8 +1038,7 @@ reviewer_additional_tools = ["WebFetch"]
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.reviewer_additional_tools, vec!["WebFetch"]);
     }
 
@@ -1055,8 +1059,7 @@ max_iterations = 3
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.reviewer, "codex");
         assert_eq!(config.ai.max_iterations, 3);
     }
@@ -1085,8 +1088,7 @@ move_down = "n"
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.keybindings.move_down.display(), "n");
         assert_eq!(config.keybindings.move_up.display(), "k");
     }
@@ -1114,8 +1116,7 @@ page_down = { key = "f", ctrl = true }
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.keybindings.page_down.display(), "Ctrl-f");
     }
 
@@ -1142,8 +1143,7 @@ jump_to_first = "G"
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.keybindings.jump_to_first.display(), "G");
     }
 
@@ -1170,8 +1170,7 @@ tab_width = 0
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.diff.tab_width, 1);
     }
 
@@ -1181,8 +1180,7 @@ tab_width = 0
         let global = dir.path().join("nonexistent_global.toml");
         let local = dir.path().join("nonexistent_local.toml");
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         // Should use all defaults
         assert_eq!(config.ai.reviewer, "claude");
         assert_eq!(config.ai.max_iterations, 10);
@@ -1196,8 +1194,7 @@ tab_width = 0
         let local = dir.path().join("local.toml");
         fs::write(&global, "").unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.project_root, dir.path());
     }
 
@@ -1210,8 +1207,7 @@ tab_width = 0
         fs::write(&global, r#"editor = "vim""#).unwrap();
         fs::write(&local, r#"editor = "malicious; rm -rf /""#).unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         // Global editor should be preserved, local editor should be stripped
         assert_eq!(config.editor.as_deref(), Some("vim"));
         // local_overrides should NOT contain "editor"
@@ -1227,8 +1223,7 @@ tab_width = 0
         fs::write(&global, "").unwrap();
         fs::write(&local, r#"editor = "malicious""#).unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         // No global editor, local editor stripped -> None
         assert!(config.editor.is_none());
     }
@@ -1251,10 +1246,11 @@ auto_post = true
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert!(config.local_overrides.contains("ai.reviewer"));
-        assert!(config.local_overrides.contains("ai.reviewee_additional_tools"));
+        assert!(config
+            .local_overrides
+            .contains("ai.reviewee_additional_tools"));
         assert!(config.local_overrides.contains("ai.auto_post"));
     }
 
@@ -1303,8 +1299,7 @@ prompt_dir = "../../evil"
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         // Traversal path should be rejected, prompt_dir reset to None
         assert!(config.ai.prompt_dir.is_none());
     }
@@ -1325,8 +1320,7 @@ prompt_dir = "/absolute/path"
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert!(config.ai.prompt_dir.is_none());
     }
 
@@ -1345,8 +1339,7 @@ prompt_dir = "/home/user/prompts"
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         // Global config absolute paths are allowed
         assert_eq!(config.ai.prompt_dir.as_deref(), Some("/home/user/prompts"));
     }
@@ -1367,8 +1360,7 @@ prompt_dir = ".octorus/prompts"
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.prompt_dir.as_deref(), Some(".octorus/prompts"));
     }
 
@@ -1387,8 +1379,7 @@ max_iterations = 999999
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.max_iterations, 100);
     }
 
@@ -1407,8 +1398,7 @@ timeout_secs = 999999
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.timeout_secs, 7200);
     }
 
@@ -1428,8 +1418,7 @@ timeout_secs = 3600
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.ai.max_iterations, 50);
         assert_eq!(config.ai.timeout_secs, 3600);
     }
