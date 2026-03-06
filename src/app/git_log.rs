@@ -63,6 +63,10 @@ impl App {
             gl.diff_error = None;
             gl.selected_line = 0;
             gl.scroll_offset = 0;
+            // Cancel any in-flight diff fetch to prevent stale responses
+            // from overwriting the current cache-hit result
+            gl.pending_diff_sha = None;
+            gl.commit_diff_receiver = None;
             return;
         }
 
@@ -558,5 +562,63 @@ mod tests {
         assert_eq!(gl.diff_cache_map.len(), MAX_GIT_LOG_DIFF_CACHE - 1);
         // sha00 (distance 5) is farther than sha09 (distance 4)
         assert!(!gl.diff_cache_map.contains_key("sha00"));
+    }
+
+    /// Regression test: moving to a cached commit while an uncached fetch is
+    /// in-flight must cancel the stale receiver/pending_diff_sha so that the
+    /// stale response cannot overwrite the cache-hit result.
+    #[test]
+    fn test_cache_hit_clears_inflight_state() {
+        let mut app = App::new_for_test();
+        let mut gl = GitLogState::new();
+
+        gl.commits = (0..3)
+            .map(|i| crate::github::PrCommit {
+                sha: format!("sha{}", i),
+                message: format!("commit {}", i),
+                author_name: "author".to_string(),
+                author_login: None,
+                date: String::new(),
+            })
+            .collect();
+
+        // Pre-populate cache for commit 1 ("sha1")
+        gl.diff_cache_map.insert(
+            "sha1".to_string(),
+            DiffCache {
+                file_index: 1,
+                patch_hash: 111,
+                lines: vec![],
+                interner: lasso::Rodeo::default(),
+                highlighted: false,
+                markdown_rich: false,
+            },
+        );
+
+        // Simulate in-flight fetch for commit 0 ("sha0")
+        let (tx, rx) = mpsc::channel(1);
+        gl.commit_diff_receiver = Some(rx);
+        gl.pending_diff_sha = Some("sha0".to_string());
+        gl.diff_loading = true;
+
+        // Now select commit 1 (which is cached)
+        gl.selected_commit = 1;
+        app.git_log_state = Some(gl);
+
+        app.start_fetch_commit_diff();
+
+        let gl = app.git_log_state.as_ref().unwrap();
+
+        // Cache hit should have cleared the stale in-flight state
+        assert!(gl.pending_diff_sha.is_none(), "pending_diff_sha should be cleared on cache hit");
+        assert!(gl.commit_diff_receiver.is_none(), "commit_diff_receiver should be cleared on cache hit");
+        assert!(!gl.diff_loading, "diff_loading should be false on cache hit");
+
+        // The diff_cache should reflect the cached commit 1 data
+        let cache = gl.diff_cache.as_ref().unwrap();
+        assert_eq!(cache.patch_hash, 111);
+
+        // Ensure the sender is now orphaned (receiver dropped)
+        drop(tx);
     }
 }

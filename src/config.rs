@@ -419,6 +419,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("filter", &seq_to_value(&self.filter))?;
         map.serialize_entry("multiline_select", &seq_to_value(&self.multiline_select))?;
         map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
+        map.serialize_entry("git_log", &seq_to_value(&self.git_log))?;
 
         map.end()
     }
@@ -1456,5 +1457,14 @@ timeout_secs = 3600
         assert!(serialized.contains("pr_description"));
         let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed.pr_description.display(), "d");
+    }
+
+    #[test]
+    fn test_git_log_keybinding_serialize_roundtrip() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("git_log"));
+        let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.git_log.display(), "gl");
     }
 }
