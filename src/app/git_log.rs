@@ -110,6 +110,86 @@ impl App {
         }
     }
 
+    /// コミット一覧取得後にバックグラウンドで先頭 N 件の diff をプリフェッチ
+    ///
+    /// 選択中のコミットは `start_fetch_commit_diff()` が処理するためスキップする。
+    ///
+    /// 2フェーズ構成:
+    ///   Phase 1: 並列 `tokio::spawn` で diff テキストを fetch（ネットワーク I/O 並列化）
+    ///   Phase 2: 単一 `spawn_blocking` で順次ハイライト構築（`ParserPool` 共有）
+    ///
+    /// 既存の `start_prefetch_all_files()` パターンに準拠。
+    fn start_prefetch_commit_diffs(&mut self) {
+        let Some(ref mut gl) = self.git_log_state else {
+            return;
+        };
+
+        // 既存のプリフェッチを中断
+        gl.prefetch_diff_receiver = None;
+
+        let selected_sha = gl
+            .commits
+            .get(gl.selected_commit)
+            .map(|c| c.sha.clone())
+            .unwrap_or_default();
+
+        let shas_to_prefetch: Vec<String> = gl
+            .commits
+            .iter()
+            .take(MAX_GIT_LOG_DIFF_CACHE)
+            .filter(|c| c.sha != selected_sha && !gl.diff_cache_map.contains_key(&c.sha))
+            .map(|c| c.sha.clone())
+            .collect();
+
+        if shas_to_prefetch.is_empty() {
+            return;
+        }
+
+        // Phase 1 → Phase 2 の中間チャネル（fetch結果をhighlighterへ渡す）
+        let (fetch_tx, mut fetch_rx) =
+            mpsc::channel::<(String, String)>(MAX_GIT_LOG_DIFF_CACHE);
+        // Phase 2 → poll の結果チャネル
+        let (result_tx, result_rx) = mpsc::channel(MAX_GIT_LOG_DIFF_CACHE);
+        gl.prefetch_diff_receiver = Some(result_rx);
+
+        let local_mode = self.local_mode;
+        let repo = self.repo.clone();
+        let working_dir = self.working_dir.clone();
+        let theme = self.config.diff.theme.clone();
+        let tab_width = self.config.diff.tab_width;
+
+        // Phase 1: 並列 async fetch
+        for sha in shas_to_prefetch {
+            let tx = fetch_tx.clone();
+            let repo = repo.clone();
+            let working_dir = working_dir.clone();
+
+            tokio::spawn(async move {
+                let diff_text = if local_mode {
+                    github::fetch_local_commit_diff(working_dir.as_deref(), &sha).await
+                } else {
+                    github::fetch_commit_diff(&repo, &sha).await
+                };
+                if let Ok(diff_text) = diff_text {
+                    let _ = tx.send((sha, diff_text)).await;
+                }
+            });
+        }
+        drop(fetch_tx); // 全 fetch 完了で fetch_rx が Disconnected になる
+
+        // Phase 2: 単一 spawn_blocking で順次ハイライト（ParserPool 共有）
+        tokio::task::spawn_blocking(move || {
+            let mut parser_pool = ParserPool::new();
+            while let Some((sha, diff_text)) = fetch_rx.blocking_recv() {
+                let cache =
+                    build_commit_diff_cache(&diff_text, &theme, &mut parser_pool, tab_width);
+                if result_tx.blocking_send((sha, cache)).is_err() {
+                    break; // receiver がドロップされた
+                }
+            }
+        });
+    }
+
     /// ポーリング: コミット一覧 + diff の受信
     pub(crate) fn poll_git_log_updates(&mut self) {
         let Some(ref mut gl) = self.git_log_state else {
@@ -124,10 +204,11 @@ impl App {
                         gl.commits = commits;
                         gl.commits_loading = false;
                         gl.commits_error = None;
-                        // 最初のコミットの diff を取得開始
+                        // 最初のコミットの diff を取得開始 + 残りをプリフェッチ
                         if !gl.commits.is_empty() {
                             gl.commit_list_receiver = None;
                             self.start_fetch_commit_diff();
+                            self.start_prefetch_commit_diffs();
                             return;
                         }
                     }
@@ -218,6 +299,49 @@ impl App {
                     gl.diff_cache = Some(hl_cache);
                 }
                 gl.highlight_receiver = None;
+            }
+        }
+
+        // プリフェッチ diff の受信（1 tick で複数結果をドレイン）
+        // gl の二重借用を避けるため、receiver を一時的に take する
+        if let Some(mut rx) = gl.prefetch_diff_receiver.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok((sha, hl_cache)) => {
+                        // キャッシュ済みならスキップ
+                        if gl.diff_cache_map.contains_key(&sha) {
+                            continue;
+                        }
+                        Self::evict_git_log_diff_cache(gl, &sha);
+                        gl.diff_cache_map.insert(sha.clone(), DiffCache {
+                            file_index: 0,
+                            patch_hash: hl_cache.patch_hash,
+                            lines: hl_cache.lines.clone(),
+                            interner: hl_cache.interner.clone(),
+                            highlighted: true,
+                            markdown_rich: false,
+                        });
+
+                        // 現在選択中でまだプレーンキャッシュなら HL にアップグレード
+                        let is_current = gl
+                            .commits
+                            .get(gl.selected_commit)
+                            .is_some_and(|c| c.sha == sha);
+                        if is_current
+                            && gl
+                                .diff_cache
+                                .as_ref()
+                                .is_some_and(|c| !c.highlighted)
+                        {
+                            gl.diff_cache = Some(hl_cache);
+                        }
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        gl.prefetch_diff_receiver = Some(rx);
+                        break;
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
             }
         }
     }
