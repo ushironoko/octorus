@@ -212,9 +212,7 @@ impl App {
                 // gl: Git Log 画面
                 if self.try_match_sequence(&kb.git_log) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    if !self.local_mode {
-                        self.open_git_log();
-                    }
+                    self.open_git_log();
                     return Ok(());
                 }
 

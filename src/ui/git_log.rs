@@ -130,8 +130,12 @@ fn render_commit_list_pane(
         .split(area);
 
     // Header
-    let pr_info = format!("PR #{}", app.pr_number.unwrap_or(0));
-    let header = Paragraph::new(pr_info).block(
+    let header_info = if app.is_local_mode() {
+        "Local branch".to_string()
+    } else {
+        format!("PR #{}", app.pr_number.unwrap_or(0))
+    };
+    let header = Paragraph::new(header_info).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
