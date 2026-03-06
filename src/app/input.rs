@@ -80,6 +80,15 @@ impl App {
                     }
                     AppState::PrDescription => self.handle_pr_description_input(key, terminal)?,
                     AppState::ChecksList => self.handle_checks_list_input(key)?,
+                    AppState::GitLogSplitCommitList => {
+                        self.handle_git_log_split_commit_list_input(key, terminal)?
+                    }
+                    AppState::GitLogSplitDiff => {
+                        self.handle_git_log_split_diff_input(key, terminal)?
+                    }
+                    AppState::GitLogDiffView => {
+                        self.handle_git_log_diff_view_input(key, terminal)?
+                    }
                 }
             }
         }
@@ -176,7 +185,7 @@ impl App {
             return Ok(());
         }
 
-        // Space+/ シーケンス処理（ファイル一覧でのフィルタ起動）
+        // Space+/ / gl シーケンス処理（ファイル一覧でのフィルタ起動 / Git Log）
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -200,11 +209,20 @@ impl App {
                     return Ok(());
                 }
 
+                // gl: Git Log 画面
+                if self.try_match_sequence(&kb.git_log) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    self.open_git_log();
+                    return Ok(());
+                }
+
                 // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
                 // シーケンス開始チェック
-                if self.key_could_match_sequence(&key, &kb.filter) {
+                let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
+                let could_start_gl = self.key_could_match_sequence(&key, &kb.git_log);
+                if could_start_filter || could_start_gl {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }

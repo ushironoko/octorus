@@ -24,9 +24,9 @@ use std::time::Instant;
 mod types;
 pub use types::{
     hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState,
-    DiffCache, HelpTab, InputMode, InternedSpan, JumpLocation, LineInputContext, LogEntry,
-    LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest, ReviewAction,
-    SymbolPopupState, ViewSnapshot, WatcherHandle,
+    DiffCache, GitLogState, HelpTab, InputMode, InternedSpan, JumpLocation, LineInputContext,
+    LogEntry, LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest,
+    ReviewAction, SymbolPopupState, ViewSnapshot, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -38,6 +38,7 @@ mod filter;
 mod input;
 mod input_diff;
 mod input_text;
+mod git_log;
 mod key_sequence;
 mod local_mode;
 mod polling;
@@ -222,6 +223,8 @@ pub struct App {
     pub ci_status: Option<CiStatus>,
     checks_receiver: PrReceiver<Result<Vec<CheckItem>, String>>,
     ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
+    /// Git Log 画面の全状態（None = 非表示）
+    pub git_log_state: Option<GitLogState>,
 }
 
 impl App {
@@ -333,6 +336,7 @@ impl App {
             ci_status: None,
             checks_receiver: None,
             ci_status_receiver: None,
+            git_log_state: None,
         };
 
         (app, tx)
@@ -440,6 +444,7 @@ impl App {
             ci_status: None,
             checks_receiver: None,
             ci_status_receiver: None,
+            git_log_state: None,
         }
     }
 
@@ -486,6 +491,7 @@ impl App {
             self.poll_rally_events();
             self.poll_checks_updates();
             self.poll_ci_status_updates();
+            self.poll_git_log_updates();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -667,6 +673,7 @@ impl App {
             ci_status: None,
             checks_receiver: None,
             ci_status_receiver: None,
+            git_log_state: None,
         }
     }
 

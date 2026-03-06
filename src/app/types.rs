@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::diff::LineType;
 use crate::github::comment::{DiscussionComment, ReviewComment};
-use crate::github::{ChangedFile, PullRequest};
+use crate::github::{ChangedFile, PrCommit, PullRequest};
 
 /// コメントのdiff内位置を表す構造体
 #[derive(Debug, Clone)]
@@ -149,6 +150,9 @@ pub enum AppState {
     SplitViewDiff,
     PrDescription,
     ChecksList,
+    GitLogSplitCommitList,
+    GitLogSplitDiff,
+    GitLogDiffView,
 }
 
 /// Variant for diff view handling (fullscreen vs split pane)
@@ -354,4 +358,76 @@ pub enum DataState {
         files: Vec<ChangedFile>,
     },
     Error(String),
+}
+
+/// Git Log 画面の全状態（receiver も含めて集約）
+///
+/// `App.git_log_state: Option<GitLogState>` として保持。
+/// 画面クローズ時に `None` で全破棄。
+pub struct GitLogState {
+    pub commits: Vec<PrCommit>,
+    pub selected_commit: usize,
+    pub commit_list_scroll_offset: usize,
+    /// 現在選択中コミットの raw unified diff
+    pub commit_diff: Option<String>,
+    /// plain diff cache（シンタックスハイライトなし）
+    pub diff_cache: Option<DiffCache>,
+    pub selected_line: usize,
+    pub scroll_offset: usize,
+    pub diff_loading: bool,
+    pub commits_loading: bool,
+    /// 追加コミットが存在するか（無限スクロール用）
+    pub commits_has_more: bool,
+    /// 現在のページ番号（GitHub API: 1-indexed, ローカル: offset計算用）
+    pub commits_page: u32,
+    /// コミット一覧取得エラー
+    pub commits_error: Option<String>,
+    /// コミット diff 取得エラー
+    pub diff_error: Option<String>,
+    /// 非同期レスポンス競合防止: 現在取得中のコミット SHA
+    pub pending_diff_sha: Option<String>,
+    /// コミット一覧レシーバー
+    pub(crate) commit_list_receiver:
+        Option<mpsc::Receiver<Result<crate::github::CommitListPage, String>>>,
+    /// コミット diff レシーバー（(sha, diff_text) タプル）
+    pub(crate) commit_diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
+    /// ハイライト済み diff キャッシュ レシーバー（(sha, DiffCache) タプル）
+    pub(crate) highlight_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
+    /// プリフェッチ diff レシーバー（複数コミットの並列ハイライト済みキャッシュ）
+    pub(crate) prefetch_diff_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
+    /// コミット diff キャッシュ（sha -> DiffCache, 上限は config.git_log.max_diff_cache）
+    pub diff_cache_map: HashMap<String, DiffCache>,
+}
+
+
+impl Default for GitLogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GitLogState {
+    pub fn new() -> Self {
+        Self {
+            commits: Vec::new(),
+            selected_commit: 0,
+            commit_list_scroll_offset: 0,
+            commit_diff: None,
+            diff_cache: None,
+            selected_line: 0,
+            scroll_offset: 0,
+            diff_loading: false,
+            commits_loading: true,
+            commits_has_more: false,
+            commits_page: 1,
+            commits_error: None,
+            diff_error: None,
+            pending_diff_sha: None,
+            commit_list_receiver: None,
+            commit_diff_receiver: None,
+            highlight_receiver: None,
+            prefetch_diff_receiver: None,
+            diff_cache_map: HashMap::new(),
+        }
+    }
 }
