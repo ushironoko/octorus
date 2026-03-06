@@ -190,10 +190,12 @@ impl App {
             .map(|c| c.sha.clone())
             .unwrap_or_default();
 
+        let max_cache = self.config.git_log.max_diff_cache;
+
         let shas_to_prefetch: Vec<String> = gl
             .commits
             .iter()
-            .take(MAX_GIT_LOG_DIFF_CACHE)
+            .take(max_cache)
             .filter(|c| c.sha != selected_sha && !gl.diff_cache_map.contains_key(&c.sha))
             .map(|c| c.sha.clone())
             .collect();
@@ -203,10 +205,9 @@ impl App {
         }
 
         // Phase 1 → Phase 2 の中間チャネル（fetch結果をhighlighterへ渡す）
-        let (fetch_tx, mut fetch_rx) =
-            mpsc::channel::<(String, String)>(MAX_GIT_LOG_DIFF_CACHE);
+        let (fetch_tx, mut fetch_rx) = mpsc::channel::<(String, String)>(max_cache);
         // Phase 2 → poll の結果チャネル
-        let (result_tx, result_rx) = mpsc::channel(MAX_GIT_LOG_DIFF_CACHE);
+        let (result_tx, result_rx) = mpsc::channel(max_cache);
         gl.prefetch_diff_receiver = Some(result_rx);
 
         let local_mode = self.local_mode;
@@ -337,9 +338,10 @@ impl App {
         }
 
         // ハイライト済み diff キャッシュの受信
+        let max_cache = self.config.git_log.max_diff_cache;
         if let Some(ref mut rx) = gl.highlight_receiver {
             if let Ok((sha, hl_cache)) = rx.try_recv() {
-                Self::evict_git_log_diff_cache(gl, &sha);
+                Self::evict_git_log_diff_cache(gl, &sha, max_cache);
                 gl.diff_cache_map.insert(sha.clone(), DiffCache {
                     file_index: hl_cache.file_index,
                     patch_hash: hl_cache.patch_hash,
@@ -371,7 +373,7 @@ impl App {
                         if gl.diff_cache_map.contains_key(&sha) {
                             continue;
                         }
-                        Self::evict_git_log_diff_cache(gl, &sha);
+                        Self::evict_git_log_diff_cache(gl, &sha, max_cache);
                         gl.diff_cache_map.insert(sha.clone(), DiffCache {
                             file_index: 0,
                             patch_hash: hl_cache.patch_hash,
@@ -406,8 +408,8 @@ impl App {
     }
 
     /// diff_cache_map の LRU eviction
-    fn evict_git_log_diff_cache(gl: &mut GitLogState, _current_sha: &str) {
-        if gl.diff_cache_map.len() < MAX_GIT_LOG_DIFF_CACHE {
+    fn evict_git_log_diff_cache(gl: &mut GitLogState, _current_sha: &str, max_cache: usize) {
+        if gl.diff_cache_map.len() < max_cache {
             return;
         }
 
@@ -796,6 +798,7 @@ mod tests {
 
     #[test]
     fn test_evict_git_log_diff_cache() {
+        let max_cache = 10;
         let mut gl = GitLogState::new();
         gl.commits = (0..15)
             .map(|i| crate::github::PrCommit {
@@ -808,8 +811,8 @@ mod tests {
             .collect();
         gl.selected_commit = 5;
 
-        // Fill cache to MAX
-        for i in 0..MAX_GIT_LOG_DIFF_CACHE {
+        // Fill cache to max
+        for i in 0..max_cache {
             let sha = format!("sha{:02}", i);
             gl.diff_cache_map.insert(
                 sha,
@@ -824,11 +827,11 @@ mod tests {
             );
         }
 
-        assert_eq!(gl.diff_cache_map.len(), MAX_GIT_LOG_DIFF_CACHE);
+        assert_eq!(gl.diff_cache_map.len(), max_cache);
 
         // Eviction should remove the farthest entry from selected_commit (5)
-        App::evict_git_log_diff_cache(&mut gl, "sha10");
-        assert_eq!(gl.diff_cache_map.len(), MAX_GIT_LOG_DIFF_CACHE - 1);
+        App::evict_git_log_diff_cache(&mut gl, "sha10", max_cache);
+        assert_eq!(gl.diff_cache_map.len(), max_cache - 1);
         // sha00 (distance 5) is farther than sha09 (distance 4)
         assert!(!gl.diff_cache_map.contains_key("sha00"));
     }

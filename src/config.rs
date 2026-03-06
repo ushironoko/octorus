@@ -26,6 +26,7 @@ pub struct Config {
     pub diff: DiffConfig,
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
+    pub git_log: GitLogConfig,
     #[serde(skip)]
     pub project_root: PathBuf,
     /// Path of the global config file if it was loaded successfully.
@@ -61,6 +62,26 @@ pub struct AiConfig {
     /// Default is false (confirmation prompt before posting).
     #[serde(default)]
     pub auto_post: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitLogConfig {
+    /// コミット diff キャッシュ（プリフェッチ含む）の最大エントリ数
+    #[serde(default = "default_max_diff_cache")]
+    pub max_diff_cache: usize,
+}
+
+fn default_max_diff_cache() -> usize {
+    20
+}
+
+impl Default for GitLogConfig {
+    fn default() -> Self {
+        Self {
+            max_diff_cache: default_max_diff_cache(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

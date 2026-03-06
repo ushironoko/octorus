@@ -395,12 +395,10 @@ pub struct GitLogState {
     pub(crate) highlight_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
     /// プリフェッチ diff レシーバー（複数コミットの並列ハイライト済みキャッシュ）
     pub(crate) prefetch_diff_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
-    /// コミット diff キャッシュ（sha -> DiffCache, 上限 MAX_GIT_LOG_DIFF_CACHE）
+    /// コミット diff キャッシュ（sha -> DiffCache, 上限は config.git_log.max_diff_cache）
     pub diff_cache_map: HashMap<String, DiffCache>,
 }
 
-/// Git Log diff キャッシュの最大エントリ数
-pub(super) const MAX_GIT_LOG_DIFF_CACHE: usize = 10;
 
 impl Default for GitLogState {
     fn default() -> Self {
