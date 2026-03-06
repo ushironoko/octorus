@@ -18,17 +18,27 @@ impl App {
         let mut state = GitLogState::new();
 
         // コミット一覧をバックグラウンドで取得
-        let repo = self.repo.clone();
-        let pr_number = self.pr_number();
         let (tx, rx) = mpsc::channel(1);
         state.commit_list_receiver = Some(rx);
 
-        tokio::spawn(async move {
-            let result = github::fetch_pr_commits(&repo, pr_number)
-                .await
-                .map_err(|e| e.to_string());
-            let _ = tx.send(result).await;
-        });
+        if self.local_mode {
+            let working_dir = self.working_dir.clone();
+            tokio::spawn(async move {
+                let result = github::fetch_local_commits(working_dir.as_deref())
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        } else {
+            let repo = self.repo.clone();
+            let pr_number = self.pr_number();
+            tokio::spawn(async move {
+                let result = github::fetch_pr_commits(&repo, pr_number)
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        }
 
         self.git_log_state = Some(state);
         self.state = AppState::GitLogSplitCommitList;
@@ -76,17 +86,28 @@ impl App {
         gl.diff_error = None;
         gl.pending_diff_sha = Some(sha.clone());
 
-        let repo = self.repo.clone();
         let (tx, rx) = mpsc::channel(1);
         gl.commit_diff_receiver = Some(rx);
 
-        tokio::spawn(async move {
-            let result = github::fetch_commit_diff(&repo, &sha)
-                .await
-                .map(|diff| (sha, diff))
-                .map_err(|e| e.to_string());
-            let _ = tx.send(result).await;
-        });
+        if self.local_mode {
+            let working_dir = self.working_dir.clone();
+            tokio::spawn(async move {
+                let result = github::fetch_local_commit_diff(working_dir.as_deref(), &sha)
+                    .await
+                    .map(|diff| (sha, diff))
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        } else {
+            let repo = self.repo.clone();
+            tokio::spawn(async move {
+                let result = github::fetch_commit_diff(&repo, &sha)
+                    .await
+                    .map(|diff| (sha, diff))
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        }
     }
 
     /// ポーリング: コミット一覧 + diff の受信

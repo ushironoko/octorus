@@ -107,6 +107,114 @@ pub async fn fetch_commit_diff(repo: &str, sha: &str) -> Result<String> {
     Ok(diff)
 }
 
+/// ローカル git log からコミット一覧を取得
+///
+/// デフォルトブランチ（main/master）からの差分コミットを返す。
+/// デフォルトブランチが検出できない場合は HEAD から最大100件を返す。
+pub async fn fetch_local_commits(working_dir: Option<&str>) -> Result<Vec<PrCommit>> {
+    // デフォルトブランチを検出（upstream tracking branch ではなく main/master）
+    let default_branch = detect_default_branch(working_dir).await;
+
+    let range = default_branch
+        .map(|b| format!("{}..HEAD", b))
+        .unwrap_or_else(|| "HEAD~100..HEAD".to_string());
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args([
+        "log",
+        "--format=%H%x00%s%x00%an%x00%aI",
+        "--reverse",
+        &range,
+    ]);
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().await.context("Failed to run git log")?;
+
+    if !output.status.success() {
+        // range が無効の場合は HEAD から直近100件
+        let mut cmd2 = tokio::process::Command::new("git");
+        cmd2.args([
+            "log",
+            "--format=%H%x00%s%x00%an%x00%aI",
+            "--reverse",
+            "-100",
+        ]);
+        if let Some(dir) = working_dir {
+            cmd2.current_dir(dir);
+        }
+        let output2 = cmd2
+            .output()
+            .await
+            .context("Failed to run git log fallback")?;
+        return parse_git_log_output(&output2.stdout);
+    }
+
+    parse_git_log_output(&output.stdout)
+}
+
+/// デフォルトブランチ（origin/main or origin/master）を検出
+async fn detect_default_branch(working_dir: Option<&str>) -> Option<String> {
+    for candidate in &["origin/main", "origin/master"] {
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.args(["rev-parse", "--verify", candidate]);
+        if let Some(dir) = working_dir {
+            cmd.current_dir(dir);
+        }
+        if let Ok(output) = cmd.output().await {
+            if output.status.success() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn parse_git_log_output(stdout: &[u8]) -> Result<Vec<PrCommit>> {
+    let text = String::from_utf8_lossy(stdout);
+    let commits = text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(4, '\0').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            Some(PrCommit {
+                sha: parts[0].to_string(),
+                message: parts[1].to_string(),
+                author_name: parts[2].to_string(),
+                author_login: None,
+                date: parts[3].to_string(),
+            })
+        })
+        .collect();
+    Ok(commits)
+}
+
+/// ローカル git show でコミットの unified diff を取得
+pub async fn fetch_local_commit_diff(
+    working_dir: Option<&str>,
+    sha: &str,
+) -> Result<String> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["show", "--format=", "--patch", sha]);
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let output = cmd
+        .output()
+        .await
+        .context("Failed to run git show")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git show failed: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// ISO 8601 の日時文字列を相対時間表示に変換
 ///
 /// 例: "2h ago", "3d ago", "1m ago"
