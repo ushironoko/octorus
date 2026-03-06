@@ -1,6 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-
 use super::{App, DataState};
 
 impl App {

@@ -112,6 +112,53 @@ pub async fn gh_command(args: &[&str]) -> Result<String> {
     .context("spawn_blocking task panicked")?
 }
 
+/// Execute gh CLI command, treating specified exit codes as success.
+/// For example, `gh pr checks` returns exit code 8 when checks are pending.
+pub async fn gh_command_allow_exit_codes(args: &[&str], allowed_codes: &[i32]) -> Result<String> {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let allowed_codes: Vec<i32> = allowed_codes.to_vec();
+
+    tokio::task::spawn_blocking(move || {
+        let output = Command::new("gh")
+            .args(&args)
+            .output()
+            .context("Failed to execute gh CLI - is it installed?")?;
+
+        let code = output.status.code().unwrap_or(-1);
+        if output.status.success() || allowed_codes.contains(&code) {
+            String::from_utf8(output.stdout).context("gh output contains invalid UTF-8")
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr_trimmed = stderr.trim();
+            let stdout_trimmed = stdout.trim();
+            tracing::debug!(
+                stderr = %stderr_trimmed,
+                stdout = %stdout_trimmed,
+                "gh command failed"
+            );
+            if stdout_trimmed.is_empty() {
+                anyhow::bail!("gh command failed: {}", stderr_trimmed);
+            } else {
+                let truncated: String = stdout_trimmed.chars().take(200).collect();
+                let suffix = if stdout_trimmed.len() > truncated.len() {
+                    "..."
+                } else {
+                    ""
+                };
+                anyhow::bail!(
+                    "gh command failed: {} ({}{})",
+                    stderr_trimmed,
+                    truncated,
+                    suffix
+                );
+            }
+        }
+    })
+    .await
+    .context("spawn_blocking task panicked")?
+}
+
 /// Execute gh api command with JSON output
 pub async fn gh_api(endpoint: &str) -> Result<serde_json::Value> {
     let output = gh_command(&["api", endpoint]).await?;

@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::ai::RallyState;
 use crate::app::{App, DataState};
+use crate::github::CiStatus;
 
 /// Build PR info string for header display (shared between file_list and ai_rally)
 pub fn build_pr_info(app: &App) -> String {
@@ -16,7 +17,16 @@ pub fn build_pr_info(app: &App) -> String {
     } else {
         match &app.data_state {
             DataState::Loaded { pr, .. } => {
-                format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
+                let ci_suffix = match app.ci_status {
+                    Some(CiStatus::Success) => "  ✓ CI passed",
+                    Some(CiStatus::Failure) => "  ✕ CI failed",
+                    Some(CiStatus::Pending) => "  ○ CI pending",
+                    Some(CiStatus::None) | None => "",
+                };
+                format!(
+                    "PR #{}: {} by @{}{}",
+                    pr.number, pr.title, pr.user.login, ci_suffix
+                )
             }
             _ => match app.pr_number {
                 Some(n) => format!("PR #{}", n),

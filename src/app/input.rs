@@ -30,6 +30,7 @@ impl App {
                 if self.state != AppState::PullRequestList
                     && self.state != AppState::Help
                     && self.state != AppState::PrDescription
+                    && self.state != AppState::ChecksList
                 {
                     // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
@@ -77,9 +78,8 @@ impl App {
                     AppState::SplitViewDiff => {
                         self.handle_split_view_diff_input(key, terminal).await?
                     }
-                    AppState::PrDescription => {
-                        self.handle_pr_description_input(key, terminal)?
-                    }
+                    AppState::PrDescription => self.handle_pr_description_input(key, terminal)?,
+                    AppState::ChecksList => self.handle_checks_list_input(key)?,
                 }
             }
         }
@@ -293,6 +293,14 @@ impl App {
             return Ok(());
         }
 
+        // CI Checks (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.ci_checks) {
+            if let Some(pr_number) = self.pr_number {
+                self.open_checks_list(pr_number);
+            }
+            return Ok(());
+        }
+
         // Help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
@@ -354,6 +362,14 @@ impl App {
         // PR description (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
             self.open_pr_description();
+            return Ok(true);
+        }
+
+        // CI Checks (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.ci_checks) {
+            if let Some(pr_number) = self.pr_number {
+                self.open_checks_list(pr_number);
+            }
             return Ok(true);
         }
 
@@ -537,6 +553,131 @@ impl App {
             let _ =
                 github::gh_command(&["pr", "view", &pr_number.to_string(), "-R", &repo, "--web"])
                     .await;
+        });
+    }
+
+    pub(crate) fn open_checks_list(&mut self, pr_number: u32) {
+        self.previous_state = self.state;
+        self.state = AppState::ChecksList;
+        self.selected_check = 0;
+        self.checks_scroll_offset = 0;
+        self.checks_loading = true;
+        self.checks = None;
+        self.checks_target_pr = Some(pr_number);
+
+        let (tx, rx) = mpsc::channel(1);
+        self.checks_receiver = Some((pr_number, rx));
+        let repo = self.repo.clone();
+        tokio::spawn(async move {
+            let result = github::fetch_pr_checks(&repo, pr_number)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result).await;
+        });
+    }
+
+    pub(crate) fn handle_checks_list_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        let kb = self.config.keybindings.clone();
+        let check_count = self.checks.as_ref().map(|c| c.len()).unwrap_or(0);
+
+        // Quit / back
+        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+            self.state = self.previous_state;
+            return Ok(());
+        }
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if check_count > 0 {
+                self.selected_check = (self.selected_check + 1).min(check_count.saturating_sub(1));
+            }
+            return Ok(());
+        }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            self.selected_check = self.selected_check.saturating_sub(1);
+            return Ok(());
+        }
+
+        // Jump to first (gg)
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    self.selected_check = 0;
+                    return Ok(());
+                }
+                self.clear_pending_keys();
+            } else if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+                self.push_pending_key(kb_event);
+                return Ok(());
+            }
+        }
+
+        // Jump to last (G)
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if check_count > 0 {
+                self.selected_check = check_count.saturating_sub(1);
+            }
+            return Ok(());
+        }
+
+        // Enter: open in browser
+        if self.matches_single_key(&key, &kb.open_panel) {
+            if let Some(ref checks) = self.checks {
+                if let Some(check) = checks.get(self.selected_check) {
+                    if let Some(ref url) = check.link {
+                        Self::open_url_in_browser(url);
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // R: refresh
+        if self.matches_single_key(&key, &kb.refresh) {
+            if let Some(pr_number) = self.checks_target_pr {
+                self.open_checks_list(pr_number);
+            }
+            return Ok(());
+        }
+
+        // O: open PR in browser
+        if self.matches_single_key(&key, &kb.open_in_browser) {
+            if let Some(pr_number) = self.checks_target_pr {
+                self.open_pr_in_browser(pr_number);
+            }
+            return Ok(());
+        }
+
+        // ?: help
+        if self.matches_single_key(&key, &kb.help) {
+            self.previous_state = AppState::ChecksList;
+            self.state = AppState::Help;
+            self.help_scroll_offset = 0;
+            self.config_scroll_offset = 0;
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn open_url_in_browser(url: &str) {
+        let url = url.to_string();
+        tokio::spawn(async move {
+            let opener = if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let _ = tokio::process::Command::new(opener)
+                .arg(&url)
+                .output()
+                .await;
         });
     }
 }

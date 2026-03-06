@@ -245,10 +245,7 @@ mod patch_tests {
     #[test]
     fn test_lines_starting_with_plus_minus() {
         let patch = build_pr_description_patch("+added\n-removed\n normal");
-        assert_eq!(
-            patch,
-            "@@ -1,3 +1,3 @@\n +added\n -removed\n  normal\n"
-        );
+        assert_eq!(patch, "@@ -1,3 +1,3 @@\n +added\n -removed\n  normal\n");
     }
 
     #[test]

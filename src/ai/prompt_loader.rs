@@ -53,14 +53,12 @@ impl PromptLoader {
             let path = PathBuf::from(p);
             if path.is_absolute() {
                 Some(path)
-            } else if path.components().any(|c| {
-                matches!(c, std::path::Component::Prefix(_))
-            }) {
+            } else if path
+                .components()
+                .any(|c| matches!(c, std::path::Component::Prefix(_)))
+            {
                 // Reject Windows drive-prefixed paths in relative position
-                tracing::warn!(
-                    "prompt_dir '{}' rejected: contains Windows drive prefix",
-                    p
-                );
+                tracing::warn!("prompt_dir '{}' rejected: contains Windows drive prefix", p);
                 None
             } else {
                 Some(project_root.join(path))
@@ -137,7 +135,9 @@ impl PromptLoader {
         }
 
         // Ensure the canonicalized path stays under project_root
-        if let (Ok(canonical), Ok(canonical_root)) = (path.canonicalize(), project_root.canonicalize()) {
+        if let (Ok(canonical), Ok(canonical_root)) =
+            (path.canonicalize(), project_root.canonicalize())
+        {
             if !canonical.starts_with(&canonical_root) {
                 return false;
             }
@@ -653,10 +653,7 @@ mod tests {
             project_root: dir.path().to_path_buf(),
         };
         let source = loader.resolve_source("reviewer.md");
-        assert_eq!(
-            source,
-            PromptSource::Global(global_dir.join("reviewer.md"))
-        );
+        assert_eq!(source, PromptSource::Global(global_dir.join("reviewer.md")));
     }
 
     #[test]
@@ -774,10 +771,7 @@ mod tests {
 
         // Symlink should be allowed for global prompts
         let source = loader.resolve_source("reviewer.md");
-        assert_eq!(
-            source,
-            PromptSource::Global(global_dir.join("reviewer.md"))
-        );
+        assert_eq!(source, PromptSource::Global(global_dir.join("reviewer.md")));
     }
 
     #[cfg(unix)]

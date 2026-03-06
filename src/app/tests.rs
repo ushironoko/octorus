@@ -1,5 +1,5 @@
-use super::*;
 use super::types::{MarkViewedResult, PendingApproveChoice};
+use super::*;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use lasso::Rodeo;
 
@@ -1231,8 +1231,7 @@ fn test_save_snapshot_captures_all_fields() {
     }]);
 
     // local_file_signatures
-    app.local_file_signatures
-        .insert("a.rs".to_string(), 111);
+    app.local_file_signatures.insert("a.rs".to_string(), 111);
     // local_file_patch_signatures
     app.local_file_patch_signatures
         .insert("a.rs".to_string(), 222);
@@ -1262,8 +1261,10 @@ fn test_save_snapshot_captures_all_fields() {
 #[test]
 fn test_save_snapshot_takes_from_app() {
     let mut app = App::new_for_test();
-    app.diff_cache =
-        Some(crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+x", 4));
+    app.diff_cache = Some(crate::ui::diff_view::build_plain_diff_cache(
+        "@@ -1 +1 @@\n+x",
+        4,
+    ));
     let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
     hc.file_index = 1;
     app.highlighted_cache_store.insert(1, hc);
@@ -1386,9 +1387,11 @@ fn test_restore_snapshot_clears_receivers() {
     app.diff_cache_receiver = Some(rx1);
     let (_tx2, rx2) = mpsc::channel(1);
     app.prefetch_receiver = Some(rx2);
-    let (_tx3, rx3) = mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
+    let (_tx3, rx3) =
+        mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
     app.comment_receiver = Some((1, rx3));
-    let (_tx4, rx4) = mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
+    let (_tx4, rx4) =
+        mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
     app.discussion_comment_receiver = Some((1, rx4));
     let (_tx5, rx5) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
     app.comment_submit_receiver = Some((1, rx5));
@@ -1569,8 +1572,10 @@ fn test_back_to_pr_list_resets_pr_state() {
     app.pr_number = Some(42);
     app.review_comments = Some(vec![]);
     app.discussion_comments = Some(vec![]);
-    app.diff_cache =
-        Some(crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+x", 4));
+    app.diff_cache = Some(crate::ui::diff_view::build_plain_diff_cache(
+        "@@ -1 +1 @@\n+x",
+        4,
+    ));
     let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
     hc.file_index = 1;
     app.highlighted_cache_store.insert(1, hc);
@@ -1597,13 +1602,15 @@ fn test_back_to_pr_list_clears_all_receivers() {
     app.started_from_pr_list = true;
 
     // レシーバーを設定
-    let (_tx1, rx1) = mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
+    let (_tx1, rx1) =
+        mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
     app.comment_receiver = Some((1, rx1));
     let (_tx2, rx2) = mpsc::channel(1);
     app.diff_cache_receiver = Some(rx2);
     let (_tx3, rx3) = mpsc::channel(1);
     app.prefetch_receiver = Some(rx3);
-    let (_tx4, rx4) = mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
+    let (_tx4, rx4) =
+        mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
     app.discussion_comment_receiver = Some((1, rx4));
     let (_tx5, rx5) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
     app.comment_submit_receiver = Some((1, rx5));
@@ -2092,8 +2099,7 @@ fn test_toggle_markdown_rich_clears_only_md_cache() {
 
     // Add cache entries for both files
     let md_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+test", 4);
-    let mut rs_cache =
-        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    let mut rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     rs_cache.file_index = 1;
     app.highlighted_cache_store.insert(0, md_cache);
     app.highlighted_cache_store.insert(1, rs_cache);
@@ -2968,7 +2974,8 @@ fn test_hash_string_deterministic() {
 fn test_check_sequence_timeout_clears_expired() {
     let mut app = App::new_for_test();
     app.pending_since = Some(Instant::now() - std::time::Duration::from_secs(10));
-    app.pending_keys.push(crate::keybinding::KeyBinding::char('g'));
+    app.pending_keys
+        .push(crate::keybinding::KeyBinding::char('g'));
 
     app.check_sequence_timeout();
 
@@ -2980,7 +2987,8 @@ fn test_check_sequence_timeout_clears_expired() {
 fn test_check_sequence_timeout_keeps_active() {
     let mut app = App::new_for_test();
     app.pending_since = Some(Instant::now());
-    app.pending_keys.push(crate::keybinding::KeyBinding::char('g'));
+    app.pending_keys
+        .push(crate::keybinding::KeyBinding::char('g'));
 
     app.check_sequence_timeout();
 
@@ -3031,9 +3039,7 @@ fn test_clear_pending_keys_resets() {
 #[test]
 fn test_matches_single_key_basic() {
     let app = App::new_for_test();
-    let seq = crate::keybinding::KeySequence(vec![
-        crate::keybinding::KeyBinding::char('j')
-    ]);
+    let seq = crate::keybinding::KeySequence(vec![crate::keybinding::KeyBinding::char('j')]);
     let key = make_key(KeyCode::Char('j'));
     assert!(app.matches_single_key(&key, &seq));
 }
@@ -3043,7 +3049,7 @@ fn test_matches_single_key_ignores_sequence() {
     let app = App::new_for_test();
     let seq = crate::keybinding::KeySequence(vec![
         crate::keybinding::KeyBinding::char('g'),
-        crate::keybinding::KeyBinding::char('d')
+        crate::keybinding::KeyBinding::char('d'),
     ]);
     let key = make_key(KeyCode::Char('g'));
     assert!(!app.matches_single_key(&key, &seq));
@@ -3054,10 +3060,7 @@ fn test_try_match_sequence_full_partial_none() {
     use crate::keybinding::{KeyBinding, KeySequence, SequenceMatch};
 
     let mut app = App::new_for_test();
-    let seq = KeySequence(vec![
-        KeyBinding::char('g'),
-        KeyBinding::char('d')
-    ]);
+    let seq = KeySequence(vec![KeyBinding::char('g'), KeyBinding::char('d')]);
 
     // No pending keys
     assert_eq!(app.try_match_sequence(&seq), SequenceMatch::None);
@@ -3076,10 +3079,7 @@ fn test_key_could_match_sequence_start() {
     use crate::keybinding::{KeyBinding, KeySequence};
 
     let app = App::new_for_test();
-    let seq = KeySequence(vec![
-        KeyBinding::char('g'),
-        KeyBinding::char('d')
-    ]);
+    let seq = KeySequence(vec![KeyBinding::char('g'), KeyBinding::char('d')]);
     let key = make_key(KeyCode::Char('g'));
     assert!(app.key_could_match_sequence(&key, &seq));
 }
@@ -3089,10 +3089,7 @@ fn test_key_could_match_sequence_no_match() {
     use crate::keybinding::{KeyBinding, KeySequence};
 
     let app = App::new_for_test();
-    let seq = KeySequence(vec![
-        KeyBinding::char('g'),
-        KeyBinding::char('d')
-    ]);
+    let seq = KeySequence(vec![KeyBinding::char('g'), KeyBinding::char('d')]);
     let key = make_key(KeyCode::Char('x'));
     assert!(!app.key_could_match_sequence(&key, &seq));
 }
@@ -3212,6 +3209,7 @@ fn test_reapply_filter_pr_list() {
             is_draft: false,
             labels: vec![],
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
         },
         PullRequestSummary {
             number: 2,
@@ -3223,6 +3221,7 @@ fn test_reapply_filter_pr_list() {
             is_draft: false,
             labels: vec![],
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
         },
     ]);
     let mut filter = crate::filter::ListFilter::new();
@@ -4104,9 +4103,7 @@ fn test_pause_state_reset_on_waiting_for_permission() {
     });
 
     event_tx
-        .try_send(RallyEvent::StateChanged(
-            RallyState::WaitingForPermission,
-        ))
+        .try_send(RallyEvent::StateChanged(RallyState::WaitingForPermission))
         .unwrap();
 
     app.poll_rally_events();
@@ -4429,18 +4426,16 @@ fn test_update_file_comment_positions_empty_comments() {
 fn test_update_file_comment_positions_with_comments() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
-    app.review_comments = Some(vec![
-        crate::github::comment::ReviewComment {
-            id: 1,
-            path: "test.rs".to_string(),
-            line: Some(1),
-            body: "comment at line 1".to_string(),
-            user: crate::github::User {
-                login: "reviewer".to_string(),
-            },
-            created_at: "2024-01-01T00:00:00Z".to_string(),
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 1,
+        path: "test.rs".to_string(),
+        line: Some(1),
+        body: "comment at line 1".to_string(),
+        user: crate::github::User {
+            login: "reviewer".to_string(),
         },
-    ]);
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
     app.update_file_comment_positions();
     assert_eq!(app.file_comment_positions.len(), 1);
 }
@@ -4449,18 +4444,16 @@ fn test_update_file_comment_positions_with_comments() {
 fn test_update_file_comment_positions_stale_comment() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
-    app.review_comments = Some(vec![
-        crate::github::comment::ReviewComment {
-            id: 1,
-            path: "other_file.rs".to_string(), // different file
-            line: Some(1),
-            body: "wrong file".to_string(),
-            user: crate::github::User {
-                login: "reviewer".to_string(),
-            },
-            created_at: "2024-01-01T00:00:00Z".to_string(),
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 1,
+        path: "other_file.rs".to_string(), // different file
+        line: Some(1),
+        body: "wrong file".to_string(),
+        user: crate::github::User {
+            login: "reviewer".to_string(),
         },
-    ]);
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
     app.update_file_comment_positions();
     assert!(app.file_comment_positions.is_empty());
 }
@@ -4518,18 +4511,16 @@ fn test_enter_reply_input_sets_mode() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
     app.selected_line = 1;
-    app.review_comments = Some(vec![
-        crate::github::comment::ReviewComment {
-            id: 42,
-            path: "test.rs".to_string(),
-            line: Some(1),
-            body: "original comment".to_string(),
-            user: crate::github::User {
-                login: "reviewer".to_string(),
-            },
-            created_at: "2024-01-01T00:00:00Z".to_string(),
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 42,
+        path: "test.rs".to_string(),
+        line: Some(1),
+        body: "original comment".to_string(),
+        user: crate::github::User {
+            login: "reviewer".to_string(),
         },
-    ]);
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
     app.file_comment_positions = vec![CommentPosition {
         diff_line_index: 1,
         comment_index: 0,
@@ -4606,18 +4597,16 @@ async fn test_jump_to_comment_sets_file_and_line() {
             },
         ],
     };
-    app.review_comments = Some(vec![
-        crate::github::comment::ReviewComment {
-            id: 1,
-            path: "second.rs".to_string(),
-            line: Some(2),
-            body: "check this".to_string(),
-            user: crate::github::User {
-                login: "r".to_string(),
-            },
-            created_at: "2024-01-01T00:00:00Z".to_string(),
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 1,
+        path: "second.rs".to_string(),
+        line: Some(2),
+        body: "check this".to_string(),
+        user: crate::github::User {
+            login: "r".to_string(),
         },
-    ]);
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
     app.selected_comment = 0;
 
     app.jump_to_comment();
@@ -4649,19 +4638,18 @@ async fn test_handle_pr_list_input_loading_blocks() {
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
     app.pr_list_loading = true;
-    app.pr_list = Some(vec![
-        PullRequestSummary {
-            number: 1,
-            title: "PR 1".to_string(),
-            state: "open".to_string(),
-            author: crate::github::User {
-                login: "user".to_string(),
-            },
-            is_draft: false,
-            labels: vec![],
-            updated_at: "2024-01-01T00:00:00Z".to_string(),
+    app.pr_list = Some(vec![PullRequestSummary {
+        number: 1,
+        title: "PR 1".to_string(),
+        state: "open".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
         },
-    ]);
+        is_draft: false,
+        labels: vec![],
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+        status_check_rollup: vec![],
+    }]);
     app.selected_pr = 0;
 
     // j key should be blocked during loading
@@ -4688,6 +4676,7 @@ async fn test_handle_pr_list_input_move_down() {
             is_draft: false,
             labels: vec![],
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
         },
         PullRequestSummary {
             number: 2,
@@ -4699,6 +4688,7 @@ async fn test_handle_pr_list_input_move_down() {
             is_draft: false,
             labels: vec![],
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
         },
     ]);
     app.selected_pr = 0;
@@ -4726,6 +4716,7 @@ async fn test_handle_pr_list_input_move_up() {
             is_draft: false,
             labels: vec![],
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
         },
         PullRequestSummary {
             number: 2,
@@ -4737,6 +4728,7 @@ async fn test_handle_pr_list_input_move_up() {
             is_draft: false,
             labels: vec![],
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
         },
     ]);
     app.selected_pr = 1;
@@ -4765,6 +4757,7 @@ async fn test_handle_pr_list_input_jump_to_last() {
                 is_draft: false,
                 labels: vec![],
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
+                status_check_rollup: vec![],
             })
             .collect(),
     );
@@ -4951,8 +4944,7 @@ async fn test_poll_prefetch_skips_current_file() {
 
     // Set up an existing highlighted diff_cache for current file
     // poll_prefetch_updates skips when diff_cache has highlighted=true for same file_index
-    let mut existing_cache =
-        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    let mut existing_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
     existing_cache.file_index = 0;
     existing_cache.highlighted = true;
     app.diff_cache = Some(existing_cache);
@@ -5261,10 +5253,7 @@ fn test_open_pr_description_state_transition() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
     app.state = AppState::FileList;
 
     app.open_pr_description();
@@ -5299,10 +5288,7 @@ fn test_open_pr_description_from_split_view() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
     app.state = AppState::SplitViewFileList;
 
     app.open_pr_description();
@@ -5335,10 +5321,7 @@ fn test_open_pr_description_body_none() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
 
     app.open_pr_description();
 
@@ -5370,10 +5353,7 @@ fn test_open_pr_description_body_empty() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
 
     app.open_pr_description();
 
@@ -5405,10 +5385,7 @@ fn test_toggle_markdown_rich_clears_pr_description_cache() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
 
     // Build cache
     app.open_pr_description();
@@ -5443,10 +5420,7 @@ fn test_pr_description_cache_reuse() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
 
     // First open
     app.open_pr_description();
@@ -5488,8 +5462,7 @@ fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
     app.markdown_rich = false;
 
     // markdown_rich=true で構築されたハイライト済みキャッシュをセット
-    let mut cache =
-        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     cache.file_index = 0;
     cache.highlighted = true;
     cache.markdown_rich = true; // 現在の app.markdown_rich (false) と不一致
@@ -5568,9 +5541,7 @@ async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
 
     // markdown ファイルなので markdown_rich 不一致 → 再構築（plain に戻る）
     assert!(
-        app.diff_cache
-            .as_ref()
-            .is_some_and(|c| !c.highlighted),
+        app.diff_cache.as_ref().is_some_and(|c| !c.highlighted),
         "md file: cache should be rebuilt (plain) on markdown_rich mismatch"
     );
 }
@@ -5616,8 +5587,7 @@ async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
     };
 
     // プリフェッチ済みキャッシュをストアに配置
-    let mut rs_cache =
-        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    let mut rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     rs_cache.file_index = 0;
     rs_cache.highlighted = true;
     app.highlighted_cache_store.insert(0, rs_cache);
@@ -5678,10 +5648,7 @@ fn test_rebuild_pr_description_cache_preserves_scroll() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![],
-    };
+    app.data_state = DataState::Loaded { pr, files: vec![] };
 
     app.open_pr_description();
     assert_eq!(app.pr_description_scroll_offset, 0);

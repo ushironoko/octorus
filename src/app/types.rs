@@ -148,6 +148,7 @@ pub enum AppState {
     SplitViewFileList,
     SplitViewDiff,
     PrDescription,
+    ChecksList,
 }
 
 /// Variant for diff view handling (fullscreen vs split pane)
@@ -354,4 +355,3 @@ pub enum DataState {
     },
     Error(String),
 }
-

@@ -95,7 +95,11 @@ impl App {
         self.submit_review_with_body(action, &body).await
     }
 
-    pub(crate) async fn submit_review_with_body(&mut self, action: ReviewAction, body: &str) -> Result<()> {
+    pub(crate) async fn submit_review_with_body(
+        &mut self,
+        action: ReviewAction,
+        body: &str,
+    ) -> Result<()> {
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
         match github::submit_review(&self.repo, self.pr_number(), action, body).await {
             Ok(()) => {
@@ -804,7 +808,11 @@ impl App {
     }
 
     /// コメントパネルのスクロール上限を計算
-    pub(crate) fn max_comment_panel_scroll(&self, terminal_height: usize, terminal_width: usize) -> u16 {
+    pub(crate) fn max_comment_panel_scroll(
+        &self,
+        terminal_height: usize,
+        terminal_width: usize,
+    ) -> u16 {
         let panel_inner_width = self.comment_panel_inner_width(terminal_width);
         let content_lines = self.comment_panel_content_lines(panel_inner_width);
         // コメントパネルは全体高さの約40%（Header/Footer/borders分を差し引き）
