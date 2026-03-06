@@ -145,6 +145,9 @@ pub struct KeybindingsConfig {
 
     // PR description
     pub pr_description: KeySequence,
+
+    // Git log
+    pub git_log: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -224,6 +227,9 @@ impl Default for KeybindingsConfig {
 
             // PR description
             pr_description: KeySequence::single(KeyBinding::char('d')),
+
+            // Git log
+            git_log: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('l')),
         }
     }
 }
@@ -273,6 +279,7 @@ impl KeybindingsConfig {
             ("filter", &self.filter),
             ("multiline_select", &self.multiline_select),
             ("pr_description", &self.pr_description),
+            ("git_log", &self.git_log),
         ];
 
         for (name, seq) in &bindings {

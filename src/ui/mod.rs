@@ -4,6 +4,7 @@ mod common;
 pub mod diff_view;
 mod file_list;
 mod footer;
+mod git_log;
 mod help;
 mod pr_description;
 mod pr_list;
@@ -99,6 +100,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::AiRally => ai_rally::render(frame, app),
         AppState::SplitViewFileList | AppState::SplitViewDiff => split_view::render(frame, app),
         AppState::PrDescription => pr_description::render(frame, app),
+        AppState::GitLogSplitCommitList | AppState::GitLogSplitDiff => {
+            git_log::render_split(frame, app)
+        }
+        AppState::GitLogDiffView => git_log::render_diff_view(frame, app),
     }
 
     // シンボル選択ポップアップ（最前面に描画）

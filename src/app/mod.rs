@@ -24,8 +24,8 @@ use std::time::Instant;
 mod types;
 pub use types::{
     AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState, DiffCache,
-    HelpTab, InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry, LogEventType,
-    MultilineSelection, PauseState, PermissionInfo, RefreshRequest, ReviewAction,
+    GitLogState, HelpTab, InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry,
+    LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest, ReviewAction,
     SymbolPopupState, ViewSnapshot, WatcherHandle, hash_string,
 };
 // Internal-only types (not re-exported from crate::app)
@@ -38,6 +38,7 @@ mod input_text;
 mod comments;
 mod diff_cache;
 mod ai_rally;
+mod git_log;
 mod key_sequence;
 mod filter;
 mod pr_list;
@@ -212,6 +213,8 @@ pub struct App {
     lazy_diff_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
     /// 現在オンデマンドロード要求中のファイル名（重複リクエスト防止）
     lazy_diff_pending_file: Option<String>,
+    /// Git Log 画面の全状態（None = 非表示）
+    pub git_log_state: Option<GitLogState>,
 }
 
 impl App {
@@ -314,6 +317,7 @@ impl App {
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
+            git_log_state: None,
         };
 
         (app, tx)
@@ -412,6 +416,7 @@ impl App {
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
+            git_log_state: None,
         }
     }
 
@@ -456,6 +461,7 @@ impl App {
             self.poll_comment_submit_updates();
             self.poll_mark_viewed_updates();
             self.poll_rally_events();
+            self.poll_git_log_updates();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -628,6 +634,7 @@ impl App {
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
+            git_log_state: None,
         }
     }
 

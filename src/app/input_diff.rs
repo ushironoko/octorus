@@ -80,7 +80,7 @@ impl App {
             return Ok(());
         }
 
-        // Space+/ シーケンス処理（分割表示でのフィルタ起動）
+        // Space+/ / gl シーケンス処理（分割表示でのフィルタ起動 / Git Log）
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -104,11 +104,22 @@ impl App {
                     return Ok(());
                 }
 
+                // gl: Git Log 画面
+                if self.try_match_sequence(&kb.git_log) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    if !self.local_mode {
+                        self.open_git_log();
+                    }
+                    return Ok(());
+                }
+
                 // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
                 // シーケンス開始チェック
-                if self.key_could_match_sequence(&key, &kb.filter) {
+                let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
+                let could_start_gl = self.key_could_match_sequence(&key, &kb.git_log);
+                if could_start_filter || could_start_gl {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }
