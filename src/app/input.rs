@@ -557,7 +557,9 @@ impl App {
     }
 
     pub(crate) fn open_checks_list(&mut self, pr_number: u32) {
-        self.previous_state = self.state;
+        if self.state != AppState::ChecksList {
+            self.checks_return_state = self.state;
+        }
         self.state = AppState::ChecksList;
         self.selected_check = 0;
         self.checks_scroll_offset = 0;
@@ -582,7 +584,7 @@ impl App {
 
         // Quit / back
         if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
-            self.state = self.previous_state;
+            self.state = self.checks_return_state;
             return Ok(());
         }
 
