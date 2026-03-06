@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::diff::LineType;
-use crate::ui::common::build_pr_info;
+use crate::ui::common::{build_ci_status_span, build_pr_info};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -32,6 +32,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let pr_info = build_pr_info(app);
+    let ci_span = build_ci_status_span(app);
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             "PR Description",
@@ -39,6 +40,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         ),
         Span::raw(" - "),
         Span::styled(pr_info, Style::default().fg(Color::Cyan)),
+        ci_span,
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(header, area);

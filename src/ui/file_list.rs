@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::common::{build_pr_info, render_rally_status_bar};
+use super::common::{build_ci_status_span, build_pr_info, render_rally_status_bar};
 use crate::app::App;
 use crate::github::ChangedFile;
 
@@ -39,9 +39,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Header
     let pr_info = build_pr_info(app);
+    let ci_span = build_ci_status_span(app);
 
-    let header =
-        Paragraph::new(pr_info).block(Block::default().borders(Borders::ALL).title("octorus"));
+    let header = Paragraph::new(Line::from(vec![Span::raw(pr_info), ci_span]))
+        .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
     // File list

@@ -1,6 +1,7 @@
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
+    text::Span,
     widgets::Paragraph,
     Frame,
 };
@@ -17,22 +18,25 @@ pub fn build_pr_info(app: &App) -> String {
     } else {
         match &app.data_state {
             DataState::Loaded { pr, .. } => {
-                let ci_suffix = match app.ci_status {
-                    Some(CiStatus::Success) => "  ✓ CI passed",
-                    Some(CiStatus::Failure) => "  ✕ CI failed",
-                    Some(CiStatus::Pending) => "  ○ CI pending",
-                    Some(CiStatus::None) | None => "",
-                };
-                format!(
-                    "PR #{}: {} by @{}{}",
-                    pr.number, pr.title, pr.user.login, ci_suffix
-                )
+                format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
             }
             _ => match app.pr_number {
                 Some(n) => format!("PR #{}", n),
                 None => "PR".to_string(),
             },
         }
+    }
+}
+
+/// Build CI status span with color for header display
+pub fn build_ci_status_span(app: &App) -> Span<'static> {
+    match app.ci_status {
+        Some(CiStatus::Success) => Span::styled("  ✓ CI passed", Style::default().fg(Color::Green)),
+        Some(CiStatus::Failure) => Span::styled("  ✕ CI failed", Style::default().fg(Color::Red)),
+        Some(CiStatus::Pending) => {
+            Span::styled("  ○ CI pending", Style::default().fg(Color::Yellow))
+        }
+        Some(CiStatus::None) | None => Span::raw(""),
     }
 }
 
