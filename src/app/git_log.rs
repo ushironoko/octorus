@@ -6,7 +6,8 @@ use tokio::sync::mpsc;
 use crate::config::KeybindingsConfig;
 use crate::github;
 use crate::keybinding::KeySequence;
-use crate::ui::diff_view::build_plain_diff_cache;
+use crate::syntax::ParserPool;
+use crate::ui::diff_view::{build_commit_diff_cache, build_plain_diff_cache};
 
 use super::types::*;
 use super::{App, AppState};
@@ -56,7 +57,7 @@ impl App {
                 patch_hash: cached.patch_hash,
                 lines: cached.lines.clone(),
                 interner: cached.interner.clone(),
-                highlighted: false,
+                highlighted: cached.highlighted,
                 markdown_rich: false,
             });
             gl.diff_loading = false;
@@ -67,6 +68,7 @@ impl App {
             // from overwriting the current cache-hit result
             gl.pending_diff_sha = None;
             gl.commit_diff_receiver = None;
+            gl.highlight_receiver = None;
             return;
         }
 
@@ -129,31 +131,37 @@ impl App {
                         let mut cache = build_plain_diff_cache(&diff_text, tab_width);
                         cache.file_index = gl.selected_commit;
 
-                        Self::evict_git_log_diff_cache(gl, &sha);
-                        gl.diff_cache_map.insert(
-                            sha.clone(),
-                            DiffCache {
-                                file_index: cache.file_index,
-                                patch_hash: cache.patch_hash,
-                                lines: cache.lines.clone(),
-                                interner: cache.interner.clone(),
-                                highlighted: false,
-                                markdown_rich: false,
-                            },
-                        );
-
                         let is_current = gl
                             .pending_diff_sha
                             .as_ref()
                             .is_some_and(|pending| *pending == sha);
                         if is_current {
-                            gl.commit_diff = Some(diff_text);
+                            gl.commit_diff = Some(diff_text.clone());
                             gl.diff_cache = Some(cache);
                             gl.diff_loading = false;
                             gl.diff_error = None;
                             gl.selected_line = 0;
                             gl.scroll_offset = 0;
                         }
+
+                        // ハイライト版をバックグラウンドで構築
+                        let theme = self.config.diff.theme.clone();
+                        let sha_clone = sha.clone();
+                        let selected = gl.selected_commit;
+                        let (tx, rx_hl) = mpsc::channel(1);
+                        gl.highlight_receiver = Some(rx_hl);
+
+                        tokio::task::spawn_blocking(move || {
+                            let mut parser_pool = ParserPool::new();
+                            let mut hl_cache = build_commit_diff_cache(
+                                &diff_text,
+                                &theme,
+                                &mut parser_pool,
+                                tab_width,
+                            );
+                            hl_cache.file_index = selected;
+                            let _ = tx.try_send((sha_clone, hl_cache));
+                        });
                     }
                     Err(e) => {
                         let is_current = gl.pending_diff_sha.is_some();
@@ -164,6 +172,31 @@ impl App {
                     }
                 }
                 gl.commit_diff_receiver = None;
+            }
+        }
+
+        // ハイライト済み diff キャッシュの受信
+        if let Some(ref mut rx) = gl.highlight_receiver {
+            if let Ok((sha, hl_cache)) = rx.try_recv() {
+                Self::evict_git_log_diff_cache(gl, &sha);
+                gl.diff_cache_map.insert(sha.clone(), DiffCache {
+                    file_index: hl_cache.file_index,
+                    patch_hash: hl_cache.patch_hash,
+                    lines: hl_cache.lines.clone(),
+                    interner: hl_cache.interner.clone(),
+                    highlighted: true,
+                    markdown_rich: false,
+                });
+
+                // 現在選択中のコミットならスワップ
+                let is_current = gl
+                    .commits
+                    .get(gl.selected_commit)
+                    .is_some_and(|c| c.sha == sha);
+                if is_current {
+                    gl.diff_cache = Some(hl_cache);
+                }
+                gl.highlight_receiver = None;
             }
         }
     }

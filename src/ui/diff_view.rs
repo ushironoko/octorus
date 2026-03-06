@@ -238,6 +238,104 @@ pub fn build_diff_cache(
     }
 }
 
+/// Build a highlighted DiffCache from a multi-file commit diff.
+///
+/// Splits the commit diff at `diff --git` boundaries, builds a highlighted
+/// DiffCache for each file section using the appropriate filename, then
+/// merges all results into a single DiffCache with a unified interner.
+///
+/// Meta/header lines (`diff --git`, `index`, `---`, `+++`) are kept as-is
+/// (same styling as `build_plain_diff_cache`), only code lines get syntax
+/// highlighting.
+pub fn build_commit_diff_cache(
+    full_diff: &str,
+    theme_name: &str,
+    parser_pool: &mut ParserPool,
+    tab_width: u8,
+) -> DiffCache {
+    let patch_hash = hash_string(full_diff);
+    let sections = split_diff_by_file(full_diff);
+
+    let mut combined_interner = Rodeo::default();
+    let mut combined_lines: Vec<CachedDiffLine> = Vec::new();
+
+    for (filename, section_patch) in &sections {
+        let section_cache = build_diff_cache(
+            section_patch,
+            filename,
+            theme_name,
+            parser_pool,
+            false, // markdown_rich is not used for commit diffs
+            tab_width,
+        );
+        // Re-intern spans from section interner into the combined interner
+        for line in &section_cache.lines {
+            let spans = line
+                .spans
+                .iter()
+                .map(|span| {
+                    let text = section_cache.resolve(span.content);
+                    InternedSpan {
+                        content: combined_interner.get_or_intern(text),
+                        style: span.style,
+                    }
+                })
+                .collect();
+            combined_lines.push(CachedDiffLine {
+                spans,
+                line_type: line.line_type,
+            });
+        }
+    }
+
+    DiffCache {
+        file_index: 0,
+        patch_hash,
+        lines: combined_lines,
+        interner: combined_interner,
+        highlighted: true,
+        markdown_rich: false,
+    }
+}
+
+/// Split a multi-file unified diff into per-file sections.
+///
+/// Each returned tuple is `(filename, section_patch)` where `filename` is
+/// extracted from the `diff --git a/... b/...` header line and
+/// `section_patch` contains the full text of that file's diff section
+/// (including the header).
+fn split_diff_by_file(diff: &str) -> Vec<(String, String)> {
+    let mut sections = Vec::new();
+    let mut current_filename = String::new();
+    let mut current_lines: Vec<&str> = Vec::new();
+
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            // Flush previous section
+            if !current_lines.is_empty() {
+                let patch = current_lines.join("\n");
+                sections.push((current_filename.clone(), patch));
+                current_lines.clear();
+            }
+            // Extract filename from "a/path b/path"
+            current_filename = rest
+                .split(" b/")
+                .nth(1)
+                .unwrap_or("unknown")
+                .to_string();
+        }
+        current_lines.push(line);
+    }
+
+    // Flush last section
+    if !current_lines.is_empty() {
+        let patch = current_lines.join("\n");
+        sections.push((current_filename, patch));
+    }
+
+    sections
+}
+
 /// Transform markdown syntax characters in rich display mode.
 ///
 /// Uses sentinel colors from `ThemeStyleCache::with_markdown_rich_overrides()` to

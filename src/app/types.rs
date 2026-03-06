@@ -385,6 +385,8 @@ pub struct GitLogState {
     pub(crate) commit_list_receiver: Option<mpsc::Receiver<Result<Vec<PrCommit>, String>>>,
     /// コミット diff レシーバー（(sha, diff_text) タプル）
     pub(crate) commit_diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
+    /// ハイライト済み diff キャッシュ レシーバー（(sha, DiffCache) タプル）
+    pub(crate) highlight_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
     /// コミット diff キャッシュ（sha -> DiffCache, 上限 MAX_GIT_LOG_DIFF_CACHE）
     pub diff_cache_map: HashMap<String, DiffCache>,
 }
@@ -415,6 +417,7 @@ impl GitLogState {
             pending_diff_sha: None,
             commit_list_receiver: None,
             commit_diff_receiver: None,
+            highlight_receiver: None,
             diff_cache_map: HashMap::new(),
         }
     }
