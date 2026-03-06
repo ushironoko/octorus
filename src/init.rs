@@ -44,6 +44,9 @@ const DEFAULT_REVIEWER_PROMPT: &str = include_str!("ai/defaults/reviewer.md");
 const DEFAULT_REVIEWEE_PROMPT: &str = include_str!("ai/defaults/reviewee.md");
 const DEFAULT_REREVIEW_PROMPT: &str = include_str!("ai/defaults/rereview.md");
 
+/// Agent skill content for Claude Code integration
+const AGENT_SKILL_CONTENT: &str = include_str!("ai/defaults/skill.md");
+
 /// Default local config.toml content
 const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configuration.
 # Values here override the global config (~/.config/octorus/config.toml).
@@ -111,6 +114,11 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
         "rereview.md",
     )?;
 
+    // Generate agent skill for Claude Code (if ~/.claude exists)
+    if let Err(e) = generate_agent_skill(force) {
+        eprintln!("Warning: Failed to generate agent skill: {}", e);
+    }
+
     println!();
     println!("Initialization complete!");
     println!();
@@ -136,6 +144,32 @@ fn write_file_if_needed(path: &PathBuf, content: &str, force: bool, name: &str) 
     println!("Writing {}...", name);
     fs::write(path, content).with_context(|| format!("Failed to write {}", name))?;
     Ok(())
+}
+
+/// Generate agent skill file in the given claude directory (testable core)
+fn generate_agent_skill_in(claude_dir: &Path, force: bool) -> Result<()> {
+    let skill_dir = claude_dir.join("skills").join("octorus");
+    if !skill_dir.exists() {
+        fs::create_dir_all(&skill_dir).context("Failed to create agent skill directory")?;
+    }
+    write_file_if_needed(
+        &skill_dir.join("SKILL.md"),
+        AGENT_SKILL_CONTENT,
+        force,
+        "SKILL.md (agent skill)",
+    )
+}
+
+/// Generate agent skill for Claude Code (if ~/.claude exists)
+fn generate_agent_skill(force: bool) -> Result<()> {
+    let claude_dir = match std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".claude"))
+    {
+        Some(dir) if dir.is_dir() => dir,
+        _ => return Ok(()),
+    };
+    generate_agent_skill_in(&claude_dir, force)
 }
 
 /// Run init for project-local .octorus/ directory
@@ -367,5 +401,61 @@ mod tests {
         let content = fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("Project-local octorus configuration"));
         assert!(!content.contains("custom = true"));
+    }
+
+    #[test]
+    fn test_generate_agent_skill_creates_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_dir = temp_dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+
+        generate_agent_skill_in(&claude_dir, false).unwrap();
+
+        let skill_path = claude_dir.join("skills/octorus/SKILL.md");
+        assert!(skill_path.exists(), "SKILL.md should exist");
+
+        let content = fs::read_to_string(&skill_path).unwrap();
+        assert!(content.contains("or"), "Should contain binary name 'or'");
+        assert!(
+            content.contains("--ai-rally"),
+            "Should contain --ai-rally flag"
+        );
+    }
+
+    #[test]
+    fn test_generate_agent_skill_respects_force() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_dir = temp_dir.path().join(".claude");
+        let skill_dir = claude_dir.join("skills/octorus");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_path = skill_dir.join("SKILL.md");
+        fs::write(&skill_path, "custom content").unwrap();
+
+        // force=false should skip
+        generate_agent_skill_in(&claude_dir, false).unwrap();
+        let content = fs::read_to_string(&skill_path).unwrap();
+        assert_eq!(content, "custom content");
+
+        // force=true should overwrite
+        generate_agent_skill_in(&claude_dir, true).unwrap();
+        let content = fs::read_to_string(&skill_path).unwrap();
+        assert!(content.contains("--ai-rally"));
+        assert!(!content.contains("custom content"));
+    }
+
+    #[test]
+    fn test_generate_agent_skill_creates_intermediate_dirs() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_dir = temp_dir.path().join(".claude");
+        // Only create .claude, not skills/octorus/
+        fs::create_dir_all(&claude_dir).unwrap();
+
+        generate_agent_skill_in(&claude_dir, false).unwrap();
+
+        let skill_path = claude_dir.join("skills/octorus/SKILL.md");
+        assert!(
+            skill_path.exists(),
+            "Should create intermediate directories and SKILL.md"
+        );
     }
 }
