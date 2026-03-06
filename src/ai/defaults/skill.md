@@ -32,8 +32,9 @@ or --local
 # Local diff with auto-focus on changed files
 or --local --auto-focus
 
-# Start AI Rally in TUI mode
-or --repo owner/repo --pr 123 --ai-rally
+# Start AI Rally in TUI mode:
+# Open the PR in TUI, then press `A` to start AI Rally from the UI
+or --repo owner/repo --pr 123
 
 # Headless AI Rally (CI/automation, outputs JSON to stdout)
 or --repo owner/repo --pr 123 --ai-rally

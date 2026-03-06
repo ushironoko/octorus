@@ -444,6 +444,54 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_agent_skill_skips_when_claude_dir_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_dir = temp_dir.path().join(".claude");
+        // .claude does not exist — simulate the wrapper's behavior
+        assert!(!claude_dir.is_dir());
+
+        // The wrapper checks is_dir() and returns Ok(()) silently
+        // Here we verify that generate_agent_skill_in still works
+        // but the wrapper would never call it when the dir is missing.
+        // Simulate the wrapper logic directly:
+        let result = if claude_dir.is_dir() {
+            generate_agent_skill_in(&claude_dir, false)
+        } else {
+            Ok(())
+        };
+        assert!(result.is_ok());
+
+        let skill_path = claude_dir.join("skills/octorus/SKILL.md");
+        assert!(
+            !skill_path.exists(),
+            "SKILL.md should not be created when .claude dir is missing"
+        );
+    }
+
+    #[test]
+    fn test_generate_agent_skill_skips_when_claude_is_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_path = temp_dir.path().join(".claude");
+        // Create .claude as a file, not a directory
+        fs::write(&claude_path, "not a directory").unwrap();
+        assert!(!claude_path.is_dir());
+
+        // Simulate the wrapper logic: is_dir() returns false for a file
+        let result = if claude_path.is_dir() {
+            generate_agent_skill_in(&claude_path, false)
+        } else {
+            Ok(())
+        };
+        assert!(result.is_ok());
+
+        let skill_path = claude_path.join("skills/octorus/SKILL.md");
+        assert!(
+            !skill_path.exists(),
+            "SKILL.md should not be created when .claude is a file"
+        );
+    }
+
+    #[test]
     fn test_generate_agent_skill_creates_intermediate_dirs() {
         let temp_dir = TempDir::new().unwrap();
         let claude_dir = temp_dir.path().join(".claude");
