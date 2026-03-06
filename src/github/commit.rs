@@ -147,6 +147,10 @@ pub async fn fetch_local_commits(working_dir: Option<&str>) -> Result<Vec<PrComm
             .output()
             .await
             .context("Failed to run git log fallback")?;
+        if !output2.status.success() {
+            let stderr = String::from_utf8_lossy(&output2.stderr);
+            anyhow::bail!("git log fallback failed: {}", stderr.trim());
+        }
         return parse_git_log_output(&output2.stdout);
     }
 

@@ -277,6 +277,18 @@ impl App {
             return Ok(());
         }
 
+        // diff エラー時の r でリトライ（diff ペインにフォーカスできないため
+        // ここでもリトライを受け付ける）
+        if self
+            .git_log_state
+            .as_ref()
+            .is_some_and(|gl| gl.diff_error.is_some())
+            && key.code == KeyCode::Char('r')
+        {
+            self.start_fetch_commit_diff();
+            return Ok(());
+        }
+
         // コミット移動 → 移動後に diff 取得
         let moved = handle_commit_list_navigation(
             &mut self.git_log_state,

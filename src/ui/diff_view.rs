@@ -317,12 +317,10 @@ fn split_diff_by_file(diff: &str) -> Vec<(String, String)> {
                 sections.push((current_filename.clone(), patch));
                 current_lines.clear();
             }
-            // Extract filename from "a/path b/path"
-            current_filename = rest
-                .split(" b/")
-                .nth(1)
-                .unwrap_or("unknown")
-                .to_string();
+            // Extract filename from "a/path b/path".
+            // For non-renames the paths are identical so we use
+            // the midpoint to correctly handle paths containing " b/".
+            current_filename = extract_diff_filename(rest);
         }
         current_lines.push(line);
     }
@@ -334,6 +332,35 @@ fn split_diff_by_file(diff: &str) -> Vec<(String, String)> {
     }
 
     sections
+}
+
+/// Extract filename from `diff --git` rest string (`a/path b/path`).
+///
+/// For non-renames (identical paths), uses the midpoint of the symmetric
+/// `a/P b/P` format to correctly handle paths containing ` b/`.
+/// Falls back to `rsplit_once(" b/")` for renames or unexpected formats.
+fn extract_diff_filename(rest: &str) -> String {
+    let len = rest.len();
+    // Non-rename: "a/P b/P" has length 5 + 2*len(P), which is always odd
+    if len >= 5 && len % 2 == 1 {
+        let mid = len / 2;
+        // Verify: rest[mid] == ' ' and rest[mid+1..mid+3] == "b/"
+        if rest.as_bytes()[mid] == b' '
+            && rest.get(mid + 1..mid + 3) == Some("b/")
+            && rest.get(..2) == Some("a/")
+        {
+            let a_path = &rest[2..mid];
+            let b_path = &rest[mid + 3..];
+            if a_path == b_path {
+                return b_path.to_string();
+            }
+        }
+    }
+    // Fallback for renames or unusual formats: use last " b/" occurrence
+    rest.rsplit_once(" b/")
+        .map(|(_, p)| p)
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 /// Transform markdown syntax characters in rich display mode.
@@ -1756,6 +1783,34 @@ fn render_reply_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_diff_filename_simple() {
+        assert_eq!(extract_diff_filename("a/src/main.rs b/src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_extract_diff_filename_path_containing_b_slash() {
+        // Path contains " b/" which would break naive `.split(" b/")`
+        assert_eq!(
+            extract_diff_filename("a/src/ b/file.rs b/src/ b/file.rs"),
+            "src/ b/file.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_diff_filename_rename_fallback() {
+        // Renames have different a/ and b/ paths; falls back to rsplit_once
+        assert_eq!(
+            extract_diff_filename("a/old_name.rs b/new_name.rs"),
+            "new_name.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_diff_filename_unknown() {
+        assert_eq!(extract_diff_filename("garbage"), "unknown");
+    }
 
     #[test]
     fn test_build_diff_cache_with_dracula_theme() {
