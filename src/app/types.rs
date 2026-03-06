@@ -376,6 +376,10 @@ pub struct GitLogState {
     pub scroll_offset: usize,
     pub diff_loading: bool,
     pub commits_loading: bool,
+    /// 追加コミットが存在するか（無限スクロール用）
+    pub commits_has_more: bool,
+    /// 現在のページ番号（GitHub API: 1-indexed, ローカル: offset計算用）
+    pub commits_page: u32,
     /// コミット一覧取得エラー
     pub commits_error: Option<String>,
     /// コミット diff 取得エラー
@@ -383,7 +387,8 @@ pub struct GitLogState {
     /// 非同期レスポンス競合防止: 現在取得中のコミット SHA
     pub pending_diff_sha: Option<String>,
     /// コミット一覧レシーバー
-    pub(crate) commit_list_receiver: Option<mpsc::Receiver<Result<Vec<PrCommit>, String>>>,
+    pub(crate) commit_list_receiver:
+        Option<mpsc::Receiver<Result<crate::github::CommitListPage, String>>>,
     /// コミット diff レシーバー（(sha, diff_text) タプル）
     pub(crate) commit_diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
     /// ハイライト済み diff キャッシュ レシーバー（(sha, DiffCache) タプル）
@@ -415,6 +420,8 @@ impl GitLogState {
             scroll_offset: 0,
             diff_loading: false,
             commits_loading: true,
+            commits_has_more: false,
+            commits_page: 1,
             commits_error: None,
             diff_error: None,
             pending_diff_sha: None,

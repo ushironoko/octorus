@@ -8,7 +8,7 @@ pub use client::{detect_repo, gh_command, DetectRepoError};
 pub use comment::{create_multiline_review_comment, create_reply_comment, create_review_comment};
 pub use commit::{
     fetch_commit_diff, fetch_local_commit_diff, fetch_local_commits, fetch_pr_commits,
-    format_relative_time, PrCommit,
+    format_relative_time, CommitListPage, PrCommit,
 };
 
 pub use pr::{

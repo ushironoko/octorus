@@ -13,18 +13,32 @@ use super::types::*;
 use super::{App, AppState};
 
 impl App {
+    /// 1ページあたりのコミット取得件数
+    const COMMITS_PER_PAGE: u32 = 30;
+
     /// Git Log 画面を開く
     pub(crate) fn open_git_log(&mut self) {
         let mut state = GitLogState::new();
+        self.fetch_commits_page(&mut state, 1);
+        self.git_log_state = Some(state);
+        self.state = AppState::GitLogSplitCommitList;
+    }
 
-        // コミット一覧をバックグラウンドで取得
+    /// コミット一覧の指定ページをバックグラウンドで取得
+    fn fetch_commits_page(&self, gl: &mut GitLogState, page: u32) {
+        gl.commits_loading = true;
+        gl.commits_page = page;
+
         let (tx, rx) = mpsc::channel(1);
-        state.commit_list_receiver = Some(rx);
+        gl.commit_list_receiver = Some(rx);
+
+        let per_page = Self::COMMITS_PER_PAGE;
 
         if self.local_mode {
             let working_dir = self.working_dir.clone();
+            let offset = (page - 1) * per_page;
             tokio::spawn(async move {
-                let result = github::fetch_local_commits(working_dir.as_deref())
+                let result = github::fetch_local_commits(working_dir.as_deref(), offset, per_page)
                     .await
                     .map_err(|e| e.to_string());
                 let _ = tx.send(result).await;
@@ -33,15 +47,58 @@ impl App {
             let repo = self.repo.clone();
             let pr_number = self.pr_number();
             tokio::spawn(async move {
-                let result = github::fetch_pr_commits(&repo, pr_number)
+                let result = github::fetch_pr_commits(&repo, pr_number, page, per_page)
                     .await
                     .map_err(|e| e.to_string());
                 let _ = tx.send(result).await;
             });
         }
+    }
 
-        self.git_log_state = Some(state);
-        self.state = AppState::GitLogSplitCommitList;
+    /// 追加のコミットを読み込み（無限スクロール用）
+    fn load_more_commits(&mut self) {
+        let Some(ref mut gl) = self.git_log_state else {
+            return;
+        };
+        if gl.commits_loading || !gl.commits_has_more {
+            return;
+        }
+        let next_page = gl.commits_page + 1;
+        self.fetch_commits_page_for_current(next_page);
+    }
+
+    /// 現在の git_log_state に対してページ取得を開始（&mut self が必要なケース）
+    fn fetch_commits_page_for_current(&mut self, page: u32) {
+        let Some(ref mut gl) = self.git_log_state else {
+            return;
+        };
+        gl.commits_loading = true;
+        gl.commits_page = page;
+
+        let (tx, rx) = mpsc::channel(1);
+        gl.commit_list_receiver = Some(rx);
+
+        let per_page = Self::COMMITS_PER_PAGE;
+
+        if self.local_mode {
+            let working_dir = self.working_dir.clone();
+            let offset = (page - 1) * per_page;
+            tokio::spawn(async move {
+                let result = github::fetch_local_commits(working_dir.as_deref(), offset, per_page)
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        } else {
+            let repo = self.repo.clone();
+            let pr_number = self.pr_number();
+            tokio::spawn(async move {
+                let result = github::fetch_pr_commits(&repo, pr_number, page, per_page)
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        }
     }
 
     /// Git Log 画面を閉じる（全状態を破棄）
@@ -200,12 +257,14 @@ impl App {
         if let Some(ref mut rx) = gl.commit_list_receiver {
             if let Ok(result) = rx.try_recv() {
                 match result {
-                    Ok(commits) => {
-                        gl.commits = commits;
+                    Ok(page) => {
+                        let is_first_page = gl.commits.is_empty();
+                        gl.commits.extend(page.items);
+                        gl.commits_has_more = page.has_more;
                         gl.commits_loading = false;
                         gl.commits_error = None;
-                        // 最初のコミットの diff を取得開始 + 残りをプリフェッチ
-                        if !gl.commits.is_empty() {
+                        // 初回ページ到着時のみ: 最初のコミットの diff 取得 + プリフェッチ
+                        if is_first_page && !gl.commits.is_empty() {
                             gl.commit_list_receiver = None;
                             self.start_fetch_commit_diff();
                             self.start_prefetch_commit_diffs();
@@ -396,6 +455,17 @@ impl App {
             .is_some_and(|gl| gl.commits_error.is_some())
             && key.code == KeyCode::Char('r')
         {
+            // 追加ロード失敗の場合はエラーをクリアして再取得
+            if let Some(ref gl) = self.git_log_state {
+                if !gl.commits.is_empty() {
+                    let page = gl.commits_page;
+                    if let Some(ref mut gl) = self.git_log_state {
+                        gl.commits_error = None;
+                    }
+                    self.fetch_commits_page_for_current(page);
+                    return Ok(());
+                }
+            }
             self.git_log_state = None;
             self.open_git_log();
             return Ok(());
@@ -422,6 +492,15 @@ impl App {
         );
         if moved {
             self.start_fetch_commit_diff();
+            // 無限スクロール: 残り5件で次ページを取得
+            if let Some(ref gl) = self.git_log_state {
+                if gl.commits_has_more
+                    && !gl.commits_loading
+                    && gl.selected_commit + 5 >= gl.commits.len()
+                {
+                    self.load_more_commits();
+                }
+            }
             return Ok(());
         }
 

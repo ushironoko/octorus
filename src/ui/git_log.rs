@@ -144,10 +144,11 @@ fn render_commit_list_pane(
     frame.render_widget(header, chunks[0]);
 
     // Commit list content — use &mut borrow throughout to allow scroll_offset update
+    let spinner = app.spinner_char().to_string();
     if let Some(ref mut gl) = app.git_log_state {
-        if gl.commits_loading {
+        if gl.commits_loading && gl.commits.is_empty() {
             let loading = Paragraph::new(Line::from(Span::styled(
-                format!("{} Loading commits...", app.spinner_char()),
+                format!("{} Loading commits...", spinner),
                 Style::default().fg(Color::Yellow),
             )))
             .block(
@@ -189,15 +190,23 @@ fn render_commit_list_pane(
         } else {
             let total = gl.commits.len();
             let selected_commit = gl.selected_commit;
-            let items: Vec<ListItem> = gl
+            let mut items: Vec<ListItem> = gl
                 .commits
                 .iter()
                 .enumerate()
                 .map(|(i, commit)| build_commit_list_item(commit, i == selected_commit))
                 .collect();
 
-            let title = if total >= 250 {
-                format!("Commits ({} - API limit)", total)
+            // 追加ロード中はリスト末尾にインジケータを表示
+            if gl.commits_loading && !gl.commits.is_empty() {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("{} Loading more...", spinner),
+                    Style::default().fg(Color::Yellow),
+                ))));
+            }
+
+            let title = if gl.commits_has_more {
+                format!("Commits ({}+)", total)
             } else {
                 format!("Commits ({})", total)
             };
