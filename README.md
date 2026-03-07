@@ -30,6 +30,8 @@ Preview local `git diff HEAD` in real time with file watcher — no PR required.
 - View and navigate review comments with jump-to-line
 - Submit reviews (Approve / Request Changes / Comment)
 - Vim-like symbol search(`gd`), on-the-fly file display and editing(`gf`)
+- Git log view for browsing PR commits with diff preview
+- CI checks status display with workflow details
 
 ### Customization
 - Fully configurable keybindings and editor
@@ -105,7 +107,7 @@ or --local
 
 | Subcommand | Description |
 |------------|-------------|
-| `or init` | Initialize global configuration files and prompt templates |
+| `or init` | Initialize global configuration files, prompt templates, and agent SKILL.md |
 | `or init --local` | Initialize project-local `.octorus/` config and prompts |
 | `or init --force` | Overwrite existing configuration files |
 | `or clean` | Remove AI Rally session data |
@@ -113,6 +115,7 @@ or --local
 `or init` creates global config:
 - `~/.config/octorus/config.toml` - Main configuration file
 - `~/.config/octorus/prompts/` - Prompt template directory
+- `~/.claude/skills/octorus/SKILL.md` - Agent skill documentation (if `~/.claude/` exists)
 
 `or init --local` creates project-local config:
 - `.octorus/config.toml` - Project-local configuration (overrides global)
@@ -336,6 +339,7 @@ The following features are **disabled** in local mode since there is no associat
 | Add suggestions | ❌ |
 | Submit reviews | ❌ |
 | View comment list | ❌ |
+| View CI checks (`S`) | ❌ |
 | Open PR in browser (`O`) | ❌ |
 
 ## Configuration
@@ -365,6 +369,10 @@ approve = "a"
 request_changes = "r"
 comment = "c"
 suggestion = "s"
+
+[git_log]
+# Maximum number of cached commit diffs (default: 20)
+max_diff_cache = 20
 
 [ai]
 # AI agent to use for reviewer/reviewee
@@ -525,6 +533,8 @@ Custom themes with the same name as a built-in theme will override it.
 | `R` | Force refresh (discard cache) |
 | `d` | View PR description |
 | `A` | Start AI Rally |
+| `S` | View CI checks status |
+| `gl` | Open git log view |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
 | `?` | Toggle help |
@@ -623,6 +633,53 @@ When adding a comment, suggestion, or reply, you enter the built-in text input m
 
 Multi-line input is supported. Press `Enter` to insert a newline.
 
+### Git Log View
+
+The git log view lets you browse PR commits with syntax-highlighted diff preview.
+
+**Commit List Focus (Split View):**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down in commit list |
+| `k` / `↑` | Move up in commit list |
+| `Shift+j` | Page down |
+| `Shift+k` | Page up |
+| `g` | Jump to first commit |
+| `G` | Jump to last commit |
+| `Enter` / `Tab` / `→` / `l` | Focus diff pane |
+| `r` | Retry (on error) |
+| `q` / `Esc` / `←` / `h` | Back to file list |
+
+**Diff Focus (Split View):**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll diff |
+| `k` / `↑` | Scroll diff |
+| `gg` / `G` | Jump to first/last line |
+| `Ctrl-d` | Page down |
+| `Ctrl-u` | Page up |
+| `Tab` / `→` / `l` | Open fullscreen diff view |
+| `←` / `h` | Focus commit list |
+| `q` | Back to file list |
+
+Commits are loaded with infinite scroll — additional commits are fetched automatically as you scroll down. Diffs are prefetched in the background for faster navigation.
+
+### CI Checks View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Enter` | Open check in browser |
+| `R` | Refresh check list |
+| `O` | Open PR in browser |
+| `?` | Toggle help |
+| `q` / `Esc` | Back to previous view |
+
+Status icons: `✓` (pass), `✕` (fail), `○` (pending), `-` (skipped/cancelled). Each check shows its name, workflow, and duration.
+
 ### Comment List View
 
 | Key | Action |
@@ -695,6 +752,8 @@ go_to_definition = ["g", "d"]
 | `ai_rally` | `A` | Start AI Rally |
 | `open_panel` | `Enter` | Open panel / select |
 | `open_in_browser` | `O` | Open PR in browser |
+| `ci_checks` | `S` | View CI checks status |
+| `git_log` | `gl` | Open git log view |
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
 | `toggle_markdown_rich` | `M` | Toggle Markdown rich display |
