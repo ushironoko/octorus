@@ -591,7 +591,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `Ctrl-u` | Page up |
 | `c` | Add comment at line |
 | `s` | Add suggestion at line |
-| `Shift+Enter` | Enter multiline selection mode |
+| `Shift+Enter` / `V` | Enter multiline selection mode |
 | `M` | Toggle Markdown rich display |
 | `Enter` | Open comment panel |
 | `←` / `h` / `q` / `Esc` | Back to previous view |
