@@ -102,6 +102,7 @@ or --local
 | `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
+| `--accept-local-overrides` | Accept local `.octorus/` overrides for AI settings in headless mode |
 
 ### Subcommands
 
@@ -186,6 +187,28 @@ or --local --ai-rally
 or --repo owner/repo --pr 123 --ai-rally --working-dir /path/to/repo
 ```
 
+**JSON output** (stdout):
+
+Headless mode writes a JSON object to stdout on completion:
+
+```json
+{
+  "result": "Approved",
+  "iterations": 2,
+  "summary": "All issues resolved",
+  "last_review": { ... },
+  "last_fix": { ... }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `result` | `"Approved"` / `"NotApproved"` / `"Error"` | Final outcome |
+| `iterations` | number | Number of review-fix iterations completed |
+| `summary` | string | Human-readable summary |
+| `last_review` | object \| null | Last reviewer output (if available) |
+| `last_fix` | object \| null | Last reviewee output (if available) |
+
 **Exit codes:**
 
 | Code | Meaning |
@@ -218,6 +241,7 @@ or --repo owner/repo --pr 123 --ai-rally --working-dir /path/to/repo
 - **Session Persistence**: Rally state is saved locally and can be resumed
 - **Interactive Flow**: When the AI agent needs clarification or permission, you can respond interactively
 - **Local Diff Support**: Re-review iterations prioritize local `git diff` for unpushed changes; falls back to `gh pr diff` when changes have been pushed
+- **Pause/Resume**: Press `p` to pause the rally at the next checkpoint (between iterations). Press `p` again to resume. The header shows `(Pausing...)` while waiting and `(PAUSED)` when stopped
 - **Background Execution**: Press `b` to run rally in background while continuing to browse files
 - **Auto Post**: Set `auto_post = true` in `[ai]` config to skip confirmation prompts and automatically post review/fix comments to the PR
 
@@ -519,13 +543,41 @@ Custom themes with the same name as a built-in theme will override it.
 
 ## Keybindings
 
+### PR List View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Shift+j` | Page down |
+| `Shift+k` | Page up |
+| `gg` | Jump to first |
+| `G` | Jump to last |
+| `Enter` | Select PR |
+| `o` | Filter: Open PRs only |
+| `c` | Filter: Closed PRs only |
+| `a` | Filter: All PRs |
+| `O` | Open PR in browser |
+| `S` | View CI checks status |
+| `Space /` | Keyword filter |
+| `R` | Refresh PR list |
+| `L` | Toggle local diff mode |
+| `?` | Toggle help |
+| `q` | Quit |
+
+PRs are loaded with infinite scroll — additional PRs are fetched automatically as you scroll down. The header shows the current state filter (open/closed/all).
+
 ### File List View
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
+| `Shift+j` | Page down |
+| `Shift+k` | Page up |
 | `Enter` / `→` / `l` | Open split view |
+| `v` | Mark file as viewed/unviewed |
+| `V` | Mark directory as viewed |
 | `a` | Approve PR |
 | `r` | Request changes |
 | `c` | Comment only |
@@ -535,6 +587,7 @@ Custom themes with the same name as a built-in theme will override it.
 | `A` | Start AI Rally |
 | `S` | View CI checks status |
 | `gl` | Open git log view |
+| `Space /` | Keyword filter |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
 | `?` | Toggle help |
@@ -595,6 +648,8 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `M` | Toggle Markdown rich display |
 | `Enter` | Open comment panel |
 | `←` / `h` / `q` / `Esc` | Back to previous view |
+
+**Go to Definition (`gd`)**: When multiple symbol candidates are found, a popup appears for selection. Use `j`/`k` to navigate, `Enter` to jump, `Esc` to cancel. The jump stack (`Ctrl-o` to go back) stores up to 100 positions.
 
 **Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
 
@@ -761,6 +816,22 @@ go_to_definition = ["g", "d"]
 | **Diff Operations** |||
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |
+| `multiline_select` | `V` | Enter multiline selection mode |
+| **List Operations** |||
+| `filter` | `Space /` | Keyword filter (PR list / file list) |
+
+### Keyword Filter
+
+Press `Space /` in the PR list or file list to activate keyword filtering. Type to filter items by name.
+
+| Key | Action |
+|-----|--------|
+| Characters | Filter by keyword |
+| `Backspace` | Delete character |
+| `Ctrl+u` | Clear filter text |
+| `↑` / `↓` | Navigate filtered results |
+| `Enter` | Confirm selection |
+| `Esc` | Cancel filter |
 
 **Note**: Arrow keys (`↑/↓/←/→`) always work as alternatives to Vim-style keys and cannot be remapped.
 
