@@ -225,6 +225,9 @@ pub struct App {
     ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
     /// Git Log 画面の全状態（None = 非表示）
     pub git_log_state: Option<GitLogState>,
+    /// Latest available version (None = not checked yet or up-to-date)
+    pub update_available: Option<String>,
+    update_check_receiver: Option<mpsc::Receiver<Option<String>>>,
 }
 
 impl App {
@@ -337,6 +340,8 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            update_available: None,
+            update_check_receiver: None,
         };
 
         (app, tx)
@@ -445,6 +450,8 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            update_available: None,
+            update_check_receiver: None,
         }
     }
 
@@ -460,6 +467,11 @@ impl App {
 
     pub fn set_retry_sender(&mut self, tx: mpsc::Sender<RefreshRequest>) {
         self.retry_sender = Some(tx);
+    }
+
+    /// Set receiver for background update check result
+    pub fn set_update_check_receiver(&mut self, rx: mpsc::Receiver<Option<String>>) {
+        self.update_check_receiver = Some(rx);
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -492,6 +504,7 @@ impl App {
             self.poll_checks_updates();
             self.poll_ci_status_updates();
             self.poll_git_log_updates();
+            self.poll_update_check();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -674,6 +687,8 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            update_available: None,
+            update_check_receiver: None,
         }
     }
 

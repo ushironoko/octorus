@@ -9,11 +9,13 @@ use ratatui::{
     Frame,
 };
 
+use super::common::render_update_bar;
 use crate::app::App;
 use crate::github::{CiStatus, PullRequestSummary};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_filter_bar = app.pr_list_filter.as_ref().is_some_and(|f| f.input_active);
+    let has_update = app.update_available.is_some();
 
     let mut constraints = vec![
         Constraint::Length(3), // Header
@@ -21,6 +23,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ];
     if has_filter_bar {
         constraints.push(Constraint::Length(3)); // Filter bar
+    }
+    if has_update {
+        constraints.push(Constraint::Length(1)); // Update notification bar
     }
     constraints.push(Constraint::Length(3)); // Footer
 
@@ -70,13 +75,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         frame.render_widget(empty, chunks[1]);
 
                         // Filter bar
+                        let mut next_chunk = 2;
                         if has_filter_bar {
-                            render_filter_bar(frame, chunks[2], filter);
+                            render_filter_bar(frame, chunks[next_chunk], filter);
+                            next_chunk += 1;
+                        }
+
+                        // Update notification bar
+                        if has_update {
+                            render_update_bar(frame, chunks[next_chunk], app);
+                            next_chunk += 1;
                         }
 
                         // Footer
-                        let footer_idx = if has_filter_bar { 3 } else { 2 };
-                        render_footer(frame, chunks[footer_idx], app);
+                        render_footer(frame, chunks[next_chunk], app);
                         return;
                     }
                     let filtered: Vec<&PullRequestSummary> =
@@ -151,15 +163,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Filter bar
+    let mut next_chunk = 2;
     if has_filter_bar {
         if let Some(ref filter) = app.pr_list_filter {
-            render_filter_bar(frame, chunks[2], filter);
+            render_filter_bar(frame, chunks[next_chunk], filter);
         }
+        next_chunk += 1;
+    }
+
+    // Update notification bar
+    if has_update {
+        render_update_bar(frame, chunks[next_chunk], app);
+        next_chunk += 1;
     }
 
     // Footer
-    let footer_idx = if has_filter_bar { 3 } else { 2 };
-    render_footer(frame, chunks[footer_idx], app);
+    render_footer(frame, chunks[next_chunk], app);
 }
 
 fn render_filter_bar(

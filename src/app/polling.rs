@@ -1247,4 +1247,22 @@ impl App {
             }
         }
     }
+
+    /// Poll for background update check result.
+    pub(crate) fn poll_update_check(&mut self) {
+        let Some(ref mut rx) = self.update_check_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(version) => {
+                self.update_available = version;
+                self.update_check_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.update_check_receiver = None;
+            }
+        }
+    }
 }

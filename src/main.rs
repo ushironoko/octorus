@@ -18,8 +18,9 @@ use tokio_util::sync::CancellationToken;
 use octorus::app::RefreshRequest;
 use octorus::{app, cache, config, github, headless, loader, syntax};
 
-// init is only used by the binary, not needed for benchmarks
+// init/update are only used by the binary, not needed for benchmarks
 mod init;
+mod update;
 
 #[derive(Parser, Debug)]
 #[command(name = "or")]
@@ -74,6 +75,8 @@ enum Commands {
     },
     /// Remove AI Rally session data
     Clean,
+    /// Update to the latest version from GitHub Releases
+    Update,
 }
 
 /// Restore terminal to normal state
@@ -128,6 +131,7 @@ async fn main() -> Result<()> {
                 println!("Rally sessions cleaned: {}", rally_dir.display());
                 Ok(())
             }
+            Commands::Update => update::run_update(),
         };
     }
 
@@ -215,6 +219,7 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
     let refresh_pending = Arc::new(AtomicBool::new(false));
 
     app.set_retry_sender(retry_tx.clone());
+    start_update_check(&mut app);
     setup_local_watch(retry_tx, working_dir.clone(), refresh_pending.clone());
     app.set_local_mode(true);
     app.set_local_auto_focus(args.auto_focus);
@@ -339,6 +344,7 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     let (mut app, tx) = app::App::new_loading(repo, pr, config.clone());
 
     app.set_retry_sender(retry_tx);
+    start_update_check(&mut app);
     setup_working_dir(&mut app, args);
 
     // Set flag to start AI Rally mode when --ai-rally is passed
@@ -412,6 +418,7 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
 
     let mut app = app::App::new_pr_list(repo, config);
     app.set_retry_sender(retry_tx);
+    start_update_check(&mut app);
     setup_working_dir(&mut app, args);
 
     // Set pending AI Rally flag if --ai-rally was passed
@@ -486,6 +493,17 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     // app.run() 内で完了済み。
     let exit_code = if result.is_ok() { 0 } else { 1 };
     std::process::exit(exit_code);
+}
+
+/// Spawn a background version check and set the receiver on the App.
+fn start_update_check(app: &mut app::App) {
+    let (tx, rx) = mpsc::channel(1);
+    app.set_update_check_receiver(rx);
+
+    tokio::task::spawn_blocking(move || {
+        let result = update::check_for_update();
+        let _ = tx.blocking_send(result);
+    });
 }
 
 /// Resolve working directory for headless mode
