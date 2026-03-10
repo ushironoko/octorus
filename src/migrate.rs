@@ -216,6 +216,29 @@ pub(crate) fn content_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Detect the originating version of a file by comparing its content hash
+/// against known default hashes. Returns `Some(version)` if matched,
+/// `None` if the content doesn't match any known default.
+pub(crate) fn detect_version_from_hash(
+    file_content: &str,
+    filename: &str,
+    is_local: bool,
+) -> Option<String> {
+    let hash = content_hash(file_content);
+    let scope = if filename == "SKILL.md" {
+        FileScope::Skill
+    } else if is_local {
+        FileScope::Local
+    } else {
+        FileScope::Global
+    };
+
+    DEFAULT_HASHES
+        .iter()
+        .find(|h| h.scope == scope && h.filename == filename && h.sha256 == hash)
+        .map(|h| h.version.to_string())
+}
+
 /// Determine the status of a file by comparing its hash against known defaults.
 fn check_file_status(
     file_content: &str,

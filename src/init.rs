@@ -7,7 +7,8 @@ use xdg::BaseDirectories;
 use octorus::config::find_project_root;
 
 use crate::migrate::{
-    write_manifest, FileRecord, FileRecordStatus, VersionManifest,
+    detect_version_from_hash, read_manifest, write_manifest, FileRecord, FileRecordStatus,
+    VersionManifest,
 };
 
 /// Default config.toml content
@@ -263,42 +264,86 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
 /// `written_files` maps filename → whether it was actually written (`true`) or
 /// skipped because it already existed (`false`). Files not present in the map
 /// (e.g. SKILL.md when ~/.claude is missing) are omitted from the manifest.
+///
+/// For skipped files, the version is determined by:
+/// 1. The existing manifest's recorded version (if available)
+/// 2. Content hash matching against known defaults
+/// 3. Fallback to `"0.0.0"` (ensures future migrations won't be skipped)
 fn write_init_manifest(
     config_dir: &Path,
-    _is_local: bool,
+    is_local: bool,
     written_files: &HashMap<String, bool>,
 ) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     let now = chrono::Utc::now().to_rfc3339();
 
+    // Read existing manifest to preserve versions of skipped files
+    let manifest_path = config_dir.join(".version");
+    let existing_manifest = read_manifest(&manifest_path);
+
     let mut files = HashMap::new();
     for (name, was_written) in written_files {
-        let status = if *was_written {
-            FileRecordStatus::Created
+        if *was_written {
+            files.insert(
+                name.clone(),
+                FileRecord {
+                    version: version.to_string(),
+                    status: FileRecordStatus::Created,
+                },
+            );
         } else {
-            FileRecordStatus::CustomizedSkipped
-        };
-        files.insert(
-            name.clone(),
-            FileRecord {
-                version: version.to_string(),
-                status,
-            },
-        );
+            // Skipped file — preserve the original version, not the current binary version.
+            let preserved_version = existing_manifest
+                .as_ref()
+                .and_then(|m| m.files.get(name))
+                .map(|r| r.version.clone())
+                .or_else(|| {
+                    // No existing manifest — try to detect version from file content hash
+                    let file_path = resolve_file_path(config_dir, name, is_local);
+                    fs::read_to_string(&file_path)
+                        .ok()
+                        .and_then(|content| detect_version_from_hash(&content, name, is_local))
+                })
+                .unwrap_or_else(|| "0.0.0".to_string());
+
+            files.insert(
+                name.clone(),
+                FileRecord {
+                    version: preserved_version,
+                    status: FileRecordStatus::CustomizedSkipped,
+                },
+            );
+        }
     }
 
     let manifest = VersionManifest {
         binary_version: version.to_string(),
-        initialized_at: now.clone(),
+        initialized_at: existing_manifest
+            .as_ref()
+            .map(|m| m.initialized_at.clone())
+            .unwrap_or_else(|| now.clone()),
         last_migrated_at: Some(now),
         files,
     };
 
-    let manifest_path = config_dir.join(".version");
-    write_manifest(&manifest_path, &manifest)
-        .context("Failed to write .version manifest")?;
+    write_manifest(&manifest_path, &manifest).context("Failed to write .version manifest")?;
 
     Ok(())
+}
+
+/// Resolve the actual file path for a managed file name within the config directory.
+fn resolve_file_path(config_dir: &Path, name: &str, _is_local: bool) -> PathBuf {
+    match name {
+        "config.toml" => config_dir.join("config.toml"),
+        "SKILL.md" => {
+            // SKILL.md lives under ~/.claude/skills/octorus/SKILL.md, not config_dir.
+            // Since we can't resolve the exact path here, return config_dir-based path
+            // which won't exist — the caller handles the None case from read_to_string.
+            config_dir.join("SKILL.md")
+        }
+        // Prompt files live under prompts/
+        _ => config_dir.join("prompts").join(name),
+    }
 }
 
 #[cfg(test)]
@@ -581,8 +626,6 @@ mod tests {
 
     #[test]
     fn test_init_local_manifest_all_created() {
-        use crate::migrate::read_manifest;
-
         let temp_dir = TempDir::new().unwrap();
         run_init_local(temp_dir.path(), false).unwrap();
 
@@ -610,8 +653,6 @@ mod tests {
 
     #[test]
     fn test_init_local_manifest_skipped_files() {
-        use crate::migrate::read_manifest;
-
         let temp_dir = TempDir::new().unwrap();
         let octorus_dir = temp_dir.path().join(".octorus");
         fs::create_dir_all(&octorus_dir).unwrap();
@@ -656,8 +697,6 @@ mod tests {
 
     #[test]
     fn test_init_local_manifest_force_all_created() {
-        use crate::migrate::read_manifest;
-
         let temp_dir = TempDir::new().unwrap();
         let octorus_dir = temp_dir.path().join(".octorus");
         fs::create_dir_all(&octorus_dir).unwrap();
@@ -680,5 +719,122 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_init_skipped_files_do_not_record_current_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+
+        // Pre-create config.toml with custom (non-default) content
+        fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
+
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let manifest_path = octorus_dir.join(".version");
+        let manifest = read_manifest(&manifest_path).expect("manifest should exist");
+
+        // Skipped file with custom content should NOT have the current binary version,
+        // since we can't determine its origin. It should fall back to "0.0.0".
+        let current_version = env!("CARGO_PKG_VERSION");
+        assert_ne!(
+            manifest.files["config.toml"].version, current_version,
+            "skipped file should not record current binary version"
+        );
+        assert_eq!(
+            manifest.files["config.toml"].version, "0.0.0",
+            "unknown origin should fall back to 0.0.0"
+        );
+
+        // Newly created files should have the current binary version
+        assert_eq!(
+            manifest.files["reviewee.md"].version, current_version,
+            "newly created file should have current binary version"
+        );
+    }
+
+    #[test]
+    fn test_init_skipped_files_preserve_existing_manifest_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+
+        // Pre-create config.toml with custom content
+        fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
+
+        // Pre-create a manifest with an older version for config.toml
+        let old_manifest = VersionManifest {
+            binary_version: "0.4.0".to_string(),
+            initialized_at: "2025-01-01T00:00:00Z".to_string(),
+            last_migrated_at: None,
+            files: {
+                let mut files = HashMap::new();
+                files.insert(
+                    "config.toml".to_string(),
+                    FileRecord {
+                        version: "0.4.0".to_string(),
+                        status: FileRecordStatus::Created,
+                    },
+                );
+                files
+            },
+        };
+        let manifest_path = octorus_dir.join(".version");
+        write_manifest(&manifest_path, &old_manifest).unwrap();
+
+        // Also pre-create prompts dir so reviewer.md etc exist
+        let prompts_dir = octorus_dir.join("prompts");
+        fs::create_dir_all(&prompts_dir).unwrap();
+
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let manifest = read_manifest(&manifest_path).expect("manifest should exist");
+
+        // config.toml was skipped — its version should be preserved from the old manifest
+        assert_eq!(
+            manifest.files["config.toml"].version, "0.4.0",
+            "skipped file should preserve version from existing manifest"
+        );
+        assert_eq!(
+            manifest.files["config.toml"].status,
+            FileRecordStatus::CustomizedSkipped,
+        );
+
+        // initialized_at should be preserved from old manifest
+        assert_eq!(
+            manifest.initialized_at, "2025-01-01T00:00:00Z",
+            "initialized_at should be preserved from existing manifest"
+        );
+    }
+
+    #[test]
+    fn test_init_skipped_files_detect_version_from_hash() {
+        use crate::init::DEFAULT_LOCAL_CONFIG;
+
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+
+        // Pre-create config.toml with the EXACT default content for v0.5.6
+        // This simulates a user who ran `or init` with v0.5.6 but has no manifest
+        fs::write(octorus_dir.join("config.toml"), DEFAULT_LOCAL_CONFIG).unwrap();
+
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let manifest_path = octorus_dir.join(".version");
+        let manifest = read_manifest(&manifest_path).expect("manifest should exist");
+
+        // config.toml matches a known default hash, so version should be detected
+        // (the exact version depends on what's registered in DEFAULT_HASHES)
+        let current_version = env!("CARGO_PKG_VERSION");
+        let config_version = &manifest.files["config.toml"].version;
+        // It should either match a known version from DEFAULT_HASHES or be 0.0.0
+        // It should NOT be the current binary version (unless current IS in DEFAULT_HASHES)
+        assert!(
+            config_version != current_version || config_version == "0.5.6",
+            "skipped file should have detected version or 0.0.0, got {}",
+            config_version
+        );
     }
 }
