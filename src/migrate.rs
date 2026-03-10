@@ -86,9 +86,15 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         filename: "config.toml",
         sha256: HASH_LOCAL_CONFIG_0_5_6,
     },
-    // Prompts (global/local share the same defaults)
+    // Prompts — global and local share the same defaults, so register both scopes
     DefaultFileHash {
         scope: FileScope::Global,
+        version: "0.5.6",
+        filename: "reviewer.md",
+        sha256: HASH_REVIEWER_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
         version: "0.5.6",
         filename: "reviewer.md",
         sha256: HASH_REVIEWER_0_5_6,
@@ -100,7 +106,19 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         sha256: HASH_REVIEWEE_0_5_6,
     },
     DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.6",
+        filename: "reviewee.md",
+        sha256: HASH_REVIEWEE_0_5_6,
+    },
+    DefaultFileHash {
         scope: FileScope::Global,
+        version: "0.5.6",
+        filename: "rereview.md",
+        sha256: HASH_REREVIEW_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
         version: "0.5.6",
         filename: "rereview.md",
         sha256: HASH_REREVIEW_0_5_6,
@@ -163,6 +181,10 @@ enum MigrationAction {
         path: PathBuf,
         content: String,
         description: String,
+    },
+    SkipUpToDate {
+        path: PathBuf,
+        reason: String,
     },
     SkipCustomized {
         path: PathBuf,
@@ -475,7 +497,7 @@ fn plan_file_action(
     }
 
     match status {
-        FileStatus::UpToDate => MigrationAction::SkipCustomized {
+        FileStatus::UpToDate => MigrationAction::SkipUpToDate {
             path: file_path.to_path_buf(),
             reason: format!("{} is already up to date", filename),
         },
@@ -503,7 +525,7 @@ fn plan_file_action(
 // Backup
 // ---------------------------------------------------------------------------
 
-fn create_backup(config_dir: &Path) -> Result<PathBuf> {
+fn create_backup(config_dir: &Path, skill_dir: Option<&Path>) -> Result<PathBuf> {
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let mut backup_dir = config_dir.join(format!(".backup-{}", timestamp));
 
@@ -516,7 +538,7 @@ fn create_backup(config_dir: &Path) -> Result<PathBuf> {
 
     fs::create_dir_all(&backup_dir).context("Failed to create backup directory")?;
 
-    // Copy all managed files that exist
+    // Copy all managed files that exist in config_dir
     for entry in fs::read_dir(config_dir).context("Failed to read config directory")? {
         let entry = entry?;
         let path = entry.path();
@@ -540,6 +562,18 @@ fn create_backup(config_dir: &Path) -> Result<PathBuf> {
                     fs::copy(pentry.path(), prompts_backup.join(pentry.file_name()))?;
                 }
             }
+        }
+    }
+
+    // Backup SKILL.md if it exists (lives outside config_dir under ~/.claude/)
+    if let Some(skill_root) = skill_dir {
+        let skill_path = skill_root.join(MANAGED_FILE_SKILL.relative_path);
+        if skill_path.exists() {
+            let skill_backup_dir = backup_dir.join("skills").join("octorus");
+            fs::create_dir_all(&skill_backup_dir)
+                .context("Failed to create skill backup directory")?;
+            fs::copy(&skill_path, skill_backup_dir.join("SKILL.md"))
+                .context("Failed to backup SKILL.md")?;
         }
     }
 
@@ -572,6 +606,21 @@ fn execute_plan(
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
+                manifest.files.insert(
+                    filename,
+                    FileRecord {
+                        version: binary_version.to_string(),
+                        status: FileRecordStatus::Migrated,
+                    },
+                );
+            }
+            MigrationAction::SkipUpToDate { path, reason: _ } => {
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                // File matches the current default — record as Migrated
                 manifest.files.insert(
                     filename,
                     FileRecord {
@@ -673,14 +722,13 @@ fn display_plan(actions: &[MigrationAction]) {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
                 println!("  \x1b[32m→\x1b[0m {} — {}", filename, description);
             }
+            MigrationAction::SkipUpToDate { path, reason } => {
+                let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                println!("  \x1b[32m✓\x1b[0m {} — {}", filename, reason);
+            }
             MigrationAction::SkipCustomized { path, reason } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                // Distinguish "up to date" (check mark) from "customized skip" (cross)
-                if reason.contains("up to date") {
-                    println!("  \x1b[32m✓\x1b[0m {} — {}", filename, reason);
-                } else {
-                    println!("  \x1b[33m✗\x1b[0m {} — skip ({})", filename, reason);
-                }
+                println!("  \x1b[33m✗\x1b[0m {} — skip ({})", filename, reason);
             }
             MigrationAction::MigrateConfig { path, migrations } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
@@ -793,24 +841,26 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
             let mut m = bootstrap_manifest(binary_version);
             // Record existing files
             for action in &actions {
-                if let MigrationAction::SkipCustomized { path, reason } = action {
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let status = if reason.contains("up to date") {
-                        FileRecordStatus::Migrated
-                    } else {
-                        FileRecordStatus::CustomizedSkipped
-                    };
-                    m.files.insert(
-                        filename,
-                        FileRecord {
-                            version: binary_version.to_string(),
-                            status,
-                        },
-                    );
-                }
+                let (path, status) = match action {
+                    MigrationAction::SkipUpToDate { path, .. } => {
+                        (path, FileRecordStatus::Migrated)
+                    }
+                    MigrationAction::SkipCustomized { path, .. } => {
+                        (path, FileRecordStatus::CustomizedSkipped)
+                    }
+                    _ => continue,
+                };
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                m.files.insert(
+                    filename,
+                    FileRecord {
+                        version: binary_version.to_string(),
+                        status,
+                    },
+                );
             }
             m.last_migrated_at = Some(now_iso());
             if !dry_run {
@@ -831,8 +881,8 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Create backup
-    let backup_dir = create_backup(&config_dir)
+    // Create backup (include skill_dir for global migrations so SKILL.md is backed up)
+    let backup_dir = create_backup(&config_dir, skill_dir.as_deref())
         .context("Failed to create backup. No changes have been applied.")?;
     println!(
         "Backup created: {}",
@@ -1026,6 +1076,18 @@ mod tests {
         assert!(all_match, "One or more hashes do not match. See output above for actual values.");
     }
 
+    #[test]
+    fn test_file_status_local_prompt_up_to_date() {
+        // Local prompts share the same content as global — should be recognized as UpToDate
+        let status = check_file_status(
+            DEFAULT_REVIEWER_PROMPT,
+            "0.5.6",
+            FileScope::Local,
+            "reviewer.md",
+        );
+        assert_eq!(status, FileStatus::UpToDate);
+    }
+
     // === Step 5: Plan construction ===
 
     #[test]
@@ -1095,7 +1157,9 @@ mod tests {
             false,
         );
 
-        let has_skip = actions.iter().any(|a| matches!(a, MigrationAction::SkipCustomized { .. }));
+        let has_skip = actions.iter().any(|a| {
+            matches!(a, MigrationAction::SkipCustomized { .. } | MigrationAction::SkipUpToDate { .. })
+        });
         let has_create = actions.iter().any(|a| matches!(a, MigrationAction::CreateNew { .. }));
         assert!(has_skip, "Should skip customized/up-to-date files");
         assert!(has_create, "Should create missing files");
@@ -1158,13 +1222,38 @@ mod tests {
         fs::write(config_dir.join("config.toml"), "test config").unwrap();
         fs::write(config_dir.join("prompts/reviewer.md"), "test prompt").unwrap();
 
-        let backup_dir = create_backup(&config_dir).unwrap();
+        let backup_dir = create_backup(&config_dir, None).unwrap();
         assert!(backup_dir.exists());
         assert!(backup_dir.join("config.toml").exists());
         assert!(backup_dir.join("prompts/reviewer.md").exists());
 
         let content = fs::read_to_string(backup_dir.join("config.toml")).unwrap();
         assert_eq!(content, "test config");
+    }
+
+    #[test]
+    fn test_create_backup_includes_skill() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join("octorus");
+        fs::create_dir_all(config_dir.join("prompts")).unwrap();
+        fs::write(config_dir.join("config.toml"), "test config").unwrap();
+
+        let skill_dir = temp_dir.path().join(".claude");
+        fs::create_dir_all(skill_dir.join("skills/octorus")).unwrap();
+        fs::write(
+            skill_dir.join("skills/octorus/SKILL.md"),
+            "test skill content",
+        )
+        .unwrap();
+
+        let backup_dir = create_backup(&config_dir, Some(&skill_dir)).unwrap();
+        assert!(backup_dir.exists());
+        assert!(backup_dir.join("config.toml").exists());
+        assert!(backup_dir.join("skills/octorus/SKILL.md").exists());
+
+        let content =
+            fs::read_to_string(backup_dir.join("skills/octorus/SKILL.md")).unwrap();
+        assert_eq!(content, "test skill content");
     }
 
     #[test]
@@ -1210,6 +1299,30 @@ mod tests {
         assert_eq!(
             manifest.files["custom.md"].status,
             FileRecordStatus::CustomizedSkipped
+        );
+    }
+
+    #[test]
+    fn test_execute_skip_up_to_date() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("uptodate.md");
+        fs::write(&file_path, "default content").unwrap();
+
+        let actions = vec![MigrationAction::SkipUpToDate {
+            path: file_path.clone(),
+            reason: "uptodate.md is already up to date".to_string(),
+        }];
+
+        let mut manifest = bootstrap_manifest("0.5.6");
+        execute_plan(&actions, &mut manifest, "0.5.6").unwrap();
+
+        // File should be unchanged
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "default content");
+        // Status should be Migrated, NOT CustomizedSkipped
+        assert_eq!(
+            manifest.files["uptodate.md"].status,
+            FileRecordStatus::Migrated
         );
     }
 
