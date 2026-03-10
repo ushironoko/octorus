@@ -35,7 +35,7 @@ or --repo owner/repo --pr 123 --ai-rally
 or --repo owner/repo --pr 123 --ai-rally --working-dir /path/to/repo
 ```
 
-See `references/headless-output.md` for JSON output spec and exit codes.
+Results are also persisted to `~/.cache/octorus/rally/{repo}_{pr}/` (see `references/headless-output.md` for details).
 
 ### Preview local changes (no PR)
 

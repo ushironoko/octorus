@@ -41,6 +41,38 @@ When running headless (`or --repo owner/repo --pr 123 --ai-rally`), octorus outp
 | `0`  | Approved |
 | `1`  | Not approved or error |
 
+## Session Storage
+
+AI Rally results are persisted to disk regardless of stdout capture. **Always check this path to read results.**
+
+```
+~/.cache/octorus/rally/{repo}_{pr}/
+├── session.json              # Current state (iteration, state, timestamps)
+└── history/
+    ├── 001_review.json       # First review (action, summary, comments, blocking_issues)
+    ├── 001_fix.json          # First fix (status, summary, files_modified)
+    ├── 002_review.json       # Second review (re-review after fix)
+    └── ...
+```
+
+- **Path pattern**: `{repo}` uses `_` as separator (e.g., `owner/repo` PR #123 → `owner_repo_123/`)
+- **Local mode**: stored as `local_0/`
+- **session.json**: `"state": "Completed"` means the rally finished successfully
+- **history/{N}_review.json**: contains the full review with `action` (`approve`/`request_changes`/`comment`), `summary`, and `comments` array
+
+### Reading results
+
+```bash
+# Check session state
+cat ~/.cache/octorus/rally/{repo}_{pr}/session.json
+
+# Read the latest review
+cat ~/.cache/octorus/rally/{repo}_{pr}/history/001_review.json
+
+# Extract review action
+cat ~/.cache/octorus/rally/{repo}_{pr}/history/001_review.json | jq '.entry_type.Review.action'
+```
+
 ## CI Example
 
 ```bash
