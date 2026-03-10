@@ -88,9 +88,15 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
         fs::create_dir_all(&config_home).context("Failed to create config directory")?;
     }
 
+    // Track which files were actually written vs skipped
+    let mut written_files: HashMap<String, bool> = HashMap::new();
+
     // Write config.toml
     let config_path = config_home.join("config.toml");
-    write_file_if_needed(&config_path, DEFAULT_CONFIG, force, "config.toml")?;
+    written_files.insert(
+        "config.toml".to_string(),
+        write_file_if_needed(&config_path, DEFAULT_CONFIG, force, "config.toml")?,
+    );
 
     // Create prompts directory
     let prompts_dir = config_home.join("prompts");
@@ -100,32 +106,41 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
     }
 
     // Write prompt templates
-    write_file_if_needed(
-        &prompts_dir.join("reviewer.md"),
-        DEFAULT_REVIEWER_PROMPT,
-        force,
-        "reviewer.md",
-    )?;
-    write_file_if_needed(
-        &prompts_dir.join("reviewee.md"),
-        DEFAULT_REVIEWEE_PROMPT,
-        force,
-        "reviewee.md",
-    )?;
-    write_file_if_needed(
-        &prompts_dir.join("rereview.md"),
-        DEFAULT_REREVIEW_PROMPT,
-        force,
-        "rereview.md",
-    )?;
+    for (name, content) in &[
+        ("reviewer.md", DEFAULT_REVIEWER_PROMPT),
+        ("reviewee.md", DEFAULT_REVIEWEE_PROMPT),
+        ("rereview.md", DEFAULT_REREVIEW_PROMPT),
+    ] {
+        written_files.insert(
+            name.to_string(),
+            write_file_if_needed(&prompts_dir.join(name), content, force, name)?,
+        );
+    }
 
     // Generate agent skill for Claude Code (if ~/.claude exists)
-    if let Err(e) = generate_agent_skill(force) {
-        eprintln!("Warning: Failed to generate agent skill: {}", e);
+    match generate_agent_skill(force) {
+        Ok(created) => {
+            if created {
+                written_files.insert("SKILL.md".to_string(), true);
+            }
+            // If false (skipped or ~/.claude missing), don't insert — file won't appear in manifest
+            // unless it was attempted and skipped (pre-existing)
+            else if std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".claude"))
+                .is_some_and(|d| d.is_dir())
+            {
+                // ~/.claude exists but SKILL.md was skipped (already exists)
+                written_files.insert("SKILL.md".to_string(), false);
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to generate agent skill: {}", e);
+        }
     }
 
     // Write .version manifest
-    write_init_manifest(&config_home, false)?;
+    write_init_manifest(&config_home, false, &written_files)?;
 
     println!();
     println!("Initialization complete!");
@@ -139,23 +154,25 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
     Ok(())
 }
 
-/// Write a file if it doesn't exist or force is true
-fn write_file_if_needed(path: &PathBuf, content: &str, force: bool, name: &str) -> Result<()> {
+/// Write a file if it doesn't exist or force is true.
+/// Returns `Ok(true)` if the file was written, `Ok(false)` if skipped.
+fn write_file_if_needed(path: &PathBuf, content: &str, force: bool, name: &str) -> Result<bool> {
     if path.exists() && !force {
         println!(
             "Skipping {} (already exists, use --force to overwrite)",
             name
         );
-        return Ok(());
+        return Ok(false);
     }
 
     println!("Writing {}...", name);
     fs::write(path, content).with_context(|| format!("Failed to write {}", name))?;
-    Ok(())
+    Ok(true)
 }
 
-/// Generate agent skill file in the given claude directory (testable core)
-fn generate_agent_skill_in(claude_dir: &Path, force: bool) -> Result<()> {
+/// Generate agent skill file in the given claude directory (testable core).
+/// Returns `Ok(true)` if the file was written, `Ok(false)` if skipped.
+fn generate_agent_skill_in(claude_dir: &Path, force: bool) -> Result<bool> {
     let skill_dir = claude_dir.join("skills").join("octorus");
     if !skill_dir.exists() {
         fs::create_dir_all(&skill_dir).context("Failed to create agent skill directory")?;
@@ -168,14 +185,15 @@ fn generate_agent_skill_in(claude_dir: &Path, force: bool) -> Result<()> {
     )
 }
 
-/// Generate agent skill for Claude Code (if ~/.claude exists)
-fn generate_agent_skill(force: bool) -> Result<()> {
+/// Generate agent skill for Claude Code (if ~/.claude exists).
+/// Returns `Ok(true)` if the file was written, `Ok(false)` if skipped or ~/.claude missing.
+fn generate_agent_skill(force: bool) -> Result<bool> {
     let claude_dir = match std::env::var("HOME")
         .ok()
         .map(|h| PathBuf::from(h).join(".claude"))
     {
         Some(dir) if dir.is_dir() => dir,
-        _ => return Ok(()),
+        _ => return Ok(false),
     };
     generate_agent_skill_in(&claude_dir, force)
 }
@@ -190,9 +208,15 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
         fs::create_dir_all(&octorus_dir).context("Failed to create .octorus directory")?;
     }
 
+    // Track which files were actually written vs skipped
+    let mut written_files: HashMap<String, bool> = HashMap::new();
+
     // Write config.toml
     let config_path = octorus_dir.join("config.toml");
-    write_file_if_needed(&config_path, DEFAULT_LOCAL_CONFIG, force, "config.toml")?;
+    written_files.insert(
+        "config.toml".to_string(),
+        write_file_if_needed(&config_path, DEFAULT_LOCAL_CONFIG, force, "config.toml")?,
+    );
 
     // Create prompts directory
     let prompts_dir = octorus_dir.join("prompts");
@@ -202,27 +226,19 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
     }
 
     // Write prompt templates
-    write_file_if_needed(
-        &prompts_dir.join("reviewer.md"),
-        DEFAULT_REVIEWER_PROMPT,
-        force,
-        "reviewer.md",
-    )?;
-    write_file_if_needed(
-        &prompts_dir.join("reviewee.md"),
-        DEFAULT_REVIEWEE_PROMPT,
-        force,
-        "reviewee.md",
-    )?;
-    write_file_if_needed(
-        &prompts_dir.join("rereview.md"),
-        DEFAULT_REREVIEW_PROMPT,
-        force,
-        "rereview.md",
-    )?;
+    for (name, content) in &[
+        ("reviewer.md", DEFAULT_REVIEWER_PROMPT),
+        ("reviewee.md", DEFAULT_REVIEWEE_PROMPT),
+        ("rereview.md", DEFAULT_REREVIEW_PROMPT),
+    ] {
+        written_files.insert(
+            name.to_string(),
+            write_file_if_needed(&prompts_dir.join(name), content, force, name)?,
+        );
+    }
 
-    // Write .version manifest
-    write_init_manifest(&octorus_dir, true)?;
+    // Write .version manifest (local scope has no SKILL.md)
+    write_init_manifest(&octorus_dir, true, &written_files)?;
 
     println!();
     println!("Local initialization complete!");
@@ -243,34 +259,30 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
 }
 
 /// Write a .version manifest after init.
-fn write_init_manifest(config_dir: &Path, is_local: bool) -> Result<()> {
+///
+/// `written_files` maps filename → whether it was actually written (`true`) or
+/// skipped because it already existed (`false`). Files not present in the map
+/// (e.g. SKILL.md when ~/.claude is missing) are omitted from the manifest.
+fn write_init_manifest(
+    config_dir: &Path,
+    _is_local: bool,
+    written_files: &HashMap<String, bool>,
+) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut files = HashMap::new();
-    let config_name = "config.toml";
-    files.insert(
-        config_name.to_string(),
-        FileRecord {
-            version: version.to_string(),
-            status: FileRecordStatus::Created,
-        },
-    );
-    for name in &["reviewer.md", "reviewee.md", "rereview.md"] {
+    for (name, was_written) in written_files {
+        let status = if *was_written {
+            FileRecordStatus::Created
+        } else {
+            FileRecordStatus::CustomizedSkipped
+        };
         files.insert(
-            name.to_string(),
+            name.clone(),
             FileRecord {
                 version: version.to_string(),
-                status: FileRecordStatus::Created,
-            },
-        );
-    }
-    if !is_local {
-        files.insert(
-            "SKILL.md".to_string(),
-            FileRecord {
-                version: version.to_string(),
-                status: FileRecordStatus::Created,
+                status,
             },
         );
     }
@@ -515,9 +527,10 @@ mod tests {
         let result = if claude_dir.is_dir() {
             generate_agent_skill_in(&claude_dir, false)
         } else {
-            Ok(())
+            Ok(false)
         };
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
 
         let skill_path = claude_dir.join("skills/octorus/SKILL.md");
         assert!(
@@ -538,9 +551,10 @@ mod tests {
         let result = if claude_path.is_dir() {
             generate_agent_skill_in(&claude_path, false)
         } else {
-            Ok(())
+            Ok(false)
         };
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
 
         let skill_path = claude_path.join("skills/octorus/SKILL.md");
         assert!(
@@ -563,5 +577,108 @@ mod tests {
             skill_path.exists(),
             "Should create intermediate directories and SKILL.md"
         );
+    }
+
+    #[test]
+    fn test_init_local_manifest_all_created() {
+        use crate::migrate::read_manifest;
+
+        let temp_dir = TempDir::new().unwrap();
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let manifest_path = temp_dir.path().join(".octorus/.version");
+        let manifest = read_manifest(&manifest_path).expect("manifest should exist");
+
+        // All files should be Created on fresh init
+        for name in &["config.toml", "reviewer.md", "reviewee.md", "rereview.md"] {
+            let record = manifest.files.get(*name).unwrap_or_else(|| {
+                panic!("{} should be in manifest", name);
+            });
+            assert_eq!(
+                record.status,
+                FileRecordStatus::Created,
+                "{} should be Created on fresh init",
+                name
+            );
+        }
+        // Local init should NOT have SKILL.md
+        assert!(
+            !manifest.files.contains_key("SKILL.md"),
+            "SKILL.md should not be in local manifest"
+        );
+    }
+
+    #[test]
+    fn test_init_local_manifest_skipped_files() {
+        use crate::migrate::read_manifest;
+
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+
+        // Pre-create config.toml with custom content
+        fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
+
+        // Also pre-create reviewer.md
+        let prompts_dir = octorus_dir.join("prompts");
+        fs::create_dir_all(&prompts_dir).unwrap();
+        fs::write(prompts_dir.join("reviewer.md"), "custom reviewer").unwrap();
+
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let manifest_path = octorus_dir.join(".version");
+        let manifest = read_manifest(&manifest_path).expect("manifest should exist");
+
+        // Skipped files should be CustomizedSkipped
+        assert_eq!(
+            manifest.files["config.toml"].status,
+            FileRecordStatus::CustomizedSkipped,
+            "pre-existing config.toml should be CustomizedSkipped"
+        );
+        assert_eq!(
+            manifest.files["reviewer.md"].status,
+            FileRecordStatus::CustomizedSkipped,
+            "pre-existing reviewer.md should be CustomizedSkipped"
+        );
+
+        // Newly created files should be Created
+        assert_eq!(
+            manifest.files["reviewee.md"].status,
+            FileRecordStatus::Created,
+            "newly created reviewee.md should be Created"
+        );
+        assert_eq!(
+            manifest.files["rereview.md"].status,
+            FileRecordStatus::Created,
+            "newly created rereview.md should be Created"
+        );
+    }
+
+    #[test]
+    fn test_init_local_manifest_force_all_created() {
+        use crate::migrate::read_manifest;
+
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+
+        // Pre-create config.toml
+        fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
+
+        // Force init should overwrite everything
+        run_init_local(temp_dir.path(), true).unwrap();
+
+        let manifest_path = octorus_dir.join(".version");
+        let manifest = read_manifest(&manifest_path).expect("manifest should exist");
+
+        // With --force, all files should be Created (overwritten)
+        for name in &["config.toml", "reviewer.md", "reviewee.md", "rereview.md"] {
+            assert_eq!(
+                manifest.files[*name].status,
+                FileRecordStatus::Created,
+                "{} should be Created with --force",
+                name
+            );
+        }
     }
 }
