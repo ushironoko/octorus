@@ -53,6 +53,12 @@ pub(crate) const DEFAULT_REREVIEW_PROMPT: &str = include_str!("ai/defaults/rerev
 /// Agent skill content for Claude Code integration
 pub(crate) const AGENT_SKILL_CONTENT: &str = include_str!("ai/defaults/skill.md");
 
+/// Agent skill reference files
+pub(crate) const AGENT_SKILL_REF_HEADLESS: &str =
+    include_str!("ai/defaults/references/headless-output.md");
+pub(crate) const AGENT_SKILL_REF_CONFIG: &str =
+    include_str!("ai/defaults/references/config-reference.md");
+
 /// Default local config.toml content
 pub(crate) const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configuration.
 # Values here override the global config (~/.config/octorus/config.toml).
@@ -119,25 +125,8 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
     }
 
     // Generate agent skill for Claude Code (if ~/.claude exists)
-    match generate_agent_skill(force) {
-        Ok(created) => {
-            if created {
-                written_files.insert("SKILL.md".to_string(), true);
-            }
-            // If false (skipped or ~/.claude missing), don't insert — file won't appear in manifest
-            // unless it was attempted and skipped (pre-existing)
-            else if std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".claude"))
-                .is_some_and(|d| d.is_dir())
-            {
-                // ~/.claude exists but SKILL.md was skipped (already exists)
-                written_files.insert("SKILL.md".to_string(), false);
-            }
-        }
-        Err(e) => {
-            eprintln!("Warning: Failed to generate agent skill: {}", e);
-        }
+    if let Err(e) = generate_agent_skill(force, &mut written_files) {
+        eprintln!("Warning: Failed to generate agent skill: {}", e);
     }
 
     // Write .version manifest
@@ -171,32 +160,63 @@ fn write_file_if_needed(path: &PathBuf, content: &str, force: bool, name: &str) 
     Ok(true)
 }
 
-/// Generate agent skill file in the given claude directory (testable core).
-/// Returns `Ok(true)` if the file was written, `Ok(false)` if skipped.
-fn generate_agent_skill_in(claude_dir: &Path, force: bool) -> Result<bool> {
+/// Generate agent skill files in the given claude directory (testable core).
+/// Writes SKILL.md and reference files, recording results in `written_files`.
+fn generate_agent_skill_in(
+    claude_dir: &Path,
+    force: bool,
+    written_files: &mut HashMap<String, bool>,
+) -> Result<()> {
     let skill_dir = claude_dir.join("skills").join("octorus");
-    if !skill_dir.exists() {
-        fs::create_dir_all(&skill_dir).context("Failed to create agent skill directory")?;
-    }
-    write_file_if_needed(
-        &skill_dir.join("SKILL.md"),
-        AGENT_SKILL_CONTENT,
-        force,
-        "SKILL.md (agent skill)",
-    )
+    fs::create_dir_all(&skill_dir).context("Failed to create agent skill directory")?;
+
+    let refs_dir = skill_dir.join("references");
+    fs::create_dir_all(&refs_dir).context("Failed to create agent skill references directory")?;
+
+    written_files.insert(
+        "SKILL.md".to_string(),
+        write_file_if_needed(
+            &skill_dir.join("SKILL.md"),
+            AGENT_SKILL_CONTENT,
+            force,
+            "SKILL.md (agent skill)",
+        )?,
+    );
+
+    written_files.insert(
+        "headless-output.md".to_string(),
+        write_file_if_needed(
+            &refs_dir.join("headless-output.md"),
+            AGENT_SKILL_REF_HEADLESS,
+            force,
+            "headless-output.md (agent skill reference)",
+        )?,
+    );
+
+    written_files.insert(
+        "config-reference.md".to_string(),
+        write_file_if_needed(
+            &refs_dir.join("config-reference.md"),
+            AGENT_SKILL_REF_CONFIG,
+            force,
+            "config-reference.md (agent skill reference)",
+        )?,
+    );
+
+    Ok(())
 }
 
 /// Generate agent skill for Claude Code (if ~/.claude exists).
-/// Returns `Ok(true)` if the file was written, `Ok(false)` if skipped or ~/.claude missing.
-fn generate_agent_skill(force: bool) -> Result<bool> {
+/// Records results in `written_files`.
+fn generate_agent_skill(force: bool, written_files: &mut HashMap<String, bool>) -> Result<()> {
     let claude_dir = match std::env::var("HOME")
         .ok()
         .map(|h| PathBuf::from(h).join(".claude"))
     {
         Some(dir) if dir.is_dir() => dir,
-        _ => return Ok(false),
+        _ => return Ok(()),
     };
-    generate_agent_skill_in(&claude_dir, force)
+    generate_agent_skill_in(&claude_dir, force, written_files)
 }
 
 /// Run init for project-local .octorus/ directory
@@ -340,14 +360,19 @@ fn resolve_file_path(config_dir: &Path, name: &str, _is_local: bool) -> PathBuf 
             // Resolve to the actual path so hash detection can find the file.
             std::env::var("HOME")
                 .ok()
+                .map(|h| PathBuf::from(h).join(".claude/skills/octorus/SKILL.md"))
+                .unwrap_or_else(|| config_dir.join("SKILL.md"))
+        }
+        "headless-output.md" | "config-reference.md" => {
+            // Reference files live under ~/.claude/skills/octorus/references/
+            std::env::var("HOME")
+                .ok()
                 .map(|h| {
                     PathBuf::from(h)
-                        .join(".claude")
-                        .join("skills")
-                        .join("octorus")
-                        .join("SKILL.md")
+                        .join(".claude/skills/octorus/references")
+                        .join(name)
                 })
-                .unwrap_or_else(|| config_dir.join("SKILL.md"))
+                .unwrap_or_else(|| config_dir.join(name))
         }
         // Prompt files live under prompts/
         _ => config_dir.join("prompts").join(name),
@@ -532,7 +557,8 @@ mod tests {
         let claude_dir = temp_dir.path().join(".claude");
         fs::create_dir_all(&claude_dir).unwrap();
 
-        generate_agent_skill_in(&claude_dir, false).unwrap();
+        let mut written = HashMap::new();
+        generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
 
         let skill_path = claude_dir.join("skills/octorus/SKILL.md");
         assert!(skill_path.exists(), "SKILL.md should exist");
@@ -543,6 +569,30 @@ mod tests {
             content.contains("--ai-rally"),
             "Should contain --ai-rally flag"
         );
+
+        // Reference files should also be created
+        let refs_dir = claude_dir.join("skills/octorus/references");
+        let headless_path = refs_dir.join("headless-output.md");
+        let config_ref_path = refs_dir.join("config-reference.md");
+        assert!(headless_path.exists(), "headless-output.md should exist");
+        assert!(config_ref_path.exists(), "config-reference.md should exist");
+
+        let headless_content = fs::read_to_string(&headless_path).unwrap();
+        assert!(
+            headless_content.contains("Exit Codes"),
+            "headless-output.md should contain Exit Codes section"
+        );
+
+        let config_content = fs::read_to_string(&config_ref_path).unwrap();
+        assert!(
+            config_content.contains("config.toml"),
+            "config-reference.md should contain config.toml reference"
+        );
+
+        // written_files should track all 3 files
+        assert_eq!(written.get("SKILL.md"), Some(&true));
+        assert_eq!(written.get("headless-output.md"), Some(&true));
+        assert_eq!(written.get("config-reference.md"), Some(&true));
     }
 
     #[test]
@@ -550,20 +600,39 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let claude_dir = temp_dir.path().join(".claude");
         let skill_dir = claude_dir.join("skills/octorus");
-        fs::create_dir_all(&skill_dir).unwrap();
+        let refs_dir = skill_dir.join("references");
+        fs::create_dir_all(&refs_dir).unwrap();
         let skill_path = skill_dir.join("SKILL.md");
         fs::write(&skill_path, "custom content").unwrap();
+        fs::write(refs_dir.join("headless-output.md"), "custom headless").unwrap();
+        fs::write(refs_dir.join("config-reference.md"), "custom config").unwrap();
 
-        // force=false should skip
-        generate_agent_skill_in(&claude_dir, false).unwrap();
+        // force=false should skip all
+        let mut written = HashMap::new();
+        generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
         let content = fs::read_to_string(&skill_path).unwrap();
         assert_eq!(content, "custom content");
+        assert_eq!(
+            fs::read_to_string(refs_dir.join("headless-output.md")).unwrap(),
+            "custom headless"
+        );
+        assert_eq!(
+            fs::read_to_string(refs_dir.join("config-reference.md")).unwrap(),
+            "custom config"
+        );
 
-        // force=true should overwrite
-        generate_agent_skill_in(&claude_dir, true).unwrap();
+        // force=true should overwrite all
+        let mut written = HashMap::new();
+        generate_agent_skill_in(&claude_dir, true, &mut written).unwrap();
         let content = fs::read_to_string(&skill_path).unwrap();
         assert!(content.contains("--ai-rally"));
         assert!(!content.contains("custom content"));
+        assert!(fs::read_to_string(refs_dir.join("headless-output.md"))
+            .unwrap()
+            .contains("Exit Codes"));
+        assert!(fs::read_to_string(refs_dir.join("config-reference.md"))
+            .unwrap()
+            .contains("config.toml"));
     }
 
     #[test]
@@ -573,17 +642,16 @@ mod tests {
         // .claude does not exist — simulate the wrapper's behavior
         assert!(!claude_dir.is_dir());
 
-        // The wrapper checks is_dir() and returns Ok(()) silently
-        // Here we verify that generate_agent_skill_in still works
-        // but the wrapper would never call it when the dir is missing.
+        // The wrapper checks is_dir() and returns Ok(()) silently.
         // Simulate the wrapper logic directly:
-        let result = if claude_dir.is_dir() {
-            generate_agent_skill_in(&claude_dir, false)
-        } else {
-            Ok(false)
-        };
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false);
+        let mut written = HashMap::new();
+        if claude_dir.is_dir() {
+            generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
+        }
+        assert!(
+            written.is_empty(),
+            "written_files should be empty when .claude dir is missing"
+        );
 
         let skill_path = claude_dir.join("skills/octorus/SKILL.md");
         assert!(
@@ -601,13 +669,11 @@ mod tests {
         assert!(!claude_path.is_dir());
 
         // Simulate the wrapper logic: is_dir() returns false for a file
-        let result = if claude_path.is_dir() {
-            generate_agent_skill_in(&claude_path, false)
-        } else {
-            Ok(false)
-        };
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false);
+        let mut written = HashMap::new();
+        if claude_path.is_dir() {
+            generate_agent_skill_in(&claude_path, false, &mut written).unwrap();
+        }
+        assert!(written.is_empty());
 
         let skill_path = claude_path.join("skills/octorus/SKILL.md");
         assert!(
@@ -620,15 +686,26 @@ mod tests {
     fn test_generate_agent_skill_creates_intermediate_dirs() {
         let temp_dir = TempDir::new().unwrap();
         let claude_dir = temp_dir.path().join(".claude");
-        // Only create .claude, not skills/octorus/
+        // Only create .claude, not skills/octorus/ or references/
         fs::create_dir_all(&claude_dir).unwrap();
 
-        generate_agent_skill_in(&claude_dir, false).unwrap();
+        let mut written = HashMap::new();
+        generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
 
         let skill_path = claude_dir.join("skills/octorus/SKILL.md");
         assert!(
             skill_path.exists(),
             "Should create intermediate directories and SKILL.md"
+        );
+
+        let refs_dir = claude_dir.join("skills/octorus/references");
+        assert!(
+            refs_dir.join("headless-output.md").exists(),
+            "Should create references/headless-output.md"
+        );
+        assert!(
+            refs_dir.join("config-reference.md").exists(),
+            "Should create references/config-reference.md"
         );
     }
 
@@ -652,10 +729,18 @@ mod tests {
                 name
             );
         }
-        // Local init should NOT have SKILL.md
+        // Local init should NOT have SKILL.md or reference files
         assert!(
             !manifest.files.contains_key("SKILL.md"),
             "SKILL.md should not be in local manifest"
+        );
+        assert!(
+            !manifest.files.contains_key("headless-output.md"),
+            "headless-output.md should not be in local manifest"
+        );
+        assert!(
+            !manifest.files.contains_key("config-reference.md"),
+            "config-reference.md should not be in local manifest"
         );
     }
 
@@ -843,6 +928,57 @@ mod tests {
             config_version != current_version || config_version == "0.5.6",
             "skipped file should have detected version or 0.0.0, got {}",
             config_version
+        );
+    }
+
+    #[test]
+    fn test_generate_agent_skill_partial_existing() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_dir = temp_dir.path().join(".claude");
+        let skill_dir = claude_dir.join("skills/octorus");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        // Pre-create only SKILL.md with custom content
+        fs::write(skill_dir.join("SKILL.md"), "custom skill").unwrap();
+        // references/ does not exist yet
+
+        let mut written = HashMap::new();
+        generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
+
+        // SKILL.md should be skipped (pre-existing)
+        assert_eq!(written.get("SKILL.md"), Some(&false));
+
+        // Reference files should be newly created
+        assert_eq!(written.get("headless-output.md"), Some(&true));
+        assert_eq!(written.get("config-reference.md"), Some(&true));
+
+        // SKILL.md content should be unchanged
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+            "custom skill"
+        );
+
+        // Reference files should exist
+        let refs_dir = skill_dir.join("references");
+        assert!(refs_dir.join("headless-output.md").exists());
+        assert!(refs_dir.join("config-reference.md").exists());
+    }
+
+    #[test]
+    fn test_generate_agent_skill_claude_dir_missing_written_files_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let claude_dir = temp_dir.path().join(".claude");
+        // Do NOT create .claude
+
+        let mut written = HashMap::new();
+        // Simulate wrapper logic: skip if .claude doesn't exist
+        if claude_dir.is_dir() {
+            generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
+        }
+
+        assert!(
+            written.is_empty(),
+            "written_files should be empty when .claude dir is missing"
         );
     }
 }
