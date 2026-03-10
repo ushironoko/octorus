@@ -61,6 +61,11 @@ struct Args {
     /// ai.auto_post, ai.prompt_dir) or local prompt files are detected in .octorus/prompts/.
     #[arg(long, default_value = "false")]
     accept_local_overrides: bool,
+
+    /// Write JSON result to a file (in addition to stdout).
+    /// Useful when running as a background task where stdout may not be captured.
+    #[arg(long)]
+    output: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -194,12 +199,13 @@ async fn main() -> Result<()> {
             &config,
             working_dir.as_deref(),
             args.accept_local_overrides,
+            args.output.as_deref(),
         )
         .await
         {
             Ok(approved) => std::process::exit(if approved { 0 } else { 1 }),
             Err(e) => {
-                headless::write_error_json(&e.to_string());
+                headless::write_error_json(&e.to_string(), args.output.as_deref());
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -212,12 +218,13 @@ async fn main() -> Result<()> {
             &config,
             working_dir.as_deref(),
             args.accept_local_overrides,
+            args.output.as_deref(),
         )
         .await
         {
             Ok(approved) => std::process::exit(if approved { 0 } else { 1 }),
             Err(e) => {
-                headless::write_error_json(&e.to_string());
+                headless::write_error_json(&e.to_string(), args.output.as_deref());
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

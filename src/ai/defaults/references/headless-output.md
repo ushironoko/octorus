@@ -73,6 +73,26 @@ cat ~/.cache/octorus/rally/{repo}_{pr}/history/001_review.json
 cat ~/.cache/octorus/rally/{repo}_{pr}/history/001_review.json | jq '.entry_type.Review.action'
 ```
 
+## Output File (`--output`)
+
+Use `--output <path>` to write the JSON result to a file. The same JSON is written to both stdout and the file. **Use this when running as a background task** (e.g., from Claude Code or Codex) where stdout may not be captured.
+
+```bash
+# Write result to file
+or --repo owner/repo --pr 123 --ai-rally --output /tmp/rally-result.json
+
+# Local mode
+or --local --ai-rally --output /tmp/rally-result.json
+
+# Read result after completion
+cat /tmp/rally-result.json | jq '.result'
+```
+
+- Parent directories are created automatically
+- Write is atomic (temp file + rename) to prevent partial reads
+- Relative paths are resolved from the process's CWD, not from `--working-dir`
+- On error, the error JSON is also written to the output file
+
 ## CI Example
 
 ```bash
@@ -81,4 +101,7 @@ or --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --ai-rally
 
 # Parse JSON output
 or --repo owner/repo --pr 123 --ai-rally 2>/dev/null | jq '.result'
+
+# Background task with file output
+or --repo owner/repo --pr 123 --ai-rally --output /tmp/rally-result.json
 ```

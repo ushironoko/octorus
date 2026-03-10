@@ -25,6 +25,7 @@ pub async fn run_headless_rally(
     config: &Config,
     working_dir: Option<&str>,
     accept_local_overrides: bool,
+    output_path: Option<&str>,
 ) -> Result<bool> {
     eprintln!("[Headless] Fetching PR #{} from {}...", pr_number, repo);
 
@@ -70,7 +71,15 @@ pub async fn run_headless_rally(
         file_patches,
     };
 
-    run_headless_with_context(repo, pr_number, config, context, accept_local_overrides).await
+    run_headless_with_context(
+        repo,
+        pr_number,
+        config,
+        context,
+        accept_local_overrides,
+        output_path,
+    )
+    .await
 }
 
 /// Run AI Rally in headless mode for local diff.
@@ -83,6 +92,7 @@ pub async fn run_headless_rally_local(
     config: &Config,
     working_dir: Option<&str>,
     accept_local_overrides: bool,
+    output_path: Option<&str>,
 ) -> Result<bool> {
     eprintln!("[Headless] Running local diff rally...");
 
@@ -174,7 +184,15 @@ pub async fn run_headless_rally_local(
         file_patches: Vec::new(),
     };
 
-    run_headless_with_context(repo, 0, config, context, accept_local_overrides).await
+    run_headless_with_context(
+        repo,
+        0,
+        config,
+        context,
+        accept_local_overrides,
+        output_path,
+    )
+    .await
 }
 
 /// Collect sensitive local overrides from config and local prompt files.
@@ -209,6 +227,7 @@ async fn run_headless_with_context(
     config: &Config,
     context: Context,
     accept_local_overrides: bool,
+    output_path: Option<&str>,
 ) -> Result<bool> {
     // Check for sensitive local config overrides
     let sensitive_overrides = collect_sensitive_overrides(config);
@@ -270,9 +289,12 @@ async fn run_headless_with_context(
         }
     }
 
-    // JSON output to stdout
+    // JSON output to stdout and optionally to file
     let json_output = build_json_output(&outcome);
     write_json_stdout(&json_output);
+    if let Some(path) = output_path {
+        write_json_file(&json_output, path);
+    }
 
     Ok(matches!(outcome.result, HeadlessResult::Approved(_)))
 }
@@ -585,8 +607,50 @@ fn write_json_stdout(output: &HeadlessJsonOutput) {
     }
 }
 
-/// Write error JSON to stdout for early failures (before event loop starts).
-pub fn write_error_json(error: &str) {
+/// Write JSON output to a file (atomic write via temp file + rename).
+///
+/// Note: Relative paths are resolved from the process's current working directory,
+/// not from `--working-dir`.
+fn write_json_file(output: &HeadlessJsonOutput, path: &str) {
+    use std::io::Write;
+    let target = std::path::Path::new(path);
+
+    // Ensure parent directory exists
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[Headless] Failed to create output directory: {}", e);
+                return;
+            }
+        }
+    }
+
+    // Atomic write: write to temp file with PID-based unique name, then rename
+    let file_name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp_path = target.with_file_name(format!(".{}.{}.tmp", file_name, std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temp_path)?;
+        serde_json::to_writer_pretty(&mut file, output)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        writeln!(file)?;
+        file.flush()?;
+        std::fs::rename(&temp_path, target)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            eprintln!("[Headless] JSON result written to: {}", path);
+        }
+        Err(e) => {
+            eprintln!("[Headless] Failed to write output file: {}", e);
+            let _ = std::fs::remove_file(&temp_path);
+        }
+    }
+}
+
+/// Write error JSON to stdout (and optionally to file) for early failures.
+pub fn write_error_json(error: &str, output_path: Option<&str>) {
     let output = HeadlessJsonOutput {
         result: HeadlessResultKind::Error,
         iterations: 0,
@@ -595,6 +659,9 @@ pub fn write_error_json(error: &str) {
         last_fix: None,
     };
     write_json_stdout(&output);
+    if let Some(path) = output_path {
+        write_json_file(&output, path);
+    }
 }
 
 /// Collect diff output for untracked files (mirrors loader.rs behavior).
@@ -1034,5 +1101,80 @@ mod tests {
         assert!(overrides
             .iter()
             .any(|o| o.as_ref().contains("local prompt: reviewee.md")));
+    }
+
+    #[test]
+    fn test_write_json_file_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result.json");
+        let output = HeadlessJsonOutput {
+            result: HeadlessResultKind::Approved,
+            iterations: 1,
+            summary: "All good".to_string(),
+            last_review: None,
+            last_fix: None,
+        };
+
+        write_json_file(&output, path.to_str().unwrap());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["result"], "approved");
+        assert_eq!(parsed["iterations"], 1);
+        assert_eq!(parsed["summary"], "All good");
+    }
+
+    #[test]
+    fn test_write_json_file_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/dir/result.json");
+        let output = HeadlessJsonOutput {
+            result: HeadlessResultKind::Error,
+            iterations: 0,
+            summary: "Failed".to_string(),
+            last_review: None,
+            last_fix: None,
+        };
+
+        write_json_file(&output, path.to_str().unwrap());
+
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["result"], "error");
+    }
+
+    #[test]
+    fn test_write_json_file_atomic_no_temp_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result.json");
+        let output = HeadlessJsonOutput {
+            result: HeadlessResultKind::Approved,
+            iterations: 2,
+            summary: "Done".to_string(),
+            last_review: None,
+            last_fix: None,
+        };
+
+        write_json_file(&output, path.to_str().unwrap());
+
+        // Temp file should not remain
+        let temp_path = path.with_file_name(format!(".result.json.{}.tmp", std::process::id()));
+        assert!(!temp_path.exists());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_write_error_json_with_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("error.json");
+
+        write_error_json("something failed", Some(path.to_str().unwrap()));
+
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["result"], "error");
+        assert_eq!(parsed["summary"], "something failed");
     }
 }
