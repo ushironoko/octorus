@@ -71,7 +71,9 @@ fn detect_install_method(exe_path: &Path) -> InstallMethod {
 /// Check if the path is in a well-known location where release binaries are installed.
 fn is_known_release_location(exe_path: &Path) -> bool {
     if let Some(parent) = exe_path.parent() {
-        let parent_canonical = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+        let parent_canonical = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
         for dir in KNOWN_RELEASE_DIRS {
             let known = Path::new(dir);
             let known_canonical = known.canonicalize().unwrap_or_else(|_| known.to_path_buf());
@@ -369,11 +371,7 @@ fn update_via_release(latest_tag: &str, latest_version: &str) -> Result<()> {
 
     println!("Downloading {}...", archive_name);
     download_asset(latest_tag, &archive_name, temp_path)?;
-    download_asset(
-        latest_tag,
-        &format!("{}.sha256", archive_name),
-        temp_path,
-    )?;
+    download_asset(latest_tag, &format!("{}.sha256", archive_name), temp_path)?;
 
     // Verify checksum
     println!("Verifying checksum...");
@@ -435,10 +433,7 @@ pub fn run_update() -> Result<UpdateResult> {
         return Ok(UpdateResult::AlreadyCurrent);
     }
 
-    println!(
-        "Updating: v{} → v{}",
-        current_version, latest_version
-    );
+    println!("Updating: v{} → v{}", current_version, latest_version);
 
     let current_exe =
         std::env::current_exe().context("Failed to determine current executable path")?;
@@ -607,7 +602,10 @@ mod tests {
             if cargo_bin.exists() {
                 let fake_exe = cargo_bin.join("or");
                 assert!(is_path_under_cargo_bin(&fake_exe));
-                assert_eq!(detect_install_method(&fake_exe), InstallMethod::CargoInstall);
+                assert_eq!(
+                    detect_install_method(&fake_exe),
+                    InstallMethod::CargoInstall
+                );
             }
         }
     }
@@ -621,7 +619,11 @@ mod tests {
                 .join("mise")
                 .join("installs");
             if mise_dir.exists() {
-                let fake_exe = mise_dir.join("octorus").join("0.5.6").join("bin").join("or");
+                let fake_exe = mise_dir
+                    .join("octorus")
+                    .join("0.5.6")
+                    .join("bin")
+                    .join("or");
                 assert!(is_path_under_mise(&fake_exe));
                 assert_eq!(detect_install_method(&fake_exe), InstallMethod::Mise);
             }
@@ -632,10 +634,7 @@ mod tests {
     fn test_detect_github_release_for_known_locations() {
         let path = Path::new("/usr/local/bin/or");
         if path.parent().map_or(false, |p| p.exists()) {
-            assert_eq!(
-                detect_install_method(path),
-                InstallMethod::GitHubRelease
-            );
+            assert_eq!(detect_install_method(path), InstallMethod::GitHubRelease);
         }
     }
 
@@ -663,7 +662,10 @@ mod tests {
         let result = verify_checksum(temp_dir.path(), archive_name);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("Checksum mismatch"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Checksum mismatch"),
             "Should report checksum mismatch"
         );
     }

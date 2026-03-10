@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
 
 use crate::init::{
-    AGENT_SKILL_CONTENT, DEFAULT_CONFIG, DEFAULT_LOCAL_CONFIG, DEFAULT_REREVIEW_PROMPT,
-    DEFAULT_REVIEWEE_PROMPT, DEFAULT_REVIEWER_PROMPT,
+    AGENT_SKILL_CONTENT, AGENT_SKILL_REF_CONFIG, AGENT_SKILL_REF_HEADLESS, DEFAULT_CONFIG,
+    DEFAULT_LOCAL_CONFIG, DEFAULT_REREVIEW_PROMPT, DEFAULT_REVIEWEE_PROMPT,
+    DEFAULT_REVIEWER_PROMPT,
 };
 use crate::update::is_newer_version;
 use octorus::config::find_project_root;
@@ -130,6 +131,25 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         filename: "SKILL.md",
         sha256: HASH_SKILL_0_5_6,
     },
+    // New version — SKILL.md rewrite + reference files
+    DefaultFileHash {
+        scope: FileScope::Skill,
+        version: "0.6.0",
+        filename: "SKILL.md",
+        sha256: HASH_SKILL_0_6_0,
+    },
+    DefaultFileHash {
+        scope: FileScope::Skill,
+        version: "0.6.0",
+        filename: "headless-output.md",
+        sha256: HASH_SKILL_REF_HEADLESS_0_6_0,
+    },
+    DefaultFileHash {
+        scope: FileScope::Skill,
+        version: "0.6.0",
+        filename: "config-reference.md",
+        sha256: HASH_SKILL_REF_CONFIG_0_6_0,
+    },
 ];
 
 // These constants are verified by test_default_hashes_match_embedded_content.
@@ -145,6 +165,11 @@ const HASH_REVIEWEE_0_5_6: &str =
 const HASH_REREVIEW_0_5_6: &str =
     "725ca31c8a180bb9333ac7e15ef54a7477afbd27300d594db8c02f3b70f01e56";
 const HASH_SKILL_0_5_6: &str = "c09f476002e139332d2d402d823a3ba8abd77f5ccd0c0f694c73e3b0337d9c7d";
+const HASH_SKILL_0_6_0: &str = "ec3a390088044e1fd5a1a7b0b4acfdc8ce4e48a1ea3f935801c44889247891fe";
+const HASH_SKILL_REF_HEADLESS_0_6_0: &str =
+    "f89450eba0d680a394e504a384a1d8a5a0f318974b7b3ebcef55b6079131270a";
+const HASH_SKILL_REF_CONFIG_0_6_0: &str =
+    "24c757880aef964db0d8b08cc81fcca0be0d7031b6606893f3e25ab801be41e7";
 
 // ---------------------------------------------------------------------------
 // Config Migrations (breaking changes registry)
@@ -224,7 +249,7 @@ pub(crate) fn detect_version_from_hash(
     is_local: bool,
 ) -> Option<String> {
     let hash = content_hash(file_content);
-    let scope = if filename == "SKILL.md" {
+    let scope = if is_skill_file(filename) {
         FileScope::Skill
     } else if is_local {
         FileScope::Local
@@ -318,6 +343,8 @@ fn get_default_content(scope: FileScope, filename: &str) -> Option<&'static str>
         (FileScope::Global | FileScope::Local, "reviewee.md") => Some(DEFAULT_REVIEWEE_PROMPT),
         (FileScope::Global | FileScope::Local, "rereview.md") => Some(DEFAULT_REREVIEW_PROMPT),
         (FileScope::Skill, "SKILL.md") => Some(AGENT_SKILL_CONTENT),
+        (FileScope::Skill, "headless-output.md") => Some(AGENT_SKILL_REF_HEADLESS),
+        (FileScope::Skill, "config-reference.md") => Some(AGENT_SKILL_REF_CONFIG),
         _ => None,
     }
 }
@@ -379,11 +406,28 @@ const MANAGED_FILES_LOCAL: &[ManagedFile] = &[
     },
 ];
 
-const MANAGED_FILE_SKILL: ManagedFile = ManagedFile {
-    scope: FileScope::Skill,
-    filename: "SKILL.md",
-    relative_path: "skills/octorus/SKILL.md",
-};
+const MANAGED_FILES_SKILL: &[ManagedFile] = &[
+    ManagedFile {
+        scope: FileScope::Skill,
+        filename: "SKILL.md",
+        relative_path: "skills/octorus/SKILL.md",
+    },
+    ManagedFile {
+        scope: FileScope::Skill,
+        filename: "headless-output.md",
+        relative_path: "skills/octorus/references/headless-output.md",
+    },
+    ManagedFile {
+        scope: FileScope::Skill,
+        filename: "config-reference.md",
+        relative_path: "skills/octorus/references/config-reference.md",
+    },
+];
+
+/// Check if a filename belongs to a skill file.
+fn is_skill_file(filename: &str) -> bool {
+    MANAGED_FILES_SKILL.iter().any(|mf| mf.filename == filename)
+}
 
 // ---------------------------------------------------------------------------
 // Plan construction
@@ -417,19 +461,20 @@ fn build_migration_plan(
         actions.push(action);
     }
 
-    // SKILL.md — global only
+    // Skill files — global only
     if !is_local {
         if let Some(skill_root) = skill_dir {
-            let skill_path = skill_root.join(MANAGED_FILE_SKILL.relative_path);
-            let action = plan_file_action(
-                &skill_path,
-                MANAGED_FILE_SKILL.scope,
-                MANAGED_FILE_SKILL.filename,
-                manifest,
-                binary_version,
-                force,
-            );
-            actions.push(action);
+            for mf in MANAGED_FILES_SKILL {
+                let skill_path = skill_root.join(mf.relative_path);
+                actions.push(plan_file_action(
+                    &skill_path,
+                    mf.scope,
+                    mf.filename,
+                    manifest,
+                    binary_version,
+                    force,
+                ));
+            }
         }
     }
 
@@ -587,15 +632,19 @@ fn create_backup(config_dir: &Path, skill_dir: Option<&Path>) -> Result<PathBuf>
         }
     }
 
-    // Backup SKILL.md if it exists (lives outside config_dir under ~/.claude/)
+    // Backup skill files if they exist (live outside config_dir under ~/.claude/)
     if let Some(skill_root) = skill_dir {
-        let skill_path = skill_root.join(MANAGED_FILE_SKILL.relative_path);
-        if skill_path.exists() {
-            let skill_backup_dir = backup_dir.join("skills").join("octorus");
-            fs::create_dir_all(&skill_backup_dir)
-                .context("Failed to create skill backup directory")?;
-            fs::copy(&skill_path, skill_backup_dir.join("SKILL.md"))
-                .context("Failed to backup SKILL.md")?;
+        for mf in MANAGED_FILES_SKILL {
+            let path = skill_root.join(mf.relative_path);
+            if path.exists() {
+                let backup_path = backup_dir.join(mf.relative_path);
+                if let Some(parent) = backup_path.parent() {
+                    fs::create_dir_all(parent)
+                        .context("Failed to create skill backup directory")?;
+                }
+                fs::copy(&path, &backup_path)
+                    .with_context(|| format!("Failed to backup {}", mf.filename))?;
+            }
         }
     }
 
@@ -1112,7 +1161,19 @@ mod tests {
                 FileScope::Skill,
                 "SKILL.md",
                 AGENT_SKILL_CONTENT,
-                HASH_SKILL_0_5_6,
+                HASH_SKILL_0_6_0,
+            ),
+            (
+                FileScope::Skill,
+                "headless-output.md",
+                AGENT_SKILL_REF_HEADLESS,
+                HASH_SKILL_REF_HEADLESS_0_6_0,
+            ),
+            (
+                FileScope::Skill,
+                "config-reference.md",
+                AGENT_SKILL_REF_CONFIG,
+                HASH_SKILL_REF_CONFIG_0_6_0,
             ),
         ];
 
@@ -1256,15 +1317,21 @@ mod tests {
             false,
         );
 
-        let has_skill = actions.iter().any(|a| match a {
-            MigrationAction::ReplaceDefault { path, .. }
-            | MigrationAction::CreateNew { path, .. }
-            | MigrationAction::SkipCustomized { path, .. } => {
-                path.to_string_lossy().contains("SKILL.md")
-            }
-            _ => false,
+        let has_skill = actions.iter().any(|a| {
+            let path = match a {
+                MigrationAction::ReplaceDefault { path, .. }
+                | MigrationAction::CreateNew { path, .. }
+                | MigrationAction::SkipCustomized { path, .. }
+                | MigrationAction::SkipUpToDate { path, .. } => path,
+                _ => return false,
+            };
+            let filename = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            is_skill_file(&filename)
         });
-        assert!(!has_skill, "Local mode should not include SKILL.md");
+        assert!(!has_skill, "Local mode should not include any skill files");
     }
 
     // === Step 6: Backup & Execution ===
@@ -1294,10 +1361,20 @@ mod tests {
         fs::write(config_dir.join("config.toml"), "test config").unwrap();
 
         let skill_dir = temp_dir.path().join(".claude");
-        fs::create_dir_all(skill_dir.join("skills/octorus")).unwrap();
+        fs::create_dir_all(skill_dir.join("skills/octorus/references")).unwrap();
         fs::write(
             skill_dir.join("skills/octorus/SKILL.md"),
             "test skill content",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("skills/octorus/references/headless-output.md"),
+            "test headless",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("skills/octorus/references/config-reference.md"),
+            "test config ref",
         )
         .unwrap();
 
@@ -1305,9 +1382,25 @@ mod tests {
         assert!(backup_dir.exists());
         assert!(backup_dir.join("config.toml").exists());
         assert!(backup_dir.join("skills/octorus/SKILL.md").exists());
+        assert!(backup_dir
+            .join("skills/octorus/references/headless-output.md")
+            .exists());
+        assert!(backup_dir
+            .join("skills/octorus/references/config-reference.md")
+            .exists());
 
         let content = fs::read_to_string(backup_dir.join("skills/octorus/SKILL.md")).unwrap();
         assert_eq!(content, "test skill content");
+
+        let headless =
+            fs::read_to_string(backup_dir.join("skills/octorus/references/headless-output.md"))
+                .unwrap();
+        assert_eq!(headless, "test headless");
+
+        let config_ref =
+            fs::read_to_string(backup_dir.join("skills/octorus/references/config-reference.md"))
+                .unwrap();
+        assert_eq!(config_ref, "test config ref");
     }
 
     #[test]
@@ -1535,5 +1628,38 @@ mod tests {
             manifest.files.get("reviewer.md").unwrap().status,
             FileRecordStatus::CustomizedSkipped,
         );
+    }
+
+    #[test]
+    fn test_detect_version_from_hash_skill_files() {
+        // SKILL.md should map to FileScope::Skill
+        let version = detect_version_from_hash(AGENT_SKILL_CONTENT, "SKILL.md", false);
+        assert!(version.is_some(), "SKILL.md should be detected");
+
+        // Reference files should also map to FileScope::Skill
+        let version =
+            detect_version_from_hash(AGENT_SKILL_REF_HEADLESS, "headless-output.md", false);
+        assert!(version.is_some(), "headless-output.md should be detected");
+
+        let version =
+            detect_version_from_hash(AGENT_SKILL_REF_CONFIG, "config-reference.md", false);
+        assert!(version.is_some(), "config-reference.md should be detected");
+
+        // Non-skill file should not match as Skill scope
+        let version = detect_version_from_hash("random content", "headless-output.md", false);
+        assert!(version.is_none(), "random content should not match");
+    }
+
+    #[test]
+    fn test_is_skill_file() {
+        assert!(is_skill_file("SKILL.md"));
+        assert!(is_skill_file("headless-output.md"));
+        assert!(is_skill_file("config-reference.md"));
+
+        assert!(!is_skill_file("config.toml"));
+        assert!(!is_skill_file("reviewer.md"));
+        assert!(!is_skill_file("reviewee.md"));
+        assert!(!is_skill_file("rereview.md"));
+        assert!(!is_skill_file("random.md"));
     }
 }
