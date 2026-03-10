@@ -92,7 +92,13 @@ pub fn render_diff_view(frame: &mut Frame, app: &mut App) {
     frame.render_widget(header, chunks[0]);
 
     // Diff body
-    render_diff_body(frame, gl, chunks[1], Color::Yellow, app.config.diff.bg_color);
+    render_diff_body(
+        frame,
+        gl,
+        chunks[1],
+        Color::Yellow,
+        app.config.diff.bg_color,
+    );
 
     // Footer
     let footer_text = "j/k: scroll | g/G: top/bottom | Ctrl-d/u: page | q/Esc/h: back";
@@ -291,12 +297,7 @@ fn build_commit_list_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<
     ListItem::new(line)
 }
 
-fn render_diff_pane(
-    frame: &mut Frame,
-    app: &App,
-    area: ratatui::layout::Rect,
-    is_focused: bool,
-) {
+fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, is_focused: bool) {
     let border_color = if is_focused {
         Color::Yellow
     } else {

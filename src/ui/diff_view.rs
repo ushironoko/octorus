@@ -1786,7 +1786,10 @@ mod tests {
 
     #[test]
     fn test_extract_diff_filename_simple() {
-        assert_eq!(extract_diff_filename("a/src/main.rs b/src/main.rs"), "src/main.rs");
+        assert_eq!(
+            extract_diff_filename("a/src/main.rs b/src/main.rs"),
+            "src/main.rs"
+        );
     }
 
     #[test]

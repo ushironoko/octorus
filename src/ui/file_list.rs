@@ -9,7 +9,9 @@ use ratatui::{
     Frame,
 };
 
-use super::common::{build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar};
+use super::common::{
+    build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar,
+};
 use crate::app::App;
 use crate::github::ChangedFile;
 

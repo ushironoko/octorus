@@ -342,14 +342,17 @@ impl App {
         if let Some(ref mut rx) = gl.highlight_receiver {
             if let Ok((sha, hl_cache)) = rx.try_recv() {
                 Self::evict_git_log_diff_cache(gl, &sha, max_cache);
-                gl.diff_cache_map.insert(sha.clone(), DiffCache {
-                    file_index: hl_cache.file_index,
-                    patch_hash: hl_cache.patch_hash,
-                    lines: hl_cache.lines.clone(),
-                    interner: hl_cache.interner.clone(),
-                    highlighted: true,
-                    markdown_rich: false,
-                });
+                gl.diff_cache_map.insert(
+                    sha.clone(),
+                    DiffCache {
+                        file_index: hl_cache.file_index,
+                        patch_hash: hl_cache.patch_hash,
+                        lines: hl_cache.lines.clone(),
+                        interner: hl_cache.interner.clone(),
+                        highlighted: true,
+                        markdown_rich: false,
+                    },
+                );
 
                 // 現在選択中のコミットならスワップ
                 let is_current = gl
@@ -374,26 +377,24 @@ impl App {
                             continue;
                         }
                         Self::evict_git_log_diff_cache(gl, &sha, max_cache);
-                        gl.diff_cache_map.insert(sha.clone(), DiffCache {
-                            file_index: 0,
-                            patch_hash: hl_cache.patch_hash,
-                            lines: hl_cache.lines.clone(),
-                            interner: hl_cache.interner.clone(),
-                            highlighted: true,
-                            markdown_rich: false,
-                        });
+                        gl.diff_cache_map.insert(
+                            sha.clone(),
+                            DiffCache {
+                                file_index: 0,
+                                patch_hash: hl_cache.patch_hash,
+                                lines: hl_cache.lines.clone(),
+                                interner: hl_cache.interner.clone(),
+                                highlighted: true,
+                                markdown_rich: false,
+                            },
+                        );
 
                         // 現在選択中でまだプレーンキャッシュなら HL にアップグレード
                         let is_current = gl
                             .commits
                             .get(gl.selected_commit)
                             .is_some_and(|c| c.sha == sha);
-                        if is_current
-                            && gl
-                                .diff_cache
-                                .as_ref()
-                                .is_some_and(|c| !c.highlighted)
-                        {
+                        if is_current && gl.diff_cache.as_ref().is_some_and(|c| !c.highlighted) {
                             gl.diff_cache = Some(hl_cache);
                         }
                     }
@@ -679,11 +680,7 @@ fn handle_diff_scroll_navigation(
     let Some(ref mut gl) = git_log_state else {
         return;
     };
-    let line_count = gl
-        .diff_cache
-        .as_ref()
-        .map(|c| c.lines.len())
-        .unwrap_or(0);
+    let line_count = gl.diff_cache.as_ref().map(|c| c.lines.len()).unwrap_or(0);
     if line_count == 0 {
         return;
     }
@@ -882,9 +879,18 @@ mod tests {
         let gl = app.git_log_state.as_ref().unwrap();
 
         // Cache hit should have cleared the stale in-flight state
-        assert!(gl.pending_diff_sha.is_none(), "pending_diff_sha should be cleared on cache hit");
-        assert!(gl.commit_diff_receiver.is_none(), "commit_diff_receiver should be cleared on cache hit");
-        assert!(!gl.diff_loading, "diff_loading should be false on cache hit");
+        assert!(
+            gl.pending_diff_sha.is_none(),
+            "pending_diff_sha should be cleared on cache hit"
+        );
+        assert!(
+            gl.commit_diff_receiver.is_none(),
+            "commit_diff_receiver should be cleared on cache hit"
+        );
+        assert!(
+            !gl.diff_loading,
+            "diff_loading should be false on cache hit"
+        );
 
         // The diff_cache should reflect the cached commit 1 data
         let cache = gl.diff_cache.as_ref().unwrap();

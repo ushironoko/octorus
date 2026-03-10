@@ -399,7 +399,6 @@ pub struct GitLogState {
     pub diff_cache_map: HashMap<String, DiffCache>,
 }
 
-
 impl Default for GitLogState {
     fn default() -> Self {
         Self::new()

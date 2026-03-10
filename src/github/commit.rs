@@ -226,9 +226,7 @@ async fn count_commits(working_dir: Option<&str>, range: &str) -> Result<usize> 
         anyhow::bail!("git rev-list --count failed: {}", stderr.trim());
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    text.trim()
-        .parse()
-        .context("Failed to parse commit count")
+    text.trim().parse().context("Failed to parse commit count")
 }
 
 /// デフォルトブランチ（origin/main or origin/master）を検出
@@ -282,19 +280,13 @@ fn parse_git_log_page(stdout: &[u8], offset: u32, limit: u32) -> Result<CommitLi
 }
 
 /// ローカル git show でコミットの unified diff を取得
-pub async fn fetch_local_commit_diff(
-    working_dir: Option<&str>,
-    sha: &str,
-) -> Result<String> {
+pub async fn fetch_local_commit_diff(working_dir: Option<&str>, sha: &str) -> Result<String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(["show", "--format=", "--patch", sha]);
     if let Some(dir) = working_dir {
         cmd.current_dir(dir);
     }
-    let output = cmd
-        .output()
-        .await
-        .context("Failed to run git show")?;
+    let output = cmd.output().await.context("Failed to run git show")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -398,7 +390,12 @@ mod tests {
     fn test_parse_git_log_page_non_overlapping_pagination() {
         // 50件のコミットを生成（git log --reverse 相当: 古い順）
         let lines: Vec<String> = (0..50)
-            .map(|i| format!("sha{:03}\x00commit {}\x00author\x002024-01-01T00:00:00Z", i, i))
+            .map(|i| {
+                format!(
+                    "sha{:03}\x00commit {}\x00author\x002024-01-01T00:00:00Z",
+                    i, i
+                )
+            })
             .collect();
         let stdout = lines.join("\n");
         let bytes = stdout.as_bytes();
@@ -432,11 +429,23 @@ mod tests {
         let page3_shas: Vec<&str> = page3.items.iter().map(|c| c.sha.as_str()).collect();
 
         for sha in &page1_shas {
-            assert!(!page2_shas.contains(sha), "page1 and page2 overlap: {}", sha);
-            assert!(!page3_shas.contains(sha), "page1 and page3 overlap: {}", sha);
+            assert!(
+                !page2_shas.contains(sha),
+                "page1 and page2 overlap: {}",
+                sha
+            );
+            assert!(
+                !page3_shas.contains(sha),
+                "page1 and page3 overlap: {}",
+                sha
+            );
         }
         for sha in &page2_shas {
-            assert!(!page3_shas.contains(sha), "page2 and page3 overlap: {}", sha);
+            assert!(
+                !page3_shas.contains(sha),
+                "page2 and page3 overlap: {}",
+                sha
+            );
         }
     }
 }
