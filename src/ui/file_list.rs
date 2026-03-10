@@ -9,12 +9,13 @@ use ratatui::{
     Frame,
 };
 
-use super::common::{build_ci_status_span, build_pr_info, render_rally_status_bar};
+use super::common::{build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar};
 use crate::app::App;
 use crate::github::ChangedFile;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
+    let has_update = app.update_available.is_some();
     let has_filter_bar = app
         .file_list_filter
         .as_ref()
@@ -26,6 +27,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ];
     if has_filter_bar {
         constraints.push(Constraint::Length(3)); // Filter bar
+    }
+    if has_update {
+        constraints.push(Constraint::Length(1)); // Update notification bar
     }
     if has_rally {
         constraints.push(Constraint::Length(1)); // Rally status bar
@@ -156,6 +160,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         if let Some(ref filter) = app.file_list_filter {
             render_filter_bar(frame, chunks[next_chunk], filter);
         }
+        next_chunk += 1;
+    }
+
+    // Update notification bar
+    if has_update {
+        render_update_bar(frame, chunks[next_chunk], app);
         next_chunk += 1;
     }
 

@@ -69,6 +69,19 @@ pub fn render_rally_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(bar, area);
 }
 
+/// Render update notification bar when a newer version is available
+pub fn render_update_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(ref version) = app.update_available else {
+        return;
+    };
+
+    let text = format!(" v{} available — run `or update` to upgrade ", version);
+    let bar = Paragraph::new(text)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center);
+    frame.render_widget(bar, area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
