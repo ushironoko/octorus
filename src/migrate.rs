@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
 
 use crate::init::{
-    AGENT_SKILL_CONTENT, DEFAULT_CONFIG, DEFAULT_LOCAL_CONFIG, DEFAULT_REVIEWEE_PROMPT,
-    DEFAULT_REVIEWER_PROMPT, DEFAULT_REREVIEW_PROMPT,
+    AGENT_SKILL_CONTENT, DEFAULT_CONFIG, DEFAULT_LOCAL_CONFIG, DEFAULT_REREVIEW_PROMPT,
+    DEFAULT_REVIEWEE_PROMPT, DEFAULT_REVIEWER_PROMPT,
 };
 use crate::update::is_newer_version;
 use octorus::config::find_project_root;
@@ -144,8 +144,7 @@ const HASH_REVIEWEE_0_5_6: &str =
     "f90c784d4ff49062ace22c68fadfff41b9a6473fbaca5d0af8a24f53d13941c4";
 const HASH_REREVIEW_0_5_6: &str =
     "725ca31c8a180bb9333ac7e15ef54a7477afbd27300d594db8c02f3b70f01e56";
-const HASH_SKILL_0_5_6: &str =
-    "c09f476002e139332d2d402d823a3ba8abd77f5ccd0c0f694c73e3b0337d9c7d";
+const HASH_SKILL_0_5_6: &str = "c09f476002e139332d2d402d823a3ba8abd77f5ccd0c0f694c73e3b0337d9c7d";
 
 // ---------------------------------------------------------------------------
 // Config Migrations (breaking changes registry)
@@ -249,9 +248,9 @@ fn check_file_status(
     let hash = content_hash(file_content);
 
     // Check if it matches the current version's default
-    let current_default = DEFAULT_HASHES.iter().find(|h| {
-        h.scope == scope && h.filename == filename && h.version == current_version
-    });
+    let current_default = DEFAULT_HASHES
+        .iter()
+        .find(|h| h.scope == scope && h.filename == filename && h.version == current_version);
     if let Some(def) = current_default {
         if hash == def.sha256 {
             return FileStatus::UpToDate;
@@ -282,8 +281,8 @@ pub(crate) fn read_manifest(path: &Path) -> Option<VersionManifest> {
 }
 
 pub(crate) fn write_manifest(path: &Path, manifest: &VersionManifest) -> Result<()> {
-    let json = serde_json::to_string_pretty(manifest)
-        .context("Failed to serialize version manifest")?;
+    let json =
+        serde_json::to_string_pretty(manifest).context("Failed to serialize version manifest")?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
@@ -611,6 +610,7 @@ fn execute_plan(
     actions: &[MigrationAction],
     manifest: &mut VersionManifest,
     binary_version: &str,
+    is_local: bool,
 ) -> Result<()> {
     for action in actions {
         match action {
@@ -660,11 +660,16 @@ fn execute_plan(
 
                 // Don't advance the version for skipped files
                 if !manifest.files.contains_key(&filename) {
-                    // First time seeing this file — record it but don't advance version
+                    // First time seeing this file — detect version from content hash
+                    // or fall back to "0.0.0" to ensure future migrations aren't skipped
+                    let detected_version = fs::read_to_string(path)
+                        .ok()
+                        .and_then(|content| detect_version_from_hash(&content, &filename, is_local))
+                        .unwrap_or_else(|| "0.0.0".to_string());
                     manifest.files.insert(
                         filename,
                         FileRecord {
-                            version: manifest.binary_version.clone(),
+                            version: detected_version,
                             status: FileRecordStatus::CustomizedSkipped,
                         },
                     );
@@ -802,8 +807,8 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
         let octorus_dir = project_root.join(".octorus");
         (octorus_dir, None)
     } else {
-        let base_dirs = BaseDirectories::with_prefix("octorus")
-            .context("Failed to get config directory")?;
+        let base_dirs =
+            BaseDirectories::with_prefix("octorus").context("Failed to get config directory")?;
         let config_home = base_dirs.get_config_home();
 
         let claude_dir = std::env::var("HOME")
@@ -864,26 +869,43 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
             let mut m = bootstrap_manifest(binary_version);
             // Record existing files
             for action in &actions {
-                let (path, status) = match action {
+                match action {
                     MigrationAction::SkipUpToDate { path, .. } => {
-                        (path, FileRecordStatus::Migrated)
+                        let filename = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        m.files.insert(
+                            filename,
+                            FileRecord {
+                                version: binary_version.to_string(),
+                                status: FileRecordStatus::Migrated,
+                            },
+                        );
                     }
                     MigrationAction::SkipCustomized { path, .. } => {
-                        (path, FileRecordStatus::CustomizedSkipped)
+                        let filename = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        // Detect version from content hash or fall back to "0.0.0"
+                        // to preserve provenance and ensure future migrations aren't skipped
+                        let detected_version = fs::read_to_string(path)
+                            .ok()
+                            .and_then(|content| {
+                                detect_version_from_hash(&content, &filename, is_local)
+                            })
+                            .unwrap_or_else(|| "0.0.0".to_string());
+                        m.files.insert(
+                            filename,
+                            FileRecord {
+                                version: detected_version,
+                                status: FileRecordStatus::CustomizedSkipped,
+                            },
+                        );
                     }
                     _ => continue,
-                };
-                let filename = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                m.files.insert(
-                    filename,
-                    FileRecord {
-                        version: binary_version.to_string(),
-                        status,
-                    },
-                );
+                }
             }
             m.last_migrated_at = Some(now_iso());
             if !dry_run {
@@ -907,15 +929,12 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
     // Create backup (include skill_dir for global migrations so SKILL.md is backed up)
     let backup_dir = create_backup(&config_dir, skill_dir.as_deref())
         .context("Failed to create backup. No changes have been applied.")?;
-    println!(
-        "Backup created: {}",
-        backup_dir.display()
-    );
+    println!("Backup created: {}", backup_dir.display());
 
     // Execute
     let mut working_manifest = manifest.unwrap_or_else(|| bootstrap_manifest(binary_version));
 
-    if let Err(e) = execute_plan(&actions, &mut working_manifest, binary_version) {
+    if let Err(e) = execute_plan(&actions, &mut working_manifest, binary_version, is_local) {
         eprintln!("\x1b[31mError during migration:\x1b[0m {}", e);
         eprintln!();
         eprintln!(
@@ -1096,7 +1115,10 @@ mod tests {
                 all_match = false;
             }
         }
-        assert!(all_match, "One or more hashes do not match. See output above for actual values.");
+        assert!(
+            all_match,
+            "One or more hashes do not match. See output above for actual values."
+        );
     }
 
     #[test]
@@ -1144,8 +1166,7 @@ mod tests {
             files: HashMap::new(),
         });
 
-        let actions =
-            build_migration_plan(&config_dir, None, &manifest, "0.5.6", false, false);
+        let actions = build_migration_plan(&config_dir, None, &manifest, "0.5.6", false, false);
 
         // Should only have skips + WriteManifest
         assert!(
@@ -1171,19 +1192,17 @@ mod tests {
         .unwrap();
         // Missing reviewee.md and rereview.md
 
-        let actions = build_migration_plan(
-            &config_dir,
-            None,
-            &None,
-            "0.5.6",
-            false,
-            false,
-        );
+        let actions = build_migration_plan(&config_dir, None, &None, "0.5.6", false, false);
 
         let has_skip = actions.iter().any(|a| {
-            matches!(a, MigrationAction::SkipCustomized { .. } | MigrationAction::SkipUpToDate { .. })
+            matches!(
+                a,
+                MigrationAction::SkipCustomized { .. } | MigrationAction::SkipUpToDate { .. }
+            )
         });
-        let has_create = actions.iter().any(|a| matches!(a, MigrationAction::CreateNew { .. }));
+        let has_create = actions
+            .iter()
+            .any(|a| matches!(a, MigrationAction::CreateNew { .. }));
         assert!(has_skip, "Should skip customized/up-to-date files");
         assert!(has_create, "Should create missing files");
     }
@@ -1220,7 +1239,7 @@ mod tests {
             Some(&skill_dir),
             &None,
             "0.5.6",
-            true,  // is_local
+            true, // is_local
             false,
         );
 
@@ -1274,8 +1293,7 @@ mod tests {
         assert!(backup_dir.join("config.toml").exists());
         assert!(backup_dir.join("skills/octorus/SKILL.md").exists());
 
-        let content =
-            fs::read_to_string(backup_dir.join("skills/octorus/SKILL.md")).unwrap();
+        let content = fs::read_to_string(backup_dir.join("skills/octorus/SKILL.md")).unwrap();
         assert_eq!(content, "test skill content");
     }
 
@@ -1292,14 +1310,11 @@ mod tests {
         }];
 
         let mut manifest = bootstrap_manifest("0.5.6");
-        execute_plan(&actions, &mut manifest, "0.5.6").unwrap();
+        execute_plan(&actions, &mut manifest, "0.5.6", false).unwrap();
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "new content");
-        assert_eq!(
-            manifest.files["test.md"].status,
-            FileRecordStatus::Migrated
-        );
+        assert_eq!(manifest.files["test.md"].status, FileRecordStatus::Migrated);
     }
 
     #[test]
@@ -1314,7 +1329,7 @@ mod tests {
         }];
 
         let mut manifest = bootstrap_manifest("0.5.6");
-        execute_plan(&actions, &mut manifest, "0.5.6").unwrap();
+        execute_plan(&actions, &mut manifest, "0.5.6", false).unwrap();
 
         // File should be unchanged
         let content = fs::read_to_string(&file_path).unwrap();
@@ -1337,7 +1352,7 @@ mod tests {
         }];
 
         let mut manifest = bootstrap_manifest("0.5.6");
-        execute_plan(&actions, &mut manifest, "0.5.6").unwrap();
+        execute_plan(&actions, &mut manifest, "0.5.6", false).unwrap();
 
         // File should be unchanged
         let content = fs::read_to_string(&file_path).unwrap();
@@ -1378,19 +1393,12 @@ mod tests {
         let version = "0.5.6";
 
         // First migration — should be "all up to date" but write manifest
-        let actions = build_migration_plan(
-            &config_dir,
-            None,
-            &None,
-            version,
-            false,
-            false,
-        );
+        let actions = build_migration_plan(&config_dir, None, &None, version, false, false);
         assert!(!has_meaningful_actions(&actions));
 
         // Write manifest for tracking
         let mut manifest = bootstrap_manifest(version);
-        execute_plan(&actions, &mut manifest, version).unwrap();
+        execute_plan(&actions, &mut manifest, version, false).unwrap();
 
         // Manifest should exist
         let manifest_path = config_dir.join(".version");
@@ -1426,12 +1434,11 @@ mod tests {
         // Run 1
         let actions1 = build_migration_plan(&config_dir, None, &None, version, false, false);
         let mut m1 = bootstrap_manifest(version);
-        execute_plan(&actions1, &mut m1, version).unwrap();
+        execute_plan(&actions1, &mut m1, version, false).unwrap();
 
         // Run 2
         let manifest2 = read_manifest(&manifest_path);
-        let actions2 =
-            build_migration_plan(&config_dir, None, &manifest2, version, false, false);
+        let actions2 = build_migration_plan(&config_dir, None, &manifest2, version, false, false);
         assert!(!has_meaningful_actions(&actions2));
     }
 
@@ -1444,14 +1451,7 @@ mod tests {
         // Missing files — would normally be created
         fs::write(config_dir.join("config.toml"), DEFAULT_CONFIG).unwrap();
 
-        let actions = build_migration_plan(
-            &config_dir,
-            None,
-            &None,
-            "0.5.6",
-            false,
-            false,
-        );
+        let actions = build_migration_plan(&config_dir, None, &None, "0.5.6", false, false);
 
         // Has meaningful actions (creating missing prompt files)
         assert!(has_meaningful_actions(&actions));
@@ -1487,11 +1487,7 @@ mod tests {
         // Default config — up to date
         fs::write(config_dir.join("config.toml"), DEFAULT_CONFIG).unwrap();
         // Customized reviewer — should be skipped
-        fs::write(
-            config_dir.join("prompts/reviewer.md"),
-            "custom reviewer",
-        )
-        .unwrap();
+        fs::write(config_dir.join("prompts/reviewer.md"), "custom reviewer").unwrap();
         // Default reviewee
         fs::write(
             config_dir.join("prompts/reviewee.md"),
@@ -1508,7 +1504,7 @@ mod tests {
         let actions = build_migration_plan(&config_dir, None, &None, version, false, false);
 
         let mut manifest = bootstrap_manifest(version);
-        execute_plan(&actions, &mut manifest, version).unwrap();
+        execute_plan(&actions, &mut manifest, version, false).unwrap();
 
         // reviewer.md should be CustomizedSkipped
         assert_eq!(

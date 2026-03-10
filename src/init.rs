@@ -337,9 +337,17 @@ fn resolve_file_path(config_dir: &Path, name: &str, _is_local: bool) -> PathBuf 
         "config.toml" => config_dir.join("config.toml"),
         "SKILL.md" => {
             // SKILL.md lives under ~/.claude/skills/octorus/SKILL.md, not config_dir.
-            // Since we can't resolve the exact path here, return config_dir-based path
-            // which won't exist — the caller handles the None case from read_to_string.
-            config_dir.join("SKILL.md")
+            // Resolve to the actual path so hash detection can find the file.
+            std::env::var("HOME")
+                .ok()
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".claude")
+                        .join("skills")
+                        .join("octorus")
+                        .join("SKILL.md")
+                })
+                .unwrap_or_else(|| config_dir.join("SKILL.md"))
         }
         // Prompt files live under prompts/
         _ => config_dir.join("prompts").join(name),
