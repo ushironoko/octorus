@@ -18,8 +18,9 @@ use tokio_util::sync::CancellationToken;
 use octorus::app::RefreshRequest;
 use octorus::{app, cache, config, github, headless, loader, syntax};
 
-// init/update are only used by the binary, not needed for benchmarks
+// init/update/migrate are only used by the binary, not needed for benchmarks
 mod init;
+mod migrate;
 mod update;
 
 #[derive(Parser, Debug)]
@@ -77,6 +78,18 @@ enum Commands {
     Clean,
     /// Update to the latest version from GitHub Releases
     Update,
+    /// Migrate configuration files and prompts after an update
+    Migrate {
+        /// Show what would change without applying
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+        /// Migrate project-local .octorus/ config
+        #[arg(long, default_value = "false")]
+        local: bool,
+        /// Overwrite all files regardless of customization
+        #[arg(long, default_value = "false")]
+        force: bool,
+    },
 }
 
 /// Restore terminal to normal state
@@ -131,7 +144,15 @@ async fn main() -> Result<()> {
                 println!("Rally sessions cleaned: {}", rally_dir.display());
                 Ok(())
             }
-            Commands::Update => update::run_update(),
+            Commands::Update => {
+                update::run_update()?;
+                Ok(())
+            }
+            Commands::Migrate {
+                dry_run,
+                local,
+                force,
+            } => migrate::run_migrate(dry_run, local, force),
         };
     }
 

@@ -1,12 +1,17 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
 
 use octorus::config::find_project_root;
 
+use crate::migrate::{
+    write_manifest, FileRecord, FileRecordStatus, VersionManifest,
+};
+
 /// Default config.toml content
-const DEFAULT_CONFIG: &str = r#"# Editor for writing review body.
+pub(crate) const DEFAULT_CONFIG: &str = r#"# Editor for writing review body.
 # Resolved in order: this value → $VISUAL → $EDITOR → vi
 # Supports arguments: editor = "code --wait"
 # editor = "vim"
@@ -40,15 +45,15 @@ timeout_secs = 600
 "#;
 
 /// Default prompt templates (same as embedded in binary)
-const DEFAULT_REVIEWER_PROMPT: &str = include_str!("ai/defaults/reviewer.md");
-const DEFAULT_REVIEWEE_PROMPT: &str = include_str!("ai/defaults/reviewee.md");
-const DEFAULT_REREVIEW_PROMPT: &str = include_str!("ai/defaults/rereview.md");
+pub(crate) const DEFAULT_REVIEWER_PROMPT: &str = include_str!("ai/defaults/reviewer.md");
+pub(crate) const DEFAULT_REVIEWEE_PROMPT: &str = include_str!("ai/defaults/reviewee.md");
+pub(crate) const DEFAULT_REREVIEW_PROMPT: &str = include_str!("ai/defaults/rereview.md");
 
 /// Agent skill content for Claude Code integration
-const AGENT_SKILL_CONTENT: &str = include_str!("ai/defaults/skill.md");
+pub(crate) const AGENT_SKILL_CONTENT: &str = include_str!("ai/defaults/skill.md");
 
 /// Default local config.toml content
-const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configuration.
+pub(crate) const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configuration.
 # Values here override the global config (~/.config/octorus/config.toml).
 # Only specify values you want to override.
 
@@ -118,6 +123,9 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
     if let Err(e) = generate_agent_skill(force) {
         eprintln!("Warning: Failed to generate agent skill: {}", e);
     }
+
+    // Write .version manifest
+    write_init_manifest(&config_home, false)?;
 
     println!();
     println!("Initialization complete!");
@@ -213,6 +221,9 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
         "rereview.md",
     )?;
 
+    // Write .version manifest
+    write_init_manifest(&octorus_dir, true)?;
+
     println!();
     println!("Local initialization complete!");
     println!("Project-local config: {}", config_path.display());
@@ -227,6 +238,53 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
     println!("         AI tool permissions, and auto_post. If you commit .octorus/ to a");
     println!("         public repository, cloners will inherit these settings when running \x1b[1mor\x1b[0m.");
     println!("         Review the config carefully before committing.");
+
+    Ok(())
+}
+
+/// Write a .version manifest after init.
+fn write_init_manifest(config_dir: &Path, is_local: bool) -> Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let mut files = HashMap::new();
+    let config_name = "config.toml";
+    files.insert(
+        config_name.to_string(),
+        FileRecord {
+            version: version.to_string(),
+            status: FileRecordStatus::Created,
+        },
+    );
+    for name in &["reviewer.md", "reviewee.md", "rereview.md"] {
+        files.insert(
+            name.to_string(),
+            FileRecord {
+                version: version.to_string(),
+                status: FileRecordStatus::Created,
+            },
+        );
+    }
+    if !is_local {
+        files.insert(
+            "SKILL.md".to_string(),
+            FileRecord {
+                version: version.to_string(),
+                status: FileRecordStatus::Created,
+            },
+        );
+    }
+
+    let manifest = VersionManifest {
+        binary_version: version.to_string(),
+        initialized_at: now.clone(),
+        last_migrated_at: Some(now),
+        files,
+    };
+
+    let manifest_path = config_dir.join(".version");
+    write_manifest(&manifest_path, &manifest)
+        .context("Failed to write .version manifest")?;
 
     Ok(())
 }

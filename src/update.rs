@@ -5,9 +5,20 @@ use std::process::Command;
 
 const REPO: &str = "ushironoko/octorus";
 
+/// Result of `run_update()` indicating what happened.
+#[allow(dead_code)]
+pub enum UpdateResult {
+    /// Binary was updated to a new version
+    Updated { version: String },
+    /// Already on the latest version
+    AlreadyCurrent,
+    /// User must take manual action (e.g., mise)
+    ManualActionRequired { message: String },
+}
+
 /// Parse a semver version string "MAJOR.MINOR.PATCH" into a comparable tuple.
 /// Returns `None` if the format is invalid.
-fn parse_semver(version: &str) -> Option<(u32, u32, u32)> {
+pub(crate) fn parse_semver(version: &str) -> Option<(u32, u32, u32)> {
     let parts: Vec<&str> = version.split('.').collect();
     if parts.len() != 3 {
         return None;
@@ -20,7 +31,7 @@ fn parse_semver(version: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// Returns true if `latest` is strictly newer than `current` by semver comparison.
-fn is_newer_version(current: &str, latest: &str) -> bool {
+pub(crate) fn is_newer_version(current: &str, latest: &str) -> bool {
     match (parse_semver(current), parse_semver(latest)) {
         (Some(cur), Some(lat)) => lat > cur,
         _ => false, // Invalid format — don't treat as update
@@ -412,7 +423,7 @@ pub fn check_for_update() -> Option<String> {
 /// Run the update command: check for new version, download, verify, and install.
 /// Automatically detects whether the binary was installed via `cargo install`
 /// and uses the appropriate update method.
-pub fn run_update() -> Result<()> {
+pub fn run_update() -> Result<UpdateResult> {
     let current_version = env!("CARGO_PKG_VERSION");
 
     println!("Checking for updates...");
@@ -421,7 +432,7 @@ pub fn run_update() -> Result<()> {
 
     if !is_newer_version(current_version, latest_version) {
         println!("Already up to date (v{})", current_version);
-        return Ok(());
+        return Ok(UpdateResult::AlreadyCurrent);
     }
 
     println!(
@@ -440,39 +451,32 @@ pub fn run_update() -> Result<()> {
             update_via_cargo(latest_version)?;
         }
         InstallMethod::Mise => {
-            println!("Detected mise-managed installation at:");
-            println!("  {}", current_exe.display());
-            println!();
-            println!("Please update via mise:");
-            println!("  mise install octorus@{}", latest_version);
-            println!("  mise use octorus@{}", latest_version);
-            return Ok(());
+            let message = format!(
+                "Detected mise-managed installation at:\n  {}\n\nPlease update via mise:\n  mise install octorus@{}\n  mise use octorus@{}",
+                current_exe.display(), latest_version, latest_version
+            );
+            println!("{}", message);
+            return Ok(UpdateResult::ManualActionRequired { message });
         }
         InstallMethod::GitHubRelease => {
             update_via_release(&latest_tag, latest_version)?;
         }
         InstallMethod::Unknown => {
-            println!("Could not determine how octorus was installed.");
-            println!("  Executable path: {}", current_exe.display());
-            println!();
-            println!("To avoid corrupting a package-managed installation, self-update");
-            println!("is only supported for the following install methods:");
-            println!("  - cargo install octorus");
-            println!("  - mise install octorus");
-            println!("  - GitHub Releases (binary in /usr/local/bin or /opt/homebrew/bin)");
-            println!();
-            println!("Please update using the same method you used to install octorus,");
-            println!("or download the latest release manually:");
-            println!(
-                "  gh release download {} --repo {}",
-                latest_tag, REPO
+            let message = format!(
+                "Could not determine how octorus was installed.\n  Executable path: {}\n\nPlease update using the same method you used to install octorus,\nor download the latest release manually:\n  gh release download {} --repo {}",
+                current_exe.display(), latest_tag, REPO
             );
-            return Ok(());
+            println!("{}", message);
+            return Ok(UpdateResult::ManualActionRequired { message });
         }
     }
 
     println!("Successfully updated to v{}", latest_version);
-    Ok(())
+    println!();
+    println!("Run `or migrate` to update configuration files and prompts.");
+    Ok(UpdateResult::Updated {
+        version: latest_version.to_string(),
+    })
 }
 
 #[cfg(test)]

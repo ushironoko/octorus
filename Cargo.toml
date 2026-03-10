@@ -75,6 +75,7 @@ tree-sitter-md = "0.5.2"
 # POSIX shell-compatible command splitting for editor commands
 shell-words = "1.1.1"
 which = "8.0.0"
+sha2 = "0.10.8"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"
