@@ -322,7 +322,7 @@ fn write_init_manifest(
             .as_ref()
             .map(|m| m.initialized_at.clone())
             .unwrap_or_else(|| now.clone()),
-        last_migrated_at: Some(now),
+        last_migrated_at: None,
         files,
     };
 

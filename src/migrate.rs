@@ -819,6 +819,25 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
         (config_home, claude_dir)
     };
 
+    run_migrate_in(
+        &config_dir,
+        skill_dir.as_deref(),
+        dry_run,
+        is_local,
+        force,
+        binary_version,
+    )
+}
+
+/// Core migration logic, separated for testability.
+fn run_migrate_in(
+    config_dir: &Path,
+    skill_dir: Option<&Path>,
+    dry_run: bool,
+    is_local: bool,
+    force: bool,
+    binary_version: &str,
+) -> Result<()> {
     // Check if config dir exists at all
     if !config_dir.exists() {
         bail!(
@@ -986,19 +1005,13 @@ mod tests {
 
     #[test]
     fn test_file_status_up_to_date() {
-        // If the content matches current version's hash → UpToDate
-        let hash = content_hash(DEFAULT_REVIEWER_PROMPT);
-        // We need the hash to be in DEFAULT_HASHES for the current version
-        // Since we'll fix hashes in step 4, this test validates the logic
         let status = check_file_status(
             DEFAULT_REVIEWER_PROMPT,
             "0.5.6",
             FileScope::Global,
             "reviewer.md",
         );
-        // This will be UpToDate once hashes are correct
-        // For now with PLACEHOLDER it will be Customized
-        let _ = (hash, status); // suppress unused warning
+        assert_eq!(status, FileStatus::UpToDate);
     }
 
     #[test]
@@ -1465,17 +1478,28 @@ mod tests {
 
     #[test]
     fn test_newer_version_error() {
-        let config_dir = PathBuf::from("/tmp/test_newer_version");
-        let manifest = Some(VersionManifest {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join("octorus");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        // Write a manifest claiming a newer version than the binary
+        let manifest = VersionManifest {
             binary_version: "99.0.0".to_string(),
             initialized_at: "2024-01-01T00:00:00Z".to_string(),
             last_migrated_at: None,
             files: HashMap::new(),
-        });
+        };
+        write_manifest(&config_dir.join(".version"), &manifest).unwrap();
 
-        // binary_version = "0.5.6", manifest says "99.0.0"
-        // The check happens in run_migrate, but we can test the condition directly
-        assert!(is_newer_version("0.5.6", "99.0.0"));
+        // run_migrate_in should error because manifest version > binary version
+        let result = run_migrate_in(&config_dir, None, false, false, false, "0.5.6");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("newer version"),
+            "Expected 'newer version' error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
