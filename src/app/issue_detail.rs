@@ -10,9 +10,20 @@ use super::types::*;
 use super::{App, AppState};
 
 impl App {
-    pub(crate) fn enter_pr_from_issue(&mut self, pr_number: u32) {
-        self.issue_detail_return = true;
-        self.select_pr(pr_number);
+    /// Linked PR を開く。同一リポならPR viewに遷移、クロスリポならブラウザで開く
+    pub(crate) fn enter_pr_from_issue(&mut self, pr_number: u32, pr_repo: Option<&str>) {
+        if let Some(repo) = pr_repo {
+            // クロスリポPR: 別リポのPRデータをキャッシュに混ぜないためブラウザで開く
+            let _ = std::process::Command::new("gh")
+                .args(["pr", "view", &pr_number.to_string(), "-R", repo, "--web"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        } else {
+            self.issue_detail_return = true;
+            self.select_pr(pr_number);
+        }
     }
 
     /// Issue body からキャッシュを構築（rebuild_pr_description_cache と同パターン）
@@ -131,15 +142,15 @@ impl App {
                     return Ok(());
                 }
 
-                // Enter: linked PRを選択してPR viewに遷移
+                // Enter: linked PRを選択してPR viewに遷移（クロスリポはブラウザで開く）
                 if self.matches_single_key(&key, &kb.open_panel) {
-                    let pr_number = state
+                    let pr_info = state
                         .linked_prs
                         .as_ref()
                         .and_then(|prs| prs.get(state.selected_linked_pr))
-                        .map(|pr| pr.number);
-                    if let Some(number) = pr_number {
-                        self.enter_pr_from_issue(number);
+                        .map(|pr| (pr.number, pr.repo.clone()));
+                    if let Some((number, repo)) = pr_info {
+                        self.enter_pr_from_issue(number, repo.as_deref());
                     }
                     return Ok(());
                 }
@@ -205,9 +216,21 @@ mod tests {
         app.started_from_pr_list = true;
         app.issue_state = Some(IssueState::new());
         app.state = AppState::IssueDetail;
-        app.enter_pr_from_issue(123);
+        app.enter_pr_from_issue(123, None);
         assert!(app.issue_detail_return);
         assert_eq!(app.state, AppState::FileList);
+    }
+
+    #[test]
+    fn test_enter_pr_from_issue_cross_repo_does_not_set_return_flag() {
+        let mut app = App::new_for_test();
+        app.started_from_pr_list = true;
+        app.issue_state = Some(IssueState::new());
+        app.state = AppState::IssueDetail;
+        app.enter_pr_from_issue(456, Some("other/repo"));
+        // クロスリポPRはブラウザで開くため、issue_detail_returnは設定されない
+        assert!(!app.issue_detail_return);
+        assert_eq!(app.state, AppState::IssueDetail);
     }
 
     #[test]
@@ -244,8 +267,10 @@ mod tests {
         app.back_to_pr_list();
 
         assert_eq!(app.state, AppState::IssueDetail);
-        assert!(!app.local_mode, "local_mode must be cleared when returning to IssueDetail");
+        assert!(
+            !app.local_mode,
+            "local_mode must be cleared when returning to IssueDetail"
+        );
         assert!(!app.issue_detail_return);
     }
-
 }

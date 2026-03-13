@@ -179,7 +179,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         Style::default()
                     };
 
-                    let line = Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         pr_state_icon,
                         Span::styled(format!("#{} ", pr.number), number_style),
@@ -188,7 +188,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                             format!("  {}", pr.state),
                             Style::default().fg(Color::DarkGray),
                         ),
-                    ]);
+                    ];
+                    // クロスリポPRにはリポ名を表示
+                    if let Some(ref repo) = pr.repo {
+                        spans.push(Span::styled(
+                            format!("  ({})", repo),
+                            Style::default().fg(Color::Blue),
+                        ));
+                    }
+                    let line = Line::from(spans);
 
                     ListItem::new(line)
                 })
