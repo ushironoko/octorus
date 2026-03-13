@@ -460,6 +460,8 @@ pub struct IssueState {
     pub issue_list_has_more: bool,
     pub issue_list_state_filter: IssueStateFilter,
     pub issue_list_filter: Option<crate::filter::ListFilter>,
+    /// true = load_more_issues (append), false = reload (replace)
+    pub(crate) issue_list_appending: bool,
     // Detail
     pub issue_detail: Option<IssueDetail>,
     pub issue_detail_loading: bool,
@@ -492,6 +494,7 @@ impl IssueState {
             issue_list_has_more: false,
             issue_list_state_filter: IssueStateFilter::default(),
             issue_list_filter: None,
+            issue_list_appending: false,
             issue_detail: None,
             issue_detail_loading: false,
             issue_detail_scroll_offset: 0,

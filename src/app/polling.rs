@@ -1276,15 +1276,18 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(page)) => {
-                if state.issue_list_scroll_offset == 0 && state.selected_issue == 0 {
-                    state.issues = Some(page.items);
-                } else if let Some(ref mut existing) = state.issues {
-                    existing.extend(page.items);
+                if state.issue_list_appending {
+                    if let Some(ref mut existing) = state.issues {
+                        existing.extend(page.items);
+                    } else {
+                        state.issues = Some(page.items);
+                    }
                 } else {
                     state.issues = Some(page.items);
                 }
                 state.issue_list_has_more = page.has_more;
                 state.issue_list_loading = false;
+                state.issue_list_appending = false;
                 state.issue_list_receiver = None;
 
                 if state

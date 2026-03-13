@@ -27,6 +27,7 @@ impl App {
         state.issue_list_loading = true;
         state.issue_list_has_more = false;
         state.issue_list_filter = None;
+        state.issue_list_appending = false;
 
         let (tx, rx) = mpsc::channel(2);
         state.issue_list_receiver = Some(rx);
@@ -50,6 +51,7 @@ impl App {
 
         let offset = state.issues.as_ref().map(|l| l.len()).unwrap_or(0) as u32;
         state.issue_list_loading = true;
+        state.issue_list_appending = true;
 
         let (tx, rx) = mpsc::channel(2);
         state.issue_list_receiver = Some(rx);
