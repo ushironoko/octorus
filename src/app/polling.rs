@@ -1265,4 +1265,129 @@ impl App {
             }
         }
     }
+
+    pub(crate) fn poll_issue_list_updates(&mut self) {
+        let Some(ref mut state) = self.issue_state else {
+            return;
+        };
+        let Some(ref mut rx) = state.issue_list_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(page)) => {
+                if state.issue_list_scroll_offset == 0 && state.selected_issue == 0 {
+                    state.issues = Some(page.items);
+                } else if let Some(ref mut existing) = state.issues {
+                    existing.extend(page.items);
+                } else {
+                    state.issues = Some(page.items);
+                }
+                state.issue_list_has_more = page.has_more;
+                state.issue_list_loading = false;
+                state.issue_list_receiver = None;
+
+                if state
+                    .issue_list_filter
+                    .as_ref()
+                    .is_some_and(|f| f.has_query())
+                {
+                    self.reapply_filter("issue");
+                }
+            }
+            Ok(Err(_e)) => {
+                let state = self.issue_state.as_mut().unwrap();
+                if state.issues.is_none() {
+                    state.issues = Some(vec![]);
+                }
+                state.issue_list_loading = false;
+                state.issue_list_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                let state = self.issue_state.as_mut().unwrap();
+                if state.issues.is_none() {
+                    state.issues = Some(vec![]);
+                }
+                state.issue_list_loading = false;
+                state.issue_list_receiver = None;
+            }
+        }
+    }
+
+    pub(crate) fn poll_issue_detail_updates(&mut self) {
+        let should_rebuild = {
+            let Some(ref mut state) = self.issue_state else {
+                return;
+            };
+            let Some((ref origin_issue, ref mut rx)) = state.issue_detail_receiver else {
+                return;
+            };
+            let origin_issue = *origin_issue;
+
+            match rx.try_recv() {
+                Ok(Ok(detail)) => {
+                    // stale response check
+                    if state
+                        .issue_detail
+                        .as_ref()
+                        .is_none_or(|d| d.number == origin_issue)
+                    {
+                        state.issue_detail = Some(detail);
+                        state.issue_detail_loading = false;
+                    }
+                    state.issue_detail_receiver = None;
+                    true
+                }
+                Ok(Err(_e)) => {
+                    state.issue_detail_loading = false;
+                    state.issue_detail_receiver = None;
+                    false
+                }
+                Err(mpsc::error::TryRecvError::Empty) => false,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    state.issue_detail_loading = false;
+                    state.issue_detail_receiver = None;
+                    false
+                }
+            }
+        };
+
+        if should_rebuild {
+            self.rebuild_issue_detail_cache();
+        }
+    }
+
+    pub(crate) fn poll_linked_prs_updates(&mut self) {
+        let Some(ref mut state) = self.issue_state else {
+            return;
+        };
+        let Some((ref origin_issue, ref mut rx)) = state.linked_prs_receiver else {
+            return;
+        };
+        let origin_issue = *origin_issue;
+
+        match rx.try_recv() {
+            Ok(Ok(prs)) => {
+                // stale response check: only update if we're still on the same issue
+                let current_issue = state.issue_detail.as_ref().map(|d| d.number);
+                if current_issue.is_none() || current_issue == Some(origin_issue) {
+                    state.linked_prs = Some(prs);
+                    state.linked_prs_loading = false;
+                }
+                state.linked_prs_receiver = None;
+            }
+            Ok(Err(_e)) => {
+                state.linked_prs = Some(vec![]);
+                state.linked_prs_loading = false;
+                state.linked_prs_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                state.linked_prs = Some(vec![]);
+                state.linked_prs_loading = false;
+                state.linked_prs_receiver = None;
+            }
+        }
+    }
 }

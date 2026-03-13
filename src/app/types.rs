@@ -11,7 +11,10 @@ use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::diff::LineType;
 use crate::github::comment::{DiscussionComment, ReviewComment};
-use crate::github::{ChangedFile, PrCommit, PullRequest};
+use crate::github::{
+    ChangedFile, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary, LinkedPr, PrCommit,
+    PullRequest,
+};
 
 /// コメントのdiff内位置を表す構造体
 #[derive(Debug, Clone)]
@@ -153,6 +156,8 @@ pub enum AppState {
     GitLogSplitCommitList,
     GitLogSplitDiff,
     GitLogDiffView,
+    IssueList,
+    IssueDetail,
 }
 
 /// Variant for diff view handling (fullscreen vs split pane)
@@ -427,6 +432,77 @@ impl GitLogState {
             highlight_receiver: None,
             prefetch_diff_receiver: None,
             diff_cache_map: HashMap::new(),
+        }
+    }
+}
+
+/// Receiver with origin issue_number tracking (stale response prevention)
+pub(crate) type IssueReceiver<T> = Option<(u32, mpsc::Receiver<Result<T, String>>)>;
+
+/// Issue詳細画面のフォーカス
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum IssueDetailFocus {
+    #[default]
+    Body,
+    LinkedPrs,
+}
+
+/// Issue画面の全状態（GitLogState パターン）
+///
+/// `App.issue_state: Option<IssueState>` として保持。
+/// 画面クローズ時に `None` で全破棄。
+pub struct IssueState {
+    // List
+    pub issues: Option<Vec<IssueSummary>>,
+    pub selected_issue: usize,
+    pub issue_list_scroll_offset: usize,
+    pub issue_list_loading: bool,
+    pub issue_list_has_more: bool,
+    pub issue_list_state_filter: IssueStateFilter,
+    pub issue_list_filter: Option<crate::filter::ListFilter>,
+    // Detail
+    pub issue_detail: Option<IssueDetail>,
+    pub issue_detail_loading: bool,
+    pub issue_detail_scroll_offset: usize,
+    pub issue_detail_cache: Option<DiffCache>,
+    pub selected_linked_pr: usize,
+    pub detail_focus: IssueDetailFocus,
+    // Linked PRs（IssueDetail から分離管理）
+    pub linked_prs: Option<Vec<LinkedPr>>,
+    pub linked_prs_loading: bool,
+    // Receivers（origin issue_number 追跡で stale 防止）
+    pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, String>>>,
+    pub(crate) issue_detail_receiver: IssueReceiver<IssueDetail>,
+    pub(crate) linked_prs_receiver: IssueReceiver<Vec<LinkedPr>>,
+}
+
+impl Default for IssueState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IssueState {
+    pub fn new() -> Self {
+        Self {
+            issues: None,
+            selected_issue: 0,
+            issue_list_scroll_offset: 0,
+            issue_list_loading: false,
+            issue_list_has_more: false,
+            issue_list_state_filter: IssueStateFilter::default(),
+            issue_list_filter: None,
+            issue_detail: None,
+            issue_detail_loading: false,
+            issue_detail_scroll_offset: 0,
+            issue_detail_cache: None,
+            selected_linked_pr: 0,
+            detail_focus: IssueDetailFocus::default(),
+            linked_prs: None,
+            linked_prs_loading: false,
+            issue_list_receiver: None,
+            issue_detail_receiver: None,
+            linked_prs_receiver: None,
         }
     }
 }

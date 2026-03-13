@@ -7,6 +7,8 @@ mod file_list;
 mod footer;
 mod git_log;
 mod help;
+mod issue_detail;
+mod issue_list;
 mod pr_description;
 mod pr_list;
 mod split_view;
@@ -80,6 +82,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         && app.state != AppState::Help
         && app.state != AppState::PrDescription
         && app.state != AppState::ChecksList
+        && app.state != AppState::IssueList
+        && app.state != AppState::IssueDetail
     {
         // Loading状態の場合は専用画面を表示
         if matches!(app.data_state, DataState::Loading) {
@@ -107,6 +111,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             git_log::render_split(frame, app)
         }
         AppState::GitLogDiffView => git_log::render_diff_view(frame, app),
+        AppState::IssueList => issue_list::render(frame, app),
+        AppState::IssueDetail => issue_detail::render(frame, app),
     }
 
     // シンボル選択ポップアップ（最前面に描画）

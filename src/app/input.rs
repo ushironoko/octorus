@@ -31,6 +31,8 @@ impl App {
                     && self.state != AppState::Help
                     && self.state != AppState::PrDescription
                     && self.state != AppState::ChecksList
+                    && self.state != AppState::IssueList
+                    && self.state != AppState::IssueDetail
                 {
                     // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
@@ -89,6 +91,8 @@ impl App {
                     AppState::GitLogDiffView => {
                         self.handle_git_log_diff_view_input(key, terminal)?
                     }
+                    AppState::IssueList => self.handle_issue_list_input(key).await?,
+                    AppState::IssueDetail => self.handle_issue_detail_input(key, terminal)?,
                 }
             }
         }

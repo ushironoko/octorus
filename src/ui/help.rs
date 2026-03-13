@@ -462,6 +462,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
         )),
+        Line::from(format!(
+            "{}  Open issue list",
+            fmt_key(&kb.issue_list.display(), key_width)
+        )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -804,6 +808,120 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Back (from fullscreen)",
             fmt_key(&format!("{}, Esc, h", kb.quit.display()), key_width)
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "PR List View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Move selection",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  View PR",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open issue list",
+            fmt_key(&kb.issue_list.display(), key_width)
+        )),
+        Line::from("  o/c/a           Filter: open/closed/all"),
+        Line::from(format!(
+            "{}  Open in browser",
+            fmt_key(&kb.open_in_browser.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Refresh",
+            fmt_key(&kb.refresh.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Filter list",
+            fmt_key(&kb.filter.display(), key_width)
+        )),
+        Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Issue List View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Move selection",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  View issue detail",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from("  o/c/a           Filter: open/closed/all"),
+        Line::from(format!(
+            "{}  Open in browser",
+            fmt_key(&kb.open_in_browser.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Refresh",
+            fmt_key(&kb.refresh.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Filter list",
+            fmt_key(&kb.filter.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Back to PR list",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Issue Detail View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Scroll body",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from("  Tab             Switch focus (Body/Linked PRs)"),
+        Line::from(format!(
+            "{}  Open linked PR",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open in browser",
+            fmt_key(&kb.open_in_browser.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle markdown rich display",
+            fmt_key(&kb.toggle_markdown_rich.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Back to issue list",
+            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
