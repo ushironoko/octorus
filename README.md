@@ -587,6 +587,7 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 | `A` | Start AI Rally |
 | `S` | View CI checks status |
 | `gl` | Open git log view |
+| `I` | Open issue list |
 | `Space /` | Keyword filter |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
@@ -809,6 +810,7 @@ go_to_definition = ["g", "d"]
 | `open_in_browser` | `O` | Open PR in browser |
 | `ci_checks` | `S` | View CI checks status |
 | `git_log` | `gl` | Open git log view |
+| `issue_list` | `I` | Open issue list |
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
 | `toggle_markdown_rich` | `M` | Toggle Markdown rich display |

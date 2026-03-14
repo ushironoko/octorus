@@ -386,4 +386,27 @@ mod tests {
         assert!(state.issue_detail.is_none());
         assert!(!state.issue_detail_loading);
     }
+
+    #[tokio::test]
+    async fn test_select_issue_replaces_receivers_on_rapid_reselection() {
+        let mut app = App::new_for_test();
+        app.issue_state = Some(IssueState::new());
+        app.state = AppState::IssueList;
+
+        // Select issue A
+        app.select_issue(100);
+        let state = app.issue_state.as_ref().unwrap();
+        assert_eq!(state.issue_detail_receiver.as_ref().unwrap().0, 100);
+        assert_eq!(state.linked_prs_receiver.as_ref().unwrap().0, 100);
+
+        // Rapidly select issue B before polling A's response
+        app.select_issue(200);
+        let state = app.issue_state.as_ref().unwrap();
+        // Receivers should now track issue B, not A
+        assert_eq!(state.issue_detail_receiver.as_ref().unwrap().0, 200);
+        assert_eq!(state.linked_prs_receiver.as_ref().unwrap().0, 200);
+        // Previous detail should be cleared
+        assert!(state.issue_detail.is_none());
+        assert!(state.linked_prs.is_none());
+    }
 }
