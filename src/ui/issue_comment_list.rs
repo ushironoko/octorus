@@ -4,7 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        ScrollbarState,
     },
     Frame,
 };
@@ -229,7 +229,7 @@ fn format_comment_item(
     ListItem::new(lines)
 }
 
-fn render_detail(frame: &mut Frame, app: &App) {
+fn render_detail(frame: &mut Frame, app: &mut App) {
     let Some(ref state) = app.issue_state else {
         return;
     };
@@ -280,34 +280,55 @@ fn render_detail(frame: &mut Frame, app: &App) {
     );
     frame.render_widget(header, chunks[0]);
 
-    // Content with scroll
+    // Content with scroll — wrap first, then paginate on wrapped rows
     let content_height = chunks[1].height.saturating_sub(2) as usize;
-    let body_lines: Vec<Line> = comment
+    let content_width = chunks[1].width.saturating_sub(2) as usize;
+
+    // Pre-wrap each raw line to the available width, then flatten into wrapped rows
+    let wrapped_rows: Vec<String> = comment
         .body
         .lines()
-        .skip(state.issue_comment_detail_scroll)
-        .take(content_height)
-        .map(|line| Line::from(line.to_string()))
+        .flat_map(|line| {
+            if line.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_text(line, content_width)
+            }
+        })
         .collect();
 
-    let total_lines = comment.body.lines().count();
-    let scroll_info = if total_lines > content_height {
+    let total_rows = wrapped_rows.len();
+
+    // Clamp scroll so it can't overshoot
+    let state = app.issue_state.as_mut().unwrap();
+    let max_scroll = total_rows.saturating_sub(content_height);
+    if state.issue_comment_detail_scroll > max_scroll {
+        state.issue_comment_detail_scroll = max_scroll;
+    }
+    let scroll = state.issue_comment_detail_scroll;
+
+    let body_lines: Vec<Line> = wrapped_rows
+        .into_iter()
+        .skip(scroll)
+        .take(content_height)
+        .map(|row| Line::from(row))
+        .collect();
+
+    let scroll_info = if total_rows > content_height {
         format!(
             " ({}/{})",
-            state.issue_comment_detail_scroll + 1,
-            total_lines.saturating_sub(content_height) + 1
+            scroll + 1,
+            max_scroll + 1
         )
     } else {
         String::new()
     };
 
-    let content = Paragraph::new(body_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Content{}", scroll_info)),
-        )
-        .wrap(Wrap { trim: false });
+    let content = Paragraph::new(body_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Content{}", scroll_info)),
+    );
     frame.render_widget(content, chunks[1]);
 
     // Footer
