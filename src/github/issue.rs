@@ -48,8 +48,9 @@ pub struct IssueSummary {
     pub labels: Vec<Label>,
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
+    /// gh CLI は comments をオブジェクト配列で返すため Vec で受ける
     #[serde(default)]
-    pub comments: u32,
+    pub comments: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +66,7 @@ pub struct IssueDetail {
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
     #[serde(default)]
-    pub comments: u32,
+    pub comments: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,19 +317,26 @@ mod tests {
 
     #[test]
     fn test_issue_summary_deserialize() {
-        let json = r#"{"number":42,"title":"Bug report","state":"OPEN","author":{"login":"user1"},"labels":[],"updatedAt":"2026-01-01T00:00:00Z","comments":5}"#;
+        let json = r#"{"number":42,"title":"Bug report","state":"OPEN","author":{"login":"user1"},"labels":[],"updatedAt":"2026-01-01T00:00:00Z","comments":[{"body":"hello"},{"body":"world"}]}"#;
         let summary: IssueSummary = serde_json::from_str(json).unwrap();
         assert_eq!(summary.number, 42);
         assert_eq!(summary.title, "Bug report");
         assert_eq!(summary.state, "OPEN");
         assert_eq!(summary.author.login, "user1");
         assert!(summary.labels.is_empty());
-        assert_eq!(summary.comments, 5);
+        assert_eq!(summary.comments.len(), 2);
+    }
+
+    #[test]
+    fn test_issue_summary_deserialize_no_comments() {
+        let json = r#"{"number":1,"title":"T","state":"OPEN","author":{"login":"u"},"labels":[],"updatedAt":"2026-01-01T00:00:00Z"}"#;
+        let summary: IssueSummary = serde_json::from_str(json).unwrap();
+        assert!(summary.comments.is_empty());
     }
 
     #[test]
     fn test_issue_detail_deserialize() {
-        let json = r#"{"number":42,"title":"Bug","body":"description","state":"OPEN","author":{"login":"user1"},"labels":[{"name":"bug"}],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","comments":3}"#;
+        let json = r#"{"number":42,"title":"Bug","body":"description","state":"OPEN","author":{"login":"user1"},"labels":[{"name":"bug"}],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","comments":[{"body":"c1"},{"body":"c2"},{"body":"c3"}]}"#;
         let detail: IssueDetail = serde_json::from_str(json).unwrap();
         assert_eq!(detail.number, 42);
         assert_eq!(detail.body.as_deref(), Some("description"));
@@ -336,11 +344,12 @@ mod tests {
         assert_eq!(detail.updated_at, "2026-01-02T00:00:00Z");
         assert_eq!(detail.labels.len(), 1);
         assert_eq!(detail.labels[0].name, "bug");
+        assert_eq!(detail.comments.len(), 3);
     }
 
     #[test]
     fn test_issue_detail_deserialize_null_body() {
-        let json = r#"{"number":1,"title":"T","body":null,"state":"OPEN","author":{"login":"u"},"labels":[],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","comments":0}"#;
+        let json = r#"{"number":1,"title":"T","body":null,"state":"OPEN","author":{"login":"u"},"labels":[],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","comments":[]}"#;
         let detail: IssueDetail = serde_json::from_str(json).unwrap();
         assert!(detail.body.is_none());
     }

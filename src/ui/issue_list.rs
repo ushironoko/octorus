@@ -255,9 +255,10 @@ fn build_issue_list_items(issues: &[&IssueSummary], selected: usize) -> Vec<List
             let labels_span = Span::styled(labels_str, Style::default().fg(Color::Blue));
 
             // Comment count
-            let comment_span = if issue.comments > 0 {
+            let comment_count = issue.comments.len();
+            let comment_span = if comment_count > 0 {
                 Span::styled(
-                    format!("  {} {}", "💬", issue.comments),
+                    format!("  💬 {}", comment_count),
                     Style::default().fg(Color::DarkGray),
                 )
             } else {
