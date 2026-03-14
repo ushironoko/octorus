@@ -209,10 +209,12 @@ fn format_comment_item(
 
     let header_line = Line::from(header_spans);
 
-    // Truncate body for list view
+    // Truncate body for list view (char-boundary-safe)
     let body_text: String = comment.body.lines().collect::<Vec<_>>().join(" ");
-    let truncated = if body_text.len() > body_width * 2 {
-        format!("{}...", &body_text[..body_width * 2])
+    let max_chars = body_width * 2;
+    let truncated = if body_text.chars().count() > max_chars {
+        let s: String = body_text.chars().take(max_chars).collect();
+        format!("{}...", s)
     } else {
         body_text
     };
@@ -315,4 +317,66 @@ fn render_detail(frame: &mut Frame, app: &App) {
         Style::default().fg(Color::DarkGray),
     )));
     frame.render_widget(footer, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::User;
+
+    #[test]
+    fn test_format_comment_item_with_japanese_text_does_not_panic() {
+        // body_width=10 → max_chars=20, but the text is 30+ multibyte chars
+        // This would panic with byte-based slicing: &body_text[..20] on UTF-8
+        let comment = IssueComment {
+            id: "IC_1".to_string(),
+            body: "これはテストです。日本語のコメントが正しく切り詰められるか確認します。".to_string(),
+            author: User {
+                login: "user1".to_string(),
+            },
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author_association: "OWNER".to_string(),
+            url: String::new(),
+        };
+
+        // Should not panic
+        let _ = format_comment_item(&comment, 0, false, 10);
+    }
+
+    #[test]
+    fn test_format_comment_item_truncates_long_body() {
+        let comment = IssueComment {
+            id: "IC_1".to_string(),
+            body: "a".repeat(100),
+            author: User {
+                login: "user1".to_string(),
+            },
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author_association: "NONE".to_string(),
+            url: String::new(),
+        };
+
+        // body_width=10 → max_chars=20, body has 100 chars → should truncate
+        let item = format_comment_item(&comment, 0, false, 10);
+        // Verify it doesn't panic and produces output
+        let lines = item.height();
+        assert!(lines > 0);
+    }
+
+    #[test]
+    fn test_format_comment_item_mixed_ascii_multibyte() {
+        let comment = IssueComment {
+            id: "IC_1".to_string(),
+            body: "Hello世界こんにちはRust言語".to_string(),
+            author: User {
+                login: "user1".to_string(),
+            },
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author_association: "NONE".to_string(),
+            url: String::new(),
+        };
+
+        // body_width=5 → max_chars=10, mixed content
+        let _ = format_comment_item(&comment, 0, false, 5);
+    }
 }

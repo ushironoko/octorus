@@ -3,7 +3,7 @@ use crossterm::event::{self, KeyCode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 
-use crate::github::parse_issue_comments;
+use crate::github::{self, parse_issue_comments};
 use crate::syntax::ParserPool;
 
 use super::diff_cache::build_pr_description_patch;
@@ -15,12 +15,14 @@ impl App {
     pub(crate) fn enter_pr_from_issue(&mut self, pr_number: u32, pr_repo: Option<&str>) {
         if let Some(repo) = pr_repo {
             // クロスリポPR: 別リポのPRデータをキャッシュに混ぜないためブラウザで開く
-            let _ = std::process::Command::new("gh")
-                .args(["pr", "view", &pr_number.to_string(), "-R", repo, "--web"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+            let repo = repo.to_string();
+            let pr_number_str = pr_number.to_string();
+            tokio::spawn(async move {
+                let _ = github::gh_command(&[
+                    "pr", "view", &pr_number_str, "-R", &repo, "--web",
+                ])
+                .await;
+            });
         } else {
             self.issue_detail_return = true;
             self.select_pr(pr_number);
