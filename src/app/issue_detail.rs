@@ -580,8 +580,8 @@ mod tests {
         assert_eq!(app.state, AppState::FileList);
     }
 
-    #[test]
-    fn test_enter_pr_from_issue_cross_repo_does_not_set_return_flag() {
+    #[tokio::test]
+    async fn test_enter_pr_from_issue_cross_repo_does_not_set_return_flag() {
         let mut app = App::new_for_test();
         app.started_from_pr_list = true;
         app.issue_state = Some(IssueState::new());
