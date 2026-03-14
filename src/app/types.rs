@@ -12,8 +12,8 @@ use crate::ai::RallyState;
 use crate::diff::LineType;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{
-    ChangedFile, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary, LinkedPr, PrCommit,
-    PullRequest,
+    ChangedFile, IssueComment, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary,
+    LinkedPr, PrCommit, PullRequest,
 };
 
 /// コメントのdiff内位置を表す構造体
@@ -158,6 +158,7 @@ pub enum AppState {
     GitLogDiffView,
     IssueList,
     IssueDetail,
+    IssueCommentList,
 }
 
 /// Variant for diff view handling (fullscreen vs split pane)
@@ -469,6 +470,12 @@ pub struct IssueState {
     pub issue_detail_cache: Option<DiffCache>,
     pub selected_linked_pr: usize,
     pub detail_focus: IssueDetailFocus,
+    // Comment list
+    pub issue_comments: Option<Vec<IssueComment>>,
+    pub selected_issue_comment: usize,
+    pub issue_comment_list_scroll_offset: usize,
+    pub issue_comment_detail_mode: bool,
+    pub issue_comment_detail_scroll: usize,
     // Linked PRs（IssueDetail から分離管理）
     pub linked_prs: Option<Vec<LinkedPr>>,
     pub linked_prs_loading: bool,
@@ -499,6 +506,11 @@ impl IssueState {
             issue_detail_loading: false,
             issue_detail_scroll_offset: 0,
             issue_detail_cache: None,
+            issue_comments: None,
+            selected_issue_comment: 0,
+            issue_comment_list_scroll_offset: 0,
+            issue_comment_detail_mode: false,
+            issue_comment_detail_scroll: 0,
             selected_linked_pr: 0,
             detail_focus: IssueDetailFocus::default(),
             linked_prs: None,

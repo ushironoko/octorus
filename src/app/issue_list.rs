@@ -74,6 +74,11 @@ impl App {
         state.issue_detail_loading = true;
         state.issue_detail_scroll_offset = 0;
         state.issue_detail_cache = None;
+        state.issue_comments = None;
+        state.selected_issue_comment = 0;
+        state.issue_comment_list_scroll_offset = 0;
+        state.issue_comment_detail_mode = false;
+        state.issue_comment_detail_scroll = 0;
         state.selected_linked_pr = 0;
         state.detail_focus = Default::default();
         state.linked_prs = None;

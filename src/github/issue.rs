@@ -4,6 +4,33 @@ use serde::{Deserialize, Serialize};
 use super::client::{gh_api_graphql, gh_command, FieldValue};
 use super::pr::{Label, User};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueComment {
+    pub id: String,
+    pub body: String,
+    pub author: User,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "authorAssociation", default)]
+    pub author_association: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+pub fn parse_issue_comments(raw: &[serde_json::Value]) -> Vec<IssueComment> {
+    raw.iter()
+        .filter_map(
+            |v| match serde_json::from_value::<IssueComment>(v.clone()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!("Failed to parse issue comment: {}", e);
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
 /// Issue状態フィルタ（型安全）
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IssueStateFilter {
@@ -293,6 +320,78 @@ pub async fn fetch_linked_prs(repo: &str, issue_number: u32) -> Result<Vec<Linke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_issue_comment_deserialize() {
+        let json = r#"{"id":"IC_kwDOTest","body":"Hello world","author":{"login":"user1"},"createdAt":"2026-01-01T00:00:00Z","authorAssociation":"OWNER","url":"https://github.com/test/repo/issues/1#issuecomment-1"}"#;
+        let comment: IssueComment = serde_json::from_str(json).unwrap();
+        assert_eq!(comment.id, "IC_kwDOTest");
+        assert_eq!(comment.body, "Hello world");
+        assert_eq!(comment.author.login, "user1");
+        assert_eq!(comment.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(comment.author_association, "OWNER");
+        assert_eq!(
+            comment.url,
+            "https://github.com/test/repo/issues/1#issuecomment-1"
+        );
+    }
+
+    #[test]
+    fn test_parse_issue_comments_from_gh_cli_output() {
+        let raw = vec![
+            serde_json::json!({
+                "id": "IC_1",
+                "body": "First comment",
+                "author": {"login": "user1"},
+                "createdAt": "2026-01-01T00:00:00Z",
+                "authorAssociation": "OWNER",
+                "url": "https://example.com/1"
+            }),
+            serde_json::json!({
+                "id": "IC_2",
+                "body": "Second comment",
+                "author": {"login": "user2"},
+                "createdAt": "2026-01-02T00:00:00Z",
+                "authorAssociation": "CONTRIBUTOR",
+                "url": "https://example.com/2"
+            }),
+        ];
+        let comments = parse_issue_comments(&raw);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, "IC_1");
+        assert_eq!(comments[1].author.login, "user2");
+    }
+
+    #[test]
+    fn test_parse_issue_comments_empty() {
+        let raw: Vec<serde_json::Value> = vec![];
+        let comments = parse_issue_comments(&raw);
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_parse_issue_comments_malformed_entry_skipped() {
+        let raw = vec![
+            serde_json::json!({
+                "id": "IC_1",
+                "body": "Valid",
+                "author": {"login": "user1"},
+                "createdAt": "2026-01-01T00:00:00Z"
+            }),
+            // Missing required fields (id, body, author, createdAt)
+            serde_json::json!({"bad": "data"}),
+            serde_json::json!({
+                "id": "IC_3",
+                "body": "Also valid",
+                "author": {"login": "user3"},
+                "createdAt": "2026-01-03T00:00:00Z"
+            }),
+        ];
+        let comments = parse_issue_comments(&raw);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, "IC_1");
+        assert_eq!(comments[1].id, "IC_3");
+    }
 
     #[test]
     fn test_issue_state_filter_as_gh_arg() {

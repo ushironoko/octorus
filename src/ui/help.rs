@@ -916,6 +916,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.open_in_browser.display(), key_width)
         )),
         Line::from(format!(
+            "{}  View issue comments",
+            fmt_key(&kb.comment_list.display(), key_width)
+        )),
+        Line::from(format!(
             "{}  Toggle markdown rich display",
             fmt_key(&kb.toggle_markdown_rich.display(), key_width)
         )),

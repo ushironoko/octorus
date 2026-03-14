@@ -14,7 +14,8 @@ pub use commit::{
 
 pub use issue::{
     fetch_issue_detail, fetch_issue_list, fetch_issue_list_with_offset, fetch_linked_prs,
-    IssueDetail, IssueListPage, IssueStateFilter, IssueSummary, LinkedPr,
+    parse_issue_comments, IssueComment, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary,
+    LinkedPr,
 };
 
 pub use pr::{
