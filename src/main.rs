@@ -47,6 +47,10 @@ struct Args {
     #[arg(long, default_value = "false", conflicts_with = "pr")]
     local: bool,
 
+    /// Issue number. Shows issue detail directly if provided, issue list if flag only.
+    #[arg(short, long, conflicts_with_all = ["pr", "local"], num_args = 0..=1, default_missing_value = "0")]
+    issue: Option<u32>,
+
     /// Auto-focus changed file when local diff updates (for local mode)
     #[arg(long, default_value = "false")]
     auto_focus: bool,
@@ -236,7 +240,7 @@ async fn main() -> Result<()> {
     } else if let Some(pr) = args.pr {
         run_with_pr(&repo, pr, &config, &args).await
     } else {
-        run_with_pr_list(&repo, config, &args).await
+        run_with_pr_list(&repo, config, &args, args.issue).await
     }
 }
 
@@ -439,7 +443,12 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
 }
 
 /// Run the app with PR list (new flow)
-async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Result<()> {
+async fn run_with_pr_list(
+    repo: &str,
+    config: config::Config,
+    args: &Args,
+    issue_arg: Option<u32>,
+) -> Result<()> {
     // リトライ用のチャンネル（PR リスト画面から Local モードへの切替に対応）
     let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
     let refresh_pending = Arc::new(AtomicBool::new(false));
@@ -452,6 +461,20 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     // Set pending AI Rally flag if --ai-rally was passed
     if args.ai_rally {
         app.set_pending_ai_rally(true);
+    }
+
+    // --issue: Issue モードで開始
+    match issue_arg {
+        Some(n) if n > 0 => {
+            // --issue 10: Issue Detail を直接開く
+            app.open_issue_list();
+            app.select_issue(n);
+        }
+        Some(_) => {
+            // --issue (番号なし): Issue 一覧で開始
+            app.open_issue_list();
+        }
+        None => {}
     }
 
     // Start loading PR list

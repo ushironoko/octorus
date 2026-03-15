@@ -10,7 +10,7 @@ use super::types::IssueState;
 use super::{App, AppState};
 
 impl App {
-    pub(crate) fn open_issue_list(&mut self) {
+    pub fn open_issue_list(&mut self) {
         let mut state = IssueState::new();
         state.issue_list_loading = true;
         self.issue_state = Some(state);
@@ -65,7 +65,7 @@ impl App {
         });
     }
 
-    pub(crate) fn select_issue(&mut self, issue_number: u32) {
+    pub fn select_issue(&mut self, issue_number: u32) {
         let Some(ref mut state) = self.issue_state else {
             return;
         };
