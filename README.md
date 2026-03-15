@@ -90,6 +90,12 @@ or --local --ai-rally
 
 # 7. Preview local working tree diff in real time
 or --local
+
+# 8. Open issue list
+or --issue
+
+# 9. Open specific issue directly
+or --issue 10
 ```
 
 ### Options
@@ -100,6 +106,7 @@ or --local
 | `-p, --pr <PR>` | Pull request number |
 | `--ai-rally` | Start AI Rally mode directly (headless when combined with `--pr` or `--local`) |
 | `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
+| `-i, --issue [NUMBER]` | Open issue list, or open a specific issue directly if number is provided |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
 | `--accept-local-overrides` | Accept local `.octorus/` overrides for AI settings in headless mode |
@@ -735,6 +742,51 @@ Commits are loaded with infinite scroll — additional commits are fetched autom
 | `q` / `Esc` | Back to previous view |
 
 Status icons: `✓` (pass), `✕` (fail), `○` (pending), `-` (skipped/cancelled). Each check shows its name, workflow, and duration.
+
+### Issue List View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Shift+j` | Page down |
+| `Shift+k` | Page up |
+| `gg` | Jump to first |
+| `G` | Jump to last |
+| `Enter` | View issue detail |
+| `o` | Filter: Open issues only |
+| `c` | Filter: Closed issues only |
+| `a` | Filter: All issues |
+| `O` | Open issue in browser |
+| `R` | Refresh issue list |
+| `Space /` | Keyword filter |
+| `?` | Toggle help |
+| `q` / `Esc` | Back to PR list |
+
+### Issue Detail View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll body |
+| `k` / `↑` | Scroll body |
+| `Tab` | Switch focus (Body / Linked PRs) |
+| `Enter` | Open linked PR |
+| `C` | View issue comments |
+| `O` | Open issue in browser |
+| `M` | Toggle Markdown rich display |
+| `?` | Toggle help |
+| `q` / `Esc` | Back to issue list |
+
+### Issue Comment List View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Enter` | View comment detail |
+| `O` | Open in browser |
+| `?` | Toggle help |
+| `q` / `Esc` | Back to issue detail |
 
 ### Comment List View
 
