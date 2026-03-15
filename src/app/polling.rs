@@ -1398,34 +1398,41 @@ impl App {
         let Some(ref mut state) = self.issue_state else {
             return;
         };
-        let Some((_origin, ref mut rx)) = state.issue_comment_submit_receiver else {
+        let Some((ref origin, ref mut rx)) = state.issue_comment_submit_receiver else {
             return;
         };
+        let origin = *origin;
+        let current_issue = state.issue_detail.as_ref().map(|d| d.number);
 
         match rx.try_recv() {
             Ok(Ok(comment)) => {
                 state.issue_comment_submitting = false;
                 state.issue_comment_submit_receiver = None;
-                self.submission_result = Some((true, "Submitted".to_string()));
-                self.submission_result_time = Some(Instant::now());
-                // ソースキャッシュ（issue_detail.comments）も更新して
-                // open_issue_comment_list() での再パース時に新コメントが含まれるようにする
-                if let Some(ref mut detail) = state.issue_detail {
-                    if let Ok(raw) = serde_json::to_value(&comment) {
-                        detail.comments.push(raw);
+                // Only update UI and caches if we're still on the originating issue
+                if current_issue == Some(origin) {
+                    self.submission_result = Some((true, "Submitted".to_string()));
+                    self.submission_result_time = Some(Instant::now());
+                    // ソースキャッシュ（issue_detail.comments）も更新して
+                    // open_issue_comment_list() での再パース時に新コメントが含まれるようにする
+                    if let Some(ref mut detail) = state.issue_detail {
+                        if let Ok(raw) = serde_json::to_value(&comment) {
+                            detail.comments.push(raw);
+                        }
                     }
-                }
-                // issue_comments が未初期化の場合も初期化して追加
-                match state.issue_comments {
-                    Some(ref mut comments) => comments.push(comment),
-                    None => state.issue_comments = Some(vec![comment]),
+                    // issue_comments が未初期化の場合も初期化して追加
+                    match state.issue_comments {
+                        Some(ref mut comments) => comments.push(comment),
+                        None => state.issue_comments = Some(vec![comment]),
+                    }
                 }
             }
             Ok(Err(e)) => {
                 state.issue_comment_submitting = false;
                 state.issue_comment_submit_receiver = None;
-                self.submission_result = Some((false, format!("Failed: {}", e)));
-                self.submission_result_time = Some(Instant::now());
+                if current_issue == Some(origin) {
+                    self.submission_result = Some((false, format!("Failed: {}", e)));
+                    self.submission_result_time = Some(Instant::now());
+                }
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {

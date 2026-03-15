@@ -345,16 +345,34 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(content, chunks[1]);
 
-    // Footer
-    let kb = &app.config.keybindings;
-    let footer_text = format!(
-        "j/k: scroll | J/K: page | {}: reply | Enter/Esc: back to list",
-        kb.reply.display(),
-    );
-    let footer = Paragraph::new(Line::from(Span::styled(
-        footer_text,
-        Style::default().fg(Color::DarkGray),
-    )));
+    // Footer — show submitting/result state (same as list view)
+    let footer_line = if app.is_issue_comment_submitting() {
+        Line::from(Span::styled(
+            " Submitting...",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if let Some((success, ref message)) = app.submission_result {
+        let (icon, color) = if success {
+            ("\u{2713}", Color::Green)
+        } else {
+            ("\u{2717}", Color::Red)
+        };
+        Line::from(Span::styled(
+            format!(" {} {}", icon, message),
+            Style::default().fg(color),
+        ))
+    } else {
+        let kb = &app.config.keybindings;
+        let footer_text = format!(
+            "j/k: scroll | J/K: page | {}: reply | Enter/Esc: back to list",
+            kb.reply.display(),
+        );
+        Line::from(Span::styled(
+            footer_text,
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[2]);
 }
 
