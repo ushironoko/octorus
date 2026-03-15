@@ -1428,10 +1428,12 @@ impl App {
                     .map(|(n, _)| *n)
                     .or_else(|| state.issue_detail.as_ref().map(|d| d.number));
                 if selected_issue == Some(origin) {
-                    match state.issue_comments {
-                        Some(ref mut comments) => comments.push(comment),
-                        None => state.issue_comments = Some(vec![comment]),
+                    if let Some(ref mut comments) = state.issue_comments {
+                        comments.push(comment);
                     }
+                    // When issue_comments is None, don't materialize it here.
+                    // The new comment is already in detail.comments (pushed above),
+                    // so open_issue_comment_list() will parse the full thread.
                 }
             }
             Ok(Err(e)) => {

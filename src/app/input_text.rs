@@ -11,9 +11,14 @@ use super::App;
 
 impl App {
     pub(crate) fn handle_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
-        // 送信中は入力を無視
-        if self.comment_submitting || self.is_issue_comment_submitting() {
+        // 送信中は入力を無視（各送信種別に対応するInputModeのみブロック）
+        if self.comment_submitting {
             return Ok(());
+        }
+        if self.is_issue_comment_submitting() {
+            if matches!(self.input_mode, Some(InputMode::IssueComment { .. })) {
+                return Ok(());
+            }
         }
 
         match self.input_text_area.input(key) {
