@@ -1,6 +1,7 @@
 mod client;
 pub mod comment;
 mod commit;
+mod issue;
 mod pr;
 
 // Explicit re-exports - only export what is actually used
@@ -9,6 +10,12 @@ pub use comment::{create_multiline_review_comment, create_reply_comment, create_
 pub use commit::{
     fetch_commit_diff, fetch_local_commit_diff, fetch_local_commits, fetch_pr_commits,
     format_relative_time, CommitListPage, PrCommit,
+};
+
+pub use issue::{
+    fetch_issue_detail, fetch_issue_list, fetch_issue_list_with_offset, fetch_linked_prs,
+    parse_issue_comments, IssueComment, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary,
+    LinkedPr,
 };
 
 pub use pr::{

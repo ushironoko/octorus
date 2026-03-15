@@ -24,9 +24,9 @@ use std::time::Instant;
 mod types;
 pub use types::{
     hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState,
-    DiffCache, GitLogState, HelpTab, InputMode, InternedSpan, JumpLocation, LineInputContext,
-    LogEntry, LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest,
-    ReviewAction, SymbolPopupState, ViewSnapshot, WatcherHandle,
+    DiffCache, GitLogState, HelpTab, InputMode, InternedSpan, IssueDetailFocus, IssueState,
+    JumpLocation, LineInputContext, LogEntry, LogEventType, MultilineSelection, PauseState,
+    PermissionInfo, RefreshRequest, ReviewAction, SymbolPopupState, ViewSnapshot, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -39,6 +39,8 @@ mod git_log;
 mod input;
 mod input_diff;
 mod input_text;
+mod issue_detail;
+mod issue_list;
 mod key_sequence;
 mod local_mode;
 mod polling;
@@ -225,6 +227,10 @@ pub struct App {
     ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
     /// Git Log 画面の全状態（None = 非表示）
     pub git_log_state: Option<GitLogState>,
+    /// Issue 画面の全状態（None = 非表示）
+    pub issue_state: Option<IssueState>,
+    /// Issue詳細からPR遷移した際の復帰フラグ
+    pub issue_detail_return: bool,
     /// Latest available version (None = not checked yet or up-to-date)
     pub update_available: Option<String>,
     update_check_receiver: Option<mpsc::Receiver<Option<String>>>,
@@ -340,6 +346,8 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            issue_state: None,
+            issue_detail_return: false,
             update_available: None,
             update_check_receiver: None,
         };
@@ -450,6 +458,8 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            issue_state: None,
+            issue_detail_return: false,
             update_available: None,
             update_check_receiver: None,
         }
@@ -504,6 +514,9 @@ impl App {
             self.poll_checks_updates();
             self.poll_ci_status_updates();
             self.poll_git_log_updates();
+            self.poll_issue_list_updates();
+            self.poll_issue_detail_updates();
+            self.poll_linked_prs_updates();
             self.poll_update_check();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
@@ -687,6 +700,8 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            issue_state: None,
+            issue_detail_return: false,
             update_available: None,
             update_check_receiver: None,
         }

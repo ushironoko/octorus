@@ -2,11 +2,25 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, DataState};
 
+/// issue_state のフィルタに安全にアクセスするヘルパー
+fn get_issue_filter_mut(app: &mut App) -> Option<&mut crate::filter::ListFilter> {
+    app.issue_state
+        .as_mut()
+        .and_then(|s| s.issue_list_filter.as_mut())
+}
+
+fn get_issue_filter(app: &App) -> Option<&crate::filter::ListFilter> {
+    app.issue_state
+        .as_ref()
+        .and_then(|s| s.issue_list_filter.as_ref())
+}
+
 impl App {
     pub(crate) fn handle_filter_input(&mut self, key: &KeyEvent, target: &str) -> bool {
         let filter = match target {
             "pr" => self.pr_list_filter.as_mut(),
             "file" => self.file_list_filter.as_mut(),
+            "issue" => get_issue_filter_mut(self),
             _ => return false,
         };
         let Some(filter) = filter else {
@@ -18,27 +32,35 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                // フィルタ入力をキャンセル（フィルタ解除）
                 match target {
                     "pr" => self.pr_list_filter = None,
                     "file" => self.file_list_filter = None,
+                    "issue" => {
+                        if let Some(ref mut s) = self.issue_state {
+                            s.issue_list_filter = None;
+                        }
+                    }
                     _ => {}
                 }
                 true
             }
             KeyCode::Enter => {
-                // 入力を確定（フィルタ適用維持、入力バーを閉じる）
                 let filter = match target {
                     "pr" => self.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
+                    "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
                 if let Some(f) = filter {
                     if f.query.is_empty() {
-                        // クエリ空なら解除
                         match target {
                             "pr" => self.pr_list_filter = None,
                             "file" => self.file_list_filter = None,
+                            "issue" => {
+                                if let Some(ref mut s) = self.issue_state {
+                                    s.issue_list_filter = None;
+                                }
+                            }
                             _ => {}
                         }
                     } else {
@@ -51,6 +73,7 @@ impl App {
                 let filter = match target {
                     "pr" => self.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
+                    "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
                 if let Some(f) = filter {
@@ -63,6 +86,7 @@ impl App {
                 let filter = match target {
                     "pr" => self.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
+                    "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
                 if let Some(f) = filter {
@@ -75,6 +99,7 @@ impl App {
                 let filter = match target {
                     "pr" => self.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
+                    "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
                 if let Some(f) = filter {
@@ -82,6 +107,11 @@ impl App {
                         match target {
                             "pr" => self.selected_pr = idx,
                             "file" => self.selected_file = idx,
+                            "issue" => {
+                                if let Some(ref mut s) = self.issue_state {
+                                    s.selected_issue = idx;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -92,6 +122,7 @@ impl App {
                 let filter = match target {
                     "pr" => self.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
+                    "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
                 if let Some(f) = filter {
@@ -99,6 +130,11 @@ impl App {
                         match target {
                             "pr" => self.selected_pr = idx,
                             "file" => self.selected_file = idx,
+                            "issue" => {
+                                if let Some(ref mut s) = self.issue_state {
+                                    s.selected_issue = idx;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -106,13 +142,13 @@ impl App {
                 true
             }
             KeyCode::Char(c) => {
-                // Ctrl+文字は通常のフィルタ入力ではない
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     return false;
                 }
                 let filter = match target {
                     "pr" => self.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
+                    "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
                 if let Some(f) = filter {
@@ -121,7 +157,7 @@ impl App {
                 }
                 true
             }
-            _ => true, // 入力中は他のキーを消費
+            _ => true,
         }
     }
 
@@ -129,7 +165,6 @@ impl App {
     pub(crate) fn reapply_filter(&mut self, target: &str) {
         match target {
             "pr" => {
-                // pr_list_filter と pr_list を同時に借用するため、一時的に取り出す
                 let mut filter = match self.pr_list_filter.take() {
                     Some(f) => f,
                     None => return,
@@ -147,7 +182,6 @@ impl App {
                 self.pr_list_filter = Some(filter);
             }
             "file" => {
-                // file_list_filter と data_state を同時に借用するため、一時的に取り出す
                 let mut filter = match self.file_list_filter.take() {
                     Some(f) => f,
                     None => return,
@@ -162,6 +196,26 @@ impl App {
                 }
                 self.file_list_filter = Some(filter);
             }
+            "issue" => {
+                let Some(ref mut state) = self.issue_state else {
+                    return;
+                };
+                let mut filter = match state.issue_list_filter.take() {
+                    Some(f) => f,
+                    None => return,
+                };
+                if let Some(issues) = state.issues.as_ref() {
+                    filter.apply(issues, |issue, q| {
+                        issue.title.to_lowercase().contains(q)
+                            || issue.number.to_string().contains(q)
+                            || issue.author.login.to_lowercase().contains(q)
+                    });
+                    if let Some(idx) = filter.sync_selection() {
+                        state.selected_issue = idx;
+                    }
+                }
+                state.issue_list_filter = Some(filter);
+            }
             _ => {}
         }
     }
@@ -171,13 +225,14 @@ impl App {
         let filter = match target {
             "pr" => self.pr_list_filter.as_mut(),
             "file" => self.file_list_filter.as_mut(),
+            "issue" => get_issue_filter_mut(self),
             _ => return false,
         };
         let Some(filter) = filter else {
             return false;
         };
         if filter.input_active {
-            return false; // input_active 中は handle_filter_input が処理
+            return false;
         }
 
         let idx = if is_down {
@@ -189,6 +244,11 @@ impl App {
             match target {
                 "pr" => self.selected_pr = idx,
                 "file" => self.selected_file = idx,
+                "issue" => {
+                    if let Some(ref mut s) = self.issue_state {
+                        s.selected_issue = idx;
+                    }
+                }
                 _ => {}
             }
         }
@@ -197,15 +257,21 @@ impl App {
 
     /// フィルタ適用中（非入力）の Esc 処理。処理した場合は true を返す。
     pub(crate) fn handle_filter_esc(&mut self, target: &str) -> bool {
-        let filter = match target {
-            "pr" => self.pr_list_filter.as_ref(),
-            "file" => self.file_list_filter.as_ref(),
+        let has_filter = match target {
+            "pr" => self.pr_list_filter.is_some(),
+            "file" => self.file_list_filter.is_some(),
+            "issue" => get_issue_filter(self).is_some(),
             _ => return false,
         };
-        if filter.is_some() {
+        if has_filter {
             match target {
                 "pr" => self.pr_list_filter = None,
                 "file" => self.file_list_filter = None,
+                "issue" => {
+                    if let Some(ref mut s) = self.issue_state {
+                        s.issue_list_filter = None;
+                    }
+                }
                 _ => {}
             }
             true
@@ -219,6 +285,7 @@ impl App {
         let filter = match target {
             "pr" => self.pr_list_filter.as_ref(),
             "file" => self.file_list_filter.as_ref(),
+            "issue" => get_issue_filter(self),
             _ => return false,
         };
         match filter {

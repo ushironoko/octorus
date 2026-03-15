@@ -225,6 +225,12 @@ impl App {
             return Ok(());
         }
 
+        // I: Issue一覧
+        if self.matches_single_key(&key, &kb.issue_list) {
+            self.open_issue_list();
+            return Ok(());
+        }
+
         // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::PullRequestList;
@@ -347,6 +353,52 @@ impl App {
     }
     pub fn back_to_pr_list(&mut self) {
         if self.started_from_pr_list {
+            // Issue詳細からPR遷移した場合、Issue詳細に戻る
+            if self.issue_detail_return {
+                self.issue_detail_return = false;
+
+                // Local モードから戻る場合はスナップショット保存 + watcher 停止
+                if self.local_mode {
+                    self.saved_local_snapshot = Some(self.save_view_snapshot());
+                    self.deactivate_watcher();
+                    self.local_mode = false;
+                }
+
+                // PR固有の状態をリセット
+                self.pr_number = None;
+                self.data_state = DataState::Loading;
+                self.review_comments = None;
+                self.discussion_comments = None;
+                self.diff_cache = None;
+                self.comment_receiver = None;
+                self.diff_cache_receiver = None;
+                self.prefetch_receiver = None;
+                self.discussion_comment_receiver = None;
+                self.comment_submit_receiver = None;
+                self.mark_viewed_receiver = None;
+                self.batch_diff_receiver = None;
+                self.lazy_diff_receiver = None;
+                self.lazy_diff_pending_file = None;
+                self.comment_submitting = false;
+                self.pending_approve_body = None;
+                self.comments_loading = false;
+                self.discussion_comments_loading = false;
+                self.highlighted_cache_store.clear();
+                self.selected_file = 0;
+                self.file_list_scroll_offset = 0;
+                self.selected_line = 0;
+                self.scroll_offset = 0;
+                self.file_list_filter = None;
+                self.checks = None;
+                self.checks_loading = false;
+                self.checks_target_pr = None;
+                self.checks_receiver = None;
+                self.ci_status = None;
+                self.ci_status_receiver = None;
+                self.state = AppState::IssueDetail;
+                return;
+            }
+
             // Local モードから戻る場合はスナップショット保存 + watcher 停止
             if self.local_mode {
                 self.saved_local_snapshot = Some(self.save_view_snapshot());

@@ -172,6 +172,9 @@ pub struct KeybindingsConfig {
 
     // Git log
     pub git_log: KeySequence,
+
+    // Issue list
+    pub issue_list: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -257,6 +260,9 @@ impl Default for KeybindingsConfig {
 
             // Git log
             git_log: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('l')),
+
+            // Issue list
+            issue_list: KeySequence::single(KeyBinding::char('I')),
         }
     }
 }
@@ -308,6 +314,7 @@ impl KeybindingsConfig {
             ("pr_description", &self.pr_description),
             ("ci_checks", &self.ci_checks),
             ("git_log", &self.git_log),
+            ("issue_list", &self.issue_list),
         ];
 
         for (name, seq) in &bindings {
@@ -449,6 +456,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
         map.serialize_entry("ci_checks", &seq_to_value(&self.ci_checks))?;
         map.serialize_entry("git_log", &seq_to_value(&self.git_log))?;
+        map.serialize_entry("issue_list", &seq_to_value(&self.issue_list))?;
 
         map.end()
     }
@@ -1476,5 +1484,14 @@ timeout_secs = 3600
         assert!(serialized.contains("git_log"));
         let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed.git_log.display(), "gl");
+    }
+
+    #[test]
+    fn test_issue_list_keybinding_serialize_roundtrip() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("issue_list"));
+        let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.issue_list.display(), "I");
     }
 }
