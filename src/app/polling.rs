@@ -1402,24 +1402,32 @@ impl App {
             return;
         };
         let origin = *origin;
-        let current_issue = state.issue_detail.as_ref().map(|d| d.number);
 
         match rx.try_recv() {
             Ok(Ok(comment)) => {
                 state.issue_comment_submitting = false;
                 state.issue_comment_submit_receiver = None;
-                // Only update UI and caches if we're still on the originating issue
-                if current_issue == Some(origin) {
-                    self.submission_result = Some((true, "Submitted".to_string()));
-                    self.submission_result_time = Some(Instant::now());
-                    // ソースキャッシュ（issue_detail.comments）も更新して
-                    // open_issue_comment_list() での再パース時に新コメントが含まれるようにする
-                    if let Some(ref mut detail) = state.issue_detail {
+                // Always show toast so users get feedback even if issue_detail
+                // is temporarily None during navigation/loading.
+                self.submission_result = Some((true, "Submitted".to_string()));
+                self.submission_result_time = Some(Instant::now());
+                // Update local caches only when issue_detail is loaded and matches
+                if let Some(ref mut detail) = state.issue_detail {
+                    if detail.number == origin {
                         if let Ok(raw) = serde_json::to_value(&comment) {
                             detail.comments.push(raw);
                         }
                     }
-                    // issue_comments が未初期化の場合も初期化して追加
+                }
+                // Update issue_comments if we're viewing the originating issue.
+                // Use issue_detail_receiver's origin to determine the selected issue
+                // since issue_detail itself may be None during loading.
+                let selected_issue = state
+                    .issue_detail_receiver
+                    .as_ref()
+                    .map(|(n, _)| *n)
+                    .or_else(|| state.issue_detail.as_ref().map(|d| d.number));
+                if selected_issue == Some(origin) {
                     match state.issue_comments {
                         Some(ref mut comments) => comments.push(comment),
                         None => state.issue_comments = Some(vec![comment]),
@@ -1429,10 +1437,8 @@ impl App {
             Ok(Err(e)) => {
                 state.issue_comment_submitting = false;
                 state.issue_comment_submit_receiver = None;
-                if current_issue == Some(origin) {
-                    self.submission_result = Some((false, format!("Failed: {}", e)));
-                    self.submission_result_time = Some(Instant::now());
-                }
+                self.submission_result = Some((false, format!("Failed: {}", e)));
+                self.submission_result_time = Some(Instant::now());
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
