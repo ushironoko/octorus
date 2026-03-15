@@ -18,10 +18,8 @@ impl App {
             let repo = repo.to_string();
             let pr_number_str = pr_number.to_string();
             tokio::spawn(async move {
-                let _ = github::gh_command(&[
-                    "pr", "view", &pr_number_str, "-R", &repo, "--web",
-                ])
-                .await;
+                let _ =
+                    github::gh_command(&["pr", "view", &pr_number_str, "-R", &repo, "--web"]).await;
             });
         } else {
             self.issue_detail_return = true;
@@ -196,6 +194,12 @@ impl App {
             return Ok(());
         }
 
+        // c: 新規コメント投稿
+        if self.matches_single_key(&key, &kb.comment) {
+            self.enter_issue_comment_input();
+            return Ok(());
+        }
+
         // C: コメントリスト
         if self.matches_single_key(&key, &kb.comment_list) {
             self.open_issue_comment_list();
@@ -234,6 +238,64 @@ impl App {
         state.issue_comment_detail_mode = false;
         state.issue_comment_detail_scroll = 0;
         self.state = AppState::IssueCommentList;
+    }
+
+    pub(crate) fn enter_issue_comment_input(&mut self) {
+        // 送信中はTextInput再オープンを防止
+        if self.is_issue_comment_submitting() {
+            return;
+        }
+        let Some(ref state) = self.issue_state else {
+            return;
+        };
+        let Some(ref detail) = state.issue_detail else {
+            return;
+        };
+        let issue_number = detail.number;
+        self.input_mode = Some(InputMode::IssueComment { issue_number });
+        self.input_text_area.clear();
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
+    }
+
+    pub(crate) fn enter_issue_reply_input(&mut self) {
+        // 送信中はTextInput再オープンを防止
+        if self.is_issue_comment_submitting() {
+            return;
+        }
+        let Some(ref state) = self.issue_state else {
+            return;
+        };
+        let Some(ref detail) = state.issue_detail else {
+            return;
+        };
+        let Some(ref comments) = state.issue_comments else {
+            return;
+        };
+        let Some(comment) = comments.get(state.selected_issue_comment) else {
+            return;
+        };
+
+        let issue_number = detail.number;
+        // 引用テンプレート（長文は先頭3行に制限）
+        let quote_lines: Vec<&str> = comment.body.lines().take(3).collect();
+        let quote = quote_lines.join("\n> ");
+        let ellipsis = if comment.body.lines().count() > 3 {
+            "\n> ..."
+        } else {
+            ""
+        };
+        let template = format!(
+            "> @{} wrote:\n> {}{}\n\n",
+            comment.author.login, quote, ellipsis
+        );
+
+        self.input_mode = Some(InputMode::IssueComment { issue_number });
+        self.input_text_area.clear();
+        self.input_text_area.set_content(&template);
+        self.input_text_area.move_to_end();
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
     }
 
     pub(crate) fn handle_issue_comment_list_input(&mut self, key: event::KeyEvent) -> Result<()> {
@@ -326,6 +388,12 @@ impl App {
             return Ok(());
         }
 
+        // c: 新規コメント投稿
+        if self.matches_single_key(&key, &kb.comment) {
+            self.enter_issue_comment_input();
+            return Ok(());
+        }
+
         // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::IssueCommentList;
@@ -348,6 +416,12 @@ impl App {
         {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_mode = false;
+            return Ok(());
+        }
+
+        // r: リプライ（detail mode で選択中のコメントに返信）
+        if self.matches_single_key(&key, &kb.reply) {
+            self.enter_issue_reply_input();
             return Ok(());
         }
 
@@ -570,6 +644,78 @@ mod tests {
     }
 
     #[test]
+    fn test_enter_issue_comment_input_sets_input_mode() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        app.issue_state = Some(state);
+        app.state = AppState::IssueDetail;
+
+        app.enter_issue_comment_input();
+
+        assert_eq!(app.state, AppState::TextInput);
+        assert!(matches!(
+            app.input_mode,
+            Some(InputMode::IssueComment { issue_number: 42 })
+        ));
+        assert_eq!(app.preview_return_state, AppState::IssueDetail);
+    }
+
+    #[test]
+    fn test_enter_issue_reply_input_sets_template() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_comments = Some(vec![crate::github::IssueComment {
+            id: "IC_1".to_string(),
+            body: "Original comment".to_string(),
+            author: crate::github::User {
+                login: "author1".to_string(),
+            },
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author_association: String::new(),
+            url: String::new(),
+        }]);
+        app.issue_state = Some(state);
+        app.state = AppState::IssueCommentList;
+
+        app.enter_issue_reply_input();
+
+        assert_eq!(app.state, AppState::TextInput);
+        let content = app.input_text_area.content();
+        assert!(content.contains("> @author1 wrote:"));
+        assert!(content.contains("> Original comment"));
+    }
+
+    #[test]
+    fn test_enter_issue_reply_input_truncates_long_quote() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_comments = Some(vec![crate::github::IssueComment {
+            id: "IC_1".to_string(),
+            body: "line1\nline2\nline3\nline4\nline5".to_string(),
+            author: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: String::new(),
+            author_association: String::new(),
+            url: String::new(),
+        }]);
+        app.issue_state = Some(state);
+        app.state = AppState::IssueCommentList;
+
+        app.enter_issue_reply_input();
+
+        let content = app.input_text_area.content();
+        assert!(content.contains("> ..."), "should contain ellipsis");
+        assert!(
+            !content.contains("line4"),
+            "line4 should be truncated"
+        );
+    }
+
+    #[test]
     fn test_enter_pr_from_issue_sets_return_flag() {
         let mut app = App::new_for_test();
         app.started_from_pr_list = true;
@@ -631,5 +777,83 @@ mod tests {
             "local_mode must be cleared when returning to IssueDetail"
         );
         assert!(!app.issue_detail_return);
+    }
+
+    #[test]
+    fn test_reply_key_works_in_detail_mode() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_comments = Some(vec![crate::github::IssueComment {
+            id: "IC_1".to_string(),
+            body: "Original".to_string(),
+            author: crate::github::User {
+                login: "author1".to_string(),
+            },
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author_association: String::new(),
+            url: String::new(),
+        }]);
+        state.issue_comment_detail_mode = true;
+        app.issue_state = Some(state);
+        app.state = AppState::IssueCommentList;
+
+        // Press 'r' (default reply key) in detail mode
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('r'), event::KeyModifiers::NONE);
+        app.handle_issue_comment_list_input(key).unwrap();
+
+        // Should transition to TextInput with reply template
+        assert_eq!(app.state, AppState::TextInput);
+        assert!(matches!(
+            app.input_mode,
+            Some(InputMode::IssueComment { issue_number: 42 })
+        ));
+        let content = app.input_text_area.content();
+        assert!(
+            content.contains("> @author1 wrote:"),
+            "reply template should be set"
+        );
+    }
+
+    #[test]
+    fn test_enter_issue_comment_blocked_during_submit() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_comment_submitting = true;
+        app.issue_state = Some(state);
+        app.state = AppState::IssueDetail;
+
+        app.enter_issue_comment_input();
+
+        // Should NOT transition to TextInput
+        assert_eq!(app.state, AppState::IssueDetail);
+        assert!(app.input_mode.is_none());
+    }
+
+    #[test]
+    fn test_enter_issue_reply_blocked_during_submit() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_comments = Some(vec![crate::github::IssueComment {
+            id: "IC_1".to_string(),
+            body: "Test".to_string(),
+            author: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: String::new(),
+            author_association: String::new(),
+            url: String::new(),
+        }]);
+        state.issue_comment_submitting = true;
+        app.issue_state = Some(state);
+        app.state = AppState::IssueCommentList;
+
+        app.enter_issue_reply_input();
+
+        // Should NOT transition to TextInput
+        assert_eq!(app.state, AppState::IssueCommentList);
+        assert!(app.input_mode.is_none());
     }
 }

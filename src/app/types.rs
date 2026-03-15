@@ -138,6 +138,9 @@ pub enum InputMode {
         reply_to_user: String,
         reply_to_body: String,
     },
+    IssueComment {
+        issue_number: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -476,6 +479,10 @@ pub struct IssueState {
     pub issue_comment_list_scroll_offset: usize,
     pub issue_comment_detail_mode: bool,
     pub issue_comment_detail_scroll: usize,
+    // Comment submission
+    pub(crate) issue_comment_submit_receiver:
+        Option<(u32, mpsc::Receiver<Result<IssueComment, String>>)>,
+    pub(crate) issue_comment_submitting: bool,
     // Linked PRs（IssueDetail から分離管理）
     pub linked_prs: Option<Vec<LinkedPr>>,
     pub linked_prs_loading: bool,
@@ -511,6 +518,8 @@ impl IssueState {
             issue_comment_list_scroll_offset: 0,
             issue_comment_detail_mode: false,
             issue_comment_detail_scroll: 0,
+            issue_comment_submit_receiver: None,
+            issue_comment_submitting: false,
             selected_linked_pr: 0,
             detail_focus: IssueDetailFocus::default(),
             linked_prs: None,
