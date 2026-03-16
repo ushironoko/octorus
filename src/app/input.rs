@@ -27,14 +27,19 @@ impl App {
 
                 // PR一覧画面は独自のLoading処理があるためスキップ
                 // Help画面・PrDescription画面はデータ状態に依存しないためスキップ
-                if self.state != AppState::PullRequestList
-                    && self.state != AppState::Help
-                    && self.state != AppState::PrDescription
-                    && self.state != AppState::ChecksList
-                    && self.state != AppState::IssueList
-                    && self.state != AppState::IssueDetail
-                    && self.state != AppState::IssueCommentList
-                {
+                // PR データ (DataState) に依存しない画面はスキップ
+                // TextInput: Issue コメント投稿時に DataState::Loading でブロックされるのを防止
+                if !matches!(
+                    self.state,
+                    AppState::PullRequestList
+                        | AppState::Help
+                        | AppState::PrDescription
+                        | AppState::ChecksList
+                        | AppState::IssueList
+                        | AppState::IssueDetail
+                        | AppState::IssueCommentList
+                        | AppState::TextInput
+                ) {
                     // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
                         match key.code {
