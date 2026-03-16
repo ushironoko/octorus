@@ -1,0 +1,7 @@
+---
+source: src/github/issue.rs
+assertion_line: 831
+expression: template
+---
+> @dave wrote:
+>

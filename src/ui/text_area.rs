@@ -29,7 +29,8 @@ pub struct TextArea {
     lines: Vec<String>,
     cursor_row: usize,
     cursor_col: usize,
-    scroll_offset: usize,
+    /// スクロールオフセット（interior mutability: render時にvisible_height更新後に再調整するため）
+    scroll_offset: Cell<usize>,
     /// 最後にレンダリングされた領域の可視行数（ボーダー除く）
     /// render()で実際のレンダリング領域から更新される（interior mutability）
     visible_height: Cell<usize>,
@@ -51,7 +52,7 @@ impl TextArea {
             lines: vec![String::new()],
             cursor_row: 0,
             cursor_col: 0,
-            scroll_offset: 0,
+            scroll_offset: Cell::new(0),
             visible_height: Cell::new(1),
             submit_key: None,
             sequence_state: SequenceState::new(),
@@ -64,7 +65,7 @@ impl TextArea {
             lines: vec![String::new()],
             cursor_row: 0,
             cursor_col: 0,
-            scroll_offset: 0,
+            scroll_offset: Cell::new(0),
             visible_height: Cell::new(1),
             submit_key: Some(submit_key),
             sequence_state: SequenceState::new(),
@@ -216,13 +217,18 @@ impl TextArea {
         };
         self.cursor_row = 0;
         self.cursor_col = 0;
-        self.scroll_offset = 0;
+        self.scroll_offset.set(0);
     }
 
     /// カーソルを末尾に移動する
+    /// Note: スクロール調整は行わない。visible_height がまだデフォルト値（1）の場合に
+    /// 過剰スクロールが発生するため、次回の render_with_title() で正しい visible_height を
+    /// 設定した後に adjust_scroll() が呼ばれることに依存する。
     pub fn move_to_end(&mut self) {
         self.cursor_row = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_row].chars().count();
+        // scroll_offset をリセットして、render 時に正しく再計算させる
+        self.scroll_offset.set(0);
     }
 
     /// テキストエリアをクリアする
@@ -230,7 +236,7 @@ impl TextArea {
         self.lines = vec![String::new()];
         self.cursor_row = 0;
         self.cursor_col = 0;
-        self.scroll_offset = 0;
+        self.scroll_offset.set(0);
     }
 
     /// テキストエリアをレンダリング（デフォルトタイトル・プレースホルダー）
@@ -243,11 +249,15 @@ impl TextArea {
     pub fn render_with_title(&self, frame: &mut Frame, area: Rect, title: &str, placeholder: &str) {
         let visible_height = area.height.saturating_sub(2).max(1) as usize; // borders
         self.visible_height.set(visible_height);
+        // visible_height が変わった可能性があるのでスクロールを再調整
+        // （ターミナルリサイズで高さが縮小した場合、stale な scroll_offset でカーソルが画面外になる）
+        self.adjust_scroll();
 
+        let scroll_offset = self.scroll_offset.get();
         let text: Vec<Line> = self
             .lines
             .iter()
-            .skip(self.scroll_offset)
+            .skip(scroll_offset)
             .take(visible_height)
             .map(|l| Line::from(l.as_str()))
             .collect();
@@ -265,7 +275,7 @@ impl TextArea {
 
         // カーソル表示（CJK文字の表示幅を考慮）
         let cursor_x = area.x + 1 + self.cursor_display_width() as u16;
-        let cursor_y = area.y + 1 + (self.cursor_row.saturating_sub(self.scroll_offset)) as u16;
+        let cursor_y = area.y + 1 + (self.cursor_row.saturating_sub(scroll_offset)) as u16;
         if cursor_y < area.y + area.height.saturating_sub(1) {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
@@ -390,14 +400,16 @@ impl TextArea {
             .sum()
     }
 
-    fn adjust_scroll(&mut self) {
+    fn adjust_scroll(&self) {
         // スクロール調整: カーソルが見えるように（render()で設定された実際の可視高さを使用）
         let visible_height = self.visible_height.get();
-        if self.cursor_row < self.scroll_offset {
-            self.scroll_offset = self.cursor_row;
+        let scroll_offset = self.scroll_offset.get();
+        if self.cursor_row < scroll_offset {
+            self.scroll_offset.set(self.cursor_row);
         }
-        if self.cursor_row >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.cursor_row.saturating_sub(visible_height) + 1;
+        if self.cursor_row >= scroll_offset + visible_height {
+            self.scroll_offset
+                .set(self.cursor_row.saturating_sub(visible_height) + 1);
         }
     }
 }
@@ -714,5 +726,90 @@ mod tests {
         assert!(matches!(action, TextAreaAction::Continue));
         assert_eq!(ta.content(), "abg"); // 'g' was inserted
         assert_eq!(ta.cursor_col, 2); // cursor moved left from position 3 to 2
+    }
+
+    #[test]
+    fn test_move_to_end_defers_scroll_to_render() {
+        let mut ta = TextArea::new();
+        // Insert 5 lines so cursor at end is beyond visible window
+        ta.set_content("line1\nline2\nline3\nline4\nline5");
+        assert_eq!(ta.scroll_offset.get(), 0);
+        assert_eq!(ta.cursor_row, 0);
+
+        ta.move_to_end();
+
+        // Cursor should be at last line
+        assert_eq!(ta.cursor_row, 4);
+        assert_eq!(ta.cursor_col, 5);
+        // scroll_offset is reset to 0 — actual scroll adjustment is deferred to render()
+        // which sets the correct visible_height first
+        assert_eq!(
+            ta.scroll_offset.get(),
+            0,
+            "move_to_end should reset scroll_offset to 0, deferring adjustment to render"
+        );
+
+        // After render with real viewport, scroll should be correctly adjusted
+        let backend = ratatui::backend::TestBackend::new(40, 5); // height 5 → 3 visible lines
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ta.render_with_title(frame, area, "Test", "placeholder");
+            })
+            .unwrap();
+
+        assert_eq!(ta.visible_height.get(), 3);
+        // cursor_row=4, visible_height=3, so scroll_offset should be 2 (lines 2,3,4 visible)
+        assert_eq!(
+            ta.scroll_offset.get(),
+            2,
+            "render should correctly adjust scroll for cursor at end"
+        );
+    }
+
+    #[test]
+    fn test_render_adjusts_scroll_on_viewport_shrink() {
+        let mut ta = TextArea::new();
+        // Set content with 10 lines
+        ta.set_content("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+        // Simulate a tall viewport and render to set visible_height correctly
+        ta.visible_height.set(8);
+        // Move cursor to end (line 9, 0-indexed)
+        ta.move_to_end();
+        assert_eq!(ta.cursor_row, 9);
+        // move_to_end() resets scroll_offset to 0, so render with tall viewport first
+        let backend_tall = ratatui::backend::TestBackend::new(40, 10); // height 10 → 8 visible lines
+        let mut terminal_tall = ratatui::Terminal::new(backend_tall).unwrap();
+        terminal_tall
+            .draw(|frame| {
+                let area = frame.area();
+                ta.render_with_title(frame, area, "Test", "placeholder");
+            })
+            .unwrap();
+        // After render with height 8, scroll_offset should be 2 (lines 2..10 visible)
+        assert_eq!(ta.scroll_offset.get(), 2);
+
+        // Now simulate the terminal shrinking to 3 visible lines
+        // Before the fix, render would use the stale scroll_offset=2 with new height=3,
+        // showing lines 2,3,4 while cursor is at line 9 — off-screen.
+        // After the fix, render calls adjust_scroll() after updating visible_height.
+        let backend = ratatui::backend::TestBackend::new(40, 5); // height 5 → 3 visible lines (minus borders)
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ta.render_with_title(frame, area, "Test", "placeholder");
+            })
+            .unwrap();
+
+        // After render, scroll_offset must be corrected for the smaller viewport
+        // cursor_row=9, visible_height=3, so scroll_offset should be 7 (lines 7,8,9 visible)
+        assert_eq!(ta.visible_height.get(), 3);
+        assert_eq!(
+            ta.scroll_offset.get(),
+            7,
+            "scroll_offset should be re-adjusted when viewport shrinks during render"
+        );
     }
 }

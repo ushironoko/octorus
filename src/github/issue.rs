@@ -96,6 +96,20 @@ fn parse_rest_issue_comment(json: &serde_json::Value) -> Result<IssueComment> {
     })
 }
 
+/// リプライ用の引用テンプレートを構築する
+///
+/// 長文コメントは先頭3行に制限し、省略記号を付加する。
+pub fn build_reply_template(author_login: &str, body: &str) -> String {
+    let quote_lines: Vec<&str> = body.lines().take(3).collect();
+    let quote = quote_lines.join("\n> ");
+    let ellipsis = if body.lines().count() > 3 {
+        "\n> ..."
+    } else {
+        ""
+    };
+    format!("> @{} wrote:\n> {}{}\n\n", author_login, quote, ellipsis)
+}
+
 /// Issue状態フィルタ（型安全）
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IssueStateFilter {
@@ -729,5 +743,100 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].number, 10);
         assert_eq!(result[1].number, 20);
+    }
+
+    // === Snapshot tests ===
+
+    #[test]
+    fn snapshot_parse_rest_issue_comment() {
+        let json = serde_json::json!({
+            "id": 123456789,
+            "body": "This is a REST API comment",
+            "user": {"login": "restuser"},
+            "created_at": "2026-03-15T10:30:00Z",
+            "author_association": "MEMBER",
+            "html_url": "https://github.com/owner/repo/issues/42#issuecomment-123456789"
+        });
+        let comment = parse_rest_issue_comment(&json).unwrap();
+        insta::assert_debug_snapshot!(comment);
+    }
+
+    #[test]
+    fn snapshot_parse_rest_issue_comment_graphql_format() {
+        let json = serde_json::json!({
+            "id": "IC_kwDOABC123",
+            "body": "GraphQL format comment",
+            "author": {"login": "gqluser"},
+            "createdAt": "2026-03-15T12:00:00Z",
+            "authorAssociation": "OWNER",
+            "url": "https://github.com/owner/repo/issues/10#issuecomment-456"
+        });
+        let comment = parse_rest_issue_comment(&json).unwrap();
+        insta::assert_debug_snapshot!(comment);
+    }
+
+    #[test]
+    fn snapshot_parse_issue_comments_multiple() {
+        let raw = vec![
+            serde_json::json!({
+                "id": "IC_1",
+                "body": "First comment\nwith multiple lines",
+                "author": {"login": "alice"},
+                "createdAt": "2026-01-01T00:00:00Z",
+                "authorAssociation": "OWNER",
+                "url": "https://example.com/1"
+            }),
+            serde_json::json!({
+                "id": "IC_2",
+                "body": "Second comment",
+                "author": {"login": "bob"},
+                "createdAt": "2026-01-02T00:00:00Z",
+                "authorAssociation": "CONTRIBUTOR",
+                "url": "https://example.com/2"
+            }),
+            serde_json::json!({"bad": "data"}),
+            serde_json::json!({
+                "id": "IC_3",
+                "body": "",
+                "author": {"login": "charlie"},
+                "createdAt": "2026-01-03T00:00:00Z"
+            }),
+        ];
+        let comments = parse_issue_comments(&raw);
+        insta::assert_debug_snapshot!(comments);
+    }
+
+    #[test]
+    fn snapshot_reply_template_single_line() {
+        let template = build_reply_template("alice", "Simple one-line comment");
+        insta::assert_snapshot!(template);
+    }
+
+    #[test]
+    fn snapshot_reply_template_multiline() {
+        let template = build_reply_template("bob", "Line one\nLine two\nLine three");
+        insta::assert_snapshot!(template);
+    }
+
+    #[test]
+    fn snapshot_reply_template_truncated() {
+        let template =
+            build_reply_template("charlie", "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
+        insta::assert_snapshot!(template);
+    }
+
+    #[test]
+    fn snapshot_reply_template_empty_body() {
+        let template = build_reply_template("dave", "");
+        insta::assert_snapshot!(template);
+    }
+
+    #[test]
+    fn snapshot_reply_template_japanese() {
+        let template = build_reply_template(
+            "tanaka",
+            "これはテストです\n二行目のコメント\n三行目\n四行目は省略されるはず",
+        );
+        insta::assert_snapshot!(template);
     }
 }

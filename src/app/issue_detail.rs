@@ -3,7 +3,7 @@ use crossterm::event::{self, KeyCode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 
-use crate::github::{self, parse_issue_comments};
+use crate::github::{self, build_reply_template, parse_issue_comments};
 use crate::syntax::ParserPool;
 
 use super::diff_cache::build_pr_description_patch;
@@ -277,18 +277,7 @@ impl App {
         };
 
         let issue_number = detail.number;
-        // 引用テンプレート（長文は先頭3行に制限）
-        let quote_lines: Vec<&str> = comment.body.lines().take(3).collect();
-        let quote = quote_lines.join("\n> ");
-        let ellipsis = if comment.body.lines().count() > 3 {
-            "\n> ..."
-        } else {
-            ""
-        };
-        let template = format!(
-            "> @{} wrote:\n> {}{}\n\n",
-            comment.author.login, quote, ellipsis
-        );
+        let template = build_reply_template(&comment.author.login, &comment.body);
 
         self.input_mode = Some(InputMode::IssueComment { issue_number });
         self.input_text_area.clear();
@@ -709,10 +698,7 @@ mod tests {
 
         let content = app.input_text_area.content();
         assert!(content.contains("> ..."), "should contain ellipsis");
-        assert!(
-            !content.contains("line4"),
-            "line4 should be truncated"
-        );
+        assert!(!content.contains("line4"), "line4 should be truncated");
     }
 
     #[test]
