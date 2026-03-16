@@ -709,10 +709,7 @@ mod tests {
 
         let content = app.input_text_area.content();
         assert!(content.contains("> ..."), "should contain ellipsis");
-        assert!(
-            !content.contains("line4"),
-            "line4 should be truncated"
-        );
+        assert!(!content.contains("line4"), "line4 should be truncated");
     }
 
     #[test]
