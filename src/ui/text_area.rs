@@ -221,10 +221,14 @@ impl TextArea {
     }
 
     /// カーソルを末尾に移動する
+    /// Note: スクロール調整は行わない。visible_height がまだデフォルト値（1）の場合に
+    /// 過剰スクロールが発生するため、次回の render_with_title() で正しい visible_height を
+    /// 設定した後に adjust_scroll() が呼ばれることに依存する。
     pub fn move_to_end(&mut self) {
         self.cursor_row = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_row].chars().count();
-        self.adjust_scroll();
+        // scroll_offset をリセットして、render 時に正しく再計算させる
+        self.scroll_offset.set(0);
     }
 
     /// テキストエリアをクリアする
@@ -725,10 +729,8 @@ mod tests {
     }
 
     #[test]
-    fn test_move_to_end_adjusts_scroll() {
+    fn test_move_to_end_defers_scroll_to_render() {
         let mut ta = TextArea::new();
-        // Simulate a small visible height (e.g. 2 lines)
-        ta.visible_height.set(2);
         // Insert 5 lines so cursor at end is beyond visible window
         ta.set_content("line1\nline2\nline3\nline4\nline5");
         assert_eq!(ta.scroll_offset.get(), 0);
@@ -738,10 +740,31 @@ mod tests {
 
         // Cursor should be at last line
         assert_eq!(ta.cursor_row, 4);
-        // Scroll offset must be adjusted so cursor is visible
-        assert!(
-            ta.scroll_offset.get() > 0,
-            "scroll_offset should be adjusted when cursor moves beyond visible area"
+        assert_eq!(ta.cursor_col, 5);
+        // scroll_offset is reset to 0 — actual scroll adjustment is deferred to render()
+        // which sets the correct visible_height first
+        assert_eq!(
+            ta.scroll_offset.get(),
+            0,
+            "move_to_end should reset scroll_offset to 0, deferring adjustment to render"
+        );
+
+        // After render with real viewport, scroll should be correctly adjusted
+        let backend = ratatui::backend::TestBackend::new(40, 5); // height 5 → 3 visible lines
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ta.render_with_title(frame, area, "Test", "placeholder");
+            })
+            .unwrap();
+
+        assert_eq!(ta.visible_height.get(), 3);
+        // cursor_row=4, visible_height=3, so scroll_offset should be 2 (lines 2,3,4 visible)
+        assert_eq!(
+            ta.scroll_offset.get(),
+            2,
+            "render should correctly adjust scroll for cursor at end"
         );
     }
 
@@ -750,12 +773,21 @@ mod tests {
         let mut ta = TextArea::new();
         // Set content with 10 lines
         ta.set_content("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
-        // Simulate a tall viewport (8 visible lines)
+        // Simulate a tall viewport and render to set visible_height correctly
         ta.visible_height.set(8);
         // Move cursor to end (line 9, 0-indexed)
         ta.move_to_end();
         assert_eq!(ta.cursor_row, 9);
-        // With height 8, scroll_offset should be 2 (lines 2..10 visible)
+        // move_to_end() resets scroll_offset to 0, so render with tall viewport first
+        let backend_tall = ratatui::backend::TestBackend::new(40, 10); // height 10 → 8 visible lines
+        let mut terminal_tall = ratatui::Terminal::new(backend_tall).unwrap();
+        terminal_tall
+            .draw(|frame| {
+                let area = frame.area();
+                ta.render_with_title(frame, area, "Test", "placeholder");
+            })
+            .unwrap();
+        // After render with height 8, scroll_offset should be 2 (lines 2..10 visible)
         assert_eq!(ta.scroll_offset.get(), 2);
 
         // Now simulate the terminal shrinking to 3 visible lines
