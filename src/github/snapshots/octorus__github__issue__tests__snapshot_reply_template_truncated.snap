@@ -1,0 +1,10 @@
+---
+source: src/github/issue.rs
+assertion_line: 825
+expression: template
+---
+> @charlie wrote:
+> Line 1
+> Line 2
+> Line 3
+> ...

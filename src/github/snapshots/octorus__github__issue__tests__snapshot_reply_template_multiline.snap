@@ -1,0 +1,9 @@
+---
+source: src/github/issue.rs
+assertion_line: 818
+expression: template
+---
+> @bob wrote:
+> Line one
+> Line two
+> Line three

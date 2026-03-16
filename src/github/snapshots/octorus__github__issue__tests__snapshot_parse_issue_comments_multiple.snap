@@ -1,0 +1,37 @@
+---
+source: src/github/issue.rs
+assertion_line: 806
+expression: comments
+---
+[
+    IssueComment {
+        id: "IC_1",
+        body: "First comment\nwith multiple lines",
+        author: User {
+            login: "alice",
+        },
+        created_at: "2026-01-01T00:00:00Z",
+        author_association: "OWNER",
+        url: "https://example.com/1",
+    },
+    IssueComment {
+        id: "IC_2",
+        body: "Second comment",
+        author: User {
+            login: "bob",
+        },
+        created_at: "2026-01-02T00:00:00Z",
+        author_association: "CONTRIBUTOR",
+        url: "https://example.com/2",
+    },
+    IssueComment {
+        id: "IC_3",
+        body: "",
+        author: User {
+            login: "charlie",
+        },
+        created_at: "2026-01-03T00:00:00Z",
+        author_association: "",
+        url: "",
+    },
+]
