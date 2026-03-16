@@ -79,6 +79,10 @@ impl App {
         state.issue_comment_list_scroll_offset = 0;
         state.issue_comment_detail_mode = false;
         state.issue_comment_detail_scroll = 0;
+        // Keep issue_comment_submit_receiver and issue_comment_submitting alive
+        // so in-flight submissions are not dropped when switching issues.
+        // poll_issue_comment_submit_updates() checks the origin issue_number
+        // to apply the result to the correct issue.
         state.selected_linked_pr = 0;
         state.detail_focus = Default::default();
         state.linked_prs = None;

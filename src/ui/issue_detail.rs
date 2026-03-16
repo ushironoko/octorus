@@ -222,17 +222,36 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Footer
     let footer_idx = chunks.len() - 1;
-    let kb = &app.config.keybindings;
-    let footer_text = format!(
-        " {}/Esc: back | j/k: scroll | Tab: switch focus | Enter: open PR | {}: browser | {}: toggle rich",
-        kb.quit.display(),
-        kb.open_in_browser.display(),
-        kb.toggle_markdown_rich.display(),
-    );
-    let footer = Paragraph::new(Line::from(Span::styled(
-        footer_text,
-        Style::default().fg(Color::DarkGray),
-    )));
+    let footer_line = if app.is_issue_comment_submitting() {
+        Line::from(Span::styled(
+            " Submitting...",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if let Some((success, ref message)) = app.submission_result {
+        let (icon, color) = if success {
+            ("\u{2713}", Color::Green)
+        } else {
+            ("\u{2717}", Color::Red)
+        };
+        Line::from(Span::styled(
+            format!(" {} {}", icon, message),
+            Style::default().fg(color),
+        ))
+    } else {
+        let kb = &app.config.keybindings;
+        Line::from(Span::styled(
+            format!(
+                " {}/Esc: back | j/k: scroll | {}: comment | {}: comments | {}: browser | {}: toggle rich",
+                kb.quit.display(),
+                kb.comment.display(),
+                kb.comment_list.display(),
+                kb.open_in_browser.display(),
+                kb.toggle_markdown_rich.display(),
+            ),
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[footer_idx]);
 }
 

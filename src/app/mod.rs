@@ -517,6 +517,7 @@ impl App {
             self.poll_issue_list_updates();
             self.poll_issue_detail_updates();
             self.poll_linked_prs_updates();
+            self.poll_issue_comment_submit_updates();
             self.poll_update_check();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;

@@ -1393,4 +1393,60 @@ impl App {
             }
         }
     }
+
+    pub(crate) fn poll_issue_comment_submit_updates(&mut self) {
+        let Some(ref mut state) = self.issue_state else {
+            return;
+        };
+        let Some((ref origin, ref mut rx)) = state.issue_comment_submit_receiver else {
+            return;
+        };
+        let origin = *origin;
+
+        match rx.try_recv() {
+            Ok(Ok(comment)) => {
+                state.issue_comment_submitting = false;
+                state.issue_comment_submit_receiver = None;
+                // Always show toast so users get feedback even if issue_detail
+                // is temporarily None during navigation/loading.
+                self.submission_result = Some((true, "Submitted".to_string()));
+                self.submission_result_time = Some(Instant::now());
+                // Update local caches only when issue_detail is loaded and matches
+                if let Some(ref mut detail) = state.issue_detail {
+                    if detail.number == origin {
+                        if let Ok(raw) = serde_json::to_value(&comment) {
+                            detail.comments.push(raw);
+                        }
+                    }
+                }
+                // Update issue_comments if we're viewing the originating issue.
+                // Use issue_detail_receiver's origin to determine the selected issue
+                // since issue_detail itself may be None during loading.
+                let selected_issue = state
+                    .issue_detail_receiver
+                    .as_ref()
+                    .map(|(n, _)| *n)
+                    .or_else(|| state.issue_detail.as_ref().map(|d| d.number));
+                if selected_issue == Some(origin) {
+                    if let Some(ref mut comments) = state.issue_comments {
+                        comments.push(comment);
+                    }
+                    // When issue_comments is None, don't materialize it here.
+                    // The new comment is already in detail.comments (pushed above),
+                    // so open_issue_comment_list() will parse the full thread.
+                }
+            }
+            Ok(Err(e)) => {
+                state.issue_comment_submitting = false;
+                state.issue_comment_submit_receiver = None;
+                self.submission_result = Some((false, format!("Failed: {}", e)));
+                self.submission_result_time = Some(Instant::now());
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                state.issue_comment_submitting = false;
+                state.issue_comment_submit_receiver = None;
+            }
+        }
+    }
 }

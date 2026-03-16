@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::client::{gh_api_graphql, gh_command, FieldValue};
+use super::client::{gh_api_graphql, gh_api_post, gh_command, FieldValue};
 use super::pr::{Label, User};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +29,71 @@ pub fn parse_issue_comments(raw: &[serde_json::Value]) -> Vec<IssueComment> {
             },
         )
         .collect()
+}
+
+/// Issue にコメントを投稿する（REST API）
+pub async fn create_issue_comment(
+    repo: &str,
+    issue_number: u32,
+    body: &str,
+) -> Result<IssueComment> {
+    let endpoint = format!("repos/{}/issues/{}/comments", repo, issue_number);
+    let json = gh_api_post(&endpoint, &[("body", FieldValue::String(body))]).await?;
+    parse_rest_issue_comment(&json)
+}
+
+/// REST API レスポンスから IssueComment を構築する。
+///
+/// REST API は snake_case + `id: u64` + `user` キーを返すが、
+/// 既存の `IssueComment` は GraphQL 由来の camelCase + `id: String` + `author` キー。
+/// 両形式に対応するためフォールバック付きで手動変換する。
+fn parse_rest_issue_comment(json: &serde_json::Value) -> Result<IssueComment> {
+    let id = json
+        .get("id")
+        .and_then(|v| {
+            v.as_u64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_str().map(String::from))
+        })
+        .context("missing id")?;
+    let body = json
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let login = json
+        .pointer("/user/login")
+        .or_else(|| json.pointer("/author/login"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let created_at = json
+        .get("created_at")
+        .or_else(|| json.get("createdAt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let author_association = json
+        .get("author_association")
+        .or_else(|| json.get("authorAssociation"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let url = json
+        .get("html_url")
+        .or_else(|| json.get("url"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(IssueComment {
+        id,
+        body,
+        author: User { login },
+        created_at,
+        author_association,
+        url,
+    })
 }
 
 /// Issue状態フィルタ（型安全）
@@ -391,6 +456,46 @@ mod tests {
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].id, "IC_1");
         assert_eq!(comments[1].id, "IC_3");
+    }
+
+    #[test]
+    fn test_parse_rest_issue_comment() {
+        let json = serde_json::json!({
+            "id": 123456789,
+            "body": "Hello from REST",
+            "user": {"login": "testuser"},
+            "created_at": "2026-01-01T00:00:00Z",
+            "author_association": "OWNER",
+            "html_url": "https://github.com/test/repo/issues/1#issuecomment-123456789"
+        });
+        let comment = parse_rest_issue_comment(&json).unwrap();
+        assert_eq!(comment.id, "123456789");
+        assert_eq!(comment.body, "Hello from REST");
+        assert_eq!(comment.author.login, "testuser");
+        assert_eq!(comment.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(comment.author_association, "OWNER");
+        assert_eq!(
+            comment.url,
+            "https://github.com/test/repo/issues/1#issuecomment-123456789"
+        );
+    }
+
+    #[test]
+    fn test_parse_rest_issue_comment_graphql_fallback() {
+        // GraphQL 形式のフィールド名でもフォールバック動作する
+        let json = serde_json::json!({
+            "id": "IC_kwDOTest",
+            "body": "Hello from GraphQL",
+            "author": {"login": "gqluser"},
+            "createdAt": "2026-02-01T00:00:00Z",
+            "authorAssociation": "CONTRIBUTOR",
+            "url": "https://github.com/test/repo/issues/2#issuecomment-2"
+        });
+        let comment = parse_rest_issue_comment(&json).unwrap();
+        assert_eq!(comment.id, "IC_kwDOTest");
+        assert_eq!(comment.author.login, "gqluser");
+        assert_eq!(comment.created_at, "2026-02-01T00:00:00Z");
+        assert_eq!(comment.author_association, "CONTRIBUTOR");
     }
 
     #[test]

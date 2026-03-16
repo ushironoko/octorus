@@ -92,16 +92,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_list(frame, app, chunks[1]);
 
     // Footer
-    let kb = &app.config.keybindings;
-    let footer_text = format!(
-        " {}/Esc: back | j/k: move | Enter: detail | {}: browser",
-        kb.quit.display(),
-        kb.open_in_browser.display(),
-    );
-    let footer = Paragraph::new(Line::from(Span::styled(
-        footer_text,
-        Style::default().fg(Color::DarkGray),
-    )));
+    let footer_line = if app.is_issue_comment_submitting() {
+        Line::from(Span::styled(
+            " Submitting...",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if let Some((success, ref message)) = app.submission_result {
+        let (icon, color) = if success {
+            ("\u{2713}", Color::Green)
+        } else {
+            ("\u{2717}", Color::Red)
+        };
+        Line::from(Span::styled(
+            format!(" {} {}", icon, message),
+            Style::default().fg(color),
+        ))
+    } else {
+        let kb = &app.config.keybindings;
+        Line::from(Span::styled(
+            format!(
+                " {}/Esc: back | j/k: move | Enter: detail | {}: comment | {}: browser",
+                kb.quit.display(),
+                kb.comment.display(),
+                kb.open_in_browser.display(),
+            ),
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -315,11 +333,7 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
         .collect();
 
     let scroll_info = if total_rows > content_height {
-        format!(
-            " ({}/{})",
-            scroll + 1,
-            max_scroll + 1
-        )
+        format!(" ({}/{})", scroll + 1, max_scroll + 1)
     } else {
         String::new()
     };
@@ -331,12 +345,34 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(content, chunks[1]);
 
-    // Footer
-    let footer_text = "j/k: scroll | J/K: page | Ctrl+d/u: half page | Enter/Esc: back to list";
-    let footer = Paragraph::new(Line::from(Span::styled(
-        footer_text,
-        Style::default().fg(Color::DarkGray),
-    )));
+    // Footer — show submitting/result state (same as list view)
+    let footer_line = if app.is_issue_comment_submitting() {
+        Line::from(Span::styled(
+            " Submitting...",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if let Some((success, ref message)) = app.submission_result {
+        let (icon, color) = if success {
+            ("\u{2713}", Color::Green)
+        } else {
+            ("\u{2717}", Color::Red)
+        };
+        Line::from(Span::styled(
+            format!(" {} {}", icon, message),
+            Style::default().fg(color),
+        ))
+    } else {
+        let kb = &app.config.keybindings;
+        let footer_text = format!(
+            "j/k: scroll | J/K: page | {}: reply | Enter/Esc: back to list",
+            kb.reply.display(),
+        );
+        Line::from(Span::styled(
+            footer_text,
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -351,7 +387,8 @@ mod tests {
         // This would panic with byte-based slicing: &body_text[..20] on UTF-8
         let comment = IssueComment {
             id: "IC_1".to_string(),
-            body: "これはテストです。日本語のコメントが正しく切り詰められるか確認します。".to_string(),
+            body: "これはテストです。日本語のコメントが正しく切り詰められるか確認します。"
+                .to_string(),
             author: User {
                 login: "user1".to_string(),
             },

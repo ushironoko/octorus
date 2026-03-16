@@ -11,9 +11,14 @@ use super::App;
 
 impl App {
     pub(crate) fn handle_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
-        // 送信中は入力を無視
+        // 送信中は入力を無視（各送信種別に対応するInputModeのみブロック）
         if self.comment_submitting {
             return Ok(());
+        }
+        if self.is_issue_comment_submitting() {
+            if matches!(self.input_mode, Some(InputMode::IssueComment { .. })) {
+                return Ok(());
+            }
         }
 
         match self.input_text_area.input(key) {
@@ -37,6 +42,9 @@ impl App {
                     }
                     Some(InputMode::Reply { comment_id, .. }) => {
                         self.submit_reply(comment_id, content);
+                    }
+                    Some(InputMode::IssueComment { issue_number }) => {
+                        self.submit_issue_comment(issue_number, content);
                     }
                     None => {}
                 }
@@ -161,6 +169,28 @@ impl App {
                 .await;
         });
     }
+    pub(crate) fn is_issue_comment_submitting(&self) -> bool {
+        self.issue_state
+            .as_ref()
+            .map_or(false, |s| s.issue_comment_submitting)
+    }
+
+    pub(crate) fn submit_issue_comment(&mut self, issue_number: u32, body: String) {
+        let Some(ref mut state) = self.issue_state else {
+            return;
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        state.issue_comment_submit_receiver = Some((issue_number, rx));
+        state.issue_comment_submitting = true;
+
+        let repo = self.repo.clone();
+        tokio::spawn(async move {
+            let result = github::create_issue_comment(&repo, issue_number, &body).await;
+            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+        });
+    }
+
     pub(super) fn handle_pending_approve_choice(&mut self, key: &KeyEvent) -> PendingApproveChoice {
         if self.pending_approve_body.is_none() {
             return PendingApproveChoice::Ignore;

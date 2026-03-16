@@ -1639,6 +1639,15 @@ pub fn render_text_input(frame: &mut Frame, app: &App) {
             render_reply_context(frame, chunks[1], reply_to_user, reply_to_body);
             render_text_input_area(frame, app, chunks[2], "Reply", "Type your reply here...");
         }
+        Some(InputMode::IssueComment { .. }) => {
+            render_text_input_area(
+                frame,
+                app,
+                chunks[2],
+                "Issue Comment",
+                "Type your comment here...",
+            );
+        }
         None => {}
     }
 }

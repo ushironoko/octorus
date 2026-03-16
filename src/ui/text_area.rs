@@ -219,6 +219,12 @@ impl TextArea {
         self.scroll_offset = 0;
     }
 
+    /// カーソルを末尾に移動する
+    pub fn move_to_end(&mut self) {
+        self.cursor_row = self.lines.len().saturating_sub(1);
+        self.cursor_col = self.lines[self.cursor_row].chars().count();
+    }
+
     /// テキストエリアをクリアする
     pub fn clear(&mut self) {
         self.lines = vec![String::new()];

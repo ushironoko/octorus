@@ -27,14 +27,7 @@ impl App {
 
                 // PR一覧画面は独自のLoading処理があるためスキップ
                 // Help画面・PrDescription画面はデータ状態に依存しないためスキップ
-                if self.state != AppState::PullRequestList
-                    && self.state != AppState::Help
-                    && self.state != AppState::PrDescription
-                    && self.state != AppState::ChecksList
-                    && self.state != AppState::IssueList
-                    && self.state != AppState::IssueDetail
-                    && self.state != AppState::IssueCommentList
-                {
+                if !self.state.is_data_state_independent() {
                     // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
                         match key.code {

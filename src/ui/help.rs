@@ -916,6 +916,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.open_in_browser.display(), key_width)
         )),
         Line::from(format!(
+            "{}  Add comment",
+            fmt_key(&kb.comment.display(), key_width)
+        )),
+        Line::from(format!(
             "{}  View issue comments",
             fmt_key(&kb.comment_list.display(), key_width)
         )),
@@ -925,6 +929,44 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Back to issue list",
+            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Issue Comment List View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Move selection",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  View comment detail",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Add comment",
+            fmt_key(&kb.comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Reply to comment (in detail mode)",
+            fmt_key(&kb.reply.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open in browser",
+            fmt_key(&kb.open_in_browser.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Back to issue detail",
             fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
         )),
         Line::from(""),
