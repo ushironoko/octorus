@@ -79,17 +79,7 @@ pub fn cleanup_keyboard_enhancement() {
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     // PR一覧画面・ヘルプ画面・PR description画面・CI Checks画面はデータ状態に依存しないためスキップ
-    if !matches!(
-        app.state,
-        AppState::PullRequestList
-            | AppState::Help
-            | AppState::PrDescription
-            | AppState::ChecksList
-            | AppState::IssueList
-            | AppState::IssueDetail
-            | AppState::IssueCommentList
-            | AppState::TextInput
-    ) {
+    if !app.state.is_data_state_independent() {
         // Loading状態の場合は専用画面を表示
         if matches!(app.data_state, DataState::Loading) {
             file_list::render_loading(frame, app);

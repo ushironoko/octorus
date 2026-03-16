@@ -164,6 +164,31 @@ pub enum AppState {
     IssueCommentList,
 }
 
+impl AppState {
+    /// PR データ（DataState）に依存しない画面かどうか
+    pub fn is_data_state_independent(self) -> bool {
+        matches!(
+            self,
+            Self::PullRequestList
+                | Self::Help
+                | Self::PrDescription
+                | Self::ChecksList
+                | Self::IssueList
+                | Self::IssueDetail
+                | Self::IssueCommentList
+                | Self::TextInput
+        )
+    }
+
+    /// Issue 系の画面かどうか
+    pub fn is_issue(self) -> bool {
+        matches!(
+            self,
+            Self::IssueList | Self::IssueDetail | Self::IssueCommentList
+        )
+    }
+}
+
 /// Variant for diff view handling (fullscreen vs split pane)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum DiffViewVariant {
