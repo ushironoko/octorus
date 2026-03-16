@@ -223,6 +223,7 @@ impl TextArea {
     pub fn move_to_end(&mut self) {
         self.cursor_row = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_row].chars().count();
+        self.adjust_scroll();
     }
 
     /// テキストエリアをクリアする
@@ -714,5 +715,26 @@ mod tests {
         assert!(matches!(action, TextAreaAction::Continue));
         assert_eq!(ta.content(), "abg"); // 'g' was inserted
         assert_eq!(ta.cursor_col, 2); // cursor moved left from position 3 to 2
+    }
+
+    #[test]
+    fn test_move_to_end_adjusts_scroll() {
+        let mut ta = TextArea::new();
+        // Simulate a small visible height (e.g. 2 lines)
+        ta.visible_height.set(2);
+        // Insert 5 lines so cursor at end is beyond visible window
+        ta.set_content("line1\nline2\nline3\nline4\nline5");
+        assert_eq!(ta.scroll_offset, 0);
+        assert_eq!(ta.cursor_row, 0);
+
+        ta.move_to_end();
+
+        // Cursor should be at last line
+        assert_eq!(ta.cursor_row, 4);
+        // Scroll offset must be adjusted so cursor is visible
+        assert!(
+            ta.scroll_offset > 0,
+            "scroll_offset should be adjusted when cursor moves beyond visible area"
+        );
     }
 }

@@ -137,6 +137,12 @@ impl App {
             if self.handle_filter_esc("issue") {
                 return Ok(());
             }
+            // Block navigation while an issue comment submission is in flight.
+            // Dropping issue_state would lose the receiver, so the user would
+            // get no success/failure feedback and caches would not be updated.
+            if self.is_issue_comment_submitting() {
+                return Ok(());
+            }
             self.issue_state = None;
             self.state = AppState::PullRequestList;
             return Ok(());
@@ -417,5 +423,46 @@ mod tests {
         // Previous detail should be cleared
         assert!(state.issue_detail.is_none());
         assert!(state.linked_prs.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_quit_blocked_while_issue_comment_submitting() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issues = Some(vec![]);
+        state.issue_comment_submitting = true;
+        app.issue_state = Some(state);
+        app.state = AppState::IssueList;
+
+        // Press 'q' — should be blocked because submission is in flight
+        let key = crossterm::event::KeyEvent::new(
+            KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_issue_list_input(key).await.unwrap();
+
+        // issue_state must NOT be dropped
+        assert!(app.issue_state.is_some());
+        assert_eq!(app.state, AppState::IssueList);
+    }
+
+    #[tokio::test]
+    async fn test_quit_allowed_when_not_submitting() {
+        let mut app = App::new_for_test();
+        let mut state = IssueState::new();
+        state.issues = Some(vec![]);
+        state.issue_comment_submitting = false;
+        app.issue_state = Some(state);
+        app.state = AppState::IssueList;
+
+        // Press 'q' — should navigate away
+        let key = crossterm::event::KeyEvent::new(
+            KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_issue_list_input(key).await.unwrap();
+
+        assert!(app.issue_state.is_none());
+        assert_eq!(app.state, AppState::PullRequestList);
     }
 }
