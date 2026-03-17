@@ -184,14 +184,10 @@ impl App {
         let term_h = term_size.height as usize;
         let term_w = term_size.width as usize;
 
-        // Calculate visible_lines based on variant
-        let visible_lines = match variant {
-            DiffViewVariant::SplitPane => {
-                // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
-                (term_h * 65 / 100).saturating_sub(8)
-            }
-            DiffViewVariant::Fullscreen => term_h.saturating_sub(8),
-        };
+        // Calculate visible_lines: Header(3) + Footer(3) + border(2) = 8
+        // Both variants use the same height — SplitView is a horizontal split (65% width),
+        // so the diff pane height equals the full terminal height.
+        let visible_lines = term_h.saturating_sub(8);
         let panel_inner_width = self.comment_panel_inner_width(term_w);
 
         // Clone keybindings to avoid borrow issues with self
@@ -612,21 +608,24 @@ impl App {
         if visible_lines == 0 {
             return;
         }
-        if self.selected_line < self.scroll_offset {
-            self.scroll_offset = self.selected_line;
-        }
-        if self.selected_line >= self.scroll_offset + visible_lines {
-            self.scroll_offset = self.selected_line.saturating_sub(visible_lines) + 1;
-        }
+        // Scroll margin: keep cursor at least this many lines from viewport edges.
+        // Uses half the viewport so scrolling begins when cursor passes the center.
+        // Disable margin when the file fits within the viewport (no scrolling needed).
+        let margin = if self.diff_line_count <= visible_lines {
+            0
+        } else {
+            visible_lines / 2
+        };
 
-        // Allow additional scrolling when at the end (bottom padding)
-        // This enables showing empty space below the last line
-        let padding = visible_lines / 2;
-        let max_scroll_with_padding = self.diff_line_count.saturating_sub(1);
-        if self.selected_line >= self.diff_line_count.saturating_sub(padding) {
-            // When near the end, allow scroll_offset to go further
-            let target_scroll = self.selected_line.saturating_sub(visible_lines / 2);
-            self.scroll_offset = target_scroll.min(max_scroll_with_padding);
+        // Cursor above the top margin
+        if self.selected_line < self.scroll_offset + margin {
+            self.scroll_offset = self.selected_line.saturating_sub(margin);
+        }
+        // Cursor below the bottom margin
+        if self.selected_line + margin >= self.scroll_offset + visible_lines {
+            self.scroll_offset = self
+                .selected_line
+                .saturating_sub(visible_lines.saturating_sub(margin + 1));
         }
     }
 }

@@ -3631,9 +3631,12 @@ fn test_adjust_scroll_above_viewport() {
     app.scroll_offset = 5;
     app.diff_line_count = 100;
 
+    // visible_lines=20, margin=10
+    // selected_line(2) < scroll_offset(5) + margin(10) → scroll to keep margin
     app.adjust_scroll(20);
 
-    assert_eq!(app.scroll_offset, 2);
+    // scroll_offset = selected_line - margin = 2 - 10 = 0 (saturating)
+    assert_eq!(app.scroll_offset, 0);
 }
 
 #[test]
@@ -3647,18 +3650,21 @@ fn test_adjust_scroll_below_viewport() {
 
     assert!(app.scroll_offset > 5);
     assert!(app.selected_line >= app.scroll_offset);
+    assert!(app.selected_line < app.scroll_offset + 20);
 }
 
 #[test]
 fn test_adjust_scroll_within_viewport() {
     let mut app = App::new_for_test();
-    app.selected_line = 10;
+    app.selected_line = 15;
     app.scroll_offset = 5;
     app.diff_line_count = 100;
 
     app.adjust_scroll(20);
 
-    // Within viewport, scroll should not change much
+    // margin=10, selected_line(15) >= scroll_offset(5)+margin(10)=15
+    // and selected_line(15)+margin(10)=25 >= scroll_offset(5)+visible_lines(20)=25
+    // → bottom margin triggers: scroll_offset = 15 - (20 - 10 - 1) = 6
     assert!(app.selected_line >= app.scroll_offset);
     assert!(app.selected_line < app.scroll_offset + 20);
 }
@@ -3677,16 +3683,19 @@ fn test_adjust_scroll_zero_visible() {
 }
 
 #[test]
-fn test_adjust_scroll_end_padding() {
+fn test_adjust_scroll_at_last_line() {
     let mut app = App::new_for_test();
     app.diff_line_count = 50;
     app.selected_line = 49; // last line
     app.scroll_offset = 0;
 
+    // visible_lines=20, margin=10
+    // bottom margin: scroll_offset = 49 - (20 - 10 - 1) = 40
     app.adjust_scroll(20);
 
-    // Near end, scroll allows padding
-    assert!(app.scroll_offset > 0);
+    assert!(app.selected_line >= app.scroll_offset);
+    assert!(app.selected_line < app.scroll_offset + 20);
+    assert_eq!(app.scroll_offset, 40);
 }
 
 #[test]
@@ -3700,6 +3709,155 @@ fn test_adjust_scroll_single_line() {
 
     assert_eq!(app.scroll_offset, 0);
     assert_eq!(app.selected_line, 0);
+}
+
+/// スナップショットテスト: 全カーソル位置で scroll_offset と visible_lines の整合性を検証
+///
+/// 不変条件:
+///   scroll_offset <= selected_line < scroll_offset + visible_lines
+/// （visible_lines == 0 の場合は adjust_scroll が何もしないので除外）
+#[test]
+fn test_adjust_scroll_invariant_all_positions() {
+    for diff_line_count in [1usize, 5, 10, 20, 50, 100] {
+        for visible_lines in [1usize, 5, 10, 20, 40] {
+            for selected_line in 0..diff_line_count {
+                // scroll_offset が selected_line より手前にあるケース
+                for initial_scroll in [0, selected_line.saturating_sub(visible_lines), selected_line]
+                {
+                    let mut app = App::new_for_test();
+                    app.diff_line_count = diff_line_count;
+                    app.selected_line = selected_line;
+                    app.scroll_offset = initial_scroll;
+
+                    app.adjust_scroll(visible_lines);
+
+                    assert!(
+                        app.selected_line >= app.scroll_offset,
+                        "cursor above viewport: selected_line={}, scroll_offset={}, \
+                         visible_lines={}, diff_line_count={}, initial_scroll={}",
+                        app.selected_line,
+                        app.scroll_offset,
+                        visible_lines,
+                        diff_line_count,
+                        initial_scroll,
+                    );
+                    assert!(
+                        app.selected_line < app.scroll_offset + visible_lines,
+                        "cursor below viewport: selected_line={}, scroll_offset={}, \
+                         visible_lines={}, diff_line_count={}, initial_scroll={}",
+                        app.selected_line,
+                        app.scroll_offset,
+                        visible_lines,
+                        diff_line_count,
+                        initial_scroll,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// スナップショットテスト: j キー連打シミュレーション
+///
+/// 先頭から末尾まで1行ずつ移動した際に、全ステップで不変条件が維持されること。
+/// 特に末尾付近でのジャンプが発生しないことを検証。
+#[test]
+fn test_adjust_scroll_sequential_down_no_jump() {
+    let diff_line_count = 100;
+    let visible_lines = 20;
+
+    let mut app = App::new_for_test();
+    app.diff_line_count = diff_line_count;
+    app.selected_line = 0;
+    app.scroll_offset = 0;
+
+    let mut prev_scroll = 0;
+    for line in 0..diff_line_count {
+        app.selected_line = line;
+        app.adjust_scroll(visible_lines);
+
+        // 不変条件: カーソルは常にビューポート内
+        assert!(
+            app.selected_line >= app.scroll_offset
+                && app.selected_line < app.scroll_offset + visible_lines,
+            "line={}: scroll_offset={}, visible_lines={}",
+            line,
+            app.scroll_offset,
+            visible_lines,
+        );
+
+        // scroll_offset は最大1ずつしか増えない（ジャンプなし）
+        assert!(
+            app.scroll_offset <= prev_scroll + 1,
+            "scroll jumped at line={}: prev={}, now={}",
+            line,
+            prev_scroll,
+            app.scroll_offset,
+        );
+
+        prev_scroll = app.scroll_offset;
+    }
+}
+
+/// スナップショットテスト: k キー連打シミュレーション（末尾→先頭）
+#[test]
+fn test_adjust_scroll_sequential_up_no_jump() {
+    let diff_line_count = 100;
+    let visible_lines = 20;
+
+    let mut app = App::new_for_test();
+    app.diff_line_count = diff_line_count;
+    app.selected_line = diff_line_count - 1;
+    app.scroll_offset = diff_line_count.saturating_sub(visible_lines);
+    app.adjust_scroll(visible_lines);
+
+    let mut prev_scroll = app.scroll_offset;
+    for line in (0..diff_line_count).rev() {
+        app.selected_line = line;
+        app.adjust_scroll(visible_lines);
+
+        assert!(
+            app.selected_line >= app.scroll_offset
+                && app.selected_line < app.scroll_offset + visible_lines,
+            "line={}: scroll_offset={}, visible_lines={}",
+            line,
+            app.scroll_offset,
+            visible_lines,
+        );
+
+        // scroll_offset は最大1ずつしか減らない（ジャンプなし）
+        assert!(
+            prev_scroll <= app.scroll_offset + 1,
+            "scroll jumped at line={}: prev={}, now={}",
+            line,
+            prev_scroll,
+            app.scroll_offset,
+        );
+
+        prev_scroll = app.scroll_offset;
+    }
+}
+
+/// ファイル行数がビューポートより小さい場合、scroll_offset は常に 0
+#[test]
+fn test_adjust_scroll_file_shorter_than_viewport() {
+    let visible_lines = 40;
+    for diff_line_count in [1, 5, 10, 39] {
+        for line in 0..diff_line_count {
+            let mut app = App::new_for_test();
+            app.diff_line_count = diff_line_count;
+            app.selected_line = line;
+            app.scroll_offset = 0;
+
+            app.adjust_scroll(visible_lines);
+
+            assert_eq!(
+                app.scroll_offset, 0,
+                "short file: diff_line_count={}, selected_line={}",
+                diff_line_count, line,
+            );
+        }
+    }
 }
 
 // ===================================================================

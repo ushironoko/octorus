@@ -1249,38 +1249,31 @@ pub(crate) fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout:
 }
 
 pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let visible_height = area.height.saturating_sub(2) as usize;
-
     // Try to use cached lines if available
-    let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
-        // Calculate visible range for optimization
-        // Add buffer for smooth scrolling and wrap handling
+    let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
         let line_count = cache.lines.len();
-
-        // Clamp visible_start to avoid out-of-bounds access when scroll_offset >= line_count
-        let visible_start = app.scroll_offset.saturating_sub(2).min(line_count);
-        let visible_end = (app.scroll_offset + visible_height + 5).min(line_count);
-
-        // Only process visible lines (with buffer) for performance
-        // When visible_start >= visible_end, this produces an empty range (safe)
+        // Slice from scroll_offset so Paragraph starts at the correct logical line.
+        // This avoids Wrap-induced mismatch between logical and display rows.
+        let start = app.scroll_offset.min(line_count);
         let multiline_range = app
             .multiline_selection
             .as_ref()
             .map(|s| (s.start(), s.end()));
-        render_cached_lines(
+        let rendered = render_cached_lines(
             cache,
-            visible_start..visible_end,
+            start..line_count,
             app.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
-        )
+        );
+        (rendered, 0u16)
     } else {
         // Fallback: parse without cache (should rarely happen)
         let file = app.files().get(app.selected_file);
         let theme_name = &app.config.diff.theme;
 
-        match file {
+        let rendered = match file {
             Some(f) => match f.patch.as_ref() {
                 Some(patch) => parse_patch_to_lines(
                     patch,
@@ -1299,21 +1292,14 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
                 }
             },
             None => vec![Line::from("No file selected")],
-        }
-    };
-
-    // Adjust scroll offset for visible range processing
-    let adjusted_scroll = if app.diff_cache.is_some() {
-        let visible_start = app.scroll_offset.saturating_sub(2);
-        (app.scroll_offset - visible_start) as u16
-    } else {
-        app.scroll_offset as u16
+        };
+        (rendered, app.scroll_offset as u16)
     };
 
     let diff_block = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false })
-        .scroll((adjusted_scroll, 0));
+        .scroll((scroll_row, 0));
 
     frame.render_widget(diff_block, area);
 
