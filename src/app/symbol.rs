@@ -178,6 +178,8 @@ impl App {
             let _ = tx.send(update).await;
         });
 
+        self.submission_result = None;
+        self.submission_result_time = None;
         self.symbol_search = super::SymbolSearchState::Searching {
             receiver: rx,
             origin_file_index,

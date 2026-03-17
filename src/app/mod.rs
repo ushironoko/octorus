@@ -525,7 +525,7 @@ impl App {
             self.poll_issue_comment_submit_updates();
             self.poll_update_check();
             self.poll_symbol_search_updates();
-            if let SymbolSearchState::Ready(_) = &self.symbol_search {
+            if let SymbolSearchState::Ready(..) = &self.symbol_search {
                 if let Some(result) = self.symbol_search.take_ready() {
                     let full_path = std::path::Path::new(&result.repo_root).join(&result.file_path);
                     let path_str = full_path.to_string_lossy().to_string();

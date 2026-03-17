@@ -576,10 +576,9 @@ pub enum SymbolSearchState {
     Idle,
     Searching {
         receiver: mpsc::Receiver<SymbolSearchUpdate>,
-        #[allow(dead_code)]
         origin_file_index: usize,
     },
-    Ready(RepoSymbolSearchResult),
+    Ready(RepoSymbolSearchResult, usize),
 }
 
 impl SymbolSearchState {
@@ -590,9 +589,9 @@ impl SymbolSearchState {
 
     /// submission_result に表示するためのタイムスタンプ付き結果を生成
     pub fn take_ready(&mut self) -> Option<RepoSymbolSearchResult> {
-        if matches!(self, Self::Ready(_)) {
+        if matches!(self, Self::Ready(..)) {
             let old = std::mem::replace(self, Self::Idle);
-            if let Self::Ready(result) = old {
+            if let Self::Ready(result, _) = old {
                 return Some(result);
             }
         }

@@ -1452,14 +1452,21 @@ impl App {
 
     pub(crate) fn poll_symbol_search_updates(&mut self) {
         let SymbolSearchState::Searching {
-            ref mut receiver, ..
+            ref mut receiver,
+            ref origin_file_index,
         } = self.symbol_search
         else {
             return;
         };
+        let origin_file_index = *origin_file_index;
         match receiver.try_recv() {
             Ok(SymbolSearchUpdate::Found(result)) => {
-                self.symbol_search = SymbolSearchState::Ready(result);
+                if self.selected_file != origin_file_index {
+                    // User has navigated away; discard stale result
+                    self.symbol_search = SymbolSearchState::Idle;
+                    return;
+                }
+                self.symbol_search = SymbolSearchState::Ready(result, origin_file_index);
             }
             Ok(SymbolSearchUpdate::NotFound) => {
                 self.symbol_search = SymbolSearchState::Idle;
