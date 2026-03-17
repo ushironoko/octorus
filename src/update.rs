@@ -293,7 +293,7 @@ fn verify_checksum(dir: &Path, archive_name: &str) -> Result<()> {
         .output()
         .or_else(|_| {
             Command::new("sha256sum")
-                .arg(&archive_path.to_string_lossy().to_string())
+                .arg(archive_path.to_string_lossy().to_string())
                 .output()
         })
         .context("Failed to compute checksum (shasum/sha256sum not found)")?;
@@ -582,7 +582,7 @@ mod tests {
             .output()
             .or_else(|_| {
                 Command::new("sha256sum")
-                    .arg(&archive_path.to_string_lossy().to_string())
+                    .arg(archive_path.to_string_lossy().to_string())
                     .output()
             })
             .unwrap();

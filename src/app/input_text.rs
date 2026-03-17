@@ -15,10 +15,10 @@ impl App {
         if self.comment_submitting {
             return Ok(());
         }
-        if self.is_issue_comment_submitting() {
-            if matches!(self.input_mode, Some(InputMode::IssueComment { .. })) {
-                return Ok(());
-            }
+        if self.is_issue_comment_submitting()
+            && matches!(self.input_mode, Some(InputMode::IssueComment { .. }))
+        {
+            return Ok(());
         }
 
         match self.input_text_area.input(key) {
@@ -172,7 +172,7 @@ impl App {
     pub(crate) fn is_issue_comment_submitting(&self) -> bool {
         self.issue_state
             .as_ref()
-            .map_or(false, |s| s.issue_comment_submitting)
+            .is_some_and(|s| s.issue_comment_submitting)
     }
 
     pub(crate) fn submit_issue_comment(&mut self, issue_number: u32, body: String) {

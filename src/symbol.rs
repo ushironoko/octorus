@@ -327,11 +327,84 @@ pub fn find_definition_in_patches(
     None
 }
 
-/// Search for a symbol definition in the local repository using `grep`.
+/// Check if `rg` (ripgrep) is available on the system.
+///
+/// Result is cached in a `OnceLock` so the check runs at most once per process.
+fn is_rg_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("rg")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// Search for a symbol definition in the local repository using `rg` (preferred) or `grep`.
 ///
 /// Returns `(file_path, line_number)` if found (1-based line number).
 /// Two-pass strategy: first search for definitions, then fall back to imports.
 pub async fn find_definition_in_repo(
+    symbol: &str,
+    repo_root: &Path,
+) -> Result<Option<(String, usize)>> {
+    if is_rg_available() {
+        find_definition_in_repo_rg(symbol, repo_root).await
+    } else {
+        find_definition_in_repo_grep(symbol, repo_root).await
+    }
+}
+
+/// Search using `rg` (ripgrep). `.gitignore` is respected automatically.
+async fn find_definition_in_repo_rg(
+    symbol: &str,
+    repo_root: &Path,
+) -> Result<Option<(String, usize)>> {
+    let pattern = format!(
+        "{}{}",
+        grep_definition_pattern(),
+        regex_escape(symbol, true)
+    );
+
+    let output = Command::new("rg")
+        .args(["-n", "--no-heading", "--color", "never"])
+        .arg(&pattern)
+        .current_dir(repo_root)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(found) = parse_search_results(&stdout, symbol, true) {
+            return Ok(Some(found));
+        }
+    }
+
+    // Fall back to import/use statement search
+    let import_pattern = format!(
+        r"(use .*\b{sym}\b|import .*\b{sym}\b|from .* import .*\b{sym}\b)",
+        sym = regex_escape(symbol, false)
+    );
+
+    let output = Command::new("rg")
+        .args(["-n", "--no-heading", "--color", "never"])
+        .arg(&import_pattern)
+        .current_dir(repo_root)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_search_results(&stdout, symbol, false))
+}
+
+/// Search using `grep` (fallback when `rg` is not available).
+async fn find_definition_in_repo_grep(
     symbol: &str,
     repo_root: &Path,
 ) -> Result<Option<(String, usize)>> {
@@ -344,7 +417,6 @@ pub async fn find_definition_in_repo(
     let mut cmd = Command::new("grep");
     cmd.arg("-rnE").arg(&pattern);
 
-    // Add exclusion directories
     for dir in EXCLUDED_DIRS {
         cmd.arg(format!("--exclude-dir={}", dir));
     }
@@ -355,18 +427,8 @@ pub async fn find_definition_in_repo(
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Parse matching lines: ./path/to/file:123:line content
-        for result_line in stdout.lines() {
-            let parts: Vec<&str> = result_line.splitn(3, ':').collect();
-            if parts.len() >= 3 {
-                let file_path = parts[0].strip_prefix("./").unwrap_or(parts[0]);
-                if let Ok(line_number) = parts[1].parse::<usize>() {
-                    if is_definition_line(parts[2], symbol) {
-                        return Ok(Some((file_path.to_string(), line_number)));
-                    }
-                }
-            }
+        if let Some(found) = parse_search_results(&stdout, symbol, true) {
+            return Ok(Some(found));
         }
     }
 
@@ -392,20 +454,36 @@ pub async fn find_definition_in_repo(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_search_results(&stdout, symbol, false))
+}
 
+/// Parse search output lines (shared between rg and grep).
+///
+/// Output format: `file:line:content` (rg) or `./file:line:content` (grep).
+/// When `definition` is true, matches against `is_definition_line`;
+/// otherwise matches against `is_import_line`.
+fn parse_search_results(
+    stdout: &str,
+    symbol: &str,
+    definition: bool,
+) -> Option<(String, usize)> {
     for result_line in stdout.lines() {
         let parts: Vec<&str> = result_line.splitn(3, ':').collect();
         if parts.len() >= 3 {
             let file_path = parts[0].strip_prefix("./").unwrap_or(parts[0]);
             if let Ok(line_number) = parts[1].parse::<usize>() {
-                if is_import_line(parts[2], symbol) {
-                    return Ok(Some((file_path.to_string(), line_number)));
+                let matches = if definition {
+                    is_definition_line(parts[2], symbol)
+                } else {
+                    is_import_line(parts[2], symbol)
+                };
+                if matches {
+                    return Some((file_path.to_string(), line_number));
                 }
             }
         }
     }
-
-    Ok(None)
+    None
 }
 
 /// Simple regex escape for symbol names (alphanumeric + underscore).

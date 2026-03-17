@@ -41,6 +41,13 @@ pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
                 Style::default().fg(Color::Yellow),
             ));
         }
+        if app.symbol_search.is_searching() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("{} Searching...", app.spinner_char()),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
         Line::from(spans)
     }
 }

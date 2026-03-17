@@ -112,7 +112,7 @@ impl App {
     pub(crate) async fn jump_to_symbol_definition_async(
         &mut self,
         symbol: &str,
-        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        _terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         // Phase 1: diff パッチ内を検索
         let files: Vec<crate::github::ChangedFile> = self.files().to_vec();
@@ -133,7 +133,7 @@ impl App {
             return Ok(());
         }
 
-        // Phase 2: ローカルリポジトリ全体を検索
+        // Phase 2: ローカルリポジトリ全体を非同期検索
         let repo_root = match &self.working_dir {
             Some(dir) => {
                 let output = tokio::process::Command::new("git")
@@ -151,21 +151,39 @@ impl App {
             None => return Ok(()),
         };
 
-        let result =
-            crate::symbol::find_definition_in_repo(symbol, std::path::Path::new(&repo_root)).await;
-        if let Ok(Some((file_path, line_number))) = result {
-            let full_path = std::path::Path::new(&repo_root).join(&file_path);
-            let path_str = full_path.to_string_lossy().to_string();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let symbol_owned = symbol.to_string();
+        let repo_root_owned = repo_root.clone();
+        let origin_file_index = self.selected_file;
 
-            // ターミナルを一時停止して外部エディタを開く
-            crate::ui::restore_terminal(terminal)?;
-            let _ = crate::editor::open_file_at_line(
-                self.config.editor.as_deref(),
-                &path_str,
-                line_number,
-            );
-            *terminal = crate::ui::setup_terminal()?;
-        }
+        tokio::spawn(async move {
+            let result = crate::symbol::find_definition_in_repo(
+                &symbol_owned,
+                std::path::Path::new(&repo_root_owned),
+            )
+            .await;
+
+            let update = match result {
+                Ok(Some((file_path, line_number))) => {
+                    super::SymbolSearchUpdate::Found(super::RepoSymbolSearchResult {
+                        file_path,
+                        line_number,
+                        repo_root: repo_root_owned,
+                    })
+                }
+                Ok(None) => super::SymbolSearchUpdate::NotFound,
+                Err(e) => super::SymbolSearchUpdate::Failed(e.to_string()),
+            };
+
+            let _ = tx.send(update).await;
+        });
+
+        self.submission_result = None;
+        self.submission_result_time = None;
+        self.symbol_search = super::SymbolSearchState::Searching {
+            receiver: rx,
+            origin_file_index,
+        };
 
         Ok(())
     }

@@ -5665,3 +5665,169 @@ fn test_rebuild_pr_description_cache_preserves_scroll() {
     );
     assert!(app.pr_description_cache.is_some());
 }
+
+// ===================================================================
+// Async symbol search state machine tests
+
+#[test]
+fn test_symbol_search_stale_result_discarded_when_file_changed() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            },
+        ],
+    };
+
+    // Simulate an async search started from file 0
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.symbol_search = SymbolSearchState::Searching {
+        receiver: rx,
+        origin_file_index: 0,
+    };
+
+    // User navigates to file 1 before the result arrives
+    app.selected_file = 1;
+
+    // Send a Found result
+    tx.try_send(SymbolSearchUpdate::Found(RepoSymbolSearchResult {
+        file_path: "src/foo.rs".to_string(),
+        line_number: 10,
+        repo_root: "/tmp".to_string(),
+    }))
+    .unwrap();
+
+    // Poll: should discard the stale result
+    app.poll_symbol_search_updates();
+    assert!(
+        matches!(app.symbol_search, SymbolSearchState::Idle),
+        "Stale result should be discarded when user navigated to a different file"
+    );
+}
+
+#[test]
+fn test_symbol_search_result_accepted_when_file_unchanged() {
+    let mut app = App::new_for_test();
+    app.selected_file = 2;
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.symbol_search = SymbolSearchState::Searching {
+        receiver: rx,
+        origin_file_index: 2,
+    };
+
+    tx.try_send(SymbolSearchUpdate::Found(RepoSymbolSearchResult {
+        file_path: "src/bar.rs".to_string(),
+        line_number: 5,
+        repo_root: "/tmp".to_string(),
+    }))
+    .unwrap();
+
+    app.poll_symbol_search_updates();
+    assert!(
+        matches!(app.symbol_search, SymbolSearchState::Ready(..)),
+        "Result should be accepted when user is still on the same file"
+    );
+}
+
+#[test]
+fn test_symbol_search_not_found_resets_to_idle() {
+    let mut app = App::new_for_test();
+    app.selected_file = 0;
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.symbol_search = SymbolSearchState::Searching {
+        receiver: rx,
+        origin_file_index: 0,
+    };
+
+    tx.try_send(SymbolSearchUpdate::NotFound).unwrap();
+
+    app.poll_symbol_search_updates();
+    assert!(matches!(app.symbol_search, SymbolSearchState::Idle));
+    assert!(app.submission_result.is_some());
+    let (success, msg) = app.submission_result.unwrap();
+    assert!(!success);
+    assert!(msg.contains("not found"));
+}
+
+#[test]
+fn test_symbol_search_failed_resets_to_idle() {
+    let mut app = App::new_for_test();
+    app.selected_file = 0;
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.symbol_search = SymbolSearchState::Searching {
+        receiver: rx,
+        origin_file_index: 0,
+    };
+
+    tx.try_send(SymbolSearchUpdate::Failed("rg not found".to_string()))
+        .unwrap();
+
+    app.poll_symbol_search_updates();
+    assert!(matches!(app.symbol_search, SymbolSearchState::Idle));
+    assert!(app.submission_result.is_some());
+    let (success, msg) = app.submission_result.unwrap();
+    assert!(!success);
+    assert!(msg.contains("Search failed"));
+}
+
+#[test]
+fn test_symbol_search_clears_submission_result_on_new_search() {
+    let mut app = App::new_for_test();
+
+    // Set an old submission_result
+    app.submission_result = Some((true, "old result".to_string()));
+    app.submission_result_time = Some(std::time::Instant::now());
+
+    // Simulate starting a new search (same as what jump_to_symbol_definition_async does)
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    app.submission_result = None;
+    app.submission_result_time = None;
+    app.symbol_search = SymbolSearchState::Searching {
+        receiver: rx,
+        origin_file_index: 0,
+    };
+
+    assert!(
+        app.submission_result.is_none(),
+        "submission_result should be cleared when a new search starts"
+    );
+    assert!(app.submission_result_time.is_none());
+    assert!(app.symbol_search.is_searching());
+}
+
+#[test]
+fn test_symbol_search_is_searching_visible_when_no_submission_result() {
+    let mut app = App::new_for_test();
+
+    // Old submission_result cleared, new search started
+    app.submission_result = None;
+    app.submission_result_time = None;
+
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    app.symbol_search = SymbolSearchState::Searching {
+        receiver: rx,
+        origin_file_index: 0,
+    };
+
+    // submission_result is None so footer priority won't suppress the search indicator
+    assert!(app.submission_result.is_none());
+    assert!(app.symbol_search.is_searching());
+}

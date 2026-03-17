@@ -94,6 +94,10 @@ harness = false
 name = "diff_parsing"
 harness = false
 
+[[bench]]
+name = "symbol_search"
+harness = false
+
 [profile.release]
 strip = true
 lto = "thin"

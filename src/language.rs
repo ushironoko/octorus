@@ -185,6 +185,34 @@ impl SupportedLanguage {
         Self::from_extension(ext).is_some()
     }
 
+    /// Return the `rg --type` name for this language, if available.
+    ///
+    /// Maps to ripgrep's built-in type names (see `rg --type-list`).
+    /// Returns `None` for languages without a ripgrep type alias.
+    pub fn rg_type_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Rust => Some("rust"),
+            Self::TypeScript | Self::TypeScriptReact => Some("ts"),
+            Self::JavaScript | Self::JavaScriptReact => Some("js"),
+            Self::Go => Some("go"),
+            Self::Python => Some("py"),
+            Self::Ruby => Some("ruby"),
+            Self::Zig => Some("zig"),
+            Self::C => Some("c"),
+            Self::Cpp => Some("cpp"),
+            Self::Java => Some("java"),
+            Self::CSharp => Some("cs"),
+            Self::Lua => Some("lua"),
+            Self::Bash => Some("sh"),
+            Self::Php => Some("php"),
+            Self::Swift => Some("swift"),
+            Self::Haskell => Some("hs"),
+            Self::Css => Some("css"),
+            Self::Markdown | Self::MarkdownInline => Some("md"),
+            Self::Svelte | Self::Vue | Self::MoonBit => None,
+        }
+    }
+
     /// Get the default file extension for this language.
     ///
     /// This is used to look up the parser from the parser pool.
