@@ -329,7 +329,7 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
         .into_iter()
         .skip(scroll)
         .take(content_height)
-        .map(|row| Line::from(row))
+        .map(Line::from)
         .collect();
 
     let scroll_info = if total_rows > content_height {

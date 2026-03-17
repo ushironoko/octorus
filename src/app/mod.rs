@@ -26,7 +26,8 @@ pub use types::{
     hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState,
     DiffCache, GitLogState, HelpTab, InputMode, InternedSpan, IssueDetailFocus, IssueState,
     JumpLocation, LineInputContext, LogEntry, LogEventType, MultilineSelection, PauseState,
-    PermissionInfo, RefreshRequest, ReviewAction, SymbolPopupState, ViewSnapshot, WatcherHandle,
+    PermissionInfo, RefreshRequest, RepoSymbolSearchResult, ReviewAction, SymbolPopupState,
+    SymbolSearchState, SymbolSearchUpdate, ViewSnapshot, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -197,6 +198,8 @@ pub struct App {
     pub pending_since: Option<Instant>,
     /// シンボル選択ポップアップの状態
     pub symbol_popup: Option<SymbolPopupState>,
+    /// リポジトリ全体シンボル検索の非同期状態
+    pub symbol_search: SymbolSearchState,
     /// インメモリセッションキャッシュ
     pub session_cache: SessionCache,
     /// Markdown リッチ表示モード（見出し太字・斜体等を適用）
@@ -327,6 +330,7 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            symbol_search: SymbolSearchState::Idle,
             session_cache: SessionCache::new(),
             markdown_rich: false,
             pr_description_scroll_offset: 0,
@@ -430,6 +434,7 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            symbol_search: SymbolSearchState::Idle,
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
@@ -519,6 +524,18 @@ impl App {
             self.poll_linked_prs_updates();
             self.poll_issue_comment_submit_updates();
             self.poll_update_check();
+            self.poll_symbol_search_updates();
+            if let SymbolSearchState::Ready(_) = &self.symbol_search {
+                if let Some(result) = self.symbol_search.take_ready() {
+                    let full_path = std::path::Path::new(&result.repo_root).join(&result.file_path);
+                    let path_str = full_path.to_string_lossy().to_string();
+                    let line = result.line_number;
+                    let editor = self.config.editor.clone();
+                    ui::restore_terminal(&mut terminal)?;
+                    let _ = crate::editor::open_file_at_line(editor.as_deref(), &path_str, line);
+                    terminal = ui::setup_terminal()?;
+                }
+            }
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -673,6 +690,7 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            symbol_search: SymbolSearchState::Idle,
             session_cache: SessionCache::new(),
             local_mode: false,
             local_auto_focus: false,

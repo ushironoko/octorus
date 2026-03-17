@@ -284,12 +284,14 @@ fn check_file_status(
 
     // Check if it matches any previous version's default
     for def in DEFAULT_HASHES.iter() {
-        if def.scope == scope && def.filename == filename && def.version != current_version {
-            if hash == def.sha256 {
-                return FileStatus::MatchesPreviousDefault {
-                    version: def.version.to_string(),
-                };
-            }
+        if def.scope == scope
+            && def.filename == filename
+            && def.version != current_version
+            && hash == def.sha256
+        {
+            return FileStatus::MatchesPreviousDefault {
+                version: def.version.to_string(),
+            };
         }
     }
 
@@ -708,24 +710,24 @@ fn execute_plan(
                     .unwrap_or_default();
 
                 // Don't advance the version for skipped files
-                if !manifest.files.contains_key(&filename) {
-                    // First time seeing this file — detect version from content hash
-                    // or fall back to "0.0.0" to ensure future migrations aren't skipped
-                    let detected_version = fs::read_to_string(path)
-                        .ok()
-                        .and_then(|content| detect_version_from_hash(&content, &filename, is_local))
-                        .unwrap_or_else(|| "0.0.0".to_string());
-                    manifest.files.insert(
-                        filename,
-                        FileRecord {
+                match manifest.files.entry(filename.clone()) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        // First time seeing this file — detect version from content hash
+                        // or fall back to "0.0.0" to ensure future migrations aren't skipped
+                        let detected_version = fs::read_to_string(path)
+                            .ok()
+                            .and_then(|content| {
+                                detect_version_from_hash(&content, &filename, is_local)
+                            })
+                            .unwrap_or_else(|| "0.0.0".to_string());
+                        entry.insert(FileRecord {
                             version: detected_version,
                             status: FileRecordStatus::CustomizedSkipped,
-                        },
-                    );
-                } else {
-                    // Already tracked — update status but keep existing version
-                    if let Some(record) = manifest.files.get_mut(&filename) {
-                        record.status = FileRecordStatus::CustomizedSkipped;
+                        });
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        // Already tracked — update status but keep existing version
+                        entry.get_mut().status = FileRecordStatus::CustomizedSkipped;
                     }
                 }
             }
@@ -921,8 +923,8 @@ fn run_migrate_in(
 
     // Build plan
     let actions = build_migration_plan(
-        &config_dir,
-        skill_dir.as_deref(),
+        config_dir,
+        skill_dir,
         &manifest,
         binary_version,
         is_local,
@@ -995,7 +997,7 @@ fn run_migrate_in(
     }
 
     // Create backup (include skill_dir for global migrations so SKILL.md is backed up)
-    let backup_dir = create_backup(&config_dir, skill_dir.as_deref())
+    let backup_dir = create_backup(config_dir, skill_dir)
         .context("Failed to create backup. No changes have been applied.")?;
     println!("Backup created: {}", backup_dir.display());
 

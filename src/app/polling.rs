@@ -1449,4 +1449,32 @@ impl App {
             }
         }
     }
+
+    pub(crate) fn poll_symbol_search_updates(&mut self) {
+        let SymbolSearchState::Searching {
+            ref mut receiver, ..
+        } = self.symbol_search
+        else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(SymbolSearchUpdate::Found(result)) => {
+                self.symbol_search = SymbolSearchState::Ready(result);
+            }
+            Ok(SymbolSearchUpdate::NotFound) => {
+                self.symbol_search = SymbolSearchState::Idle;
+                self.submission_result = Some((false, "Definition not found".to_string()));
+                self.submission_result_time = Some(Instant::now());
+            }
+            Ok(SymbolSearchUpdate::Failed(msg)) => {
+                self.symbol_search = SymbolSearchState::Idle;
+                self.submission_result = Some((false, format!("Search failed: {}", msg)));
+                self.submission_result_time = Some(Instant::now());
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.symbol_search = SymbolSearchState::Idle;
+            }
+        }
+    }
 }

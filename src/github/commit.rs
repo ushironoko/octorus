@@ -81,7 +81,7 @@ pub async fn fetch_pr_commits(
     let commits: Vec<PrCommit> = responses
         .into_iter()
         .take(per_page as usize)
-        .map(|r| commit_response_to_pr_commit(r))
+        .map(commit_response_to_pr_commit)
         .collect();
 
     Ok(CommitListPage {

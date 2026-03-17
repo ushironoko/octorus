@@ -555,3 +555,47 @@ impl IssueState {
         }
     }
 }
+
+/// リポジトリ全体検索の結果
+#[derive(Debug, Clone)]
+pub struct RepoSymbolSearchResult {
+    pub file_path: String,
+    pub line_number: usize,
+    pub repo_root: String,
+}
+
+/// リポジトリ全体シンボル検索の非同期更新
+pub enum SymbolSearchUpdate {
+    Found(RepoSymbolSearchResult),
+    NotFound,
+    Failed(String),
+}
+
+/// リポジトリ全体シンボル検索の状態
+pub enum SymbolSearchState {
+    Idle,
+    Searching {
+        receiver: mpsc::Receiver<SymbolSearchUpdate>,
+        #[allow(dead_code)]
+        origin_file_index: usize,
+    },
+    Ready(RepoSymbolSearchResult),
+}
+
+impl SymbolSearchState {
+    /// 検索中かどうか
+    pub fn is_searching(&self) -> bool {
+        matches!(self, Self::Searching { .. })
+    }
+
+    /// submission_result に表示するためのタイムスタンプ付き結果を生成
+    pub fn take_ready(&mut self) -> Option<RepoSymbolSearchResult> {
+        if matches!(self, Self::Ready(_)) {
+            let old = std::mem::replace(self, Self::Idle);
+            if let Self::Ready(result) = old {
+                return Some(result);
+            }
+        }
+        None
+    }
+}
