@@ -1252,7 +1252,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
     let visible_height = area.height.saturating_sub(2) as usize;
 
     // Try to use cached lines if available
-    let mut lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
+    let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
         // Calculate visible range for optimization
         // Add buffer for smooth scrolling and wrap handling
         let line_count = cache.lines.len();
@@ -1301,12 +1301,6 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
             None => vec![Line::from("No file selected")],
         }
     };
-
-    // Add bottom padding for scrolling past the last line
-    let padding = visible_height / 2;
-    for _ in 0..padding {
-        lines.push(Line::from(""));
-    }
 
     // Adjust scroll offset for visible range processing
     let adjusted_scroll = if app.diff_cache.is_some() {
