@@ -1249,19 +1249,23 @@ pub(crate) fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout:
 }
 
 pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let visible_height = area.height.saturating_sub(2) as usize;
+
     // Try to use cached lines if available
     let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
         let line_count = cache.lines.len();
         // Slice from scroll_offset so Paragraph starts at the correct logical line.
         // This avoids Wrap-induced mismatch between logical and display rows.
+        // Bound to visible viewport + buffer for wrap handling to avoid O(n) per frame.
         let start = app.scroll_offset.min(line_count);
+        let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection
             .as_ref()
             .map(|s| (s.start(), s.end()));
         let rendered = render_cached_lines(
             cache,
-            start..line_count,
+            start..end,
             app.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,

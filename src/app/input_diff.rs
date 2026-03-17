@@ -608,14 +608,16 @@ impl App {
         if visible_lines == 0 {
             return;
         }
+        // When the entire diff fits within the viewport, no scrolling is needed.
+        // Reset scroll_offset to prevent stale state from hiding lines after refresh.
+        if self.diff_line_count <= visible_lines {
+            self.scroll_offset = 0;
+            return;
+        }
+
         // Scroll margin: keep cursor at least this many lines from viewport edges.
         // Uses half the viewport so scrolling begins when cursor passes the center.
-        // Disable margin when the file fits within the viewport (no scrolling needed).
-        let margin = if self.diff_line_count <= visible_lines {
-            0
-        } else {
-            visible_lines / 2
-        };
+        let margin = visible_lines / 2;
 
         // Cursor above the top margin
         if self.selected_line < self.scroll_offset + margin {

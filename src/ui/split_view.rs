@@ -489,16 +489,19 @@ fn render_diff_body(
     area: ratatui::layout::Rect,
     border_color: Color,
 ) {
+    let visible_height = area.height.saturating_sub(2) as usize;
     let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
         let line_count = cache.lines.len();
+        // Slice from scroll_offset, bounded to visible viewport + buffer for wrap handling.
         let start = app.scroll_offset.min(line_count);
+        let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection
             .as_ref()
             .map(|s| (s.start(), s.end()));
         let rendered = diff_view::render_cached_lines(
             cache,
-            start..line_count,
+            start..end,
             app.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,
