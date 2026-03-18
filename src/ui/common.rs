@@ -5,6 +5,7 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::ai::RallyState;
 use crate::app::{App, DataState};
@@ -80,6 +81,49 @@ pub fn render_update_bar(frame: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center);
     frame.render_widget(bar, area);
+}
+
+/// Wrap text to fit within the specified width, handling multibyte characters.
+///
+/// Preserves explicit newlines in the input. Each `\n` starts a new line.
+pub fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines.push(current_line);
+            current_line = String::new();
+            current_width = 0;
+            continue;
+        }
+
+        let char_width = ch.width().unwrap_or(1);
+
+        if current_width + char_width > max_width {
+            lines.push(current_line);
+            current_line = String::new();
+            current_width = 0;
+        }
+
+        current_line.push(ch);
+        current_width += char_width;
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
 }
 
 #[cfg(test)]

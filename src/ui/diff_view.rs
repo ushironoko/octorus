@@ -1615,7 +1615,7 @@ pub fn render_text_input(frame: &mut Frame, app: &App) {
             ..
         }) => {
             render_suggestion_context(frame, app, chunks[1], context, original_code);
-            render_suggestion_input(frame, app, chunks[2], context);
+            render_suggestion_input(frame, app, chunks[2]);
         }
         Some(InputMode::Reply {
             reply_to_user,
@@ -1690,12 +1690,7 @@ fn render_text_input_area(
 }
 
 /// Render suggestion input TextArea with syntax highlighting
-fn render_suggestion_input(
-    frame: &mut Frame,
-    app: &App,
-    area: ratatui::layout::Rect,
-    _ctx: &LineInputContext,
-) {
+fn render_suggestion_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let submit_key = app.input_text_area.submit_key_display();
     let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
 

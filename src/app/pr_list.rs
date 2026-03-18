@@ -298,6 +298,8 @@ impl App {
         self.lazy_diff_pending_file = None;
         self.highlighted_cache_store.clear();
         self.diff_cache = None;
+        self.suggestion_highlight_cache = None;
+        self.input_mode = None;
         self.selected_file = 0;
         self.file_list_scroll_offset = 0;
         self.checks = None;
@@ -383,6 +385,8 @@ impl App {
                 self.comments_loading = false;
                 self.discussion_comments_loading = false;
                 self.highlighted_cache_store.clear();
+                self.suggestion_highlight_cache = None;
+                self.input_mode = None;
                 self.selected_file = 0;
                 self.file_list_scroll_offset = 0;
                 self.selected_line = 0;
@@ -427,6 +431,8 @@ impl App {
             self.comments_loading = false;
             self.discussion_comments_loading = false;
             self.highlighted_cache_store.clear();
+            self.suggestion_highlight_cache = None;
+            self.input_mode = None;
             self.selected_file = 0;
             self.file_list_scroll_offset = 0;
             self.selected_line = 0;

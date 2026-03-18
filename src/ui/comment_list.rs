@@ -8,52 +8,8 @@ use ratatui::{
     },
     Frame,
 };
-use unicode_width::UnicodeWidthChar;
-
-use super::common::render_rally_status_bar;
+use super::common::{render_rally_status_bar, wrap_text};
 use crate::app::{App, CommentTab};
-
-/// Wrap text to fit within the specified width, handling multibyte characters
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0;
-
-    for ch in text.chars() {
-        if ch == '\n' {
-            lines.push(current_line);
-            current_line = String::new();
-            current_width = 0;
-            continue;
-        }
-
-        let char_width = ch.width().unwrap_or(1);
-
-        if current_width + char_width > max_width {
-            // Start new line
-            lines.push(current_line);
-            current_line = String::new();
-            current_width = 0;
-        }
-
-        current_line.push(ch);
-        current_width += char_width;
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    lines
-}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     // Handle detail mode separately

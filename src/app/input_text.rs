@@ -37,7 +37,6 @@ impl App {
                     Some(InputMode::Suggestion {
                         context,
                         original_code: _,
-                        diff_line_range: _,
                     }) => {
                         self.submit_suggestion(context, content);
                         self.suggestion_highlight_cache = None;
@@ -116,48 +115,15 @@ impl App {
         });
     }
     pub(crate) fn submit_comment(&mut self, ctx: LineInputContext, body: String) {
-        let Some(file) = self.files().get(ctx.file_index) else {
-            return;
-        };
-        let Some(pr) = self.pr() else {
-            return;
-        };
-
-        let commit_id = pr.head.sha.clone();
-        let filename = file.filename.clone();
-        let repo = self.repo.clone();
-        let pr_number = self.pr_number();
-        let position = ctx.diff_position;
-        let start_line = ctx.start_line_number;
-        let end_line = ctx.line_number;
-
-        let (tx, rx) = mpsc::channel(1);
-        self.comment_submit_receiver = Some((pr_number, rx));
-        self.comment_submitting = true;
-
-        tokio::spawn(async move {
-            let result = if let Some(start) = start_line {
-                github::create_multiline_review_comment(
-                    &repo, pr_number, &commit_id, &filename, start, end_line, "RIGHT", &body,
-                )
-                .await
-            } else {
-                github::create_review_comment(
-                    &repo, pr_number, &commit_id, &filename, position, &body,
-                )
-                .await
-            };
-
-            let _ = tx
-                .send(match result {
-                    Ok(_) => CommentSubmitResult::Success,
-                    Err(e) => CommentSubmitResult::Error(e.to_string()),
-                })
-                .await;
-        });
+        self.submit_review_comment_inner(ctx, body);
     }
 
     pub(crate) fn submit_suggestion(&mut self, ctx: LineInputContext, suggested_code: String) {
+        let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
+        self.submit_review_comment_inner(ctx, body);
+    }
+
+    fn submit_review_comment_inner(&mut self, ctx: LineInputContext, body: String) {
         let Some(file) = self.files().get(ctx.file_index) else {
             return;
         };
@@ -167,7 +133,6 @@ impl App {
 
         let commit_id = pr.head.sha.clone();
         let filename = file.filename.clone();
-        let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
         let position = ctx.diff_position;
