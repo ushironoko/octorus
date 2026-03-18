@@ -167,6 +167,7 @@ impl App {
         });
         // サジェスチョンは元コードを初期値として設定
         self.input_text_area.set_content(&original_code);
+        self.update_suggestion_highlight_cache();
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
     }
@@ -344,6 +345,7 @@ impl App {
             diff_line_range: (start, end),
         });
         self.input_text_area.set_content(&original_code);
+        self.update_suggestion_highlight_cache();
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
     }

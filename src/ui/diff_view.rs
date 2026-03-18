@@ -1612,16 +1612,9 @@ pub fn render_text_input(frame: &mut Frame, app: &App) {
         Some(InputMode::Suggestion {
             context,
             original_code,
-            diff_line_range,
+            ..
         }) => {
-            render_suggestion_context(
-                frame,
-                app,
-                chunks[1],
-                context,
-                original_code,
-                *diff_line_range,
-            );
+            render_suggestion_context(frame, app, chunks[1], context, original_code);
             render_suggestion_input(frame, app, chunks[2], context);
         }
         Some(InputMode::Reply {
@@ -1701,22 +1694,15 @@ fn render_suggestion_input(
     frame: &mut Frame,
     app: &App,
     area: ratatui::layout::Rect,
-    ctx: &LineInputContext,
+    _ctx: &LineInputContext,
 ) {
     let submit_key = app.input_text_area.submit_key_display();
     let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
 
-    let filename = app
-        .files()
-        .get(ctx.file_index)
-        .map(|f| f.filename.as_str());
-
-    if let Some(filename) = filename {
-        let theme_name = &app.config.diff.theme;
-        let content = app.input_text_area.content();
-        let styled_lines = highlight_text_for_suggestion(&content, filename, theme_name);
+    // キャッシュ済みのハイライト結果を使用（ParserPool の毎フレーム再生成を回避）
+    if let Some(ref cache) = app.suggestion_highlight_cache {
         app.input_text_area
-            .render_highlighted(frame, area, &title, "Edit the code...", &styled_lines);
+            .render_highlighted(frame, area, &title, "Edit the code...", &cache.lines);
     } else {
         app.input_text_area
             .render_with_title(frame, area, &title, "Edit the code...");
@@ -1727,7 +1713,7 @@ fn render_suggestion_input(
 ///
 /// tree-sitter ベース: 壊れたコードでもエラーリカバリにより安定したハイライトを提供。
 /// tree-sitter 非対応言語の場合は syntect にフォールバック。
-fn highlight_text_for_suggestion(
+pub fn highlight_text_for_suggestion(
     content: &str,
     filename: &str,
     theme_name: &str,
@@ -1760,8 +1746,9 @@ fn highlight_text_for_suggestion(
                 ext,
             );
             let mut interner = Rodeo::default();
+            // split('\n') を使用して末尾の空行を保持する（TextArea の行数と一致させる）
             return content
-                .lines()
+                .split('\n')
                 .enumerate()
                 .map(|(idx, line)| {
                     let captures = line_highlights.get(idx);
@@ -1785,7 +1772,7 @@ fn highlight_text_for_suggestion(
             let theme = get_theme(theme_name);
             let mut hl = HighlightLines::new(syntax, theme);
             return content
-                .lines()
+                .split('\n')
                 .map(|line| {
                     let spans = crate::syntax::highlight_code_line_legacy(line, &mut hl);
                     Line::from(spans)
@@ -1796,7 +1783,7 @@ fn highlight_text_for_suggestion(
 
     // ハイライト非対応: プレーンテキスト
     content
-        .lines()
+        .split('\n')
         .map(|l| Line::from(l.to_owned()))
         .collect()
 }
@@ -1808,7 +1795,6 @@ fn render_suggestion_context(
     area: ratatui::layout::Rect,
     ctx: &LineInputContext,
     original_code: &str,
-    diff_line_range: (usize, usize),
 ) {
     let filename = app
         .files()
@@ -1837,40 +1823,12 @@ fn render_suggestion_context(
         )]),
     ];
 
-    // DiffCache からハイライト済みSpanを取得（キャッシュが有効な場合）
-    let highlighted = app.diff_cache.as_ref().and_then(|cache| {
-        if cache.file_index != ctx.file_index {
-            return None;
-        }
-        let (start, end) = diff_line_range;
-        if end >= cache.lines.len() {
-            return None;
-        }
-        let mut highlighted_lines = Vec::new();
-        for idx in start..=end {
-            let cached = &cache.lines[idx];
-            let spans: Vec<Span<'_>> = cached
-                .spans
-                .iter()
-                .map(|s| Span::styled(cache.resolve(s.content).to_owned(), s.style))
-                .collect();
-            highlighted_lines.push(Line::from(spans));
-        }
-        Some(highlighted_lines)
-    });
-
-    if let Some(highlighted_lines) = highlighted {
-        for line in highlighted_lines {
-            lines.push(line);
-        }
-    } else {
-        // フォールバック: ハイライトなしのプレーン表示
-        for line in original_code.lines() {
-            lines.push(Line::from(vec![Span::styled(
-                format!("  {}", line),
-                Style::default().fg(Color::Red),
-            )]));
-        }
+    // original_code を直接ハイライトする（DiffCache はマークダウンリッチ変換が
+    // 適用されている可能性があるため、リテラルなソースコードと不一致になる）
+    let theme_name = &app.config.diff.theme;
+    let highlighted_lines = highlight_text_for_suggestion(original_code, filename, theme_name);
+    for line in highlighted_lines {
+        lines.push(line);
     }
 
     // Add hint about what will be submitted
