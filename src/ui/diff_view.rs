@@ -1612,9 +1612,17 @@ pub fn render_text_input(frame: &mut Frame, app: &App) {
         Some(InputMode::Suggestion {
             context,
             original_code,
+            diff_line_range,
         }) => {
-            render_suggestion_context(frame, app, chunks[1], context, original_code);
-            render_text_input_area(frame, app, chunks[2], "Suggested code", "Edit the code...");
+            render_suggestion_context(
+                frame,
+                app,
+                chunks[1],
+                context,
+                original_code,
+                *diff_line_range,
+            );
+            render_suggestion_input(frame, app, chunks[2], context);
         }
         Some(InputMode::Reply {
             reply_to_user,
@@ -1688,6 +1696,111 @@ fn render_text_input_area(
         .render_with_title(frame, area, &title, placeholder);
 }
 
+/// Render suggestion input TextArea with syntax highlighting
+fn render_suggestion_input(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    ctx: &LineInputContext,
+) {
+    let submit_key = app.input_text_area.submit_key_display();
+    let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
+
+    let filename = app
+        .files()
+        .get(ctx.file_index)
+        .map(|f| f.filename.as_str());
+
+    if let Some(filename) = filename {
+        let theme_name = &app.config.diff.theme;
+        let content = app.input_text_area.content();
+        let styled_lines = highlight_text_for_suggestion(&content, filename, theme_name);
+        app.input_text_area
+            .render_highlighted(frame, area, &title, "Edit the code...", &styled_lines);
+    } else {
+        app.input_text_area
+            .render_with_title(frame, area, &title, "Edit the code...");
+    }
+}
+
+/// テキストをシンタックスハイライトして Line のベクタを返す（サジェスチョン入力用）
+///
+/// tree-sitter ベース: 壊れたコードでもエラーリカバリにより安定したハイライトを提供。
+/// tree-sitter 非対応言語の場合は syntect にフォールバック。
+fn highlight_text_for_suggestion(
+    content: &str,
+    filename: &str,
+    theme_name: &str,
+) -> Vec<Line<'static>> {
+    use crate::syntax::{
+        apply_line_highlights, collect_line_highlights_with_injections, Highlighter, ParserPool,
+    };
+    use lasso::Rodeo;
+
+    if content.is_empty() {
+        return vec![Line::from("")];
+    }
+
+    let highlighter = Highlighter::for_file(filename, theme_name);
+
+    // tree-sitter パス
+    if let Some(style_cache) = highlighter.style_cache() {
+        let mut parser_pool = ParserPool::new();
+        if let Some(cst_result) = highlighter.parse_source(content, &mut parser_pool) {
+            let ext = std::path::Path::new(filename)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let line_highlights = collect_line_highlights_with_injections(
+                content,
+                &cst_result.tree,
+                cst_result.lang,
+                style_cache,
+                &mut parser_pool,
+                ext,
+            );
+            let mut interner = Rodeo::default();
+            return content
+                .lines()
+                .enumerate()
+                .map(|(idx, line)| {
+                    let captures = line_highlights.get(idx);
+                    let interned_spans = apply_line_highlights(line, captures, &mut interner);
+                    let spans: Vec<Span<'static>> = interned_spans
+                        .iter()
+                        .map(|s| Span::styled(interner.resolve(&s.content).to_owned(), s.style))
+                        .collect();
+                    Line::from(spans)
+                })
+                .collect();
+        }
+    }
+
+    // syntect フォールバック
+    {
+        use crate::syntax::{get_theme, syntax_for_file};
+        use syntect::easy::HighlightLines;
+
+        if let Some(syntax) = syntax_for_file(filename) {
+            let theme = get_theme(theme_name);
+            let mut hl = HighlightLines::new(syntax, theme);
+            return content
+                .lines()
+                .map(|line| {
+                    let spans = crate::syntax::highlight_code_line_legacy(line, &mut hl);
+                    Line::from(spans)
+                })
+                .collect();
+        }
+    }
+
+    // ハイライト非対応: プレーンテキスト
+    content
+        .lines()
+        .map(|l| Line::from(l.to_owned()))
+        .collect()
+}
+
 /// Render context info for suggestion input
 fn render_suggestion_context(
     frame: &mut Frame,
@@ -1695,6 +1808,7 @@ fn render_suggestion_context(
     area: ratatui::layout::Rect,
     ctx: &LineInputContext,
     original_code: &str,
+    diff_line_range: (usize, usize),
 ) {
     let filename = app
         .files()
@@ -1721,11 +1835,43 @@ fn render_suggestion_context(
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(vec![Span::styled(
-            format!("  {}", original_code),
-            Style::default().fg(Color::Red),
-        )]),
     ];
+
+    // DiffCache からハイライト済みSpanを取得（キャッシュが有効な場合）
+    let highlighted = app.diff_cache.as_ref().and_then(|cache| {
+        if cache.file_index != ctx.file_index {
+            return None;
+        }
+        let (start, end) = diff_line_range;
+        if end >= cache.lines.len() {
+            return None;
+        }
+        let mut highlighted_lines = Vec::new();
+        for idx in start..=end {
+            let cached = &cache.lines[idx];
+            let spans: Vec<Span<'_>> = cached
+                .spans
+                .iter()
+                .map(|s| Span::styled(cache.resolve(s.content).to_owned(), s.style))
+                .collect();
+            highlighted_lines.push(Line::from(spans));
+        }
+        Some(highlighted_lines)
+    });
+
+    if let Some(highlighted_lines) = highlighted {
+        for line in highlighted_lines {
+            lines.push(line);
+        }
+    } else {
+        // フォールバック: ハイライトなしのプレーン表示
+        for line in original_code.lines() {
+            lines.push(Line::from(vec![Span::styled(
+                format!("  {}", line),
+                Style::default().fg(Color::Red),
+            )]));
+        }
+    }
 
     // Add hint about what will be submitted
     lines.push(Line::from(""));
@@ -1736,7 +1882,7 @@ fn render_suggestion_context(
 
     let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title("Suggestion"))
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 

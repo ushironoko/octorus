@@ -2277,10 +2277,12 @@ fn test_multiline_suggestion_clears_selection_on_valid_range() {
     if let Some(InputMode::Suggestion {
         context,
         original_code,
+        diff_line_range,
     }) = &app.input_mode
     {
         assert!(context.start_line_number.is_some());
         assert!(!original_code.is_empty());
+        assert!(diff_line_range.0 <= diff_line_range.1);
     } else {
         panic!("expected InputMode::Suggestion");
     }

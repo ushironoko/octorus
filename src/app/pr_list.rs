@@ -243,11 +243,10 @@ impl App {
         Ok(())
     }
     pub(crate) fn reload_pr_list(&mut self) {
-        // 既存のリストをクリアせず、ローディング状態のみ設定
-        // これにより、ローディング中も既存のリストが表示される
         self.selected_pr = 0;
         self.pr_list_scroll_offset = 0;
         self.pr_list_loading = true;
+        self.pr_list = None;
         self.pr_list_has_more = false;
         self.pr_list_filter = None;
 

@@ -37,6 +37,7 @@ impl App {
                     Some(InputMode::Suggestion {
                         context,
                         original_code: _,
+                        diff_line_range: _,
                     }) => {
                         self.submit_suggestion(context, content);
                     }
