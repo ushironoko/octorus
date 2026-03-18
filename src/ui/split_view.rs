@@ -489,27 +489,29 @@ fn render_diff_body(
     area: ratatui::layout::Rect,
     border_color: Color,
 ) {
-    let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
-        let visible_height = area.height.saturating_sub(2) as usize;
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
         let line_count = cache.lines.len();
-        let visible_start = app.scroll_offset.saturating_sub(2).min(line_count);
-        let visible_end = (app.scroll_offset + visible_height + 5).min(line_count);
-
+        // Slice from scroll_offset, bounded to visible viewport + buffer for wrap handling.
+        let max_scroll = line_count.saturating_sub(visible_height);
+        let start = app.scroll_offset.min(max_scroll);
+        let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection
             .as_ref()
             .map(|s| (s.start(), s.end()));
-        diff_view::render_cached_lines(
+        let rendered = diff_view::render_cached_lines(
             cache,
-            visible_start..visible_end,
+            start..end,
             app.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
-        )
+        );
+        (rendered, 0u16)
     } else {
         let file = app.files().get(app.selected_file);
-        match file {
+        let rendered = match file {
             Some(f) => match f.patch.as_ref() {
                 Some(_) => vec![Line::from("Loading diff...")],
                 None => {
@@ -521,14 +523,8 @@ fn render_diff_body(
                 }
             },
             None => vec![Line::from("No file selected")],
-        }
-    };
-
-    let adjusted_scroll = if app.diff_cache.is_some() {
-        let visible_start = app.scroll_offset.saturating_sub(2);
-        (app.scroll_offset - visible_start) as u16
-    } else {
-        app.scroll_offset as u16
+        };
+        (rendered, app.scroll_offset as u16)
     };
 
     let diff_block = Paragraph::new(lines)
@@ -538,7 +534,7 @@ fn render_diff_body(
                 .border_style(Style::default().fg(border_color)),
         )
         .wrap(Wrap { trim: false })
-        .scroll((adjusted_scroll, 0));
+        .scroll((scroll_row, 0));
 
     frame.render_widget(diff_block, area);
 
