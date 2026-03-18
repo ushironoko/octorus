@@ -493,7 +493,8 @@ fn render_diff_body(
     let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
         let line_count = cache.lines.len();
         // Slice from scroll_offset, bounded to visible viewport + buffer for wrap handling.
-        let start = app.scroll_offset.min(line_count);
+        let max_scroll = line_count.saturating_sub(visible_height);
+        let start = app.scroll_offset.min(max_scroll);
         let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection

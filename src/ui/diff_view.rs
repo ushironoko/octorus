@@ -1257,7 +1257,8 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
         // Slice from scroll_offset so Paragraph starts at the correct logical line.
         // This avoids Wrap-induced mismatch between logical and display rows.
         // Bound to visible viewport + buffer for wrap handling to avoid O(n) per frame.
-        let start = app.scroll_offset.min(line_count);
+        let max_scroll = line_count.saturating_sub(visible_height);
+        let start = app.scroll_offset.min(max_scroll);
         let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection
