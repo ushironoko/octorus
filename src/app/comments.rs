@@ -163,9 +163,11 @@ impl App {
                 start_line_number: None,
             },
             original_code: original_code.clone(),
+            diff_line_range: (self.selected_line, self.selected_line),
         });
         // サジェスチョンは元コードを初期値として設定
         self.input_text_area.set_content(&original_code);
+        self.update_suggestion_highlight_cache();
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
     }
@@ -340,8 +342,10 @@ impl App {
                 start_line_number: start_line,
             },
             original_code: original_code.clone(),
+            diff_line_range: (start, end),
         });
         self.input_text_area.set_content(&original_code);
+        self.update_suggestion_highlight_cache();
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
     }

@@ -247,6 +247,32 @@ impl TextArea {
 
     /// カスタムタイトルとプレースホルダーでレンダリング
     pub fn render_with_title(&self, frame: &mut Frame, area: Rect, title: &str, placeholder: &str) {
+        self.render_inner(frame, area, title, placeholder, None);
+    }
+
+    /// シンタックスハイライト付きでレンダリング
+    ///
+    /// `styled_lines` は TextArea の全行に対応するハイライト済み `Line` のスライス。
+    /// スクロール・可視範囲の切り出しは内部で行う。
+    pub fn render_highlighted(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        title: &str,
+        placeholder: &str,
+        styled_lines: &[Line<'_>],
+    ) {
+        self.render_inner(frame, area, title, placeholder, Some(styled_lines));
+    }
+
+    fn render_inner(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        title: &str,
+        placeholder: &str,
+        styled_lines: Option<&[Line<'_>]>,
+    ) {
         let visible_height = area.height.saturating_sub(2).max(1) as usize; // borders
         self.visible_height.set(visible_height);
         // visible_height が変わった可能性があるのでスクロールを再調整
@@ -254,17 +280,37 @@ impl TextArea {
         self.adjust_scroll();
 
         let scroll_offset = self.scroll_offset.get();
-        let text: Vec<Line> = self
-            .lines
-            .iter()
-            .skip(scroll_offset)
-            .take(visible_height)
-            .map(|l| Line::from(l.as_str()))
-            .collect();
+
+        // styled_lines がある場合はそれを使い、ない場合はプレーンテキスト
+        // ライフタイムが異なるため、所有権を持つ Line<'static> に統一する
+        let text: Vec<Line<'static>> = if let Some(styled) = styled_lines {
+            styled
+                .iter()
+                .skip(scroll_offset)
+                .take(visible_height)
+                .map(|line| {
+                    let owned_spans: Vec<ratatui::text::Span<'static>> = line
+                        .spans
+                        .iter()
+                        .map(|s| {
+                            ratatui::text::Span::styled(s.content.to_string(), s.style)
+                        })
+                        .collect();
+                    Line::from(owned_spans)
+                })
+                .collect()
+        } else {
+            self.lines
+                .iter()
+                .skip(scroll_offset)
+                .take(visible_height)
+                .map(|l| Line::from(l.to_owned()))
+                .collect()
+        };
 
         let placeholder_style = Style::default().fg(Color::DarkGray);
-        let display_text = if self.is_empty() {
-            vec![Line::styled(placeholder, placeholder_style)]
+        let display_text: Vec<Line<'static>> = if self.is_empty() {
+            vec![Line::styled(placeholder.to_owned(), placeholder_style)]
         } else {
             text
         };

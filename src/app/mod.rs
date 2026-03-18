@@ -65,6 +65,17 @@ const MAX_PREFETCH_FILES: usize = 50;
 /// PR番号と紐づいたレシーバー（発信元PRを追跡してクロスPRキャッシュ汚染を防止）
 type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
 
+/// サジェスチョン入力のシンタックスハイライトキャッシュ
+///
+/// 毎フレーム ParserPool を再生成するコストを回避するため、
+/// コンテンツのハッシュ・ファイル名・テーマが変わった時のみハイライトを再構築する。
+pub struct SuggestionHighlightCache {
+    pub content_hash: u64,
+    pub filename: String,
+    pub theme_name: String,
+    pub lines: Vec<ratatui::text::Line<'static>>,
+}
+
 pub struct App {
     pub repo: String,
     /// 選択されたPR番号（PR一覧から選択した場合は後から設定）
@@ -204,6 +215,8 @@ pub struct App {
     pub session_cache: SessionCache,
     /// Markdown リッチ表示モード（見出し太字・斜体等を適用）
     markdown_rich: bool,
+    /// サジェスチョン入力のシンタックスハイライトキャッシュ
+    pub suggestion_highlight_cache: Option<SuggestionHighlightCache>,
     /// PR description 画面のスクロールオフセット
     pub pr_description_scroll_offset: usize,
     /// PR description 用の DiffCache（マークダウンリッチ表示）
@@ -333,6 +346,7 @@ impl App {
             symbol_search: SymbolSearchState::Idle,
             session_cache: SessionCache::new(),
             markdown_rich: false,
+            suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
             pr_description_cache: None,
             pr_list_filter: None,
@@ -446,6 +460,7 @@ impl App {
             refresh_pending: None,
             session_cache: SessionCache::new(),
             markdown_rich: false,
+            suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
             pr_description_cache: None,
             pr_list_filter: None,
@@ -702,6 +717,7 @@ impl App {
             watcher_handle: None,
             refresh_pending: None,
             markdown_rich: false,
+            suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
             pr_description_cache: None,
             pr_list_filter: None,

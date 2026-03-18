@@ -7,7 +7,7 @@ use crate::loader::CommentSubmitResult;
 use crate::ui::text_area::TextAreaAction;
 
 use super::types::*;
-use super::App;
+use super::{App, SuggestionHighlightCache};
 
 impl App {
     pub(crate) fn handle_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
@@ -37,8 +37,10 @@ impl App {
                     Some(InputMode::Suggestion {
                         context,
                         original_code: _,
+                        diff_line_range: _,
                     }) => {
                         self.submit_suggestion(context, content);
+                        self.suggestion_highlight_cache = None;
                     }
                     Some(InputMode::Reply { comment_id, .. }) => {
                         self.submit_reply(comment_id, content);
@@ -53,7 +55,12 @@ impl App {
             TextAreaAction::Cancel => {
                 self.cancel_input();
             }
-            TextAreaAction::Continue => {}
+            TextAreaAction::Continue => {
+                // サジェスチョンモードではハイライトキャッシュを更新
+                if matches!(self.input_mode, Some(InputMode::Suggestion { .. })) {
+                    self.update_suggestion_highlight_cache();
+                }
+            }
             TextAreaAction::PendingSequence => {
                 // Waiting for more keys in a sequence, do nothing
             }
@@ -63,7 +70,50 @@ impl App {
     pub(crate) fn cancel_input(&mut self) {
         self.input_mode = None;
         self.input_text_area.clear();
+        self.suggestion_highlight_cache = None;
         self.state = self.preview_return_state;
+    }
+
+    /// サジェスチョン入力のハイライトキャッシュを更新する
+    ///
+    /// コンテンツのハッシュが変わった場合のみ再構築する。
+    /// 毎フレーム ParserPool を再生成するコストを回避。
+    pub(crate) fn update_suggestion_highlight_cache(&mut self) {
+        let filename = match &self.input_mode {
+            Some(InputMode::Suggestion { context, .. }) => self
+                .files()
+                .get(context.file_index)
+                .map(|f| f.filename.clone()),
+            _ => None,
+        };
+
+        let Some(filename) = filename else {
+            return;
+        };
+
+        let content = self.input_text_area.content();
+        let content_hash = hash_string(&content);
+        let theme_name = self.config.diff.theme.clone();
+
+        // キャッシュが有効ならスキップ（content_hash, filename, theme_name すべて一致時のみ）
+        if let Some(ref cache) = self.suggestion_highlight_cache {
+            if cache.content_hash == content_hash
+                && cache.filename == filename
+                && cache.theme_name == theme_name
+            {
+                return;
+            }
+        }
+
+        let lines =
+            crate::ui::diff_view::highlight_text_for_suggestion(&content, &filename, &theme_name);
+
+        self.suggestion_highlight_cache = Some(SuggestionHighlightCache {
+            content_hash,
+            filename,
+            theme_name,
+            lines,
+        });
     }
     pub(crate) fn submit_comment(&mut self, ctx: LineInputContext, body: String) {
         let Some(file) = self.files().get(ctx.file_index) else {

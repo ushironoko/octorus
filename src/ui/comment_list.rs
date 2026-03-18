@@ -24,8 +24,10 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     let mut current_width = 0;
 
     for ch in text.chars() {
-        // Skip newlines, treat as space
         if ch == '\n' {
+            lines.push(current_line);
+            current_line = String::new();
+            current_width = 0;
             continue;
         }
 
@@ -290,12 +292,12 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
                 ),
             ]);
 
-            let body_text: String = comment.body.lines().collect::<Vec<_>>().join(" ");
-            let wrapped_lines = wrap_text(&body_text, body_width);
-
             let mut lines = vec![header_line];
-            for wrapped_line in wrapped_lines {
-                lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+            for body_line in comment.body.lines() {
+                let wrapped = wrap_text(body_line, body_width);
+                for wrapped_line in wrapped {
+                    lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+                }
             }
             lines.push(Line::from(""));
 
@@ -335,18 +337,23 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
                 Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
             ]);
 
-            // Truncate body for list view
-            let body_text: String = comment.body.lines().collect::<Vec<_>>().join(" ");
-            let truncated = if body_text.len() > body_width * 2 {
-                format!("{}...", &body_text[..body_width * 2])
-            } else {
-                body_text
-            };
-            let wrapped_lines = wrap_text(&truncated, body_width);
-
+            // Truncate body for list view (max 3 lines)
             let mut lines = vec![header_line];
-            for wrapped_line in wrapped_lines {
-                lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+            let mut line_count = 0;
+            let max_preview_lines = 3;
+            'outer: for body_line in comment.body.lines() {
+                let wrapped = wrap_text(body_line, body_width);
+                for wrapped_line in wrapped {
+                    if line_count >= max_preview_lines {
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled("...", Style::default().fg(Color::DarkGray)),
+                        ]));
+                        break 'outer;
+                    }
+                    lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+                    line_count += 1;
+                }
             }
             lines.push(Line::from(""));
 
