@@ -132,8 +132,6 @@ pub enum InputMode {
     Suggestion {
         context: LineInputContext,
         original_code: String,
-        /// DiffCache 内の行インデックス範囲（ハイライト表示用）
-        diff_line_range: (usize, usize),
     },
     Reply {
         comment_id: u64,

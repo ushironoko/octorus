@@ -8,48 +8,10 @@ use ratatui::{
     },
     Frame,
 };
-use unicode_width::UnicodeWidthChar;
-
 use crate::app::App;
 use crate::github::IssueComment;
 
-/// Wrap text to fit within the specified width, handling multibyte characters
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0;
-
-    for ch in text.chars() {
-        if ch == '\n' {
-            continue;
-        }
-
-        let char_width = ch.width().unwrap_or(1);
-
-        if current_width + char_width > max_width {
-            lines.push(current_line);
-            current_line = String::new();
-            current_width = 0;
-        }
-
-        current_line.push(ch);
-        current_width += char_width;
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    lines
-}
+use super::common::wrap_text;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let Some(ref state) = app.issue_state else {
