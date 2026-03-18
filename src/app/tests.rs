@@ -4425,7 +4425,7 @@ async fn test_jump_back_restores_position() {
                 status: "modified".to_string(),
                 additions: 1,
                 deletions: 0,
-                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                patch: Some("@@ -1,6 +1,6 @@\n line1\n line2\n line3\n line4\n line5\n+line6".to_string()),
                 viewed: false,
             },
             ChangedFile {
@@ -4433,19 +4433,19 @@ async fn test_jump_back_restores_position() {
                 status: "modified".to_string(),
                 additions: 1,
                 deletions: 0,
-                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                patch: Some("@@ -1,11 +1,11 @@\n l1\n l2\n l3\n l4\n l5\n l6\n l7\n l8\n l9\n l10\n+l11".to_string()),
                 viewed: false,
             },
         ],
     };
 
-    // Push current position
+    // Push current position (line 5 is valid: a.rs has 7 diff lines, indices 0-6)
     app.selected_file = 0;
     app.selected_line = 5;
     app.scroll_offset = 2;
     app.push_jump_location();
 
-    // Move elsewhere
+    // Move elsewhere (line 10 is valid: b.rs has 12 diff lines, indices 0-11)
     app.selected_file = 1;
     app.selected_line = 10;
     app.scroll_offset = 8;

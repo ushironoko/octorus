@@ -35,6 +35,21 @@ impl App {
     }
     pub(crate) fn update_diff_line_count(&mut self) {
         self.diff_line_count = Self::calc_diff_line_count(self.files(), self.selected_file);
+        // Clamp scroll_offset and selected_line so they never point past the
+        // end of the new diff.  This prevents a blank diff pane when a refresh
+        // or patch change shrinks the diff while it is being viewed.
+        if self.diff_line_count == 0 {
+            self.scroll_offset = 0;
+            self.selected_line = 0;
+        } else {
+            let max_line = self.diff_line_count - 1;
+            if self.selected_line > max_line {
+                self.selected_line = max_line;
+            }
+            if self.scroll_offset > max_line {
+                self.scroll_offset = max_line;
+            }
+        }
     }
 
     /// Split Viewでファイル選択変更時にdiff状態を同期
