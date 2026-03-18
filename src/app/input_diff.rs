@@ -184,10 +184,32 @@ impl App {
         let term_h = term_size.height as usize;
         let term_w = term_size.width as usize;
 
-        // Calculate visible_lines: Header(3) + Footer(3) + border(2) = 8
-        // Both variants use the same height — SplitView is a horizontal split (65% width),
-        // so the diff pane height equals the full terminal height.
-        let visible_lines = term_h.saturating_sub(8);
+        // Calculate visible_lines matching the actual rendered diff body height.
+        // When the comment panel is closed, the layout is:
+        //   Header(3) + Diff(remaining) + Footer(3) + border(2) = term_h - 8
+        // When the comment panel is open, the diff body only gets a percentage of
+        // the available space (after subtracting fixed-height regions), so we must
+        // replicate that proportional split here to keep adjust_scroll() accurate.
+        let visible_lines = if self.comment_panel_open {
+            let has_rally = self.has_background_rally();
+            // Fixed-height rows consumed by Header + Footer (+ optional Rally bar)
+            let fixed = if has_rally { 7usize } else { 6usize };
+            let remaining = term_h.saturating_sub(fixed);
+            // Diff percentage / total percentage — must match the rendering layout:
+            //   Fullscreen without rally: 55% diff + 40% comments = 95%
+            //   Fullscreen with rally:    50% diff + 40% comments = 90%
+            //   SplitPane (both):         50% diff + 40% comments = 90%
+            let (diff_pct, total_pct) = match variant {
+                DiffViewVariant::Fullscreen if !has_rally => (55usize, 95usize),
+                _ => (50, 90),
+            };
+            let diff_area_h = remaining * diff_pct / total_pct;
+            // Subtract 2 for the Block borders around the diff body
+            diff_area_h.saturating_sub(2)
+        } else {
+            // Header(3) + Footer(3) + border(2) = 8
+            term_h.saturating_sub(8)
+        };
         let panel_inner_width = self.comment_panel_inner_width(term_w);
 
         // Clone keybindings to avoid borrow issues with self
