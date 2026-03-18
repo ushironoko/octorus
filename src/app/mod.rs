@@ -68,9 +68,11 @@ type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
 /// サジェスチョン入力のシンタックスハイライトキャッシュ
 ///
 /// 毎フレーム ParserPool を再生成するコストを回避するため、
-/// コンテンツのハッシュが変わった時のみハイライトを再構築する。
+/// コンテンツのハッシュ・ファイル名・テーマが変わった時のみハイライトを再構築する。
 pub struct SuggestionHighlightCache {
     pub content_hash: u64,
+    pub filename: String,
+    pub theme_name: String,
     pub lines: Vec<ratatui::text::Line<'static>>,
 }
 

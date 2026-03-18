@@ -40,6 +40,7 @@ impl App {
                         diff_line_range: _,
                     }) => {
                         self.submit_suggestion(context, content);
+                        self.suggestion_highlight_cache = None;
                     }
                     Some(InputMode::Reply { comment_id, .. }) => {
                         self.submit_reply(comment_id, content);
@@ -92,20 +93,25 @@ impl App {
 
         let content = self.input_text_area.content();
         let content_hash = hash_string(&content);
+        let theme_name = self.config.diff.theme.clone();
 
-        // キャッシュが有効ならスキップ
+        // キャッシュが有効ならスキップ（content_hash, filename, theme_name すべて一致時のみ）
         if let Some(ref cache) = self.suggestion_highlight_cache {
-            if cache.content_hash == content_hash {
+            if cache.content_hash == content_hash
+                && cache.filename == filename
+                && cache.theme_name == theme_name
+            {
                 return;
             }
         }
 
-        let theme_name = &self.config.diff.theme;
         let lines =
-            crate::ui::diff_view::highlight_text_for_suggestion(&content, &filename, theme_name);
+            crate::ui::diff_view::highlight_text_for_suggestion(&content, &filename, &theme_name);
 
         self.suggestion_highlight_cache = Some(SuggestionHighlightCache {
             content_hash,
+            filename,
+            theme_name,
             lines,
         });
     }
