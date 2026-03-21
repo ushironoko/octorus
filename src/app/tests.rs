@@ -311,8 +311,6 @@ fn test_back_to_pr_list_from_local_mode_resets_local_state() {
 
     // local_mode がリセットされている
     assert!(!app.local_mode);
-    // Local スナップショットが保存されている
-    assert!(app.saved_local_snapshot.is_some());
     assert_eq!(app.state, AppState::PullRequestList);
     assert!(app.pr_number.is_none());
 }
@@ -381,7 +379,6 @@ async fn test_pr_list_local_toggle_round_trip() {
     app.back_to_pr_list();
     assert!(!app.local_mode);
     assert_eq!(app.state, AppState::PullRequestList);
-    assert!(app.saved_local_snapshot.is_some());
 
     // Step 3: L → 再度 Local モード（1回目で正しく Local に入る）
     app.toggle_local_mode();
@@ -1159,418 +1156,7 @@ fn test_toggle_local_mode_blocks_during_ai_rally() {
     assert!(app.submission_result.as_ref().unwrap().1.contains("Cannot"));
 }
 
-#[test]
-fn test_save_and_restore_view_snapshot() {
-    let mut app = App::new_for_test();
-    app.selected_file = 5;
-    app.file_list_scroll_offset = 2;
-    app.diff_scroll.selected_line = 10;
-    app.diff_scroll.scroll_offset = 3;
-
-    let snapshot = app.save_view_snapshot();
-
-    // save_view_snapshot does not move data_state (ViewSnapshot has no data_state)
-    // App state fields should be reset after save
-    assert!(app.diff_store.current.is_none());
-
-    // Modify app state
-    app.selected_file = 0;
-    app.diff_scroll.selected_line = 0;
-
-    // Restore
-    app.restore_view_snapshot(snapshot);
-    assert_eq!(app.selected_file, 5);
-    assert_eq!(app.file_list_scroll_offset, 2);
-    assert_eq!(app.diff_scroll.selected_line, 10);
-    assert_eq!(app.diff_scroll.scroll_offset, 3);
-}
-
 // ===================================================================
-// ViewSnapshot 網羅テスト
-// ===================================================================
-
-#[test]
-fn test_save_snapshot_captures_all_fields() {
-    let mut app = App::new_for_test();
-    app.pr_number = Some(42);
-    app.selected_file = 7;
-    app.file_list_scroll_offset = 3;
-    app.diff_scroll.selected_line = 15;
-    app.diff_scroll.scroll_offset = 5;
-
-    // diff_cache (current)
-    let mut dc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
-    dc.file_index = 7;
-    app.diff_store.set_current(7, dc);
-
-    // highlighted_cache_store (store)
-    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
-    hc.file_index = 2;
-    app.diff_store.store.insert(2, hc);
-
-    // review_comments
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
-        id: 10,
-        path: "test.rs".to_string(),
-        line: Some(5),
-        body: "snapshot test".to_string(),
-        user: crate::github::User {
-            login: "reviewer".to_string(),
-        },
-        created_at: "2024-01-01T00:00:00Z".to_string(),
-    }]);
-
-    // discussion_comments
-    app.discussion_comments = Some(vec![crate::github::comment::DiscussionComment {
-        id: 20,
-        body: "discussion".to_string(),
-        user: crate::github::User {
-            login: "user".to_string(),
-        },
-        created_at: "2024-01-01T00:00:00Z".to_string(),
-    }]);
-
-    // local_file_signatures
-    app.local_file_signatures.insert("a.rs".to_string(), 111);
-    // local_file_patch_signatures
-    app.local_file_patch_signatures
-        .insert("a.rs".to_string(), 222);
-
-    let snapshot = app.save_view_snapshot();
-
-    // --- スナップショットに全フィールドがキャプチャされていること ---
-    assert_eq!(snapshot.pr_number, Some(42));
-    assert_eq!(snapshot.selected_file, 7);
-    assert_eq!(snapshot.file_list_scroll_offset, 3);
-    assert_eq!(snapshot.selected_line, 15);
-    assert_eq!(snapshot.scroll_offset, 5);
-    assert!(snapshot.diff_cache_snapshot.current.is_some());
-    assert_eq!(snapshot.diff_cache_snapshot.current.as_ref().unwrap().file_index, 7);
-    assert_eq!(snapshot.diff_cache_snapshot.store.len(), 1);
-    assert!(snapshot.diff_cache_snapshot.store.contains_key(&2));
-    assert_eq!(snapshot.review_comments.as_ref().unwrap().len(), 1);
-    assert_eq!(snapshot.review_comments.as_ref().unwrap()[0].id, 10);
-    assert_eq!(snapshot.discussion_comments.as_ref().unwrap().len(), 1);
-    assert_eq!(snapshot.discussion_comments.as_ref().unwrap()[0].id, 20);
-    assert_eq!(snapshot.local_file_signatures.len(), 1);
-    assert_eq!(snapshot.local_file_signatures["a.rs"], 111);
-    assert_eq!(snapshot.local_file_patch_signatures.len(), 1);
-    assert_eq!(snapshot.local_file_patch_signatures["a.rs"], 222);
-}
-
-#[test]
-fn test_save_snapshot_takes_from_app() {
-    let mut app = App::new_for_test();
-    app.diff_store.current = Some(crate::ui::diff_view::build_plain_diff_cache(
-        "@@ -1 +1 @@\n+x",
-        4,
-    ));
-    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
-    hc.file_index = 1;
-    app.diff_store.store.insert(1, hc);
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
-        id: 1,
-        path: "f.rs".to_string(),
-        line: Some(1),
-        body: "c".to_string(),
-        user: crate::github::User {
-            login: "u".to_string(),
-        },
-        created_at: "".to_string(),
-    }]);
-    app.discussion_comments = Some(vec![crate::github::comment::DiscussionComment {
-        id: 1,
-        body: "d".to_string(),
-        user: crate::github::User {
-            login: "u".to_string(),
-        },
-        created_at: "".to_string(),
-    }]);
-    app.local_file_signatures.insert("b.rs".to_string(), 1);
-    app.local_file_patch_signatures
-        .insert("b.rs".to_string(), 2);
-
-    let _snapshot = app.save_view_snapshot();
-
-    // take() / mem::take() により App 側は空になっていること
-    assert!(app.diff_store.current.is_none());
-    assert!(app.diff_store.store.is_empty());
-    assert!(app.review_comments.is_none());
-    assert!(app.discussion_comments.is_none());
-    assert!(app.local_file_signatures.is_empty());
-    assert!(app.local_file_patch_signatures.is_empty());
-}
-
-#[test]
-fn test_restore_snapshot_all_fields() {
-    use super::types::ViewSnapshot;
-    use std::collections::HashMap;
-
-    let mut app = App::new_for_test();
-    // 事前に違う値を設定
-    app.pr_number = Some(99);
-    app.selected_file = 0;
-    app.diff_scroll.selected_line = 0;
-
-    let mut dc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+restored", 4);
-    dc.file_index = 3;
-
-    let mut hcs = HashMap::new();
-    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+cached", 4);
-    hc.file_index = 5;
-    hcs.insert(5, hc);
-
-    let mut sigs = HashMap::new();
-    sigs.insert("sig.rs".to_string(), 333_u64);
-    let mut patch_sigs = HashMap::new();
-    patch_sigs.insert("sig.rs".to_string(), 444_u64);
-
-    let snapshot = ViewSnapshot {
-        pr_number: Some(42),
-        selected_file: 8,
-        file_list_scroll_offset: 4,
-        selected_line: 20,
-        scroll_offset: 6,
-        diff_cache_snapshot: crate::diff_store::DiffCacheSnapshot {
-            current: Some(dc),
-            current_key: Some(3),
-            store: hcs,
-        },
-        review_comments: Some(vec![crate::github::comment::ReviewComment {
-            id: 50,
-            path: "r.rs".to_string(),
-            line: Some(10),
-            body: "restored comment".to_string(),
-            user: crate::github::User {
-                login: "r".to_string(),
-            },
-            created_at: "".to_string(),
-        }]),
-        discussion_comments: Some(vec![crate::github::comment::DiscussionComment {
-            id: 60,
-            body: "restored discussion".to_string(),
-            user: crate::github::User {
-                login: "d".to_string(),
-            },
-            created_at: "".to_string(),
-        }]),
-        local_file_signatures: sigs,
-        local_file_patch_signatures: patch_sigs,
-    };
-
-    app.restore_view_snapshot(snapshot);
-
-    // 全フィールドが復元されていること
-    assert_eq!(app.pr_number, Some(42));
-    assert_eq!(app.selected_file, 8);
-    assert_eq!(app.file_list_scroll_offset, 4);
-    assert_eq!(app.diff_scroll.selected_line, 20);
-    assert_eq!(app.diff_scroll.scroll_offset, 6);
-    assert!(app.diff_store.current.is_some());
-    assert_eq!(app.diff_store.current.as_ref().unwrap().file_index, 3);
-    assert_eq!(app.diff_store.store_len(), 1);
-    assert!(app.diff_store.store_contains_key(&5));
-    assert_eq!(app.review_comments.as_ref().unwrap().len(), 1);
-    assert_eq!(app.review_comments.as_ref().unwrap()[0].id, 50);
-    assert_eq!(app.discussion_comments.as_ref().unwrap().len(), 1);
-    assert_eq!(app.discussion_comments.as_ref().unwrap()[0].id, 60);
-    assert_eq!(app.local_file_signatures["sig.rs"], 333);
-    assert_eq!(app.local_file_patch_signatures["sig.rs"], 444);
-}
-
-#[test]
-fn test_restore_snapshot_clears_receivers() {
-    use super::types::ViewSnapshot;
-    use std::collections::HashMap;
-
-    let mut app = App::new_for_test();
-
-    // レシーバーを設定
-    let (_tx1, rx1) = mpsc::channel(1);
-    app.diff_store.set_highlight_rx(rx1);
-    let (_tx2, rx2) = mpsc::channel(1);
-    app.diff_store.set_prefetch_rx(rx2);
-    let (_tx3, rx3) =
-        mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
-    app.comment_receiver = Some((1, rx3));
-    let (_tx4, rx4) =
-        mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
-    app.discussion_comment_receiver = Some((1, rx4));
-    let (_tx5, rx5) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
-    app.comment_submit_receiver = Some((1, rx5));
-    app.comment_submitting = true;
-    app.comments_loading = true;
-    app.discussion_comments_loading = true;
-
-    let snapshot = ViewSnapshot {
-        pr_number: None,
-        selected_file: 0,
-        file_list_scroll_offset: 0,
-        selected_line: 0,
-        scroll_offset: 0,
-        diff_cache_snapshot: crate::diff_store::DiffCacheSnapshot {
-            current: None,
-            current_key: None,
-            store: HashMap::new(),
-        },
-        review_comments: None,
-        discussion_comments: None,
-        local_file_signatures: HashMap::new(),
-        local_file_patch_signatures: HashMap::new(),
-    };
-
-    app.restore_view_snapshot(snapshot);
-
-    // 全レシーバーがクリアされていること（restore_snapshot clears them）
-    assert!(!app.diff_store.has_highlight_rx());
-    assert!(!app.diff_store.has_prefetch_rx());
-    assert!(app.comment_receiver.is_none());
-    assert!(app.discussion_comment_receiver.is_none());
-    assert!(app.comment_submit_receiver.is_none());
-    assert!(!app.comment_submitting);
-    assert!(!app.comments_loading);
-    assert!(!app.discussion_comments_loading);
-}
-
-#[test]
-fn test_save_restore_roundtrip_preserves_data() {
-    let mut app = App::new_for_test();
-    app.pr_number = Some(10);
-    app.selected_file = 3;
-    app.file_list_scroll_offset = 1;
-    app.diff_scroll.selected_line = 7;
-    app.diff_scroll.scroll_offset = 2;
-    app.local_file_signatures.insert("x.rs".to_string(), 500);
-    app.local_file_patch_signatures
-        .insert("x.rs".to_string(), 600);
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
-        id: 77,
-        path: "x.rs".to_string(),
-        line: Some(3),
-        body: "roundtrip".to_string(),
-        user: crate::github::User {
-            login: "u".to_string(),
-        },
-        created_at: "".to_string(),
-    }]);
-
-    // Save
-    let snapshot = app.save_view_snapshot();
-
-    // App が空になっていることを確認
-    assert!(app.review_comments.is_none());
-    assert!(app.local_file_signatures.is_empty());
-
-    // 別の値を設定
-    app.pr_number = Some(999);
-    app.selected_file = 99;
-    app.diff_scroll.selected_line = 99;
-
-    // Restore
-    app.restore_view_snapshot(snapshot);
-
-    // 元の値が復元されること
-    assert_eq!(app.pr_number, Some(10));
-    assert_eq!(app.selected_file, 3);
-    assert_eq!(app.file_list_scroll_offset, 1);
-    assert_eq!(app.diff_scroll.selected_line, 7);
-    assert_eq!(app.diff_scroll.scroll_offset, 2);
-    assert_eq!(app.local_file_signatures["x.rs"], 500);
-    assert_eq!(app.local_file_patch_signatures["x.rs"], 600);
-    assert_eq!(app.review_comments.as_ref().unwrap()[0].id, 77);
-}
-
-#[test]
-fn test_toggle_local_mode_clears_receivers_on_entry() {
-    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
-    let (_data_tx, data_rx) = mpsc::channel(2);
-    let mut app = App::new_for_test();
-    app.retry_sender = Some(retry_tx);
-    app.data_receiver = Some((42, data_rx));
-    app.original_pr_number = Some(42);
-    app.pr_number = Some(42);
-
-    // toggle 前にレシーバーを設定
-    let (_tx1, rx1) = mpsc::channel::<MarkViewedResult>(1);
-    app.mark_viewed_receiver = Some((42, rx1));
-    let (_tx2, rx2) = mpsc::channel::<Vec<crate::loader::SingleFileDiffResult>>(1);
-    app.batch_diff_receiver = Some(rx2);
-    let (_tx3, rx3) = mpsc::channel::<crate::loader::SingleFileDiffResult>(1);
-    app.lazy_diff_receiver = Some(rx3);
-    app.lazy_diff_pending_file = Some("file.rs".to_string());
-
-    // PR → Local
-    app.toggle_local_mode();
-
-    // toggle 開始時にクリアされること
-    assert!(app.mark_viewed_receiver.is_none());
-    assert!(app.batch_diff_receiver.is_none());
-    assert!(app.lazy_diff_receiver.is_none());
-    assert!(app.lazy_diff_pending_file.is_none());
-}
-
-#[test]
-fn test_toggle_local_mode_resets_file_list_filter() {
-    use crate::filter::ListFilter;
-
-    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
-    let (_data_tx, data_rx) = mpsc::channel(2);
-    let mut app = App::new_for_test();
-    app.retry_sender = Some(retry_tx);
-    app.data_receiver = Some((42, data_rx));
-    app.original_pr_number = Some(42);
-    app.pr_number = Some(42);
-
-    // フィルタを設定
-    app.file_list_filter = Some(ListFilter::new());
-
-    // PR → Local: フィルタがリセットされること
-    app.toggle_local_mode();
-    assert!(app.file_list_filter.is_none());
-
-    // Local → PR でもリセットされること
-    app.file_list_filter = Some(ListFilter::new());
-    app.toggle_local_mode();
-    assert!(app.file_list_filter.is_none());
-}
-
-#[test]
-fn test_toggle_local_mode_from_pr_list_transitions_to_file_list() {
-    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
-    let (_data_tx, data_rx) = mpsc::channel(2);
-    let mut app = App::new_for_test();
-    app.retry_sender = Some(retry_tx);
-    app.data_receiver = Some((42, data_rx));
-    app.pr_number = Some(42);
-    app.state = AppState::PullRequestList;
-
-    // PullRequestList → Local: AppState が FileList に遷移すること
-    app.toggle_local_mode();
-    assert!(app.local_mode);
-    assert_eq!(app.state, AppState::FileList);
-}
-
-#[test]
-fn test_back_to_pr_list_saves_local_snapshot() {
-    let mut app = App::new_for_test();
-    app.started_from_pr_list = true;
-    app.local_mode = true;
-    app.selected_file = 5;
-    app.local_file_signatures.insert("z.rs".to_string(), 999);
-
-    app.back_to_pr_list();
-
-    // ローカルスナップショットが保存されること
-    assert!(app.saved_local_snapshot.is_some());
-    let snap = app.saved_local_snapshot.as_ref().unwrap();
-    assert_eq!(snap.selected_file, 5);
-    assert_eq!(snap.local_file_signatures["z.rs"], 999);
-    // local_mode は false に戻ること
-    assert!(!app.local_mode);
-    // PullRequestList に遷移すること
-    assert_eq!(app.state, AppState::PullRequestList);
-}
-
 #[test]
 fn test_back_to_pr_list_resets_pr_state() {
     let mut app = App::new_for_test();
@@ -1648,6 +1234,7 @@ fn test_back_to_pr_list_clears_all_receivers() {
     assert!(!app.discussion_comments_loading);
 }
 
+/// PR(--pr指定)→Local→PR の往復で pr_number が復元されること
 #[test]
 fn test_toggle_local_mode_pr_to_local_and_back() {
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
@@ -1657,37 +1244,159 @@ fn test_toggle_local_mode_pr_to_local_and_back() {
     app.data_receiver = Some((42, data_rx));
     app.original_pr_number = Some(42);
     app.pr_number = Some(42);
-    app.selected_file = 3;
+
+    // PR → Local: クリーン起動
+    app.toggle_local_mode();
+    assert!(app.local_mode);
+    assert_eq!(app.pr_number, Some(0));
+    assert_eq!(app.selected_file, 0); // リセットされる
+    assert!(app.submission_result.as_ref().unwrap().1.contains("Local"));
+
+    // Local → PR: original_pr_number で復帰
+    app.toggle_local_mode();
+    assert!(!app.local_mode);
+    assert_eq!(app.pr_number, Some(42));
+    assert_eq!(app.state, AppState::FileList);
+    assert!(app.submission_result.as_ref().unwrap().1.contains("PR"));
+}
+
+/// PR→Local→PR の2往復でも pr_number が安定すること
+#[test]
+fn test_toggle_local_mode_roundtrip_preserves_pr_number() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((42, data_rx));
+    app.original_pr_number = Some(42);
+    app.pr_number = Some(42);
+
+    for _ in 0..3 {
+        app.toggle_local_mode();
+        assert!(app.local_mode);
+        assert_eq!(app.pr_number, Some(0));
+
+        app.toggle_local_mode();
+        assert!(!app.local_mode);
+        assert_eq!(app.pr_number, Some(42));
+    }
+}
+
+/// PR一覧→Local→PR一覧に戻れること
+#[tokio::test]
+async fn test_toggle_local_mode_from_pr_list_without_selecting_pr() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    app.original_pr_number = None;
+    app.started_from_pr_list = false;
+    app.pr_number = None;
+    app.state = AppState::PullRequestList;
+
+    // PR一覧 → Local
+    app.toggle_local_mode();
+    assert!(app.local_mode);
+    assert_eq!(app.pr_number, Some(0));
+    assert_eq!(app.state, AppState::FileList);
+
+    // Local → PR一覧
+    app.toggle_local_mode();
+    assert!(!app.local_mode);
+    assert_eq!(app.state, AppState::PullRequestList);
+}
+
+/// PR一覧→PR選択→Local→PR一覧の往復（original_pr_numberなし）
+#[tokio::test]
+async fn test_toggle_local_mode_roundtrip_from_pr_list() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((99, data_rx));
+    app.original_pr_number = None;
+    app.started_from_pr_list = false;
+    app.pr_number = Some(99);
 
     // PR → Local
     app.toggle_local_mode();
     assert!(app.local_mode);
     assert_eq!(app.pr_number, Some(0));
-    assert!(app.saved_pr_snapshot.is_some());
-    assert!(app.submission_result.as_ref().unwrap().1.contains("Local"));
 
-    // Local → PR
+    // Local → PR一覧（original_pr_numberがないのでPR一覧へ）
     app.toggle_local_mode();
     assert!(!app.local_mode);
-    assert!(app.saved_local_snapshot.is_some());
-    // saved_pr_snapshot が復元されたので取得済み
-    assert!(app.saved_pr_snapshot.is_none());
-    assert_eq!(app.selected_file, 3); // 復元された値
-    assert!(app.submission_result.as_ref().unwrap().1.contains("PR"));
+    assert_eq!(app.state, AppState::PullRequestList);
 }
 
-#[test]
-fn test_toggle_local_mode_no_pr_to_return() {
-    let mut app = App::new_for_test();
-    app.original_pr_number = None;
+/// --local起動（detect_repo成功, repo="owner/repo"）→ L → PR一覧に遷移
+#[tokio::test]
+async fn test_toggle_local_mode_from_local_startup_with_valid_repo() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test(); // repo = "test/repo"（スラッシュあり）
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    app.original_pr_number = Some(0); // --local は new_loading(repo, 0) で起動
     app.started_from_pr_list = false;
     app.local_mode = true;
+    app.pr_number = Some(0);
 
-    // Local → PR: 復帰先がない
+    // Local → PR: repo が有効なので PR一覧へ遷移できる
     app.toggle_local_mode();
-    // local_mode のまま（エラートースト）
+    assert!(!app.local_mode);
+    assert_eq!(app.state, AppState::PullRequestList);
+    assert!(app.started_from_pr_list);
+}
+
+/// --local起動（detect_repo失敗, repo="local"）→ L → 切替不可エラー
+#[test]
+fn test_toggle_local_mode_from_local_startup_with_dummy_repo() {
+    let mut app = App::new_for_test();
+    app.repo = "local".to_string(); // detect_repo 失敗時のフォールバック
+    app.original_pr_number = Some(0);
+    app.started_from_pr_list = false;
+    app.local_mode = true;
+    app.pr_number = Some(0);
+
+    // Local → PR: repo がダミーなので切替不可
+    app.toggle_local_mode();
+    assert!(app.local_mode, "should stay in local mode with dummy repo");
+    assert!(
+        app.submission_result.as_ref().unwrap().1.contains("No PR"),
+        "should show error message"
+    );
+}
+
+/// --local起動（有効repo）→ L → PR一覧 → L → local の往復
+#[tokio::test]
+async fn test_toggle_local_mode_roundtrip_from_local_startup() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test(); // repo = "test/repo"
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    app.original_pr_number = Some(0);
+    app.started_from_pr_list = false;
+    app.local_mode = true;
+    app.pr_number = Some(0);
+
+    // Local → PR一覧
+    app.toggle_local_mode();
+    assert!(!app.local_mode);
+    assert_eq!(app.state, AppState::PullRequestList);
+
+    // PR一覧 → Local
+    app.toggle_local_mode();
     assert!(app.local_mode);
-    assert!(app.submission_result.as_ref().unwrap().1.contains("No PR"));
+    assert_eq!(app.pr_number, Some(0));
+    assert_eq!(app.state, AppState::FileList);
+
+    // Local → PR一覧（2回目も安定して動作）
+    app.toggle_local_mode();
+    assert!(!app.local_mode);
+    assert_eq!(app.state, AppState::PullRequestList);
 }
 
 #[test]

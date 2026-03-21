@@ -811,6 +811,95 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
+            "Git Ops View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Open git ops (from File List)",
+            fmt_key(&kb.git_ops.display(), key_width)
+        )),
+        Line::from(vec![Span::styled(
+            "  Tree Focus:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}  Move selection",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Stage/unstage file or directory",
+            fmt_key("Space", key_width)
+        )),
+        Line::from(format!(
+            "{}  Stage all files",
+            fmt_key("s", key_width)
+        )),
+        Line::from(format!(
+            "{}  Discard changes",
+            fmt_key("d", key_width)
+        )),
+        Line::from(format!(
+            "{}  Commit (opens editor)",
+            fmt_key("c", key_width)
+        )),
+        Line::from(format!(
+            "{}  Undo last operation",
+            fmt_key("u", key_width)
+        )),
+        Line::from(format!(
+            "{}  Refresh status",
+            fmt_key("R", key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle directory expand/collapse",
+            fmt_key("Enter", key_width)
+        )),
+        Line::from(format!(
+            "{}  Focus diff pane",
+            fmt_key("Tab, l", key_width)
+        )),
+        Line::from(format!(
+            "{}  Close git ops",
+            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+        )),
+        Line::from(vec![Span::styled(
+            "  Diff Focus:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}  Scroll diff",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Page scroll",
+            fmt_key(
+                &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "  g/{}            Jump to first/last",
+            kb.jump_to_last.display()
+        )),
+        Line::from("  h/Left/Esc      Back to tree"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
             "PR List View",
             Style::default()
                 .fg(Color::Yellow)

@@ -29,7 +29,7 @@ pub use types::{
     InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation, LineInputContext,
     LogEntry, LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest,
     RepoSymbolSearchResult, ReviewAction, SymbolPopupState, SymbolSearchState, SymbolSearchUpdate,
-    TreeRow, UndoAction, ViewSnapshot, WatcherHandle,
+    TreeRow, UndoAction, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -94,10 +94,6 @@ pub struct App {
     local_file_patch_signatures: HashMap<String, u64>,
     /// CLI で指定された元の PR 番号（モード復帰用）
     original_pr_number: Option<u32>,
-    /// PR モードのスナップショット
-    saved_pr_snapshot: Option<ViewSnapshot>,
-    /// Local モードのスナップショット
-    saved_local_snapshot: Option<ViewSnapshot>,
     /// ファイルウォッチャーハンドル（遅延生成）
     watcher_handle: Option<WatcherHandle>,
     /// ウォッチャー用 debounce フラグ（watcher スレッドと共有）
@@ -266,8 +262,6 @@ impl App {
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
             original_pr_number: Some(pr_number),
-            saved_pr_snapshot: None,
-            saved_local_snapshot: None,
             watcher_handle: None,
             refresh_pending: None,
             pr_list_receiver: None,
@@ -433,8 +427,6 @@ impl App {
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
             original_pr_number: None,
-            saved_pr_snapshot: None,
-            saved_local_snapshot: None,
             watcher_handle: None,
             refresh_pending: None,
             session_cache: SessionCache::new(),
@@ -688,8 +680,6 @@ impl App {
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
             original_pr_number: None,
-            saved_pr_snapshot: None,
-            saved_local_snapshot: None,
             watcher_handle: None,
             refresh_pending: None,
             markdown_rich: false,

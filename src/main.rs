@@ -165,19 +165,23 @@ async fn main() -> Result<()> {
         };
     }
 
-    let repo = if args.local {
-        args.repo.clone().unwrap_or_else(|| "local".to_string())
-    } else {
-        // Detect or use provided repo
-        match args.repo.clone() {
-            Some(r) => r,
-            None => match github::detect_repo().await {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
+    let repo = match args.repo.clone() {
+        Some(r) => r,
+        None => {
+            if args.local {
+                // --local: detect_repo を試みるが、失敗しても "local" でフォールバック
+                github::detect_repo()
+                    .await
+                    .unwrap_or_else(|_| "local".to_string())
+            } else {
+                match github::detect_repo().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
                 }
-            },
+            }
         }
     };
 

@@ -1,7 +1,6 @@
 use lasso::{Rodeo, Spur};
 use ratatui::style::Style;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -11,10 +10,7 @@ use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::diff::LineType;
 use crate::loader::SingleFileDiffResult;
-use crate::diff_store::{
-    DiffCacheSnapshot, DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES,
-};
-use crate::github::comment::{DiscussionComment, ReviewComment};
+use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
     ChangedFile, IssueComment, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary,
     LinkedPr, PrCommit, PullRequest,
@@ -368,24 +364,6 @@ pub struct WatcherHandle {
     pub(crate) _thread: std::thread::JoinHandle<()>,
 }
 
-/// モード切替時のビュー状態スナップショット
-///
-/// データは `SessionCache` で管理するため、ここには UI 状態のみ保持。
-/// 全フィールドを `std::mem::replace` / `take()` で移動（Clone 不使用）。
-pub struct ViewSnapshot {
-    pub pr_number: Option<u32>,
-    pub selected_file: usize,
-    pub file_list_scroll_offset: usize,
-    pub selected_line: usize,
-    pub scroll_offset: usize,
-    pub diff_cache_snapshot: DiffCacheSnapshot<usize>,
-    pub review_comments: Option<Vec<ReviewComment>>,
-    pub discussion_comments: Option<Vec<DiscussionComment>>,
-    pub local_file_signatures: HashMap<String, u64>,
-    /// patch 内容を含む完全シグネチャ（バッチ diff 完了後に更新）
-    pub local_file_patch_signatures: HashMap<String, u64>,
-}
-
 /// PRデータの読み込み状態。
 ///
 /// `Loaded` のフィールドは `Arc` ではなく `Box`/`Vec` で保持する。
@@ -540,6 +518,40 @@ impl GitStatusEntry {
             self.worktree_status,
             FileStatus::Unmodified | FileStatus::Ignored
         )
+    }
+
+    /// 変更種別ラベル: ファイルの性質を固定幅2文字で返す
+    ///
+    /// stage/unstage で変化しない。色だけが変わる。
+    /// 判定ロジック: index/worktree の両方を見て「このファイルは何の変更か」を決定。
+    /// optimistic_stage/unstage で index/worktree が入れ替わっても結果が同じになるよう、
+    /// 両方の非trivialな状態から種別を判定する。
+    pub fn change_type_label(&self) -> &'static str {
+        // untracked/added は同じ「新規ファイル」
+        if self.index_status == FileStatus::Untracked
+            || self.worktree_status == FileStatus::Untracked
+            || (self.index_status == FileStatus::Added
+                && self.worktree_status == FileStatus::Unmodified)
+        {
+            return "??";
+        }
+
+        // index 側が非trivial ならそれを使う（staged 状態）
+        let kind = if self.index_status != FileStatus::Unmodified {
+            self.index_status
+        } else {
+            self.worktree_status
+        };
+
+        match kind {
+            FileStatus::Modified => "M ",
+            FileStatus::Added => "A ",
+            FileStatus::Deleted => "D ",
+            FileStatus::Renamed => "R ",
+            FileStatus::Copied => "C ",
+            FileStatus::Unmerged => "U ",
+            _ => "  ",
+        }
     }
 }
 

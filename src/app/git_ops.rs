@@ -1111,6 +1111,51 @@ fn start_git_ops_prefetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
+
+    /// FileStatus のスペースを · に置換して可視化
+    fn vis(s: FileStatus) -> char {
+        match s.as_char() {
+            ' ' => '·',
+            c => c,
+        }
+    }
+
+    /// テスト用ヘルパー: GitStatusEntry を簡潔に生成
+    fn entry(path: &str, index: FileStatus, worktree: FileStatus) -> GitStatusEntry {
+        GitStatusEntry {
+            path: path.to_string(),
+            index_status: index,
+            worktree_status: worktree,
+            additions: 0,
+            deletions: 0,
+            staged_additions: 0,
+            staged_deletions: 0,
+            orig_path: None,
+            unmerged: false,
+        }
+    }
+
+    /// visible_rows を人間が読める文字列にダンプ
+    fn dump_visible_rows(ops: &GitOpsState) -> String {
+        ops.visible_rows
+            .iter()
+            .map(|row| match row {
+                TreeRow::Dir(path, depth, expanded) => {
+                    let indent = "  ".repeat(*depth);
+                    let icon = if *expanded { "▼" } else { "▶" };
+                    format!("{}{} {}/", indent, icon, path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path))
+                }
+                TreeRow::File(idx, depth) => {
+                    let indent = "  ".repeat(*depth);
+                    let e = &ops.entries[*idx];
+                    let label = e.change_type_label();
+                    format!("{}{} {}", indent, label, e.path.rsplit_once('/').map(|(_, n)| n).unwrap_or(&e.path))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     #[test]
     fn test_parse_porcelain_status_basic() {
@@ -1322,5 +1367,168 @@ mod tests {
         let ops = GitOpsState::new(Vec::new());
         assert_eq!(ops.diff_store.store_len(), 0);
         assert!(!ops.diff_store.has_prefetch_rx());
+    }
+
+    // =================================================================
+    // スナップショットテスト
+    // =================================================================
+
+    /// ツリー構造: フラットファイル + ネストディレクトリの混在
+    #[test]
+    fn test_tree_structure_mixed() {
+        let entries = vec![
+            entry("README.md", FileStatus::Unmodified, FileStatus::Modified),
+            entry("src/app/mod.rs", FileStatus::Modified, FileStatus::Unmodified),
+            entry("src/app/types.rs", FileStatus::Unmodified, FileStatus::Modified),
+            entry("src/lib.rs", FileStatus::Modified, FileStatus::Unmodified),
+            entry("tests/integration.rs", FileStatus::Untracked, FileStatus::Untracked),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_visible_rows(&mut ops);
+        assert_snapshot!(dump_visible_rows(&ops), @"
+        M  README.md
+        ▼ src/
+          ▼ app/
+            M  mod.rs
+            M  types.rs
+          M  lib.rs
+        ▼ tests/
+          ?? integration.rs
+        ");
+    }
+
+    /// ツリー構造: ディレクトリ折りたたみ後
+    #[test]
+    fn test_tree_structure_collapsed() {
+        let entries = vec![
+            entry("src/app/mod.rs", FileStatus::Modified, FileStatus::Unmodified),
+            entry("src/app/types.rs", FileStatus::Unmodified, FileStatus::Modified),
+            entry("src/lib.rs", FileStatus::Modified, FileStatus::Unmodified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_visible_rows(&mut ops);
+
+        // src/app/ を折りたたみ
+        ops.expanded_dirs.remove("src/app");
+        rebuild_visible_rows(&mut ops);
+        assert_snapshot!(dump_visible_rows(&ops), @"
+        ▼ src/
+          ▶ app/
+          M  lib.rs
+        ");
+    }
+
+    /// change_type_label が stage/unstage で不変であることを保証
+    #[test]
+    fn test_change_type_label_stable_across_stage_unstage() {
+        // unstaged modified → staged modified
+        let mut e = entry("a.rs", FileStatus::Unmodified, FileStatus::Modified);
+        let label_before = e.change_type_label();
+        optimistic_stage(&mut e);
+        let label_after = e.change_type_label();
+        assert_eq!(label_before, label_after, "M file label must not change on stage");
+
+        // staged modified → unstaged modified
+        optimistic_unstage(&mut e);
+        let label_roundtrip = e.change_type_label();
+        assert_eq!(label_before, label_roundtrip, "M file label must survive roundtrip");
+
+        // untracked → staged added
+        let mut u = entry("b.rs", FileStatus::Untracked, FileStatus::Untracked);
+        let label_before = u.change_type_label();
+        optimistic_stage(&mut u);
+        let label_after = u.change_type_label();
+        assert_eq!(label_before, label_after, "?? file label must not change on stage");
+    }
+
+    /// optimistic_stage の状態遷移
+    #[test]
+    fn test_optimistic_stage_transitions() {
+        let cases = vec![
+            // (初期index, 初期worktree, 期待index, 期待worktree)
+            ("·M → staged", FileStatus::Unmodified, FileStatus::Modified, FileStatus::Modified, FileStatus::Unmodified),
+            ("?? → staged", FileStatus::Untracked, FileStatus::Untracked, FileStatus::Added, FileStatus::Unmodified),
+            ("·D → staged", FileStatus::Unmodified, FileStatus::Deleted, FileStatus::Deleted, FileStatus::Unmodified),
+        ];
+        let mut result = String::new();
+        for (label, idx, wt, exp_idx, exp_wt) in &cases {
+            let mut e = entry("file", *idx, *wt);
+            optimistic_stage(&mut e);
+            result.push_str(&format!(
+                "{}: {}{}→{}{}\n",
+                label,
+                vis(*idx), vis(*wt),
+                vis(e.index_status), vis(e.worktree_status),
+            ));
+            assert_eq!(e.index_status, *exp_idx);
+            assert_eq!(e.worktree_status, *exp_wt);
+        }
+        assert_snapshot!(result, @"
+        ·M → staged: ·M→M·
+        ?? → staged: ??→A·
+        ·D → staged: ·D→D·
+        ");
+    }
+
+    /// optimistic_unstage の状態遷移
+    #[test]
+    fn test_optimistic_unstage_transitions() {
+        let cases = vec![
+            ("M· → unstaged", FileStatus::Modified, FileStatus::Unmodified, FileStatus::Unmodified, FileStatus::Modified),
+            ("A· → unstaged", FileStatus::Added, FileStatus::Unmodified, FileStatus::Untracked, FileStatus::Untracked),
+            ("D· → unstaged", FileStatus::Deleted, FileStatus::Unmodified, FileStatus::Unmodified, FileStatus::Deleted),
+        ];
+        let mut result = String::new();
+        for (label, idx, wt, exp_idx, exp_wt) in &cases {
+            let mut e = entry("file", *idx, *wt);
+            optimistic_unstage(&mut e);
+            result.push_str(&format!(
+                "{}: {}{}→{}{}\n",
+                label,
+                vis(*idx), vis(*wt),
+                vis(e.index_status), vis(e.worktree_status),
+            ));
+            assert_eq!(e.index_status, *exp_idx);
+            assert_eq!(e.worktree_status, *exp_wt);
+        }
+        assert_snapshot!(result, @"
+        M· → unstaged: M·→·M
+        A· → unstaged: A·→??
+        D· → unstaged: D·→·D
+        ");
+    }
+
+    /// parse_porcelain_status: 複雑なケース（rename, unmerge, mixed status）
+    #[test]
+    fn test_parse_porcelain_status_complex() {
+        // MM (staged + worktree modified), UU (unmerged), R (rename), A (added), D (deleted)
+        let output = "MM src/both.rs\0UU conflict.rs\0A  new.rs\0 D deleted.rs\0R  old.rs\0renamed.rs\0";
+        let entries = parse_porcelain_status(output);
+        let mut result = String::new();
+        for e in &entries {
+            result.push_str(&format!(
+                "{}{} {} orig={}\n",
+                vis(e.index_status),
+                vis(e.worktree_status),
+                e.path,
+                e.orig_path.as_deref().unwrap_or("-"),
+            ));
+        }
+        assert_snapshot!(result, @"
+        MM src/both.rs orig=-
+        UU conflict.rs orig=-
+        A· new.rs orig=-
+        ·D deleted.rs orig=-
+        R· renamed.rs orig=old.rs
+        ");
+    }
+
+    /// parse_porcelain_status: 空入力
+    #[test]
+    fn test_parse_porcelain_status_empty() {
+        let entries = parse_porcelain_status("");
+        assert!(entries.is_empty());
+        let entries = parse_porcelain_status("\0");
+        assert!(entries.is_empty());
     }
 }

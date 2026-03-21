@@ -354,9 +354,8 @@ impl App {
             if self.issue_detail_return {
                 self.issue_detail_return = false;
 
-                // Local モードから戻る場合はスナップショット保存 + watcher 停止
+                // Local モードから戻る場合は watcher 停止
                 if self.local_mode {
-                    self.saved_local_snapshot = Some(self.save_view_snapshot());
                     self.deactivate_watcher();
                     self.local_mode = false;
                 }
@@ -392,9 +391,8 @@ impl App {
                 return;
             }
 
-            // Local モードから戻る場合はスナップショット保存 + watcher 停止
+            // Local モードから戻る場合は watcher 停止
             if self.local_mode {
-                self.saved_local_snapshot = Some(self.save_view_snapshot());
                 self.deactivate_watcher();
                 self.local_mode = false;
             }

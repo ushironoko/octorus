@@ -332,7 +332,7 @@ fn build_tree_row_item<'a>(
             let indent = "  ".repeat(*depth);
 
             // 変更種別ラベル: ファイルの性質を表す固定テキスト（stage/unstageで不変）
-            let label = change_type_label(entry);
+            let label = entry.change_type_label();
 
             // 色だけでstaged/unstagedを区別
             let status_color = status_color_for_entry(entry);
@@ -368,30 +368,6 @@ fn build_tree_row_item<'a>(
 
             ListItem::new(Line::from(spans))
         }
-    }
-}
-
-/// エントリのステータスに応じた色を返す
-/// 変更種別ラベル: ファイルの性質を固定幅2文字で表す（stage/unstage で不変）
-fn change_type_label(entry: &crate::app::GitStatusEntry) -> &'static str {
-    // index と worktree のどちらか非trivial な方から種別を判定
-    let kind = if entry.index_status != FileStatus::Unmodified
-        && entry.index_status != FileStatus::Untracked
-    {
-        entry.index_status
-    } else {
-        entry.worktree_status
-    };
-
-    match kind {
-        FileStatus::Modified => "M ",
-        FileStatus::Added => "A ",
-        FileStatus::Deleted => "D ",
-        FileStatus::Renamed => "R ",
-        FileStatus::Copied => "C ",
-        FileStatus::Untracked => "??",
-        FileStatus::Unmerged => "U ",
-        _ => "  ",
     }
 }
 
