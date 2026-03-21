@@ -290,16 +290,12 @@ impl App {
         self.pending_approve_body = None;
 
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
-        self.diff_cache_receiver = None;
-        self.prefetch_receiver = None;
+        self.diff_store.clear();
+        self.diff_scroll.reset();
         self.mark_viewed_receiver = None;
         self.batch_diff_receiver = None;
         self.lazy_diff_receiver = None;
         self.lazy_diff_pending_file = None;
-        self.highlighted_cache_store.clear();
-        self.diff_cache = None;
-        self.suggestion_highlight_cache = None;
-        self.input_mode = None;
         self.selected_file = 0;
         self.file_list_scroll_offset = 0;
         self.checks = None;
@@ -338,7 +334,7 @@ impl App {
                 pr: cached.pr.clone(),
                 files: cached.files.clone(),
             };
-            self.diff_line_count = diff_line_count;
+            self.diff_scroll.line_count = diff_line_count;
             self.start_prefetch_all_files();
             // キャッシュHit時はhandle_data_resultを経由しないため、ここでRally起動
             if self.start_ai_rally_on_load {
@@ -370,10 +366,9 @@ impl App {
                 self.data_state = DataState::Loading;
                 self.review_comments = None;
                 self.discussion_comments = None;
-                self.diff_cache = None;
+                self.diff_store.clear();
+                self.diff_scroll.reset();
                 self.comment_receiver = None;
-                self.diff_cache_receiver = None;
-                self.prefetch_receiver = None;
                 self.discussion_comment_receiver = None;
                 self.comment_submit_receiver = None;
                 self.mark_viewed_receiver = None;
@@ -384,13 +379,8 @@ impl App {
                 self.pending_approve_body = None;
                 self.comments_loading = false;
                 self.discussion_comments_loading = false;
-                self.highlighted_cache_store.clear();
-                self.suggestion_highlight_cache = None;
-                self.input_mode = None;
                 self.selected_file = 0;
                 self.file_list_scroll_offset = 0;
-                self.selected_line = 0;
-                self.scroll_offset = 0;
                 self.file_list_filter = None;
                 self.checks = None;
                 self.checks_loading = false;
@@ -414,12 +404,11 @@ impl App {
             self.data_state = DataState::Loading;
             self.review_comments = None;
             self.discussion_comments = None;
-            self.diff_cache = None;
+            self.diff_store.clear();
+            self.diff_scroll.reset();
             // in-flight view 系レシーバーをクリア（late response による panic 防止）
             // data_receiver / retry_sender は永続のため維持
             self.comment_receiver = None;
-            self.diff_cache_receiver = None;
-            self.prefetch_receiver = None;
             self.discussion_comment_receiver = None;
             self.comment_submit_receiver = None;
             self.mark_viewed_receiver = None;
@@ -430,13 +419,8 @@ impl App {
             self.pending_approve_body = None;
             self.comments_loading = false;
             self.discussion_comments_loading = false;
-            self.highlighted_cache_store.clear();
-            self.suggestion_highlight_cache = None;
-            self.input_mode = None;
             self.selected_file = 0;
             self.file_list_scroll_offset = 0;
-            self.selected_line = 0;
-            self.scroll_offset = 0;
             self.file_list_filter = None;
             self.checks = None;
             self.checks_loading = false;

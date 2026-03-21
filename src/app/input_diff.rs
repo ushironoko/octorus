@@ -80,7 +80,7 @@ impl App {
             return Ok(());
         }
 
-        // Space+/ / gl シーケンス処理（分割表示でのフィルタ起動 / Git Log）
+        // Space+/ / gl / go シーケンス処理（分割表示でのフィルタ起動 / Git Log / Git Ops）
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -111,13 +111,21 @@ impl App {
                     return Ok(());
                 }
 
+                // go: Git Ops 画面
+                if self.try_match_sequence(&kb.git_ops) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    self.open_git_ops();
+                    return Ok(());
+                }
+
                 // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
                 // シーケンス開始チェック
                 let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
                 let could_start_gl = self.key_could_match_sequence(&key, &kb.git_log);
-                if could_start_filter || could_start_gl {
+                let could_start_go = self.key_could_match_sequence(&key, &kb.git_ops);
+                if could_start_filter || could_start_gl || could_start_go {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }
@@ -219,10 +227,10 @@ impl App {
         if self.multiline_selection.is_some() {
             // Move down: カーソルを下に移動
             if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
-                if self.diff_line_count > 0 {
+                if self.diff_scroll.line_count > 0 {
                     let new_cursor =
-                        (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
-                    self.selected_line = new_cursor;
+                        (self.diff_scroll.selected_line + 1).min(self.diff_scroll.line_count.saturating_sub(1));
+                    self.diff_scroll.selected_line = new_cursor;
                     if let Some(ref mut sel) = self.multiline_selection {
                         sel.cursor_line = new_cursor;
                     }
@@ -233,8 +241,8 @@ impl App {
 
             // Move up: カーソルを上に移動
             if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
-                let new_cursor = self.selected_line.saturating_sub(1);
-                self.selected_line = new_cursor;
+                let new_cursor = self.diff_scroll.selected_line.saturating_sub(1);
+                self.diff_scroll.selected_line = new_cursor;
                 if let Some(ref mut sel) = self.multiline_selection {
                     sel.cursor_line = new_cursor;
                 }
@@ -283,9 +291,9 @@ impl App {
 
             // Next comment
             if self.matches_single_key(&key, &kb.next_comment) {
-                let prev_line = self.selected_line;
+                let prev_line = self.diff_scroll.selected_line;
                 self.jump_to_next_comment();
-                if self.selected_line != prev_line {
+                if self.diff_scroll.selected_line != prev_line {
                     self.comment_panel_scroll = 0;
                     self.selected_inline_comment = 0;
                     self.adjust_scroll(visible_lines);
@@ -295,9 +303,9 @@ impl App {
 
             // Previous comment
             if self.matches_single_key(&key, &kb.prev_comment) {
-                let prev_line = self.selected_line;
+                let prev_line = self.diff_scroll.selected_line;
                 self.jump_to_prev_comment();
-                if self.selected_line != prev_line {
+                if self.diff_scroll.selected_line != prev_line {
                     self.comment_panel_scroll = 0;
                     self.selected_inline_comment = 0;
                     self.adjust_scroll(visible_lines);
@@ -425,8 +433,8 @@ impl App {
                 // Check for jump_to_first (gg)
                 if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    self.selected_line = 0;
-                    self.scroll_offset = 0;
+                    self.diff_scroll.selected_line = 0;
+                    self.diff_scroll.scroll_offset = 0;
                     return Ok(());
                 }
 
@@ -520,9 +528,9 @@ impl App {
 
         // Move down
         if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
-            if self.diff_line_count > 0 {
-                self.selected_line =
-                    (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
+            if self.diff_scroll.line_count > 0 {
+                self.diff_scroll.selected_line =
+                    (self.diff_scroll.selected_line + 1).min(self.diff_scroll.line_count.saturating_sub(1));
                 self.adjust_scroll(visible_lines);
             }
             return Ok(());
@@ -530,15 +538,15 @@ impl App {
 
         // Move up
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
-            self.selected_line = self.selected_line.saturating_sub(1);
+            self.diff_scroll.selected_line = self.diff_scroll.selected_line.saturating_sub(1);
             self.adjust_scroll(visible_lines);
             return Ok(());
         }
 
         // Jump to last
         if self.matches_single_key(&key, &kb.jump_to_last) {
-            if self.diff_line_count > 0 {
-                self.selected_line = self.diff_line_count.saturating_sub(1);
+            if self.diff_scroll.line_count > 0 {
+                self.diff_scroll.selected_line = self.diff_scroll.line_count.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
             }
             return Ok(());
@@ -552,9 +560,9 @@ impl App {
 
         // Page down
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
-            if self.diff_line_count > 0 {
-                self.selected_line =
-                    (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
+            if self.diff_scroll.line_count > 0 {
+                self.diff_scroll.selected_line =
+                    (self.diff_scroll.selected_line + 20).min(self.diff_scroll.line_count.saturating_sub(1));
                 self.adjust_scroll(visible_lines);
             }
             return Ok(());
@@ -562,7 +570,7 @@ impl App {
 
         // Page up
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
-            self.selected_line = self.selected_line.saturating_sub(20);
+            self.diff_scroll.selected_line = self.diff_scroll.selected_line.saturating_sub(20);
             self.adjust_scroll(visible_lines);
             return Ok(());
         }
@@ -632,8 +640,8 @@ impl App {
         }
         // When the entire diff fits within the viewport, no scrolling is needed.
         // Reset scroll_offset to prevent stale state from hiding lines after refresh.
-        if self.diff_line_count <= visible_lines {
-            self.scroll_offset = 0;
+        if self.diff_scroll.line_count <= visible_lines {
+            self.diff_scroll.scroll_offset = 0;
             return;
         }
 
@@ -642,12 +650,13 @@ impl App {
         let margin = visible_lines / 2;
 
         // Cursor above the top margin
-        if self.selected_line < self.scroll_offset + margin {
-            self.scroll_offset = self.selected_line.saturating_sub(margin);
+        if self.diff_scroll.selected_line < self.diff_scroll.scroll_offset + margin {
+            self.diff_scroll.scroll_offset = self.diff_scroll.selected_line.saturating_sub(margin);
         }
         // Cursor below the bottom margin
-        if self.selected_line + margin >= self.scroll_offset + visible_lines {
-            self.scroll_offset = self
+        if self.diff_scroll.selected_line + margin >= self.diff_scroll.scroll_offset + visible_lines {
+            self.diff_scroll.scroll_offset = self
+                .diff_scroll
                 .selected_line
                 .saturating_sub(visible_lines.saturating_sub(margin + 1));
         }

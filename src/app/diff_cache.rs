@@ -4,7 +4,7 @@ use crate::github::{ChangedFile, PullRequest};
 use crate::syntax::ParserPool;
 
 use super::types::*;
-use super::{App, DataState, MAX_HIGHLIGHTED_CACHE_ENTRIES};
+use super::{App, DataState};
 
 impl App {
     pub(crate) fn calc_diff_line_count(files: &[ChangedFile], selected: usize) -> usize {
@@ -34,28 +34,13 @@ impl App {
         matches!(self.data_state, DataState::Loaded { .. })
     }
     pub(crate) fn update_diff_line_count(&mut self) {
-        self.diff_line_count = Self::calc_diff_line_count(self.files(), self.selected_file);
-        // Clamp scroll_offset and selected_line so they never point past the
-        // end of the new diff.  This prevents a blank diff pane when a refresh
-        // or patch change shrinks the diff while it is being viewed.
-        if self.diff_line_count == 0 {
-            self.scroll_offset = 0;
-            self.selected_line = 0;
-        } else {
-            let max_line = self.diff_line_count - 1;
-            if self.selected_line > max_line {
-                self.selected_line = max_line;
-            }
-            if self.scroll_offset > max_line {
-                self.scroll_offset = max_line;
-            }
-        }
+        let count = Self::calc_diff_line_count(self.files(), self.selected_file);
+        self.diff_scroll.set_line_count(count);
     }
 
     /// Split Viewでファイル選択変更時にdiff状態を同期
     pub(crate) fn sync_diff_to_selected_file(&mut self) {
-        self.selected_line = 0;
-        self.scroll_offset = 0;
+        self.diff_scroll.reset();
         self.multiline_selection = None;
         self.comment_panel_open = false;
         self.comment_panel_scroll = 0;
@@ -84,67 +69,64 @@ impl App {
             .unwrap_or(false);
 
         // 1. 現在の diff_cache が有効か確認（O(1)）
-        if let Some(ref cache) = self.diff_cache {
-            let md_ok = !is_md || cache.markdown_rich == markdown_rich;
-            if cache.file_index == file_index && md_ok {
-                let Some(file) = self.files().get(file_index) else {
-                    self.diff_cache = None;
-                    return;
-                };
-                let Some(ref patch) = file.patch else {
-                    self.diff_cache = None;
-                    return;
-                };
-                let current_hash = hash_string(patch);
-                if cache.patch_hash == current_hash {
-                    return; // キャッシュ有効
+        if self.diff_store.current_key() == Some(&file_index) {
+            if let Some(ref cache) = self.diff_store.current {
+                let md_ok = !is_md || cache.markdown_rich == markdown_rich;
+                if md_ok {
+                    let Some(file) = self.files().get(file_index) else {
+                        self.diff_store.clear_current();
+                        return;
+                    };
+                    let Some(ref patch) = file.patch else {
+                        self.diff_store.clear_current();
+                        return;
+                    };
+                    let current_hash = hash_string(patch);
+                    if cache.patch_hash == current_hash {
+                        return; // キャッシュ有効
+                    }
                 }
             }
         }
 
-        // 古い receiver をドロップ（競合防止）
-        self.diff_cache_receiver = None;
-
-        // 現在のハイライト済みキャッシュをストアに退避（上限チェック付き）
-        if let Some(cache) = self.diff_cache.take() {
-            if cache.highlighted
-                && self.highlighted_cache_store.len() < MAX_HIGHLIGHTED_CACHE_ENTRIES
-            {
-                self.highlighted_cache_store.insert(cache.file_index, cache);
-            }
-        }
-
         let Some(file) = self.files().get(file_index) else {
-            self.diff_cache = None;
+            self.diff_store.clear_current();
             return;
         };
         let Some(patch) = file.patch.clone() else {
-            self.diff_cache = None;
+            self.diff_store.clear_current();
             return;
         };
         let filename = file.filename.clone();
+        let current_hash = hash_string(&patch);
 
         // 2. ストアにハイライト済みキャッシュがあるか確認
-        //    md_ok: 非markdownファイルでは markdown_rich の不一致を無視する（上記コメント参照）
-        if let Some(cached) = self.highlighted_cache_store.remove(&file_index) {
-            let current_hash = hash_string(&patch);
-            let md_ok = !is_md || cached.markdown_rich == markdown_rich;
-            if cached.patch_hash == current_hash && md_ok {
-                self.diff_cache = Some(cached);
+        //    try_restore は patch_hash のみチェックするため、markdown_rich は別途確認
+        if self.diff_store.try_restore(&file_index, Some(current_hash)) {
+            // markdown_rich の一致チェック（非markdownファイルでは常に ok）
+            let md_ok = !is_md
+                || self
+                    .diff_store
+                    .current
+                    .as_ref()
+                    .map(|c| c.markdown_rich == markdown_rich)
+                    .unwrap_or(false);
+            if md_ok {
                 return; // ストアから復元、バックグラウンド構築不要
             }
-            // 無効なキャッシュは破棄
+            // markdown_rich 不一致: current を破棄して再構築に進む
+            self.diff_store.clear_current();
         }
 
         // 3. キャッシュミス: プレーンキャッシュを即座に構築（~1ms）
         let tab_width = self.config.diff.tab_width;
         let mut plain_cache = crate::ui::diff_view::build_plain_diff_cache(&patch, tab_width);
         plain_cache.file_index = file_index;
-        self.diff_cache = Some(plain_cache);
+        self.diff_store.set_current(file_index, plain_cache);
 
         // 完全版キャッシュをバックグラウンドで構築
         let (tx, rx) = mpsc::channel(1);
-        self.diff_cache_receiver = Some(rx);
+        self.diff_store.set_highlight_rx(rx);
 
         let theme = self.config.diff.theme.clone();
 
@@ -159,7 +141,7 @@ impl App {
                 tab_width,
             );
             cache.file_index = file_index;
-            let _ = tx.try_send(cache);
+            let _ = tx.try_send((file_index, cache));
         });
     }
 

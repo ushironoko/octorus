@@ -6,6 +6,7 @@ pub mod diff_view;
 mod file_list;
 mod footer;
 mod git_log;
+mod git_ops;
 mod help;
 mod issue_comment_list;
 mod issue_detail;
@@ -109,6 +110,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::IssueList => issue_list::render(frame, app),
         AppState::IssueDetail => issue_detail::render(frame, app),
         AppState::IssueCommentList => issue_comment_list::render(frame, app),
+        AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff => {
+            git_ops::render(frame, app)
+        }
     }
 
     // シンボル選択ポップアップ（最前面に描画）

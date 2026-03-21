@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn test_detect_github_release_for_known_locations() {
         let path = Path::new("/usr/local/bin/or");
-        if path.parent().map_or(false, |p| p.exists()) {
+        if path.parent().is_some_and(|p| p.exists()) {
             assert_eq!(detect_install_method(path), InstallMethod::GitHubRelease);
         }
     }

@@ -10,8 +10,8 @@ impl App {
     pub(crate) fn push_jump_location(&mut self) {
         let loc = JumpLocation {
             file_index: self.selected_file,
-            line_index: self.selected_line,
-            scroll_offset: self.scroll_offset,
+            line_index: self.diff_scroll.selected_line,
+            scroll_offset: self.diff_scroll.scroll_offset,
         };
         self.jump_stack.push(loc);
         // 上限 100 件
@@ -28,8 +28,8 @@ impl App {
 
         let file_changed = self.selected_file != loc.file_index;
         self.selected_file = loc.file_index;
-        self.selected_line = loc.line_index;
-        self.scroll_offset = loc.scroll_offset;
+        self.diff_scroll.selected_line = loc.line_index;
+        self.diff_scroll.scroll_offset = loc.scroll_offset;
 
         if file_changed {
             self.update_diff_line_count();
@@ -51,7 +51,7 @@ impl App {
             Some(p) => p,
             None => return Ok(()),
         };
-        let info = match crate::diff::get_line_info(patch, self.selected_line) {
+        let info = match crate::diff::get_line_info(patch, self.diff_scroll.selected_line) {
             Some(i) => i,
             None => return Ok(()),
         };
@@ -122,8 +122,8 @@ impl App {
             self.push_jump_location();
             let file_changed = self.selected_file != file_idx;
             self.selected_file = file_idx;
-            self.selected_line = line_idx;
-            self.scroll_offset = line_idx;
+            self.diff_scroll.selected_line = line_idx;
+            self.diff_scroll.scroll_offset = line_idx;
 
             if file_changed {
                 self.update_diff_line_count();
@@ -200,7 +200,7 @@ impl App {
 
         // 行番号: new_line_number があれば使用、なければ 1
         let line_number = file.patch.as_ref().and_then(|patch| {
-            crate::diff::get_line_info(patch, self.selected_line)
+            crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
                 .and_then(|info| info.new_line_number)
         });
 

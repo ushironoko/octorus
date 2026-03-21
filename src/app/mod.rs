@@ -19,15 +19,17 @@ use crate::keybinding::KeyBinding;
 use crate::loader::{CommentSubmitResult, DataLoadResult, SingleFileDiffResult};
 use crate::ui;
 use crate::ui::text_area::TextArea;
+use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use std::time::Instant;
 
 mod types;
 pub use types::{
     hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState,
-    DiffCache, GitLogState, HelpTab, InputMode, InternedSpan, IssueDetailFocus, IssueState,
-    JumpLocation, LineInputContext, LogEntry, LogEventType, MultilineSelection, PauseState,
-    PermissionInfo, RefreshRequest, RepoSymbolSearchResult, ReviewAction, SymbolPopupState,
-    SymbolSearchState, SymbolSearchUpdate, ViewSnapshot, WatcherHandle,
+    DiffCache, FileStatus, GitLogState, GitOpsState, GitStatusEntry, HelpTab, IndexEntry,
+    InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation, LineInputContext,
+    LogEntry, LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest,
+    RepoSymbolSearchResult, ReviewAction, SymbolPopupState, SymbolSearchState, SymbolSearchUpdate,
+    TreeRow, UndoAction, ViewSnapshot, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -37,6 +39,7 @@ mod comments;
 mod diff_cache;
 mod filter;
 mod git_log;
+mod git_ops;
 mod input;
 mod input_diff;
 mod input_text;
@@ -51,16 +54,6 @@ mod symbol;
 mod tests;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// ハイライトキャッシュストアの最大エントリ数（メモリ上限）
-///
-/// 大規模PRでのOOM防止。超過時は現在選択中のファイルから最も遠いエントリを削除。
-const MAX_HIGHLIGHTED_CACHE_ENTRIES: usize = 50;
-
-/// プリフェッチ対象ファイルの最大数
-///
-/// 大規模PRで全ファイルをクローンしないよう制限。
-const MAX_PREFETCH_FILES: usize = 50;
 
 /// PR番号と紐づいたレシーバー（発信元PRを追跡してクロスPRキャッシュ汚染を防止）
 type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
@@ -118,9 +111,7 @@ pub struct App {
     pub previous_state: AppState,
     pub selected_file: usize,
     pub file_list_scroll_offset: usize,
-    pub selected_line: usize,
-    pub diff_line_count: usize,
-    pub scroll_offset: usize,
+    pub diff_scroll: DiffScrollState,
     /// 複数行選択モードの状態（None = 非選択モード）
     pub multiline_selection: Option<MultilineSelection>,
     /// 統一入力モード
@@ -142,10 +133,7 @@ pub struct App {
     pub comment_panel_open: bool,
     /// インラインコメントパネルのスクロールオフセット（行単位）
     pub comment_panel_scroll: u16,
-    // Cached diff lines (syntax highlighted)
-    pub diff_cache: Option<DiffCache>,
-    // Store for highlighted diff caches (file_index -> DiffCache)
-    highlighted_cache_store: HashMap<usize, DiffCache>,
+    pub diff_store: DiffCacheStore<usize>,
     // Discussion comments (PR conversation)
     pub discussion_comments: Option<Vec<DiscussionComment>>,
     pub selected_discussion_comment: usize,
@@ -170,8 +158,6 @@ pub struct App {
     data_receiver: PrReceiver<DataLoadResult>,
     retry_sender: Option<mpsc::Sender<RefreshRequest>>,
     comment_receiver: PrReceiver<Result<Vec<ReviewComment>, String>>,
-    diff_cache_receiver: Option<mpsc::Receiver<DiffCache>>,
-    prefetch_receiver: Option<mpsc::Receiver<DiffCache>>,
     discussion_comment_receiver: PrReceiver<Result<Vec<DiscussionComment>, String>>,
     rally_event_receiver: Option<mpsc::Receiver<RallyEvent>>,
     // Handle for aborting the rally orchestrator task
@@ -243,6 +229,8 @@ pub struct App {
     ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
     /// Git Log 画面の全状態（None = 非表示）
     pub git_log_state: Option<GitLogState>,
+    /// GitOps 画面の全状態（None = 非表示）
+    pub git_ops_state: Option<GitOpsState>,
     /// Issue 画面の全状態（None = 非表示）
     pub issue_state: Option<IssueState>,
     /// Issue詳細からPR遷移した際の復帰フラグ
@@ -288,9 +276,7 @@ impl App {
             previous_state: AppState::FileList,
             selected_file: 0,
             file_list_scroll_offset: 0,
-            selected_line: 0,
-            diff_line_count: 0,
-            scroll_offset: 0,
+            diff_scroll: DiffScrollState::new(ScrollMode::Margin),
             multiline_selection: None,
             input_mode: None,
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
@@ -304,8 +290,7 @@ impl App {
             file_comment_lines: HashSet::new(),
             comment_panel_open: false,
             comment_panel_scroll: 0,
-            diff_cache: None,
-            highlighted_cache_store: HashMap::new(),
+            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comment_list_scroll_offset: 0,
@@ -321,8 +306,6 @@ impl App {
             data_receiver: Some((pr_number, rx)),
             retry_sender: None,
             comment_receiver: None,
-            diff_cache_receiver: None,
-            prefetch_receiver: None,
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
@@ -364,6 +347,7 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
             update_available: None,
@@ -393,9 +377,7 @@ impl App {
             previous_state: AppState::PullRequestList,
             selected_file: 0,
             file_list_scroll_offset: 0,
-            selected_line: 0,
-            diff_line_count: 0,
-            scroll_offset: 0,
+            diff_scroll: DiffScrollState::new(ScrollMode::Margin),
             multiline_selection: None,
             input_mode: None,
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
@@ -409,8 +391,7 @@ impl App {
             file_comment_lines: HashSet::new(),
             comment_panel_open: false,
             comment_panel_scroll: 0,
-            diff_cache: None,
-            highlighted_cache_store: HashMap::new(),
+            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comment_list_scroll_offset: 0,
@@ -426,8 +407,6 @@ impl App {
             data_receiver: None,
             retry_sender: None,
             comment_receiver: None,
-            diff_cache_receiver: None,
-            prefetch_receiver: None,
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
@@ -478,6 +457,7 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
             update_available: None,
@@ -534,6 +514,7 @@ impl App {
             self.poll_checks_updates();
             self.poll_ci_status_updates();
             self.poll_git_log_updates();
+            self.poll_git_ops_updates();
             self.poll_issue_list_updates();
             self.poll_issue_detail_updates();
             self.poll_linked_prs_updates();
@@ -650,9 +631,7 @@ impl App {
             previous_state: AppState::FileList,
             selected_file: 0,
             file_list_scroll_offset: 0,
-            selected_line: 0,
-            diff_line_count: 0,
-            scroll_offset: 0,
+            diff_scroll: DiffScrollState::new(ScrollMode::Margin),
             multiline_selection: None,
             input_mode: None,
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
@@ -666,8 +645,7 @@ impl App {
             file_comment_lines: HashSet::new(),
             comment_panel_open: false,
             comment_panel_scroll: 0,
-            diff_cache: None,
-            highlighted_cache_store: HashMap::new(),
+            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comment_list_scroll_offset: 0,
@@ -683,8 +661,6 @@ impl App {
             data_receiver: None,
             retry_sender: None,
             comment_receiver: None,
-            diff_cache_receiver: None,
-            prefetch_receiver: None,
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
@@ -735,6 +711,7 @@ impl App {
             checks_receiver: None,
             ci_status_receiver: None,
             git_log_state: None,
+            git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
             update_available: None,

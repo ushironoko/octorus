@@ -391,17 +391,17 @@ fn render_diff_body(
         return;
     }
 
-    let lines: Vec<Line> = if let Some(ref cache) = gl.diff_cache {
+    let lines: Vec<Line> = if let Some(ref cache) = gl.diff_store.current {
         let visible_height = area.height.saturating_sub(2) as usize;
         let line_count = cache.lines.len();
-        let visible_start = gl.scroll_offset.saturating_sub(2).min(line_count);
-        let visible_end = (gl.scroll_offset + visible_height + 5).min(line_count);
+        let visible_start = gl.diff_scroll.scroll_offset.saturating_sub(2).min(line_count);
+        let visible_end = (gl.diff_scroll.scroll_offset + visible_height + 5).min(line_count);
 
         let empty_comments = HashSet::new();
         diff_view::render_cached_lines(
             cache,
             visible_start..visible_end,
-            gl.selected_line,
+            gl.diff_scroll.selected_line,
             &empty_comments,
             bg_color,
             None,
@@ -413,11 +413,11 @@ fn render_diff_body(
         ))]
     };
 
-    let adjusted_scroll = if gl.diff_cache.is_some() {
-        let visible_start = gl.scroll_offset.saturating_sub(2);
-        (gl.scroll_offset - visible_start) as u16
+    let adjusted_scroll = if gl.diff_store.current.is_some() {
+        let visible_start = gl.diff_scroll.scroll_offset.saturating_sub(2);
+        (gl.diff_scroll.scroll_offset - visible_start) as u16
     } else {
-        gl.scroll_offset as u16
+        gl.diff_scroll.scroll_offset as u16
     };
 
     let diff_block = Paragraph::new(lines)
@@ -431,7 +431,7 @@ fn render_diff_body(
     frame.render_widget(diff_block, area);
 
     // Scrollbar
-    if let Some(ref cache) = gl.diff_cache {
+    if let Some(ref cache) = gl.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;
         let max_scroll = total_lines.saturating_sub(visible_height);
@@ -440,7 +440,7 @@ fn render_diff_body(
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
 
-            let clamped_position = gl.scroll_offset.min(max_scroll);
+            let clamped_position = gl.diff_scroll.scroll_offset.min(max_scroll);
             let mut scrollbar_state = ScrollbarState::new(max_scroll).position(clamped_position);
 
             frame.render_stateful_widget(

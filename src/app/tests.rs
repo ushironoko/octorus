@@ -57,13 +57,13 @@ fn test_has_comment_at_current_line() {
         },
     ];
 
-    app.selected_line = 5;
+    app.diff_scroll.selected_line = 5;
     assert!(app.has_comment_at_current_line());
 
-    app.selected_line = 10;
+    app.diff_scroll.selected_line = 10;
     assert!(app.has_comment_at_current_line());
 
-    app.selected_line = 7;
+    app.diff_scroll.selected_line = 7;
     assert!(!app.has_comment_at_current_line());
 }
 
@@ -87,15 +87,15 @@ fn test_get_comment_indices_at_current_line() {
         },
     ];
 
-    app.selected_line = 5;
+    app.diff_scroll.selected_line = 5;
     let indices = app.get_comment_indices_at_current_line();
     assert_eq!(indices, vec![0, 2]);
 
-    app.selected_line = 10;
+    app.diff_scroll.selected_line = 10;
     let indices = app.get_comment_indices_at_current_line();
     assert_eq!(indices, vec![1]);
 
-    app.selected_line = 7;
+    app.diff_scroll.selected_line = 7;
     let indices = app.get_comment_indices_at_current_line();
     assert!(indices.is_empty());
 }
@@ -119,15 +119,15 @@ fn test_jump_to_next_comment_basic() {
         },
     ];
 
-    app.selected_line = 0;
+    app.diff_scroll.selected_line = 0;
     app.jump_to_next_comment();
-    assert_eq!(app.selected_line, 5);
+    assert_eq!(app.diff_scroll.selected_line, 5);
 
     app.jump_to_next_comment();
-    assert_eq!(app.selected_line, 10);
+    assert_eq!(app.diff_scroll.selected_line, 10);
 
     app.jump_to_next_comment();
-    assert_eq!(app.selected_line, 15);
+    assert_eq!(app.diff_scroll.selected_line, 15);
 }
 
 #[test]
@@ -139,10 +139,10 @@ fn test_jump_to_next_comment_no_wrap() {
         comment_index: 0,
     }];
 
-    app.selected_line = 5;
+    app.diff_scroll.selected_line = 5;
     app.jump_to_next_comment();
     // Should stay at 5 (no wrap-around)
-    assert_eq!(app.selected_line, 5);
+    assert_eq!(app.diff_scroll.selected_line, 5);
 }
 
 #[test]
@@ -164,15 +164,15 @@ fn test_jump_to_prev_comment_basic() {
         },
     ];
 
-    app.selected_line = 20;
+    app.diff_scroll.selected_line = 20;
     app.jump_to_prev_comment();
-    assert_eq!(app.selected_line, 15);
+    assert_eq!(app.diff_scroll.selected_line, 15);
 
     app.jump_to_prev_comment();
-    assert_eq!(app.selected_line, 10);
+    assert_eq!(app.diff_scroll.selected_line, 10);
 
     app.jump_to_prev_comment();
-    assert_eq!(app.selected_line, 5);
+    assert_eq!(app.diff_scroll.selected_line, 5);
 }
 
 #[test]
@@ -184,10 +184,10 @@ fn test_jump_to_prev_comment_no_wrap() {
         comment_index: 0,
     }];
 
-    app.selected_line = 5;
+    app.diff_scroll.selected_line = 5;
     app.jump_to_prev_comment();
     // Should stay at 5 (no wrap-around)
-    assert_eq!(app.selected_line, 5);
+    assert_eq!(app.diff_scroll.selected_line, 5);
 }
 
 #[test]
@@ -196,12 +196,12 @@ fn test_jump_with_empty_positions() {
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.file_comment_positions = vec![];
 
-    app.selected_line = 10;
+    app.diff_scroll.selected_line = 10;
     app.jump_to_next_comment();
-    assert_eq!(app.selected_line, 10);
+    assert_eq!(app.diff_scroll.selected_line, 10);
 
     app.jump_to_prev_comment();
-    assert_eq!(app.selected_line, 10);
+    assert_eq!(app.diff_scroll.selected_line, 10);
 }
 
 #[test]
@@ -283,8 +283,8 @@ fn test_back_to_pr_list_clears_view_receivers() {
     assert!(app.discussion_comment_receiver.is_none());
     assert!(app.comment_submit_receiver.is_none());
     assert!(app.mark_viewed_receiver.is_none());
-    assert!(app.diff_cache_receiver.is_none());
-    assert!(app.prefetch_receiver.is_none());
+    assert!(!app.diff_store.has_highlight_rx());
+    assert!(!app.diff_store.has_prefetch_rx());
     // Loading flags should be cleared
     assert!(!app.comment_submitting);
     assert!(!app.comments_loading);
@@ -585,11 +585,11 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
         files: initial_files,
     };
     app.selected_file = 4;
-    app.selected_line = 10;
-    app.scroll_offset = 5;
+    app.diff_scroll.selected_line = 10;
+    app.diff_scroll.scroll_offset = 5;
 
     // Set a stale diff_cache pointing to old file index 4
-    app.diff_cache = Some(DiffCache {
+    app.diff_store.current = Some(DiffCache {
         file_index: 4,
         patch_hash: 0,
         lines: vec![],
@@ -615,13 +615,13 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
     assert_eq!(app.selected_file, 1);
     // diff_cache must be rebuilt for the new selected file (ensure_diff_cache rebuilds it)
     assert_eq!(
-        app.diff_cache.as_ref().map(|c| c.file_index),
+        app.diff_store.current.as_ref().map(|c| c.file_index),
         Some(1),
         "diff_cache should be rebuilt for the new selected file"
     );
     // selected_line and scroll_offset must be reset
-    assert_eq!(app.selected_line, 0, "selected_line should be reset to 0");
-    assert_eq!(app.scroll_offset, 0, "scroll_offset should be reset to 0");
+    assert_eq!(app.diff_scroll.selected_line, 0, "selected_line should be reset to 0");
+    assert_eq!(app.diff_scroll.scroll_offset, 0, "scroll_offset should be reset to 0");
 }
 
 #[tokio::test]
@@ -771,11 +771,11 @@ async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchang
         files: initial_files,
     };
     app.selected_file = 1;
-    app.selected_line = 10;
-    app.scroll_offset = 5;
+    app.diff_scroll.selected_line = 2;
+    app.diff_scroll.scroll_offset = 1;
 
     // Set diff_cache for file index 1
-    app.diff_cache = Some(DiffCache {
+    app.diff_store.current = Some(DiffCache {
         file_index: 1,
         patch_hash: 0,
         lines: vec![],
@@ -801,12 +801,12 @@ async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchang
     assert_eq!(app.selected_file, 1);
     // diff_cache should NOT be invalidated (selected_file didn't change)
     assert!(
-        app.diff_cache.is_some(),
+        app.diff_store.current.is_some(),
         "diff_cache should be preserved when selected_file is unchanged"
     );
-    // selected_line and scroll_offset should be preserved
-    assert_eq!(app.selected_line, 10);
-    assert_eq!(app.scroll_offset, 5);
+    // selected_line and scroll_offset should be preserved (within valid range for 3-line diff)
+    assert_eq!(app.diff_scroll.selected_line, 2);
+    assert_eq!(app.diff_scroll.scroll_offset, 1);
 }
 
 #[tokio::test]
@@ -1164,25 +1164,25 @@ fn test_save_and_restore_view_snapshot() {
     let mut app = App::new_for_test();
     app.selected_file = 5;
     app.file_list_scroll_offset = 2;
-    app.selected_line = 10;
-    app.scroll_offset = 3;
+    app.diff_scroll.selected_line = 10;
+    app.diff_scroll.scroll_offset = 3;
 
     let snapshot = app.save_view_snapshot();
 
     // save_view_snapshot does not move data_state (ViewSnapshot has no data_state)
     // App state fields should be reset after save
-    assert!(app.diff_cache.is_none());
+    assert!(app.diff_store.current.is_none());
 
     // Modify app state
     app.selected_file = 0;
-    app.selected_line = 0;
+    app.diff_scroll.selected_line = 0;
 
     // Restore
     app.restore_view_snapshot(snapshot);
     assert_eq!(app.selected_file, 5);
     assert_eq!(app.file_list_scroll_offset, 2);
-    assert_eq!(app.selected_line, 10);
-    assert_eq!(app.scroll_offset, 3);
+    assert_eq!(app.diff_scroll.selected_line, 10);
+    assert_eq!(app.diff_scroll.scroll_offset, 3);
 }
 
 // ===================================================================
@@ -1195,18 +1195,18 @@ fn test_save_snapshot_captures_all_fields() {
     app.pr_number = Some(42);
     app.selected_file = 7;
     app.file_list_scroll_offset = 3;
-    app.selected_line = 15;
-    app.scroll_offset = 5;
+    app.diff_scroll.selected_line = 15;
+    app.diff_scroll.scroll_offset = 5;
 
-    // diff_cache
+    // diff_cache (current)
     let mut dc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
     dc.file_index = 7;
-    app.diff_cache = Some(dc);
+    app.diff_store.set_current(7, dc);
 
-    // highlighted_cache_store
+    // highlighted_cache_store (store)
     let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     hc.file_index = 2;
-    app.highlighted_cache_store.insert(2, hc);
+    app.diff_store.store.insert(2, hc);
 
     // review_comments
     app.review_comments = Some(vec![crate::github::comment::ReviewComment {
@@ -1244,10 +1244,10 @@ fn test_save_snapshot_captures_all_fields() {
     assert_eq!(snapshot.file_list_scroll_offset, 3);
     assert_eq!(snapshot.selected_line, 15);
     assert_eq!(snapshot.scroll_offset, 5);
-    assert!(snapshot.diff_cache.is_some());
-    assert_eq!(snapshot.diff_cache.as_ref().unwrap().file_index, 7);
-    assert_eq!(snapshot.highlighted_cache_store.len(), 1);
-    assert!(snapshot.highlighted_cache_store.contains_key(&2));
+    assert!(snapshot.diff_cache_snapshot.current.is_some());
+    assert_eq!(snapshot.diff_cache_snapshot.current.as_ref().unwrap().file_index, 7);
+    assert_eq!(snapshot.diff_cache_snapshot.store.len(), 1);
+    assert!(snapshot.diff_cache_snapshot.store.contains_key(&2));
     assert_eq!(snapshot.review_comments.as_ref().unwrap().len(), 1);
     assert_eq!(snapshot.review_comments.as_ref().unwrap()[0].id, 10);
     assert_eq!(snapshot.discussion_comments.as_ref().unwrap().len(), 1);
@@ -1261,13 +1261,13 @@ fn test_save_snapshot_captures_all_fields() {
 #[test]
 fn test_save_snapshot_takes_from_app() {
     let mut app = App::new_for_test();
-    app.diff_cache = Some(crate::ui::diff_view::build_plain_diff_cache(
+    app.diff_store.current = Some(crate::ui::diff_view::build_plain_diff_cache(
         "@@ -1 +1 @@\n+x",
         4,
     ));
     let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
     hc.file_index = 1;
-    app.highlighted_cache_store.insert(1, hc);
+    app.diff_store.store.insert(1, hc);
     app.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 1,
         path: "f.rs".to_string(),
@@ -1293,8 +1293,8 @@ fn test_save_snapshot_takes_from_app() {
     let _snapshot = app.save_view_snapshot();
 
     // take() / mem::take() により App 側は空になっていること
-    assert!(app.diff_cache.is_none());
-    assert!(app.highlighted_cache_store.is_empty());
+    assert!(app.diff_store.current.is_none());
+    assert!(app.diff_store.store.is_empty());
     assert!(app.review_comments.is_none());
     assert!(app.discussion_comments.is_none());
     assert!(app.local_file_signatures.is_empty());
@@ -1310,7 +1310,7 @@ fn test_restore_snapshot_all_fields() {
     // 事前に違う値を設定
     app.pr_number = Some(99);
     app.selected_file = 0;
-    app.selected_line = 0;
+    app.diff_scroll.selected_line = 0;
 
     let mut dc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+restored", 4);
     dc.file_index = 3;
@@ -1331,8 +1331,11 @@ fn test_restore_snapshot_all_fields() {
         file_list_scroll_offset: 4,
         selected_line: 20,
         scroll_offset: 6,
-        diff_cache: Some(dc),
-        highlighted_cache_store: hcs,
+        diff_cache_snapshot: crate::diff_store::DiffCacheSnapshot {
+            current: Some(dc),
+            current_key: Some(3),
+            store: hcs,
+        },
         review_comments: Some(vec![crate::github::comment::ReviewComment {
             id: 50,
             path: "r.rs".to_string(),
@@ -1357,16 +1360,16 @@ fn test_restore_snapshot_all_fields() {
 
     app.restore_view_snapshot(snapshot);
 
-    // 全11フィールドが復元されていること
+    // 全フィールドが復元されていること
     assert_eq!(app.pr_number, Some(42));
     assert_eq!(app.selected_file, 8);
     assert_eq!(app.file_list_scroll_offset, 4);
-    assert_eq!(app.selected_line, 20);
-    assert_eq!(app.scroll_offset, 6);
-    assert!(app.diff_cache.is_some());
-    assert_eq!(app.diff_cache.as_ref().unwrap().file_index, 3);
-    assert_eq!(app.highlighted_cache_store.len(), 1);
-    assert!(app.highlighted_cache_store.contains_key(&5));
+    assert_eq!(app.diff_scroll.selected_line, 20);
+    assert_eq!(app.diff_scroll.scroll_offset, 6);
+    assert!(app.diff_store.current.is_some());
+    assert_eq!(app.diff_store.current.as_ref().unwrap().file_index, 3);
+    assert_eq!(app.diff_store.store_len(), 1);
+    assert!(app.diff_store.store_contains_key(&5));
     assert_eq!(app.review_comments.as_ref().unwrap().len(), 1);
     assert_eq!(app.review_comments.as_ref().unwrap()[0].id, 50);
     assert_eq!(app.discussion_comments.as_ref().unwrap().len(), 1);
@@ -1384,9 +1387,9 @@ fn test_restore_snapshot_clears_receivers() {
 
     // レシーバーを設定
     let (_tx1, rx1) = mpsc::channel(1);
-    app.diff_cache_receiver = Some(rx1);
+    app.diff_store.set_highlight_rx(rx1);
     let (_tx2, rx2) = mpsc::channel(1);
-    app.prefetch_receiver = Some(rx2);
+    app.diff_store.set_prefetch_rx(rx2);
     let (_tx3, rx3) =
         mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
     app.comment_receiver = Some((1, rx3));
@@ -1405,8 +1408,11 @@ fn test_restore_snapshot_clears_receivers() {
         file_list_scroll_offset: 0,
         selected_line: 0,
         scroll_offset: 0,
-        diff_cache: None,
-        highlighted_cache_store: HashMap::new(),
+        diff_cache_snapshot: crate::diff_store::DiffCacheSnapshot {
+            current: None,
+            current_key: None,
+            store: HashMap::new(),
+        },
         review_comments: None,
         discussion_comments: None,
         local_file_signatures: HashMap::new(),
@@ -1415,9 +1421,9 @@ fn test_restore_snapshot_clears_receivers() {
 
     app.restore_view_snapshot(snapshot);
 
-    // 全レシーバーがクリアされていること
-    assert!(app.diff_cache_receiver.is_none());
-    assert!(app.prefetch_receiver.is_none());
+    // 全レシーバーがクリアされていること（restore_snapshot clears them）
+    assert!(!app.diff_store.has_highlight_rx());
+    assert!(!app.diff_store.has_prefetch_rx());
     assert!(app.comment_receiver.is_none());
     assert!(app.discussion_comment_receiver.is_none());
     assert!(app.comment_submit_receiver.is_none());
@@ -1432,8 +1438,8 @@ fn test_save_restore_roundtrip_preserves_data() {
     app.pr_number = Some(10);
     app.selected_file = 3;
     app.file_list_scroll_offset = 1;
-    app.selected_line = 7;
-    app.scroll_offset = 2;
+    app.diff_scroll.selected_line = 7;
+    app.diff_scroll.scroll_offset = 2;
     app.local_file_signatures.insert("x.rs".to_string(), 500);
     app.local_file_patch_signatures
         .insert("x.rs".to_string(), 600);
@@ -1458,7 +1464,7 @@ fn test_save_restore_roundtrip_preserves_data() {
     // 別の値を設定
     app.pr_number = Some(999);
     app.selected_file = 99;
-    app.selected_line = 99;
+    app.diff_scroll.selected_line = 99;
 
     // Restore
     app.restore_view_snapshot(snapshot);
@@ -1467,8 +1473,8 @@ fn test_save_restore_roundtrip_preserves_data() {
     assert_eq!(app.pr_number, Some(10));
     assert_eq!(app.selected_file, 3);
     assert_eq!(app.file_list_scroll_offset, 1);
-    assert_eq!(app.selected_line, 7);
-    assert_eq!(app.scroll_offset, 2);
+    assert_eq!(app.diff_scroll.selected_line, 7);
+    assert_eq!(app.diff_scroll.scroll_offset, 2);
     assert_eq!(app.local_file_signatures["x.rs"], 500);
     assert_eq!(app.local_file_patch_signatures["x.rs"], 600);
     assert_eq!(app.review_comments.as_ref().unwrap()[0].id, 77);
@@ -1572,13 +1578,13 @@ fn test_back_to_pr_list_resets_pr_state() {
     app.pr_number = Some(42);
     app.review_comments = Some(vec![]);
     app.discussion_comments = Some(vec![]);
-    app.diff_cache = Some(crate::ui::diff_view::build_plain_diff_cache(
+    app.diff_store.current = Some(crate::ui::diff_view::build_plain_diff_cache(
         "@@ -1 +1 @@\n+x",
         4,
     ));
     let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
     hc.file_index = 1;
-    app.highlighted_cache_store.insert(1, hc);
+    app.diff_store.store.insert(1, hc);
 
     app.back_to_pr_list();
 
@@ -1587,12 +1593,12 @@ fn test_back_to_pr_list_resets_pr_state() {
     assert!(matches!(app.data_state, DataState::Loading));
     assert!(app.review_comments.is_none());
     assert!(app.discussion_comments.is_none());
-    assert!(app.diff_cache.is_none());
-    assert!(app.highlighted_cache_store.is_empty());
+    assert!(app.diff_store.current.is_none());
+    assert!(app.diff_store.store.is_empty());
     assert_eq!(app.selected_file, 0);
     assert_eq!(app.file_list_scroll_offset, 0);
-    assert_eq!(app.selected_line, 0);
-    assert_eq!(app.scroll_offset, 0);
+    assert_eq!(app.diff_scroll.selected_line, 0);
+    assert_eq!(app.diff_scroll.scroll_offset, 0);
     assert!(app.file_list_filter.is_none());
 }
 
@@ -1606,9 +1612,9 @@ fn test_back_to_pr_list_clears_all_receivers() {
         mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
     app.comment_receiver = Some((1, rx1));
     let (_tx2, rx2) = mpsc::channel(1);
-    app.diff_cache_receiver = Some(rx2);
+    app.diff_store.set_highlight_rx(rx2);
     let (_tx3, rx3) = mpsc::channel(1);
-    app.prefetch_receiver = Some(rx3);
+    app.diff_store.set_prefetch_rx(rx3);
     let (_tx4, rx4) =
         mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
     app.discussion_comment_receiver = Some((1, rx4));
@@ -1629,8 +1635,8 @@ fn test_back_to_pr_list_clears_all_receivers() {
 
     // 全レシーバーがクリアされること
     assert!(app.comment_receiver.is_none());
-    assert!(app.diff_cache_receiver.is_none());
-    assert!(app.prefetch_receiver.is_none());
+    assert!(!app.diff_store.has_highlight_rx());
+    assert!(!app.diff_store.has_prefetch_rx());
     assert!(app.discussion_comment_receiver.is_none());
     assert!(app.comment_submit_receiver.is_none());
     assert!(app.mark_viewed_receiver.is_none());
@@ -2029,7 +2035,7 @@ fn test_toggle_markdown_rich() {
     app.toggle_markdown_rich();
     assert!(app.is_markdown_rich());
     assert!(
-        app.diff_cache.is_none(),
+        app.diff_store.current.is_none(),
         "Cache should be cleared for md file"
     );
 
@@ -2054,19 +2060,19 @@ fn test_toggle_markdown_rich_clears_receivers() {
     };
 
     // Simulate having active receivers
-    let (_tx, rx) = tokio::sync::mpsc::channel::<DiffCache>(1);
-    app.diff_cache_receiver = Some(rx);
+    let (_tx, rx) = tokio::sync::mpsc::channel::<(usize, DiffCache)>(1);
+    app.diff_store.set_highlight_rx(rx);
 
-    let (_tx2, rx2) = tokio::sync::mpsc::channel::<DiffCache>(1);
-    app.prefetch_receiver = Some(rx2);
+    let (_tx2, rx2) = tokio::sync::mpsc::channel::<(usize, DiffCache)>(1);
+    app.diff_store.set_prefetch_rx(rx2);
 
     app.toggle_markdown_rich();
     assert!(
-        app.diff_cache_receiver.is_none(),
+        !app.diff_store.has_highlight_rx(),
         "diff_cache_receiver should be cleared for md file"
     );
     assert!(
-        app.prefetch_receiver.is_none(),
+        !app.diff_store.has_prefetch_rx(),
         "prefetch_receiver should be cleared on toggle"
     );
 }
@@ -2098,25 +2104,31 @@ fn test_toggle_markdown_rich_clears_only_md_cache() {
     };
 
     // Add cache entries for both files
+    // md_cache: markdown_rich=false (built with plain)
     let md_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+test", 4);
+    // rs_cache: markdown_rich=true (simulates a cache built with the new markdown_rich flag)
     let mut rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     rs_cache.file_index = 1;
-    app.highlighted_cache_store.insert(0, md_cache);
-    app.highlighted_cache_store.insert(1, rs_cache);
-    assert_eq!(app.highlighted_cache_store.len(), 2);
+    rs_cache.markdown_rich = true; // matches the post-toggle state
+    app.diff_store.store.insert(0, md_cache);
+    app.diff_store.store.insert(1, rs_cache);
+    assert_eq!(app.diff_store.store.len(), 2);
 
+    // toggle_markdown_rich flips from false to true
+    // invalidate_if removes caches where markdown_rich != true
     app.toggle_markdown_rich();
 
-    // Only md cache should be removed
+    // md_cache (markdown_rich=false) should be removed (doesn't match new flag=true)
     assert!(
-        !app.highlighted_cache_store.contains_key(&0),
+        !app.diff_store.store.contains_key(&0),
         "md cache should be cleared"
     );
+    // rs_cache (markdown_rich=true) should be preserved (matches new flag=true)
     assert!(
-        app.highlighted_cache_store.contains_key(&1),
+        app.diff_store.store.contains_key(&1),
         "rs cache should be preserved"
     );
-    assert_eq!(app.highlighted_cache_store.len(), 1);
+    assert_eq!(app.diff_store.store.len(), 1);
 }
 
 #[test]
@@ -2136,12 +2148,12 @@ fn test_toggle_markdown_rich_preserves_non_md_diff_cache() {
     };
 
     let rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
-    app.diff_cache = Some(rs_cache);
+    app.diff_store.current = Some(rs_cache);
 
     app.toggle_markdown_rich();
 
     assert!(
-        app.diff_cache.is_some(),
+        app.diff_store.current.is_some(),
         "non-md diff_cache should be preserved"
     );
 }
@@ -2188,7 +2200,7 @@ fn make_app_with_patch(patch: &str) -> App {
 #[test]
 fn test_enter_multiline_selection_sets_anchor() {
     let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
-    app.selected_line = 1; // context line
+    app.diff_scroll.selected_line = 1; // context line
     app.enter_multiline_selection();
     assert!(app.multiline_selection.is_some());
     let sel = app.multiline_selection.as_ref().unwrap();
@@ -2199,7 +2211,7 @@ fn test_enter_multiline_selection_sets_anchor() {
 #[test]
 fn test_enter_multiline_selection_rejected_on_header() {
     let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added");
-    app.selected_line = 0; // hunk header line
+    app.diff_scroll.selected_line = 0; // hunk header line
     app.enter_multiline_selection();
     assert!(app.multiline_selection.is_none());
 }
@@ -3627,88 +3639,88 @@ fn test_cancel_input_clears_multiline_selection() {
 #[test]
 fn test_adjust_scroll_above_viewport() {
     let mut app = App::new_for_test();
-    app.selected_line = 2;
-    app.scroll_offset = 5;
-    app.diff_line_count = 100;
+    app.diff_scroll.selected_line = 2;
+    app.diff_scroll.scroll_offset = 5;
+    app.diff_scroll.line_count = 100;
 
     // visible_lines=20, margin=10
     // selected_line(2) < scroll_offset(5) + margin(10) → scroll to keep margin
     app.adjust_scroll(20);
 
     // scroll_offset = selected_line - margin = 2 - 10 = 0 (saturating)
-    assert_eq!(app.scroll_offset, 0);
+    assert_eq!(app.diff_scroll.scroll_offset, 0);
 }
 
 #[test]
 fn test_adjust_scroll_below_viewport() {
     let mut app = App::new_for_test();
-    app.selected_line = 30;
-    app.scroll_offset = 5;
-    app.diff_line_count = 100;
+    app.diff_scroll.selected_line = 30;
+    app.diff_scroll.scroll_offset = 5;
+    app.diff_scroll.line_count = 100;
 
     app.adjust_scroll(20);
 
-    assert!(app.scroll_offset > 5);
-    assert!(app.selected_line >= app.scroll_offset);
-    assert!(app.selected_line < app.scroll_offset + 20);
+    assert!(app.diff_scroll.scroll_offset > 5);
+    assert!(app.diff_scroll.selected_line >= app.diff_scroll.scroll_offset);
+    assert!(app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + 20);
 }
 
 #[test]
 fn test_adjust_scroll_within_viewport() {
     let mut app = App::new_for_test();
-    app.selected_line = 15;
-    app.scroll_offset = 5;
-    app.diff_line_count = 100;
+    app.diff_scroll.selected_line = 15;
+    app.diff_scroll.scroll_offset = 5;
+    app.diff_scroll.line_count = 100;
 
     app.adjust_scroll(20);
 
     // margin=10, selected_line(15) >= scroll_offset(5)+margin(10)=15
     // and selected_line(15)+margin(10)=25 >= scroll_offset(5)+visible_lines(20)=25
     // → bottom margin triggers: scroll_offset = 15 - (20 - 10 - 1) = 6
-    assert!(app.selected_line >= app.scroll_offset);
-    assert!(app.selected_line < app.scroll_offset + 20);
+    assert!(app.diff_scroll.selected_line >= app.diff_scroll.scroll_offset);
+    assert!(app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + 20);
 }
 
 #[test]
 fn test_adjust_scroll_zero_visible() {
     let mut app = App::new_for_test();
-    app.selected_line = 10;
-    app.scroll_offset = 5;
-    app.diff_line_count = 100;
+    app.diff_scroll.selected_line = 10;
+    app.diff_scroll.scroll_offset = 5;
+    app.diff_scroll.line_count = 100;
 
     app.adjust_scroll(0);
 
     // Should early return, no change
-    assert_eq!(app.scroll_offset, 5);
+    assert_eq!(app.diff_scroll.scroll_offset, 5);
 }
 
 #[test]
 fn test_adjust_scroll_at_last_line() {
     let mut app = App::new_for_test();
-    app.diff_line_count = 50;
-    app.selected_line = 49; // last line
-    app.scroll_offset = 0;
+    app.diff_scroll.line_count = 50;
+    app.diff_scroll.selected_line = 49; // last line
+    app.diff_scroll.scroll_offset = 0;
 
     // visible_lines=20, margin=10
     // bottom margin: scroll_offset = 49 - (20 - 10 - 1) = 40
     app.adjust_scroll(20);
 
-    assert!(app.selected_line >= app.scroll_offset);
-    assert!(app.selected_line < app.scroll_offset + 20);
-    assert_eq!(app.scroll_offset, 40);
+    assert!(app.diff_scroll.selected_line >= app.diff_scroll.scroll_offset);
+    assert!(app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + 20);
+    assert_eq!(app.diff_scroll.scroll_offset, 40);
 }
 
 #[test]
 fn test_adjust_scroll_single_line() {
     let mut app = App::new_for_test();
-    app.diff_line_count = 1;
-    app.selected_line = 0;
-    app.scroll_offset = 0;
+    app.diff_scroll.line_count = 1;
+    app.diff_scroll.selected_line = 0;
+    app.diff_scroll.scroll_offset = 0;
 
     app.adjust_scroll(20);
 
-    assert_eq!(app.scroll_offset, 0);
-    assert_eq!(app.selected_line, 0);
+    assert_eq!(app.diff_scroll.scroll_offset, 0);
+    assert_eq!(app.diff_scroll.selected_line, 0);
 }
 
 /// スナップショットテスト: 全カーソル位置で scroll_offset と visible_lines の整合性を検証
@@ -3725,28 +3737,28 @@ fn test_adjust_scroll_invariant_all_positions() {
                 for initial_scroll in [0, selected_line.saturating_sub(visible_lines), selected_line]
                 {
                     let mut app = App::new_for_test();
-                    app.diff_line_count = diff_line_count;
-                    app.selected_line = selected_line;
-                    app.scroll_offset = initial_scroll;
+                    app.diff_scroll.line_count = diff_line_count;
+                    app.diff_scroll.selected_line = selected_line;
+                    app.diff_scroll.scroll_offset = initial_scroll;
 
                     app.adjust_scroll(visible_lines);
 
                     assert!(
-                        app.selected_line >= app.scroll_offset,
+                        app.diff_scroll.selected_line >= app.diff_scroll.scroll_offset,
                         "cursor above viewport: selected_line={}, scroll_offset={}, \
                          visible_lines={}, diff_line_count={}, initial_scroll={}",
-                        app.selected_line,
-                        app.scroll_offset,
+                        app.diff_scroll.selected_line,
+                        app.diff_scroll.scroll_offset,
                         visible_lines,
                         diff_line_count,
                         initial_scroll,
                     );
                     assert!(
-                        app.selected_line < app.scroll_offset + visible_lines,
+                        app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + visible_lines,
                         "cursor below viewport: selected_line={}, scroll_offset={}, \
                          visible_lines={}, diff_line_count={}, initial_scroll={}",
-                        app.selected_line,
-                        app.scroll_offset,
+                        app.diff_scroll.selected_line,
+                        app.diff_scroll.scroll_offset,
                         visible_lines,
                         diff_line_count,
                         initial_scroll,
@@ -3767,35 +3779,35 @@ fn test_adjust_scroll_sequential_down_no_jump() {
     let visible_lines = 20;
 
     let mut app = App::new_for_test();
-    app.diff_line_count = diff_line_count;
-    app.selected_line = 0;
-    app.scroll_offset = 0;
+    app.diff_scroll.line_count = diff_line_count;
+    app.diff_scroll.selected_line = 0;
+    app.diff_scroll.scroll_offset = 0;
 
     let mut prev_scroll = 0;
     for line in 0..diff_line_count {
-        app.selected_line = line;
+        app.diff_scroll.selected_line = line;
         app.adjust_scroll(visible_lines);
 
         // 不変条件: カーソルは常にビューポート内
         assert!(
-            app.selected_line >= app.scroll_offset
-                && app.selected_line < app.scroll_offset + visible_lines,
+            app.diff_scroll.selected_line >= app.diff_scroll.scroll_offset
+                && app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + visible_lines,
             "line={}: scroll_offset={}, visible_lines={}",
             line,
-            app.scroll_offset,
+            app.diff_scroll.scroll_offset,
             visible_lines,
         );
 
         // scroll_offset は最大1ずつしか増えない（ジャンプなし）
         assert!(
-            app.scroll_offset <= prev_scroll + 1,
+            app.diff_scroll.scroll_offset <= prev_scroll + 1,
             "scroll jumped at line={}: prev={}, now={}",
             line,
             prev_scroll,
-            app.scroll_offset,
+            app.diff_scroll.scroll_offset,
         );
 
-        prev_scroll = app.scroll_offset;
+        prev_scroll = app.diff_scroll.scroll_offset;
     }
 }
 
@@ -3806,35 +3818,35 @@ fn test_adjust_scroll_sequential_up_no_jump() {
     let visible_lines = 20;
 
     let mut app = App::new_for_test();
-    app.diff_line_count = diff_line_count;
-    app.selected_line = diff_line_count - 1;
-    app.scroll_offset = diff_line_count.saturating_sub(visible_lines);
+    app.diff_scroll.line_count = diff_line_count;
+    app.diff_scroll.selected_line = diff_line_count - 1;
+    app.diff_scroll.scroll_offset = diff_line_count.saturating_sub(visible_lines);
     app.adjust_scroll(visible_lines);
 
-    let mut prev_scroll = app.scroll_offset;
+    let mut prev_scroll = app.diff_scroll.scroll_offset;
     for line in (0..diff_line_count).rev() {
-        app.selected_line = line;
+        app.diff_scroll.selected_line = line;
         app.adjust_scroll(visible_lines);
 
         assert!(
-            app.selected_line >= app.scroll_offset
-                && app.selected_line < app.scroll_offset + visible_lines,
+            app.diff_scroll.selected_line >= app.diff_scroll.scroll_offset
+                && app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + visible_lines,
             "line={}: scroll_offset={}, visible_lines={}",
             line,
-            app.scroll_offset,
+            app.diff_scroll.scroll_offset,
             visible_lines,
         );
 
         // scroll_offset は最大1ずつしか減らない（ジャンプなし）
         assert!(
-            prev_scroll <= app.scroll_offset + 1,
+            prev_scroll <= app.diff_scroll.scroll_offset + 1,
             "scroll jumped at line={}: prev={}, now={}",
             line,
             prev_scroll,
-            app.scroll_offset,
+            app.diff_scroll.scroll_offset,
         );
 
-        prev_scroll = app.scroll_offset;
+        prev_scroll = app.diff_scroll.scroll_offset;
     }
 }
 
@@ -3845,14 +3857,14 @@ fn test_adjust_scroll_file_shorter_than_viewport() {
     for diff_line_count in [1, 5, 10, 39] {
         for line in 0..diff_line_count {
             let mut app = App::new_for_test();
-            app.diff_line_count = diff_line_count;
-            app.selected_line = line;
-            app.scroll_offset = 0;
+            app.diff_scroll.line_count = diff_line_count;
+            app.diff_scroll.selected_line = line;
+            app.diff_scroll.scroll_offset = 0;
 
             app.adjust_scroll(visible_lines);
 
             assert_eq!(
-                app.scroll_offset, 0,
+                app.diff_scroll.scroll_offset, 0,
                 "short file: diff_line_count={}, selected_line={}",
                 diff_line_count, line,
             );
@@ -4371,8 +4383,8 @@ fn test_pause_state_preserved_on_active_state_change() {
 fn test_push_jump_location_basic() {
     let mut app = App::new_for_test();
     app.selected_file = 2;
-    app.selected_line = 10;
-    app.scroll_offset = 5;
+    app.diff_scroll.selected_line = 10;
+    app.diff_scroll.scroll_offset = 5;
 
     app.push_jump_location();
 
@@ -4389,8 +4401,8 @@ fn test_push_jump_location_max_capacity() {
     // Push 101 locations (should trim oldest)
     for i in 0..101 {
         app.selected_file = i;
-        app.selected_line = i;
-        app.scroll_offset = 0;
+        app.diff_scroll.selected_line = i;
+        app.diff_scroll.scroll_offset = 0;
         app.push_jump_location();
     }
 
@@ -4403,8 +4415,8 @@ fn test_push_jump_location_max_capacity() {
 fn test_push_jump_location_preserves_fields() {
     let mut app = App::new_for_test();
     app.selected_file = 42;
-    app.selected_line = 99;
-    app.scroll_offset = 33;
+    app.diff_scroll.selected_line = 99;
+    app.diff_scroll.scroll_offset = 33;
 
     app.push_jump_location();
 
@@ -4441,36 +4453,36 @@ async fn test_jump_back_restores_position() {
 
     // Push current position (line 5 is valid: a.rs has 7 diff lines, indices 0-6)
     app.selected_file = 0;
-    app.selected_line = 5;
-    app.scroll_offset = 2;
+    app.diff_scroll.selected_line = 5;
+    app.diff_scroll.scroll_offset = 2;
     app.push_jump_location();
 
     // Move elsewhere (line 10 is valid: b.rs has 12 diff lines, indices 0-11)
     app.selected_file = 1;
-    app.selected_line = 10;
-    app.scroll_offset = 8;
+    app.diff_scroll.selected_line = 10;
+    app.diff_scroll.scroll_offset = 8;
 
     // Jump back
     app.jump_back();
 
     assert_eq!(app.selected_file, 0);
-    assert_eq!(app.selected_line, 5);
-    assert_eq!(app.scroll_offset, 2);
+    assert_eq!(app.diff_scroll.selected_line, 5);
+    assert_eq!(app.diff_scroll.scroll_offset, 2);
 }
 
 #[test]
 fn test_jump_back_empty_stack() {
     let mut app = App::new_for_test();
     app.selected_file = 3;
-    app.selected_line = 7;
-    app.scroll_offset = 4;
+    app.diff_scroll.selected_line = 7;
+    app.diff_scroll.scroll_offset = 4;
 
     app.jump_back();
 
     // Nothing should change
     assert_eq!(app.selected_file, 3);
-    assert_eq!(app.selected_line, 7);
-    assert_eq!(app.scroll_offset, 4);
+    assert_eq!(app.diff_scroll.selected_line, 7);
+    assert_eq!(app.diff_scroll.scroll_offset, 4);
 }
 
 // ===================================================================
@@ -4481,7 +4493,7 @@ fn test_jump_back_empty_stack() {
 fn test_enter_comment_input_sets_mode() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
-    app.selected_line = 1; // context line (commentable)
+    app.diff_scroll.selected_line = 1; // context line (commentable)
     app.state = AppState::DiffView;
 
     app.enter_comment_input();
@@ -4514,7 +4526,7 @@ fn test_enter_comment_input_no_patch() {
 fn test_enter_suggestion_input_sets_mode() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added line\n more context";
     let mut app = make_app_with_patch(patch);
-    app.selected_line = 2; // added line
+    app.diff_scroll.selected_line = 2; // added line
     app.state = AppState::DiffView;
 
     app.enter_suggestion_input();
@@ -4668,7 +4680,7 @@ fn test_max_comment_panel_scroll() {
 fn test_enter_reply_input_sets_mode() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
-    app.selected_line = 1;
+    app.diff_scroll.selected_line = 1;
     app.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 42,
         path: "test.rs".to_string(),
@@ -4990,17 +5002,25 @@ async fn test_poll_diff_cache_accepts_valid() {
         }],
     };
     app.selected_file = 0;
-    app.diff_line_count = 2;
+    app.diff_scroll.line_count = 2;
+
+    // Set up a plain cache as current (poll_highlight checks current_key and patch_hash)
+    let plain_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    let patch_hash = plain_cache.patch_hash;
+    app.diff_store.set_current(0, plain_cache);
 
     let (tx, rx) = mpsc::channel(1);
-    app.diff_cache_receiver = Some(rx);
+    app.diff_store.set_highlight_rx(rx);
 
-    let cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
-    tx.send(cache).await.unwrap();
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    cache.highlighted = true;
+    cache.patch_hash = patch_hash;
+    tx.send((0_usize, cache)).await.unwrap();
 
     app.poll_diff_cache_updates();
 
-    assert!(app.diff_cache.is_some());
+    assert!(app.diff_store.current.is_some());
+    assert!(app.diff_store.current.as_ref().unwrap().highlighted);
 }
 
 #[tokio::test]
@@ -5029,18 +5049,24 @@ async fn test_poll_diff_cache_rejects_stale_file() {
     };
     app.selected_file = 1; // We're now looking at file 1
 
-    let (tx, rx) = mpsc::channel(1);
-    app.diff_cache_receiver = Some(rx);
+    // Set current to file 1 (the selected file)
+    let mut current_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line2", 4);
+    current_cache.file_index = 1;
+    app.diff_store.set_current(1, current_cache);
 
-    // Send cache for file 0 (stale)
+    let (tx, rx) = mpsc::channel(1);
+    app.diff_store.set_highlight_rx(rx);
+
+    // Send cache for file 0 (stale - key doesn't match current_key)
     let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
     cache.file_index = 0;
-    tx.send(cache).await.unwrap();
+    cache.highlighted = true;
+    tx.send((0_usize, cache)).await.unwrap();
 
     app.poll_diff_cache_updates();
 
-    // Stale cache should be rejected (diff_cache stays None or is not updated)
-    if let Some(ref c) = app.diff_cache {
+    // Stale cache should be rejected (current stays as file 1)
+    if let Some(ref c) = app.diff_store.current {
         assert_ne!(c.file_index, 0, "stale cache should not be applied");
     }
 }
@@ -5072,16 +5098,16 @@ async fn test_poll_prefetch_stores_cache() {
     app.selected_file = 0;
 
     let (tx, rx) = mpsc::channel(2);
-    app.prefetch_receiver = Some(rx);
+    app.diff_store.set_prefetch_rx(rx);
 
     let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line2", 4);
     cache.file_index = 1;
     cache.highlighted = true;
-    tx.send(cache).await.unwrap();
+    tx.send((1_usize, cache)).await.unwrap();
 
     app.poll_prefetch_updates();
 
-    assert!(app.highlighted_cache_store.contains_key(&1));
+    assert!(app.diff_store.store.contains_key(&1));
 }
 
 #[tokio::test]
@@ -5101,24 +5127,24 @@ async fn test_poll_prefetch_skips_current_file() {
     app.selected_file = 0;
 
     // Set up an existing highlighted diff_cache for current file
-    // poll_prefetch_updates skips when diff_cache has highlighted=true for same file_index
+    // poll_prefetch_updates skips when current has highlighted=true for same key
     let mut existing_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
     existing_cache.file_index = 0;
     existing_cache.highlighted = true;
-    app.diff_cache = Some(existing_cache);
+    app.diff_store.set_current(0, existing_cache);
 
     let (tx, rx) = mpsc::channel(2);
-    app.prefetch_receiver = Some(rx);
+    app.diff_store.set_prefetch_rx(rx);
 
     let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
     cache.file_index = 0; // same as selected
     cache.highlighted = true;
-    tx.send(cache).await.unwrap();
+    tx.send((0_usize, cache)).await.unwrap();
 
     app.poll_prefetch_updates();
 
-    // Should skip storing cache for current file because diff_cache already has it highlighted
-    assert!(!app.highlighted_cache_store.contains_key(&0));
+    // Should skip storing cache for current file because diff_store.current already has it highlighted
+    assert!(!app.diff_store.store.contains_key(&0));
 }
 
 #[tokio::test]
@@ -5602,8 +5628,8 @@ fn test_pr_description_cache_reuse() {
 /// ensure_diff_cache ステージ1: 非markdownファイルでは markdown_rich 不一致でもキャッシュを保持する。
 /// markdown_rich は markdown ファイルのハイライトにのみ影響するため、非markdownのキャッシュを
 /// 破棄するとプリフェッチ済みキャッシュが無駄に失われるデグレが発生する。
-#[test]
-fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
+#[tokio::test]
+async fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
     let mut app = App::new_for_test();
     app.data_state = DataState::Loaded {
         pr: Box::new(make_local_pr()),
@@ -5624,12 +5650,12 @@ fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
     cache.file_index = 0;
     cache.highlighted = true;
     cache.markdown_rich = true; // 現在の app.markdown_rich (false) と不一致
-    app.diff_cache = Some(cache);
+    app.diff_store.set_current(0, cache);
 
     // ensure_diff_cache は非markdown なので markdown_rich 不一致を無視してキャッシュを維持
     app.ensure_diff_cache();
     assert!(
-        app.diff_cache.as_ref().is_some_and(|c| c.highlighted),
+        app.diff_store.current.as_ref().is_some_and(|c| c.highlighted),
         "non-md file: highlighted cache should be preserved despite markdown_rich mismatch"
     );
 }
@@ -5651,7 +5677,7 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
     };
     app.selected_file = 0;
     app.markdown_rich = false;
-    app.diff_cache = None;
+    app.diff_store.current = None;
 
     // ストアに markdown_rich=true のキャッシュを配置
     let mut store_cache =
@@ -5659,13 +5685,13 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
     store_cache.file_index = 0;
     store_cache.highlighted = true;
     store_cache.markdown_rich = true;
-    app.highlighted_cache_store.insert(0, store_cache);
+    app.diff_store.store.insert(0, store_cache);
 
     app.ensure_diff_cache();
 
     // ストアから復元されるはず（markdown_rich 不一致は無視）
     assert!(
-        app.diff_cache.as_ref().is_some_and(|c| c.highlighted),
+        app.diff_store.current.as_ref().is_some_and(|c| c.highlighted),
         "non-md file: store cache should be restored despite markdown_rich mismatch"
     );
 }
@@ -5693,13 +5719,13 @@ async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
     cache.file_index = 0;
     cache.highlighted = true;
     cache.markdown_rich = false; // 現在の app.markdown_rich (true) と不一致
-    app.diff_cache = Some(cache);
+    app.diff_store.current = Some(cache);
 
     app.ensure_diff_cache();
 
     // markdown ファイルなので markdown_rich 不一致 → 再構築（plain に戻る）
     assert!(
-        app.diff_cache.as_ref().is_some_and(|c| !c.highlighted),
+        app.diff_store.current.as_ref().is_some_and(|c| !c.highlighted),
         "md file: cache should be rebuilt (plain) on markdown_rich mismatch"
     );
 }
@@ -5748,11 +5774,11 @@ async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
     let mut rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     rs_cache.file_index = 0;
     rs_cache.highlighted = true;
-    app.highlighted_cache_store.insert(0, rs_cache);
+    app.diff_store.store.insert(0, rs_cache);
 
     // prefetch_receiver をセット
-    let (_tx, rx) = tokio::sync::mpsc::channel(1);
-    app.prefetch_receiver = Some(rx);
+    let (_tx, rx) = tokio::sync::mpsc::channel::<(usize, DiffCache)>(1);
+    app.diff_store.set_prefetch_rx(rx);
 
     // PR description を開く
     app.open_pr_description();
@@ -5765,12 +5791,12 @@ async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
 
     // prefetch_receiver は温存されていること
     assert!(
-        app.prefetch_receiver.is_some(),
+        app.diff_store.has_prefetch_rx(),
         "prefetch_receiver should be preserved after toggling rich in PR description view"
     );
     // ストアのキャッシュも温存されていること
     assert!(
-        app.highlighted_cache_store.contains_key(&0),
+        app.diff_store.store.contains_key(&0),
         "highlighted_cache_store should be preserved after toggling rich in PR description view"
     );
     // PR description キャッシュは再構築されていること
@@ -5988,4 +6014,81 @@ fn test_symbol_search_is_searching_visible_when_no_submission_result() {
     // submission_result is None so footer priority won't suppress the search indicator
     assert!(app.submission_result.is_none());
     assert!(app.symbol_search.is_searching());
+}
+
+// =================================================================
+// Git Ops プリフェッチ統合テスト
+// =================================================================
+
+/// poll_git_ops_updates で status_updated 後にプリフェッチが開始されることを検証。
+/// プリフェッチ未実装のデグレを防止する回帰テスト。
+#[tokio::test]
+async fn test_poll_git_ops_starts_prefetch_after_status_update() {
+    let mut app = App::new_for_test();
+    app.set_local_mode(true);
+
+    // DataState::Loaded を設定（start_git_ops_prefetch が files() を参照）
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+a".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+b".to_string()),
+                viewed: false,
+            },
+        ],
+    };
+
+    // GitOpsState をセットアップ（status_receiver に結果を送信済み）
+    let entries = vec![
+        GitStatusEntry {
+            path: "a.rs".to_string(),
+            index_status: FileStatus::Unmodified,
+            worktree_status: FileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            staged_additions: 0,
+            staged_deletions: 0,
+            orig_path: None,
+            unmerged: false,
+        },
+        GitStatusEntry {
+            path: "b.rs".to_string(),
+            index_status: FileStatus::Unmodified,
+            worktree_status: FileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            staged_additions: 0,
+            staged_deletions: 0,
+            orig_path: None,
+            unmerged: false,
+        },
+    ];
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(Ok(entries)).await.unwrap();
+
+    let mut ops = GitOpsState::new(Vec::new());
+    ops.status_receiver = Some(rx);
+    app.git_ops_state = Some(ops);
+
+    // poll_git_ops_updates を呼ぶ → status_updated → prefetch 開始
+    app.poll_git_ops_updates();
+
+    // プリフェッチレシーバーが設定されていること（= start_git_ops_prefetch が呼ばれた証拠）
+    let ops = app.git_ops_state.as_ref().unwrap();
+    assert!(
+        ops.diff_store.has_prefetch_rx(),
+        "prefetch should be started after status update (regression: start_git_ops_prefetch not called)"
+    );
 }

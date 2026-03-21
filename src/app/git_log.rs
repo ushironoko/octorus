@@ -18,7 +18,7 @@ impl App {
 
     /// Git Log 画面を開く
     pub(crate) fn open_git_log(&mut self) {
-        let mut state = GitLogState::new();
+        let mut state = GitLogState::with_max_cache(self.config.git_log.max_diff_cache);
         self.fetch_commits_page(&mut state, 1);
         self.git_log_state = Some(state);
         self.state = AppState::GitLogSplitCommitList;
@@ -117,25 +117,18 @@ impl App {
         };
         let sha = commit.sha.clone();
 
-        // キャッシュヒットチェック
-        if let Some(cached) = gl.diff_cache_map.get(&sha) {
-            gl.diff_cache = Some(DiffCache {
-                file_index: gl.selected_commit,
-                patch_hash: cached.patch_hash,
-                lines: cached.lines.clone(),
-                interner: cached.interner.clone(),
-                highlighted: cached.highlighted,
-                markdown_rich: false,
-            });
+        // キャッシュヒットチェック（ストアから復元）
+        if gl.diff_store.try_restore(&sha, None) {
             gl.diff_loading = false;
             gl.diff_error = None;
-            gl.selected_line = 0;
-            gl.scroll_offset = 0;
+            gl.diff_scroll.reset();
+            if let Some(ref cache) = gl.diff_store.current {
+                gl.diff_scroll.set_line_count(cache.lines.len());
+            }
             // Cancel any in-flight diff fetch to prevent stale responses
             // from overwriting the current cache-hit result
             gl.pending_diff_sha = None;
             gl.commit_diff_receiver = None;
-            gl.highlight_receiver = None;
             return;
         }
 
@@ -182,7 +175,7 @@ impl App {
         };
 
         // 既存のプリフェッチを中断
-        gl.prefetch_diff_receiver = None;
+        gl.diff_store.drop_prefetch_rx();
 
         let selected_sha = gl
             .commits
@@ -196,7 +189,7 @@ impl App {
             .commits
             .iter()
             .take(max_cache)
-            .filter(|c| c.sha != selected_sha && !gl.diff_cache_map.contains_key(&c.sha))
+            .filter(|c| c.sha != selected_sha && !gl.diff_store.store_contains_key(&c.sha))
             .map(|c| c.sha.clone())
             .collect();
 
@@ -208,7 +201,7 @@ impl App {
         let (fetch_tx, mut fetch_rx) = mpsc::channel::<(String, String)>(max_cache);
         // Phase 2 → poll の結果チャネル
         let (result_tx, result_rx) = mpsc::channel(max_cache);
-        gl.prefetch_diff_receiver = Some(result_rx);
+        gl.diff_store.set_prefetch_rx(result_rx);
 
         let local_mode = self.local_mode;
         let repo = self.repo.clone();
@@ -299,11 +292,13 @@ impl App {
                             .is_some_and(|pending| *pending == sha);
                         if is_current {
                             gl.commit_diff = Some(diff_text.clone());
-                            gl.diff_cache = Some(cache);
+                            gl.diff_store.set_current(sha.clone(), cache);
                             gl.diff_loading = false;
                             gl.diff_error = None;
-                            gl.selected_line = 0;
-                            gl.scroll_offset = 0;
+                            gl.diff_scroll.reset();
+                            if let Some(ref c) = gl.diff_store.current {
+                                gl.diff_scroll.set_line_count(c.lines.len());
+                            }
                         }
 
                         // ハイライト版をバックグラウンドで構築
@@ -311,7 +306,7 @@ impl App {
                         let sha_clone = sha.clone();
                         let selected = gl.selected_commit;
                         let (tx, rx_hl) = mpsc::channel(1);
-                        gl.highlight_receiver = Some(rx_hl);
+                        gl.diff_store.set_highlight_rx(rx_hl);
 
                         tokio::task::spawn_blocking(move || {
                             let mut parser_pool = ParserPool::new();
@@ -338,102 +333,43 @@ impl App {
         }
 
         // ハイライト済み diff キャッシュの受信
-        let max_cache = self.config.git_log.max_diff_cache;
-        if let Some(ref mut rx) = gl.highlight_receiver {
-            if let Ok((sha, hl_cache)) = rx.try_recv() {
-                Self::evict_git_log_diff_cache(gl, &sha, max_cache);
-                gl.diff_cache_map.insert(
-                    sha.clone(),
-                    DiffCache {
-                        file_index: hl_cache.file_index,
-                        patch_hash: hl_cache.patch_hash,
-                        lines: hl_cache.lines.clone(),
-                        interner: hl_cache.interner.clone(),
-                        highlighted: true,
-                        markdown_rich: false,
-                    },
-                );
-
-                // 現在選択中のコミットならスワップ
-                let is_current = gl
-                    .commits
-                    .get(gl.selected_commit)
-                    .is_some_and(|c| c.sha == sha);
-                if is_current {
-                    gl.diff_cache = Some(hl_cache);
-                }
-                gl.highlight_receiver = None;
+        if gl.diff_store.poll_highlight() {
+            // line_count を更新
+            if let Some(ref c) = gl.diff_store.current {
+                gl.diff_scroll.set_line_count(c.lines.len());
             }
         }
 
-        // プリフェッチ diff の受信（1 tick で複数結果をドレイン）
-        // gl の二重借用を避けるため、receiver を一時的に take する
-        if let Some(mut rx) = gl.prefetch_diff_receiver.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok((sha, hl_cache)) => {
-                        // キャッシュ済みならスキップ
-                        if gl.diff_cache_map.contains_key(&sha) {
-                            continue;
-                        }
-                        Self::evict_git_log_diff_cache(gl, &sha, max_cache);
-                        gl.diff_cache_map.insert(
-                            sha.clone(),
-                            DiffCache {
-                                file_index: 0,
-                                patch_hash: hl_cache.patch_hash,
-                                lines: hl_cache.lines.clone(),
-                                interner: hl_cache.interner.clone(),
-                                highlighted: true,
-                                markdown_rich: false,
-                            },
-                        );
-
-                        // 現在選択中でまだプレーンキャッシュなら HL にアップグレード
-                        let is_current = gl
-                            .commits
-                            .get(gl.selected_commit)
-                            .is_some_and(|c| c.sha == sha);
-                        if is_current && gl.diff_cache.as_ref().is_some_and(|c| !c.highlighted) {
-                            gl.diff_cache = Some(hl_cache);
-                        }
-                    }
-                    Err(mpsc::error::TryRecvError::Empty) => {
-                        gl.prefetch_diff_receiver = Some(rx);
-                        break;
-                    }
-                    Err(mpsc::error::TryRecvError::Disconnected) => break,
-                }
-            }
-        }
-    }
-
-    /// diff_cache_map の LRU eviction
-    fn evict_git_log_diff_cache(gl: &mut GitLogState, _current_sha: &str, max_cache: usize) {
-        if gl.diff_cache_map.len() < max_cache {
-            return;
-        }
-
+        // プリフェッチ diff の受信（距離ベース eviction）
         let selected = gl.selected_commit;
-        let mut farthest_sha: Option<String> = None;
-        let mut max_distance: usize = 0;
-
-        for sha in gl.diff_cache_map.keys() {
-            let distance = gl
-                .commits
+        let commits = &gl.commits;
+        gl.diff_store.poll_prefetch(|sha| {
+            commits
                 .iter()
                 .position(|c| c.sha == *sha)
                 .map(|pos| pos.abs_diff(selected))
-                .unwrap_or(usize::MAX);
+                .unwrap_or(usize::MAX)
+        });
 
-            if distance > max_distance || farthest_sha.is_none() {
-                max_distance = distance;
-                farthest_sha = Some(sha.clone());
+        // 現在選択中でまだプレーンキャッシュなら、ストアにハイライト版があればアップグレード
+        if let Some(current_sha) = gl
+            .commits
+            .get(gl.selected_commit)
+            .map(|c| c.sha.clone())
+        {
+            let is_plain = gl
+                .diff_store
+                .current
+                .as_ref()
+                .is_some_and(|c| !c.highlighted);
+            if is_plain
+                && gl.diff_store.store_contains_key(&current_sha)
+                && gl.diff_store.try_restore(&current_sha, None)
+            {
+                if let Some(ref c) = gl.diff_store.current {
+                    gl.diff_scroll.set_line_count(c.lines.len());
+                }
             }
-        }
-
-        if let Some(sha) = farthest_sha {
-            gl.diff_cache_map.remove(&sha);
         }
     }
 
@@ -516,7 +452,7 @@ impl App {
             if self
                 .git_log_state
                 .as_ref()
-                .is_some_and(|gl| gl.diff_cache.is_some())
+                .is_some_and(|gl| gl.diff_store.current.is_some())
             {
                 self.state = AppState::GitLogSplitDiff;
             }
@@ -568,7 +504,7 @@ impl App {
             if self
                 .git_log_state
                 .as_ref()
-                .is_some_and(|gl| gl.diff_cache.is_some())
+                .is_some_and(|gl| gl.diff_store.current.is_some())
             {
                 self.state = AppState::GitLogDiffView;
             }
@@ -680,43 +616,39 @@ fn handle_diff_scroll_navigation(
     let Some(ref mut gl) = git_log_state else {
         return;
     };
-    let line_count = gl.diff_cache.as_ref().map(|c| c.lines.len()).unwrap_or(0);
-    if line_count == 0 {
+    if gl.diff_scroll.line_count == 0 {
         return;
     }
 
-    let max_line = line_count.saturating_sub(1);
-
     // Move down
     if matches_key(key, &kb.move_down) || key.code == KeyCode::Down {
-        gl.selected_line = (gl.selected_line + 1).min(max_line);
+        gl.diff_scroll.move_down();
     }
     // Move up
     else if matches_key(key, &kb.move_up) || key.code == KeyCode::Up {
-        gl.selected_line = gl.selected_line.saturating_sub(1);
+        gl.diff_scroll.move_up();
     }
     // Page down
     else if matches_key(key, &kb.page_down) || is_shift_char(key, 'j') {
-        gl.selected_line = (gl.selected_line + 20).min(max_line);
+        gl.diff_scroll.page_down(20);
     }
     // Page up
     else if matches_key(key, &kb.page_up) || is_shift_char(key, 'k') {
-        gl.selected_line = gl.selected_line.saturating_sub(20);
+        gl.diff_scroll.page_up(20);
     }
     // Jump to first (g)
     else if key.code == KeyCode::Char('g') {
-        gl.selected_line = 0;
-        gl.scroll_offset = 0;
+        gl.diff_scroll.jump_to_first();
         return;
     }
     // Jump to last (G)
     else if matches_key(key, &kb.jump_to_last) {
-        gl.selected_line = max_line;
+        gl.diff_scroll.jump_to_last();
     } else {
         return;
     }
 
-    adjust_git_log_scroll(gl, visible_lines);
+    gl.diff_scroll.adjust_scroll(visible_lines);
 }
 
 /// 単一キーマッチ（App::matches_single_key の free function 版）
@@ -746,19 +678,6 @@ fn is_shift_char(event: &event::KeyEvent, lower: char) -> bool {
     }
 }
 
-/// Git Log 用のスクロール調整
-fn adjust_git_log_scroll(gl: &mut GitLogState, visible_lines: usize) {
-    if visible_lines == 0 {
-        return;
-    }
-    if gl.selected_line < gl.scroll_offset {
-        gl.scroll_offset = gl.selected_line;
-    }
-    if gl.selected_line >= gl.scroll_offset + visible_lines {
-        gl.scroll_offset = gl.selected_line.saturating_sub(visible_lines) + 1;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,64 +692,6 @@ mod tests {
 
         assert!(app.git_log_state.is_none());
         assert_eq!(app.state, AppState::FileList);
-    }
-
-    #[test]
-    fn test_adjust_git_log_scroll_down() {
-        let mut gl = GitLogState::new();
-        gl.selected_line = 30;
-        gl.scroll_offset = 0;
-        adjust_git_log_scroll(&mut gl, 20);
-        assert_eq!(gl.scroll_offset, 11); // 30 - 20 + 1 = 11
-    }
-
-    #[test]
-    fn test_adjust_git_log_scroll_up() {
-        let mut gl = GitLogState::new();
-        gl.selected_line = 5;
-        gl.scroll_offset = 10;
-        adjust_git_log_scroll(&mut gl, 20);
-        assert_eq!(gl.scroll_offset, 5);
-    }
-
-    #[test]
-    fn test_evict_git_log_diff_cache() {
-        let max_cache = 10;
-        let mut gl = GitLogState::new();
-        gl.commits = (0..15)
-            .map(|i| crate::github::PrCommit {
-                sha: format!("sha{:02}", i),
-                message: format!("commit {}", i),
-                author_name: "author".to_string(),
-                author_login: None,
-                date: String::new(),
-            })
-            .collect();
-        gl.selected_commit = 5;
-
-        // Fill cache to max
-        for i in 0..max_cache {
-            let sha = format!("sha{:02}", i);
-            gl.diff_cache_map.insert(
-                sha,
-                DiffCache {
-                    file_index: i,
-                    patch_hash: 0,
-                    lines: vec![],
-                    interner: lasso::Rodeo::default(),
-                    highlighted: false,
-                    markdown_rich: false,
-                },
-            );
-        }
-
-        assert_eq!(gl.diff_cache_map.len(), max_cache);
-
-        // Eviction should remove the farthest entry from selected_commit (5)
-        App::evict_git_log_diff_cache(&mut gl, "sha10", max_cache);
-        assert_eq!(gl.diff_cache_map.len(), max_cache - 1);
-        // sha00 (distance 5) is farther than sha09 (distance 4)
-        assert!(!gl.diff_cache_map.contains_key("sha00"));
     }
 
     /// Regression test: moving to a cached commit while an uncached fetch is
@@ -851,8 +712,8 @@ mod tests {
             })
             .collect();
 
-        // Pre-populate cache for commit 1 ("sha1")
-        gl.diff_cache_map.insert(
+        // Pre-populate store for commit 1 ("sha1")
+        gl.diff_store.store.insert(
             "sha1".to_string(),
             DiffCache {
                 file_index: 1,
@@ -892,8 +753,8 @@ mod tests {
             "diff_loading should be false on cache hit"
         );
 
-        // The diff_cache should reflect the cached commit 1 data
-        let cache = gl.diff_cache.as_ref().unwrap();
+        // The diff_store.current should reflect the cached commit 1 data
+        let cache = gl.diff_store.current.as_ref().unwrap();
         assert_eq!(cache.patch_hash, 111);
 
         // Ensure the sender is now orphaned (receiver dropped)

@@ -490,11 +490,11 @@ fn render_diff_body(
     border_color: Color,
 ) {
     let visible_height = area.height.saturating_sub(2) as usize;
-    let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
+    let (lines, scroll_row) = if let Some(ref cache) = app.diff_store.current {
         let line_count = cache.lines.len();
         // Slice from scroll_offset, bounded to visible viewport + buffer for wrap handling.
         let max_scroll = line_count.saturating_sub(visible_height);
-        let start = app.scroll_offset.min(max_scroll);
+        let start = app.diff_scroll.scroll_offset.min(max_scroll);
         let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection
@@ -503,7 +503,7 @@ fn render_diff_body(
         let rendered = diff_view::render_cached_lines(
             cache,
             start..end,
-            app.selected_line,
+            app.diff_scroll.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
@@ -524,7 +524,7 @@ fn render_diff_body(
             },
             None => vec![Line::from("No file selected")],
         };
-        (rendered, app.scroll_offset as u16)
+        (rendered, app.diff_scroll.scroll_offset as u16)
     };
 
     let diff_block = Paragraph::new(lines)
@@ -539,7 +539,7 @@ fn render_diff_body(
     frame.render_widget(diff_block, area);
 
     // Render scrollbar for diff content
-    if let Some(ref cache) = app.diff_cache {
+    if let Some(ref cache) = app.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;
         let max_scroll = total_lines.saturating_sub(visible_height);
@@ -548,7 +548,7 @@ fn render_diff_body(
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
 
-            let clamped_position = app.scroll_offset.min(max_scroll);
+            let clamped_position = app.diff_scroll.scroll_offset.min(max_scroll);
             let mut scrollbar_state = ScrollbarState::new(max_scroll).position(clamped_position);
 
             frame.render_stateful_widget(

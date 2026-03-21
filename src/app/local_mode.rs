@@ -21,32 +21,19 @@ impl App {
             .unwrap_or(false);
 
         if current_is_md {
-            self.diff_cache = None;
-            self.diff_cache_receiver = None;
+            self.diff_store.clear_current();
         }
 
         // ストア内のmarkdownファイルのキャッシュのみ無効化
-        let files = self.files();
-        let md_indices: Vec<usize> = self
-            .highlighted_cache_store
-            .keys()
-            .copied()
-            .filter(|idx| {
-                files
-                    .get(*idx)
-                    .map(|f| crate::language::is_markdown_ext_from_filename(&f.filename))
-                    .unwrap_or(false)
-            })
-            .collect();
-        for idx in md_indices {
-            self.highlighted_cache_store.remove(&idx);
-        }
+        let markdown_rich = self.markdown_rich;
+        self.diff_store
+            .invalidate_if(|_k, cache| cache.markdown_rich != markdown_rich);
 
         // PR description キャッシュも無効化
         self.pr_description_cache = None;
 
         // プリフェッチも停止（markdown_richフラグが変わったため再構築が必要）
-        self.prefetch_receiver = None;
+        self.diff_store.drop_prefetch_rx();
     }
 
     pub(crate) fn toggle_local_mode(&mut self) {
@@ -123,10 +110,9 @@ impl App {
                 // 初回: ビューリセット
                 self.selected_file = 0;
                 self.file_list_scroll_offset = 0;
-                self.selected_line = 0;
-                self.scroll_offset = 0;
-                self.diff_cache = None;
-                self.highlighted_cache_store.clear();
+                self.diff_scroll.selected_line = 0;
+                self.diff_scroll.scroll_offset = 0;
+                self.diff_store.clear();
                 self.review_comments = None;
                 self.discussion_comments = None;
             }
@@ -138,8 +124,8 @@ impl App {
             // data_receiver の origin_pr を 0 (local) に更新
             self.update_data_receiver_origin(0);
             // stale な in-flight view 系 receiver をクリア
-            self.diff_cache_receiver = None;
-            self.prefetch_receiver = None;
+            self.diff_store.clear_current();
+            self.diff_store.drop_prefetch_rx();
 
             // SessionCache からデータ復元
             let cache_key = PrCacheKey {
@@ -151,7 +137,7 @@ impl App {
                     pr: cached.pr.clone(),
                     files: cached.files.clone(),
                 };
-                self.diff_line_count =
+                self.diff_scroll.line_count =
                     Self::calc_diff_line_count(&cached.files, self.selected_file);
                 self.start_prefetch_all_files();
             } else {
@@ -187,7 +173,7 @@ impl App {
                 pr: cached.pr.clone(),
                 files: cached.files.clone(),
             };
-            self.diff_line_count = Self::calc_diff_line_count(&cached.files, self.selected_file);
+            self.diff_scroll.line_count = Self::calc_diff_line_count(&cached.files, self.selected_file);
             self.start_prefetch_all_files();
         } else {
             self.data_state = DataState::Loading;
@@ -239,10 +225,9 @@ impl App {
             pr_number: self.pr_number,
             selected_file: self.selected_file,
             file_list_scroll_offset: self.file_list_scroll_offset,
-            selected_line: self.selected_line,
-            scroll_offset: self.scroll_offset,
-            diff_cache: self.diff_cache.take(),
-            highlighted_cache_store: std::mem::take(&mut self.highlighted_cache_store),
+            selected_line: self.diff_scroll.selected_line,
+            scroll_offset: self.diff_scroll.scroll_offset,
+            diff_cache_snapshot: self.diff_store.take_snapshot(),
             review_comments: self.review_comments.take(),
             discussion_comments: self.discussion_comments.take(),
             local_file_signatures: std::mem::take(&mut self.local_file_signatures),
@@ -258,18 +243,16 @@ impl App {
         self.pr_number = snapshot.pr_number;
         self.selected_file = snapshot.selected_file;
         self.file_list_scroll_offset = snapshot.file_list_scroll_offset;
-        self.selected_line = snapshot.selected_line;
-        self.scroll_offset = snapshot.scroll_offset;
-        self.diff_cache = snapshot.diff_cache;
-        self.highlighted_cache_store = snapshot.highlighted_cache_store;
+        self.diff_scroll.selected_line = snapshot.selected_line;
+        self.diff_scroll.scroll_offset = snapshot.scroll_offset;
+        self.diff_store.restore_snapshot(snapshot.diff_cache_snapshot);
         self.review_comments = snapshot.review_comments;
         self.discussion_comments = snapshot.discussion_comments;
         self.local_file_signatures = snapshot.local_file_signatures;
         self.local_file_patch_signatures = snapshot.local_file_patch_signatures;
 
         // stale な in-flight view 系 receiver をクリア
-        self.diff_cache_receiver = None;
-        self.prefetch_receiver = None;
+        // (diff_store.restore_snapshot already clears highlight_rx and prefetch_rx)
         self.comment_receiver = None;
         self.discussion_comment_receiver = None;
         self.comment_submit_receiver = None;

@@ -173,6 +173,9 @@ pub struct KeybindingsConfig {
     // Git log
     pub git_log: KeySequence,
 
+    // Git ops
+    pub git_ops: KeySequence,
+
     // Issue list
     pub issue_list: KeySequence,
 }
@@ -261,6 +264,9 @@ impl Default for KeybindingsConfig {
             // Git log
             git_log: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('l')),
 
+            // Git ops
+            git_ops: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('o')),
+
             // Issue list
             issue_list: KeySequence::single(KeyBinding::char('I')),
         }
@@ -314,6 +320,7 @@ impl KeybindingsConfig {
             ("pr_description", &self.pr_description),
             ("ci_checks", &self.ci_checks),
             ("git_log", &self.git_log),
+            ("git_ops", &self.git_ops),
             ("issue_list", &self.issue_list),
         ];
 
@@ -456,6 +463,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
         map.serialize_entry("ci_checks", &seq_to_value(&self.ci_checks))?;
         map.serialize_entry("git_log", &seq_to_value(&self.git_log))?;
+        map.serialize_entry("git_ops", &seq_to_value(&self.git_ops))?;
         map.serialize_entry("issue_list", &seq_to_value(&self.issue_list))?;
 
         map.end()
