@@ -5,14 +5,18 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::diff_store::MAX_PREFETCH_FILES;
+use crate::github;
 use crate::loader;
 use crate::syntax::ParserPool;
-use crate::ui::diff_view::{build_diff_cache, build_plain_diff_cache};
+use crate::ui::diff_view::{build_commit_diff_cache, build_diff_cache, build_plain_diff_cache};
 
 use super::types::*;
 use super::{App, AppState};
 
 impl App {
+    /// 1ページあたりのコミット取得件数
+    pub(crate) const COMMITS_PER_PAGE: u32 = 30;
+
     /// GitOps 画面を開く
     pub(crate) fn open_git_ops(&mut self) {
         let caller_state = self.state;
@@ -21,6 +25,7 @@ impl App {
         self.git_ops_state = Some(ops);
         self.state = AppState::GitOpsSplitTree;
         self.refresh_git_status();
+        self.fetch_git_ops_commits(1);
     }
 
     /// GitOps 画面を閉じる
@@ -34,6 +39,193 @@ impl App {
         self.state = return_state;
         // コミット等の変更を反映するため PR データを再取得
         self.retry_load();
+    }
+
+    /// 左ペインのサブフォーカスをトグル（Tree ↔ Commits）
+    pub(crate) fn toggle_git_ops_left_focus(&mut self) {
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+        ops.left_focus = match ops.left_focus {
+            LeftPaneFocus::Tree => LeftPaneFocus::Commits,
+            LeftPaneFocus::Commits => LeftPaneFocus::Tree,
+        };
+    }
+
+    /// Diff ペインから左ペインへ戻る（left_return_focus を復帰）
+    pub(crate) fn return_from_git_ops_diff(&mut self) {
+        if let Some(ref mut ops) = self.git_ops_state {
+            ops.left_focus = ops.left_return_focus;
+        }
+        self.state = AppState::GitOpsSplitTree;
+    }
+
+    /// コミット一覧をバックグラウンドで取得
+    fn fetch_git_ops_commits(&mut self, page: u32) {
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+        ops.commit_log.loading = true;
+        ops.commit_log.page = page;
+
+        let (tx, rx) = mpsc::channel(1);
+        ops.commit_log.list_receiver = Some(rx);
+
+        let per_page = Self::COMMITS_PER_PAGE;
+
+        if self.local_mode {
+            let working_dir = self.working_dir.clone();
+            let offset = (page - 1) * per_page;
+            tokio::spawn(async move {
+                let result =
+                    github::fetch_local_commits(working_dir.as_deref(), offset, per_page)
+                        .await
+                        .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        } else {
+            let repo = self.repo.clone();
+            let pr_number = self.pr_number();
+            tokio::spawn(async move {
+                let result = github::fetch_pr_commits(&repo, pr_number, page, per_page)
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        }
+    }
+
+    /// 追加のコミットを読み込み（無限スクロール用）
+    fn load_more_git_ops_commits(&mut self) {
+        let Some(ref ops) = self.git_ops_state else {
+            return;
+        };
+        if ops.commit_log.loading || !ops.commit_log.has_more {
+            return;
+        }
+        let next_page = ops.commit_log.page + 1;
+        self.fetch_git_ops_commits(next_page);
+    }
+
+    /// コミット選択変更時に diff をバックグラウンド取得
+    fn start_fetch_git_ops_commit_diff(&mut self) {
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+        let cl = &mut ops.commit_log;
+        let Some(commit) = cl.commits.get(cl.selected) else {
+            return;
+        };
+        let sha = commit.sha.clone();
+
+        // キャッシュヒットチェック
+        if cl.diff_store.try_restore(&sha, None) {
+            cl.diff_loading = false;
+            cl.diff_error = None;
+            cl.diff_scroll.reset();
+            if let Some(ref cache) = cl.diff_store.current {
+                cl.diff_scroll.set_line_count(cache.lines.len());
+            }
+            cl.pending_diff_sha = None;
+            cl.diff_receiver = None;
+            return;
+        }
+
+        cl.diff_loading = true;
+        cl.diff_error = None;
+        cl.pending_diff_sha = Some(sha.clone());
+
+        let (tx, rx) = mpsc::channel(1);
+        cl.diff_receiver = Some(rx);
+
+        if self.local_mode {
+            let working_dir = self.working_dir.clone();
+            tokio::spawn(async move {
+                let result = github::fetch_local_commit_diff(working_dir.as_deref(), &sha)
+                    .await
+                    .map(|diff| (sha, diff))
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        } else {
+            let repo = self.repo.clone();
+            tokio::spawn(async move {
+                let result = github::fetch_commit_diff(&repo, &sha)
+                    .await
+                    .map(|diff| (sha, diff))
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result).await;
+            });
+        }
+    }
+
+    /// コミット一覧取得後にバックグラウンドで先頭 N 件の diff をプリフェッチ
+    fn start_prefetch_git_ops_commit_diffs(&mut self) {
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+        let cl = &mut ops.commit_log;
+
+        cl.diff_store.drop_prefetch_rx();
+
+        let selected_sha = cl
+            .commits
+            .get(cl.selected)
+            .map(|c| c.sha.clone())
+            .unwrap_or_default();
+
+        let max_cache = self.config.git_ops.max_diff_cache;
+
+        let shas_to_prefetch: Vec<String> = cl
+            .commits
+            .iter()
+            .take(max_cache)
+            .filter(|c| c.sha != selected_sha && !cl.diff_store.store_contains_key(&c.sha))
+            .map(|c| c.sha.clone())
+            .collect();
+
+        if shas_to_prefetch.is_empty() {
+            return;
+        }
+
+        let (fetch_tx, mut fetch_rx) = mpsc::channel::<(String, String)>(max_cache);
+        let (result_tx, result_rx) = mpsc::channel(max_cache);
+        cl.diff_store.set_prefetch_rx(result_rx);
+
+        let local_mode = self.local_mode;
+        let repo = self.repo.clone();
+        let working_dir = self.working_dir.clone();
+        let theme = self.config.diff.theme.clone();
+        let tab_width = self.config.diff.tab_width;
+
+        for sha in shas_to_prefetch {
+            let tx = fetch_tx.clone();
+            let repo = repo.clone();
+            let working_dir = working_dir.clone();
+
+            tokio::spawn(async move {
+                let diff_text = if local_mode {
+                    github::fetch_local_commit_diff(working_dir.as_deref(), &sha).await
+                } else {
+                    github::fetch_commit_diff(&repo, &sha).await
+                };
+                if let Ok(diff_text) = diff_text {
+                    let _ = tx.send((sha, diff_text)).await;
+                }
+            });
+        }
+        drop(fetch_tx);
+
+        tokio::task::spawn_blocking(move || {
+            let mut parser_pool = ParserPool::new();
+            while let Some((sha, diff_text)) = fetch_rx.blocking_recv() {
+                let cache =
+                    build_commit_diff_cache(&diff_text, &theme, &mut parser_pool, tab_width);
+                if result_tx.blocking_send((sha, cache)).is_err() {
+                    break;
+                }
+            }
+        });
     }
 
     /// git status をバックグラウンドで取得
@@ -160,6 +352,23 @@ impl App {
             self.refresh_git_status();
         }
 
+        // --- コミット一覧が未初期化ならリフレッシュ ---
+        // HEAD 変更操作（reset --soft, undo commit）で initialized=false にクリアされる
+        {
+            let needs_refresh = self
+                .git_ops_state
+                .as_ref()
+                .map(|ops| {
+                    let cl = &ops.commit_log;
+                    !cl.initialized && !cl.loading && cl.list_receiver.is_none()
+                })
+                .unwrap_or(false);
+            if needs_refresh {
+                self.fetch_git_ops_commits(1);
+                self.retry_load();
+            }
+        }
+
         // --- status 更新後のプリフェッチ開始 ---
         if status_updated {
             let working_dir = self.working_dir.clone();
@@ -169,6 +378,130 @@ impl App {
 
             if let Some(ref mut ops) = self.git_ops_state {
                 start_git_ops_prefetch(ops, working_dir, &theme, markdown_rich, tab_width);
+            }
+        }
+
+        // --- コミット一覧の受信 ---
+        let mut first_commit_page = false;
+        if let Some(ref mut ops) = self.git_ops_state {
+            let cl = &mut ops.commit_log;
+            if let Some(ref mut rx) = cl.list_receiver {
+                if let Ok(result) = rx.try_recv() {
+                    match result {
+                        Ok(page) => {
+                            let is_first = cl.commits.is_empty();
+                            cl.commits.extend(page.items);
+                            cl.has_more = page.has_more;
+                            cl.loading = false;
+                            cl.error = None;
+                            cl.initialized = true;
+                            if is_first && !cl.commits.is_empty() {
+                                first_commit_page = true;
+                            }
+                        }
+                        Err(e) => {
+                            cl.loading = false;
+                            cl.error = Some(e);
+                            cl.initialized = true;
+                        }
+                    }
+                    cl.list_receiver = None;
+                }
+            }
+        }
+        if first_commit_page {
+            self.start_fetch_git_ops_commit_diff();
+            self.start_prefetch_git_ops_commit_diffs();
+        }
+
+        // --- コミット diff の受信 ---
+        if let Some(ref mut ops) = self.git_ops_state {
+            let cl = &mut ops.commit_log;
+            if let Some(ref mut rx) = cl.diff_receiver {
+                if let Ok(result) = rx.try_recv() {
+                    let tab_width = self.config.diff.tab_width;
+                    match result {
+                        Ok((sha, diff_text)) => {
+                            let mut cache = build_plain_diff_cache(&diff_text, tab_width);
+                            cache.file_index = cl.selected;
+
+                            let is_current = cl
+                                .pending_diff_sha
+                                .as_ref()
+                                .is_some_and(|pending| *pending == sha);
+                            if is_current {
+                                cl.diff_store.set_current(sha.clone(), cache);
+                                cl.diff_loading = false;
+                                cl.diff_error = None;
+                                cl.diff_scroll.reset();
+                                if let Some(ref c) = cl.diff_store.current {
+                                    cl.diff_scroll.set_line_count(c.lines.len());
+                                }
+                            }
+
+                            // ハイライト版をバックグラウンドで構築
+                            let theme = self.config.diff.theme.clone();
+                            let sha_clone = sha.clone();
+                            let selected = cl.selected;
+                            let (tx, rx_hl) = mpsc::channel(1);
+                            cl.diff_store.set_highlight_rx(rx_hl);
+
+                            tokio::task::spawn_blocking(move || {
+                                let mut parser_pool = ParserPool::new();
+                                let mut hl_cache = build_commit_diff_cache(
+                                    &diff_text,
+                                    &theme,
+                                    &mut parser_pool,
+                                    tab_width,
+                                );
+                                hl_cache.file_index = selected;
+                                let _ = tx.try_send((sha_clone, hl_cache));
+                            });
+                        }
+                        Err(e) => {
+                            if cl.pending_diff_sha.is_some() {
+                                cl.diff_loading = false;
+                                cl.diff_error = Some(e);
+                            }
+                        }
+                    }
+                    cl.diff_receiver = None;
+                }
+            }
+
+            // コミット diff のハイライトキャッシュ受信
+            if cl.diff_store.poll_highlight() {
+                if let Some(ref c) = cl.diff_store.current {
+                    cl.diff_scroll.set_line_count(c.lines.len());
+                }
+            }
+
+            // コミット diff のプリフェッチ受信
+            let selected = cl.selected;
+            let commits = &cl.commits;
+            cl.diff_store.poll_prefetch(|sha| {
+                commits
+                    .iter()
+                    .position(|c| c.sha == *sha)
+                    .map(|pos| pos.abs_diff(selected))
+                    .unwrap_or(usize::MAX)
+            });
+
+            // プレーンキャッシュのアップグレード
+            if let Some(current_sha) = cl.commits.get(cl.selected).map(|c| c.sha.clone()) {
+                let is_plain = cl
+                    .diff_store
+                    .current
+                    .as_ref()
+                    .is_some_and(|c| !c.highlighted);
+                if is_plain
+                    && cl.diff_store.store_contains_key(&current_sha)
+                    && cl.diff_store.try_restore(&current_sha, None)
+                {
+                    if let Some(ref c) = cl.diff_store.current {
+                        cl.diff_scroll.set_line_count(c.lines.len());
+                    }
+                }
             }
         }
 
@@ -472,6 +805,10 @@ impl App {
                 if let Some(ref mut ops) = self.git_ops_state {
                     ops.op_message = Some(("Commit created".to_string(), Instant::now()));
                     ops.undo_stack.push(UndoAction::Commit);
+                    ops.commit_log.diff_store.clear();
+                    ops.commit_log.commits.clear();
+                    ops.commit_log.selected = 0;
+                    ops.commit_log.initialized = false;
                 }
                 self.refresh_git_status();
                 self.retry_load();
@@ -504,6 +841,12 @@ impl App {
 
         match action {
             UndoAction::Commit => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.commit_log.diff_store.clear();
+                    ops.commit_log.commits.clear();
+                    ops.commit_log.selected = 0;
+                    ops.commit_log.initialized = false;
+                }
                 self.run_git_op_silent(
                     vec![
                         "reset".to_string(),
@@ -512,7 +855,6 @@ impl App {
                     ],
                     "Undo commit (changes are staged)".to_string(),
                 );
-                self.retry_load();
             }
             UndoAction::Stage {
                 paths,
@@ -718,56 +1060,164 @@ impl App {
                 }
             }
             KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.left_return_focus = LeftPaneFocus::Tree;
+                }
                 self.state = AppState::GitOpsSplitDiff;
             }
             KeyCode::Tab => {
-                if self.state == AppState::GitOpsSplitTree {
-                    self.state = AppState::GitOpsSplitDiff;
-                } else {
-                    self.state = AppState::GitOpsSplitTree;
-                }
+                self.toggle_git_ops_left_focus();
             }
             _ => {}
         }
+    }
+
+    /// Commits フォーカスの入力処理
+    pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.close_git_ops();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    let cl = &mut ops.commit_log;
+                    if !cl.commits.is_empty() {
+                        cl.selected = (cl.selected + 1).min(cl.commits.len() - 1);
+                    }
+                    // 末尾に近づいたら追加ロード
+                    if cl.selected + 5 >= cl.commits.len() && cl.has_more && !cl.loading {
+                        // load_more は &mut self が必要なので後で呼ぶ
+                    }
+                }
+                self.start_fetch_git_ops_commit_diff();
+                // 末尾接近時の追加ロード
+                let should_load_more = self
+                    .git_ops_state
+                    .as_ref()
+                    .map(|ops| {
+                        let cl = &ops.commit_log;
+                        cl.selected + 5 >= cl.commits.len() && cl.has_more && !cl.loading
+                    })
+                    .unwrap_or(false);
+                if should_load_more {
+                    self.load_more_git_ops_commits();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.commit_log.selected = ops.commit_log.selected.saturating_sub(1);
+                }
+                self.start_fetch_git_ops_commit_diff();
+            }
+            KeyCode::Char('g') => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.commit_log.selected = 0;
+                }
+                self.start_fetch_git_ops_commit_diff();
+            }
+            KeyCode::Char('G') => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    let cl = &mut ops.commit_log;
+                    if !cl.commits.is_empty() {
+                        cl.selected = cl.commits.len() - 1;
+                    }
+                }
+                self.start_fetch_git_ops_commit_diff();
+            }
+            KeyCode::Char('u') => {
+                // ローカルモードのみ: 選択中コミットに対して reset --soft
+                if self.local_mode {
+                    self.reset_soft_to_selected_commit();
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.left_return_focus = LeftPaneFocus::Commits;
+                }
+                self.state = AppState::GitOpsSplitDiff;
+            }
+            KeyCode::Tab => {
+                self.toggle_git_ops_left_focus();
+            }
+            _ => {}
+        }
+    }
+
+    /// 選択中コミットに対して git reset --soft を実行
+    fn reset_soft_to_selected_commit(&mut self) {
+        let sha = self
+            .git_ops_state
+            .as_ref()
+            .and_then(|ops| ops.commit_log.commits.get(ops.commit_log.selected))
+            .map(|c| c.sha.clone());
+
+        let Some(sha) = sha else {
+            return;
+        };
+
+        // diff store をクリア、コミット一覧を未初期化に戻す
+        if let Some(ref mut ops) = self.git_ops_state {
+            ops.diff_store.clear();
+            ops.commit_log.diff_store.clear();
+            ops.commit_log.commits.clear();
+            ops.commit_log.selected = 0;
+            ops.commit_log.initialized = false;
+        }
+
+        self.run_git_op_silent(
+            vec!["reset".to_string(), "--soft".to_string(), sha],
+            "Reset --soft (changes are staged)".to_string(),
+        );
+    }
+
+    /// left_return_focus に応じてアクティブな diff_scroll を返す
+    fn active_git_ops_diff_scroll(&mut self) -> Option<&mut crate::diff_store::DiffScrollState> {
+        self.git_ops_state.as_mut().map(|ops| match ops.left_return_focus {
+            LeftPaneFocus::Commits => &mut ops.commit_log.diff_scroll,
+            LeftPaneFocus::Tree => &mut ops.diff_scroll,
+        })
     }
 
     /// GitOpsSplitDiff の入力処理
     pub(crate) fn handle_git_ops_diff_input(&mut self, key: event::KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
-                self.state = AppState::GitOpsSplitTree;
+                self.return_from_git_ops_diff();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.diff_scroll.move_down();
+                if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                    scroll.move_down();
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.diff_scroll.move_up();
+                if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                    scroll.move_up();
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.diff_scroll.page_down(20);
+                if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                    scroll.page_down(20);
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.diff_scroll.page_up(20);
+                if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                    scroll.page_up(20);
                 }
             }
             KeyCode::Char('g') => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.diff_scroll.jump_to_first();
+                if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                    scroll.jump_to_first();
                 }
             }
             KeyCode::Char('G') => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.diff_scroll.jump_to_last();
+                if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                    scroll.jump_to_last();
                 }
             }
             KeyCode::Tab => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.left_focus = LeftPaneFocus::Tree;
+                }
                 self.state = AppState::GitOpsSplitTree;
             }
             _ => {}

@@ -13,7 +13,8 @@ use ratatui::{
 
 use super::common::render_rally_status_bar;
 use super::diff_view;
-use crate::app::{App, AppState, FileStatus, GitOpsState, TreeRow};
+use crate::app::{App, AppState, CommitLogState, FileStatus, GitOpsState, LeftPaneFocus, TreeRow};
+use crate::github::{format_relative_time, PrCommit};
 
 /// GitOps 分割ビューを描画
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -36,11 +37,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(outer_chunks[0]);
 
-    let is_tree_focused = app.state == AppState::GitOpsSplitTree;
     let is_diff_focused = app.state == AppState::GitOpsSplitDiff;
+    let left_focus = app
+        .git_ops_state
+        .as_ref()
+        .map(|ops| ops.left_focus)
+        .unwrap_or(LeftPaneFocus::Tree);
+    let is_tree_focused = !is_diff_focused && left_focus == LeftPaneFocus::Tree;
+    let is_commits_focused = !is_diff_focused && left_focus == LeftPaneFocus::Commits;
 
-    render_tree_pane(frame, app, h_chunks[0], is_tree_focused);
-    render_diff_pane(frame, app, h_chunks[1], is_diff_focused);
+    // 左ペインを縦分割: 70% Tree / 30% Commits
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(h_chunks[0]);
+
+    // diff ペインの visible_lines を事前計算してセット
+    // 右ペインレイアウト: Header(3) + Diff(Min) + Footer(3) → border含めて -8
+    let diff_visible_lines = h_chunks[1].height.saturating_sub(8) as usize;
+    if let Some(ref mut ops) = app.git_ops_state {
+        ops.diff_scroll.set_visible_lines(diff_visible_lines);
+        ops.commit_log.diff_scroll.set_visible_lines(diff_visible_lines);
+    }
+
+    // &mut app が必要なペインを先に描画（scroll_offset 更新のため）
+    render_tree_pane(frame, app, left_chunks[0], is_tree_focused);
+    render_commits_pane(frame, app, left_chunks[1], is_commits_focused);
+    // &app で十分なペインを後に描画
+    render_diff_pane(frame, &*app, h_chunks[1], is_diff_focused);
 
     if has_rally {
         render_rally_status_bar(frame, outer_chunks[1], app);
@@ -187,15 +211,26 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
         ])
         .split(area);
 
+    let bg_color = app.config.diff.bg_color;
+
     let Some(ref ops) = app.git_ops_state else {
         return;
     };
 
+    let is_commit_diff = ops.left_return_focus == LeftPaneFocus::Commits;
+
     // Header
-    let header_text = ops
-        .selected_path()
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "No file selected".to_string());
+    let header_text = if is_commit_diff {
+        ops.commit_log
+            .commits
+            .get(ops.commit_log.selected)
+            .map(|c| format!("{} {}", c.short_sha(), c.message))
+            .unwrap_or_else(|| "No commit selected".to_string())
+    } else {
+        ops.selected_path()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "No file selected".to_string())
+    };
 
     let header = Paragraph::new(header_text).block(
         Block::default()
@@ -205,8 +240,12 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
     );
     frame.render_widget(header, chunks[0]);
 
-    // Diff body
-    render_diff_body(frame, ops, chunks[1], border_color, app.config.diff.bg_color);
+    // Diff body — left_return_focus に応じて diff_store / scroll を切り替え
+    if is_commit_diff {
+        render_commit_diff_body(frame, &ops.commit_log, chunks[1], border_color, bg_color);
+    } else {
+        render_diff_body(frame, ops, chunks[1], border_color, bg_color);
+    }
 
     // Footer
     let footer_text = if is_focused {
@@ -292,6 +331,237 @@ fn render_diff_body(
             );
         }
     }
+}
+
+/// コミット diff 本文を描画
+fn render_commit_diff_body(
+    frame: &mut Frame,
+    cl: &CommitLogState,
+    area: ratatui::layout::Rect,
+    border_color: Color,
+    bg_color: bool,
+) {
+    let lines: Vec<Line> = if cl.diff_loading {
+        vec![Line::from(Span::styled(
+            "Loading diff...",
+            Style::default().fg(Color::Yellow),
+        ))]
+    } else if let Some(ref error) = cl.diff_error {
+        vec![Line::from(Span::styled(
+            format!("Error: {}", error),
+            Style::default().fg(Color::Red),
+        ))]
+    } else if let Some(ref cache) = cl.diff_store.current {
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let line_count = cache.lines.len();
+        let visible_start = cl.diff_scroll.scroll_offset.saturating_sub(2).min(line_count);
+        let visible_end = (cl.diff_scroll.scroll_offset + visible_height + 5).min(line_count);
+
+        let empty_comments = HashSet::new();
+        diff_view::render_cached_lines(
+            cache,
+            visible_start..visible_end,
+            cl.diff_scroll.selected_line,
+            &empty_comments,
+            bg_color,
+            None,
+        )
+    } else {
+        vec![Line::from(Span::styled(
+            "Select a commit to preview diff",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    };
+
+    let adjusted_scroll = if cl.diff_store.current.is_some() {
+        let visible_start = cl.diff_scroll.scroll_offset.saturating_sub(2);
+        (cl.diff_scroll.scroll_offset - visible_start) as u16
+    } else {
+        cl.diff_scroll.scroll_offset as u16
+    };
+
+    let diff_block = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color)),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((adjusted_scroll, 0));
+    frame.render_widget(diff_block, area);
+
+    // Scrollbar
+    if let Some(ref cache) = cl.diff_store.current {
+        let total_lines = cache.lines.len();
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        if max_scroll > 0 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let clamped_position = cl.diff_scroll.scroll_offset.min(max_scroll);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll).position(clamped_position);
+
+            frame.render_stateful_widget(
+                scrollbar,
+                area.inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
+    }
+}
+
+/// 左下ペイン: コミット一覧
+fn render_commits_pane(
+    frame: &mut Frame,
+    app: &mut App,
+    area: ratatui::layout::Rect,
+    is_focused: bool,
+) {
+    let border_color = if is_focused {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
+    let spinner = app.spinner_char().to_string();
+    let Some(ref mut ops) = app.git_ops_state else {
+        return;
+    };
+    let cl = &mut ops.commit_log;
+
+    if cl.loading && cl.commits.is_empty() {
+        let loading = Paragraph::new(Line::from(Span::styled(
+            format!("{} Loading commits...", spinner),
+            Style::default().fg(Color::Yellow),
+        )))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title("Commits"),
+        );
+        frame.render_widget(loading, area);
+        return;
+    }
+
+    if let Some(ref error) = cl.error {
+        let err_msg = Paragraph::new(Span::styled(
+            format!("Error: {}", error),
+            Style::default().fg(Color::Red),
+        ))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title("Commits"),
+        );
+        frame.render_widget(err_msg, area);
+        return;
+    }
+
+    if cl.commits.is_empty() {
+        let empty = Paragraph::new("No commits")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color))
+                    .title("Commits (0)"),
+            );
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let total = cl.commits.len();
+    let selected = cl.selected;
+    let mut items: Vec<ListItem> = cl
+        .commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| build_commit_item(commit, i == selected))
+        .collect();
+
+    if cl.loading && !cl.commits.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("{} Loading more...", spinner),
+            Style::default().fg(Color::Yellow),
+        ))));
+    }
+
+    let title = if cl.has_more {
+        format!("Commits ({}+)", total)
+    } else {
+        format!("Commits ({})", total)
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title(title),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let mut list_state = ListState::default()
+        .with_offset(cl.scroll_offset)
+        .with_selected(Some(selected));
+
+    frame.render_stateful_widget(list, area, &mut list_state);
+    cl.scroll_offset = list_state.offset();
+
+    if total > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(1)).position(selected);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
+}
+
+/// コミットアイテムを構築
+fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
+    let style = if is_selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    let relative_time = format_relative_time(&commit.date);
+    let author = commit
+        .author_login
+        .as_deref()
+        .unwrap_or(&commit.author_name);
+
+    let line = Line::from(vec![
+        Span::styled(
+            format!("{} ", commit.short_sha()),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(commit.message.clone(), style),
+        Span::styled(
+            format!("  ({}, {})", author, relative_time),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    ListItem::new(line)
 }
 
 /// ツリー行をリストアイテムに変換

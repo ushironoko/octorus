@@ -4,7 +4,7 @@ use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyEventState, Key
 use lasso::Rodeo;
 
 use crate::cache::{PrCacheKey, PrData};
-use crate::github::{ChangedFile, PullRequest};
+use crate::github::{ChangedFile, PrCommit, PullRequest};
 use crate::loader::DataLoadResult;
 
 #[test]
@@ -5800,4 +5800,142 @@ async fn test_poll_git_ops_starts_prefetch_after_status_update() {
         ops.diff_store.has_prefetch_rx(),
         "prefetch should be started after status update (regression: start_git_ops_prefetch not called)"
     );
+}
+
+// ============================================================
+// Step 1: LeftPaneFocus / CommitLogState / GitOpsState 拡張
+// ============================================================
+
+#[test]
+fn test_left_pane_focus_default_is_tree() {
+    use crate::app::types::LeftPaneFocus;
+    assert_eq!(LeftPaneFocus::default(), LeftPaneFocus::Tree);
+}
+
+#[test]
+fn test_commit_log_state_new_has_correct_defaults() {
+    use crate::app::types::CommitLogState;
+    let state = CommitLogState::new();
+    assert!(state.commits.is_empty());
+    assert_eq!(state.selected, 0);
+    assert_eq!(state.scroll_offset, 0);
+    assert!(!state.diff_loading);
+    assert!(!state.loading);
+    assert!(!state.has_more);
+    assert_eq!(state.page, 0);
+    assert!(state.error.is_none());
+    assert!(state.diff_error.is_none());
+    assert!(state.pending_diff_sha.is_none());
+    assert!(!state.initialized);
+}
+
+#[test]
+fn test_git_ops_state_has_left_focus_and_commit_log() {
+    use crate::app::types::LeftPaneFocus;
+    let ops = GitOpsState::new(Vec::new());
+    assert_eq!(ops.left_focus, LeftPaneFocus::Tree);
+    assert_eq!(ops.left_return_focus, LeftPaneFocus::Tree);
+    assert!(ops.commit_log.commits.is_empty());
+}
+
+// ============================================================
+// Step 2: open_git_ops にコミット取得が統合されていること
+// ============================================================
+
+#[tokio::test]
+async fn test_open_git_ops_starts_commit_loading() {
+    let mut app = App::new_for_test();
+    app.set_local_mode(true);
+    app.open_git_ops();
+    let ops = app.git_ops_state.as_ref().unwrap();
+    assert!(
+        ops.commit_log.loading,
+        "open_git_ops should start commit loading"
+    );
+    assert!(
+        ops.commit_log.list_receiver.is_some(),
+        "open_git_ops should set commit list receiver"
+    );
+}
+
+#[tokio::test]
+async fn test_poll_git_ops_receives_commit_list() {
+    use crate::github::CommitListPage;
+    let mut app = App::new_for_test();
+    app.set_local_mode(true);
+
+    // GitOpsState をセットアップ
+    let mut ops = GitOpsState::new(Vec::new());
+    let (tx, rx) = mpsc::channel(1);
+    ops.commit_log.list_receiver = Some(rx);
+    ops.commit_log.loading = true;
+    app.git_ops_state = Some(ops);
+    app.state = AppState::GitOpsSplitTree;
+
+    // コミット一覧を送信
+    let page = CommitListPage {
+        items: vec![PrCommit {
+            sha: "abc123".to_string(),
+            message: "test commit".to_string(),
+            author_name: "test".to_string(),
+            author_login: None,
+            date: "2025-01-01T00:00:00Z".to_string(),
+        }],
+        has_more: false,
+    };
+    tx.send(Ok(page)).await.unwrap();
+
+    app.poll_git_ops_updates();
+
+    let ops = app.git_ops_state.as_ref().unwrap();
+    assert_eq!(ops.commit_log.commits.len(), 1);
+    assert_eq!(ops.commit_log.commits[0].sha, "abc123");
+    assert!(!ops.commit_log.loading);
+}
+
+// ============================================================
+// Step 3: フォーカス遷移
+// ============================================================
+
+#[tokio::test]
+async fn test_tab_in_tree_focus_switches_to_commits() {
+    use crate::app::types::LeftPaneFocus;
+    let mut app = App::new_for_test();
+    app.open_git_ops();
+
+    // Tab で Commits へ
+    app.toggle_git_ops_left_focus();
+    let ops = app.git_ops_state.as_ref().unwrap();
+    assert_eq!(ops.left_focus, LeftPaneFocus::Commits);
+}
+
+#[tokio::test]
+async fn test_tab_in_commits_focus_switches_to_tree() {
+    use crate::app::types::LeftPaneFocus;
+    let mut app = App::new_for_test();
+    app.open_git_ops();
+    if let Some(ref mut ops) = app.git_ops_state {
+        ops.left_focus = LeftPaneFocus::Commits;
+    }
+
+    app.toggle_git_ops_left_focus();
+    let ops = app.git_ops_state.as_ref().unwrap();
+    assert_eq!(ops.left_focus, LeftPaneFocus::Tree);
+}
+
+#[tokio::test]
+async fn test_diff_returns_to_left_return_focus() {
+    use crate::app::types::LeftPaneFocus;
+    let mut app = App::new_for_test();
+    app.open_git_ops();
+    if let Some(ref mut ops) = app.git_ops_state {
+        ops.left_return_focus = LeftPaneFocus::Commits;
+    }
+    app.state = AppState::GitOpsSplitDiff;
+
+    // Esc で left_return_focus へ戻る
+    app.return_from_git_ops_diff();
+    assert_eq!(app.state, AppState::GitOpsSplitTree);
+    let ops = app.git_ops_state.as_ref().unwrap();
+    assert_eq!(ops.left_focus, LeftPaneFocus::Commits);
 }

@@ -76,20 +76,23 @@ impl App {
                     }
                     AppState::PrDescription => self.handle_pr_description_input(key, terminal)?,
                     AppState::ChecksList => self.handle_checks_list_input(key)?,
-                    AppState::GitLogSplitCommitList => {
-                        self.handle_git_log_split_commit_list_input(key, terminal)?
-                    }
-                    AppState::GitLogSplitDiff => {
-                        self.handle_git_log_split_diff_input(key, terminal)?
-                    }
-                    AppState::GitLogDiffView => {
-                        self.handle_git_log_diff_view_input(key, terminal)?
-                    }
-                    AppState::IssueList => self.handle_issue_list_input(key).await?,
+AppState::IssueList => self.handle_issue_list_input(key).await?,
                     AppState::IssueDetail => self.handle_issue_detail_input(key, terminal)?,
                     AppState::IssueCommentList => self.handle_issue_comment_list_input(key)?,
                     AppState::GitOpsSplitTree => {
-                        self.handle_git_ops_tree_input(key, terminal);
+                        let focus = self
+                            .git_ops_state
+                            .as_ref()
+                            .map(|ops| ops.left_focus)
+                            .unwrap_or(LeftPaneFocus::Tree);
+                        match focus {
+                            LeftPaneFocus::Tree => {
+                                self.handle_git_ops_tree_input(key, terminal);
+                            }
+                            LeftPaneFocus::Commits => {
+                                self.handle_git_ops_commits_input(key);
+                            }
+                        }
                     }
                     AppState::GitOpsSplitDiff => {
                         self.handle_git_ops_diff_input(key);
@@ -190,7 +193,13 @@ impl App {
             return Ok(());
         }
 
-        // Space+/ / gl / go シーケンス処理（ファイル一覧でのフィルタ起動 / Git Log / Git Ops）
+        // G: Git Ops 画面
+        if self.matches_single_key(&key, &kb.git_ops) {
+            self.open_git_ops();
+            return Ok(());
+        }
+
+        // Space+/ シーケンス処理（ファイル一覧でのフィルタ起動）
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -214,28 +223,12 @@ impl App {
                     return Ok(());
                 }
 
-                // gl: Git Log 画面
-                if self.try_match_sequence(&kb.git_log) == SequenceMatch::Full {
-                    self.clear_pending_keys();
-                    self.open_git_log();
-                    return Ok(());
-                }
-
-                // go: Git Ops 画面
-                if self.try_match_sequence(&kb.git_ops) == SequenceMatch::Full {
-                    self.clear_pending_keys();
-                    self.open_git_ops();
-                    return Ok(());
-                }
-
                 // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
                 // シーケンス開始チェック
                 let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
-                let could_start_gl = self.key_could_match_sequence(&key, &kb.git_log);
-                let could_start_go = self.key_could_match_sequence(&key, &kb.git_ops);
-                if could_start_filter || could_start_gl || could_start_go {
+                if could_start_filter {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }

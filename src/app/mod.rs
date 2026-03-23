@@ -24,12 +24,12 @@ use std::time::Instant;
 
 mod types;
 pub use types::{
-    hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState,
-    DiffCache, FileStatus, GitLogState, GitOpsState, GitStatusEntry, HelpTab, IndexEntry,
-    InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation, LineInputContext,
-    LogEntry, LogEventType, MultilineSelection, PauseState, PermissionInfo, RefreshRequest,
-    RepoSymbolSearchResult, ReviewAction, SymbolPopupState, SymbolSearchState, SymbolSearchUpdate,
-    TreeRow, UndoAction, WatcherHandle,
+    hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab,
+    CommitLogState, DataState, DiffCache, FileStatus, GitOpsState, GitStatusEntry, HelpTab,
+    IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
+    LeftPaneFocus, LineInputContext, LogEntry, LogEventType, MultilineSelection, PauseState,
+    PermissionInfo, RefreshRequest, RepoSymbolSearchResult, ReviewAction, SymbolPopupState,
+    SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -38,7 +38,6 @@ mod ai_rally;
 mod comments;
 mod diff_cache;
 mod filter;
-mod git_log;
 mod git_ops;
 mod input;
 mod input_diff;
@@ -224,7 +223,6 @@ pub struct App {
     checks_receiver: PrReceiver<Result<Vec<CheckItem>, String>>,
     ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
     /// Git Log 画面の全状態（None = 非表示）
-    pub git_log_state: Option<GitLogState>,
     /// GitOps 画面の全状態（None = 非表示）
     pub git_ops_state: Option<GitOpsState>,
     /// Issue 画面の全状態（None = 非表示）
@@ -340,7 +338,6 @@ impl App {
             ci_status: None,
             checks_receiver: None,
             ci_status_receiver: None,
-            git_log_state: None,
             git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
@@ -448,7 +445,6 @@ impl App {
             ci_status: None,
             checks_receiver: None,
             ci_status_receiver: None,
-            git_log_state: None,
             git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
@@ -505,7 +501,6 @@ impl App {
             self.poll_rally_events();
             self.poll_checks_updates();
             self.poll_ci_status_updates();
-            self.poll_git_log_updates();
             self.poll_git_ops_updates();
             self.poll_issue_list_updates();
             self.poll_issue_detail_updates();
@@ -700,7 +695,6 @@ impl App {
             ci_status: None,
             checks_receiver: None,
             ci_status_receiver: None,
-            git_log_state: None,
             git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,

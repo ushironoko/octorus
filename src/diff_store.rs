@@ -35,6 +35,8 @@ pub struct DiffScrollState {
     pub scroll_offset: usize,
     pub line_count: usize,
     mode: ScrollMode,
+    /// 直近の描画で確定したビューポート行数。move_down 等で自動 adjust_scroll に使用。
+    visible_lines: usize,
 }
 
 impl DiffScrollState {
@@ -44,7 +46,13 @@ impl DiffScrollState {
             scroll_offset: 0,
             line_count: 0,
             mode,
+            visible_lines: 0,
         }
+    }
+
+    /// ビューポート行数を更新（UI描画側から呼ぶ）
+    pub fn set_visible_lines(&mut self, visible_lines: usize) {
+        self.visible_lines = visible_lines;
     }
 
     /// 全状態をリセット
@@ -119,10 +127,12 @@ impl DiffScrollState {
         if self.line_count > 0 {
             self.selected_line = (self.selected_line + 1).min(self.line_count.saturating_sub(1));
         }
+        self.adjust_scroll(self.visible_lines);
     }
 
     pub fn move_up(&mut self) {
         self.selected_line = self.selected_line.saturating_sub(1);
+        self.adjust_scroll(self.visible_lines);
     }
 
     pub fn page_down(&mut self, step: usize) {
@@ -130,10 +140,12 @@ impl DiffScrollState {
             self.selected_line =
                 (self.selected_line + step).min(self.line_count.saturating_sub(1));
         }
+        self.adjust_scroll(self.visible_lines);
     }
 
     pub fn page_up(&mut self, step: usize) {
         self.selected_line = self.selected_line.saturating_sub(step);
+        self.adjust_scroll(self.visible_lines);
     }
 
     pub fn jump_to_first(&mut self) {
@@ -145,6 +157,7 @@ impl DiffScrollState {
         if self.line_count > 0 {
             self.selected_line = self.line_count.saturating_sub(1);
         }
+        self.adjust_scroll(self.visible_lines);
     }
 }
 

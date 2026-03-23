@@ -26,7 +26,8 @@ pub struct Config {
     pub diff: DiffConfig,
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
-    pub git_log: GitLogConfig,
+    #[serde(alias = "git_log")]
+    pub git_ops: GitOpsConfig,
     #[serde(skip)]
     pub project_root: PathBuf,
     /// Path of the global config file if it was loaded successfully.
@@ -66,7 +67,7 @@ pub struct AiConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct GitLogConfig {
+pub struct GitOpsConfig {
     /// コミット diff キャッシュ（プリフェッチ含む）の最大エントリ数
     #[serde(default = "default_max_diff_cache")]
     pub max_diff_cache: usize,
@@ -76,7 +77,7 @@ fn default_max_diff_cache() -> usize {
     20
 }
 
-impl Default for GitLogConfig {
+impl Default for GitOpsConfig {
     fn default() -> Self {
         Self {
             max_diff_cache: default_max_diff_cache(),
@@ -170,9 +171,6 @@ pub struct KeybindingsConfig {
     // CI Checks
     pub ci_checks: KeySequence,
 
-    // Git log
-    pub git_log: KeySequence,
-
     // Git ops
     pub git_ops: KeySequence,
 
@@ -261,11 +259,8 @@ impl Default for KeybindingsConfig {
             // CI Checks
             ci_checks: KeySequence::single(KeyBinding::char('S')),
 
-            // Git log
-            git_log: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('l')),
-
             // Git ops
-            git_ops: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('o')),
+            git_ops: KeySequence::single(KeyBinding::char('G')),
 
             // Issue list
             issue_list: KeySequence::single(KeyBinding::char('I')),
@@ -319,7 +314,6 @@ impl KeybindingsConfig {
             ("multiline_select", &self.multiline_select),
             ("pr_description", &self.pr_description),
             ("ci_checks", &self.ci_checks),
-            ("git_log", &self.git_log),
             ("git_ops", &self.git_ops),
             ("issue_list", &self.issue_list),
         ];
@@ -390,6 +384,7 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         &["reply", "request_changes"],
         &["toggle_local_mode", "move_right"], // L vs l: different cases
         &["toggle_auto_focus", "go_to_file"], // F vs gf: different sequence lengths
+        &["git_ops", "jump_to_last"],           // G: git ops in file list, jump_to_last in diff/other views
     ];
 
     for group in context_groups {
@@ -462,7 +457,6 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("multiline_select", &seq_to_value(&self.multiline_select))?;
         map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
         map.serialize_entry("ci_checks", &seq_to_value(&self.ci_checks))?;
-        map.serialize_entry("git_log", &seq_to_value(&self.git_log))?;
         map.serialize_entry("git_ops", &seq_to_value(&self.git_ops))?;
         map.serialize_entry("issue_list", &seq_to_value(&self.issue_list))?;
 
@@ -1483,15 +1477,6 @@ timeout_secs = 3600
         assert!(serialized.contains("pr_description"));
         let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed.pr_description.display(), "d");
-    }
-
-    #[test]
-    fn test_git_log_keybinding_serialize_roundtrip() {
-        let config = KeybindingsConfig::default();
-        let serialized = toml::to_string(&config).unwrap();
-        assert!(serialized.contains("git_log"));
-        let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(parsed.git_log.display(), "gl");
     }
 
     #[test]

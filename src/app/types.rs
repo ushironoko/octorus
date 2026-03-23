@@ -12,8 +12,8 @@ use crate::diff::LineType;
 use crate::loader::SingleFileDiffResult;
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
-    ChangedFile, IssueComment, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary,
-    LinkedPr, PrCommit, PullRequest,
+    ChangedFile, CommitListPage, IssueComment, IssueDetail, IssueListPage, IssueStateFilter,
+    IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
 
 /// コメントのdiff内位置を表す構造体
@@ -156,10 +156,7 @@ pub enum AppState {
     SplitViewDiff,
     PrDescription,
     ChecksList,
-    GitLogSplitCommitList,
-    GitLogSplitDiff,
-    GitLogDiffView,
-    IssueList,
+IssueList,
     IssueDetail,
     IssueCommentList,
     GitOpsSplitTree,
@@ -379,71 +376,6 @@ pub enum DataState {
     Error(String),
 }
 
-/// Git Log 画面の全状態（receiver も含めて集約）
-///
-/// `App.git_log_state: Option<GitLogState>` として保持。
-/// 画面クローズ時に `None` で全破棄。
-pub struct GitLogState {
-    pub commits: Vec<PrCommit>,
-    pub selected_commit: usize,
-    pub commit_list_scroll_offset: usize,
-    /// 現在選択中コミットの raw unified diff
-    pub commit_diff: Option<String>,
-    /// Diff キャッシュストア（SHA キー）
-    pub diff_store: DiffCacheStore<String>,
-    /// Diff スクロール状態
-    pub diff_scroll: DiffScrollState,
-    pub diff_loading: bool,
-    pub commits_loading: bool,
-    /// 追加コミットが存在するか（無限スクロール用）
-    pub commits_has_more: bool,
-    /// 現在のページ番号（GitHub API: 1-indexed, ローカル: offset計算用）
-    pub commits_page: u32,
-    /// コミット一覧取得エラー
-    pub commits_error: Option<String>,
-    /// コミット diff 取得エラー
-    pub diff_error: Option<String>,
-    /// 非同期レスポンス競合防止: 現在取得中のコミット SHA
-    pub pending_diff_sha: Option<String>,
-    /// コミット一覧レシーバー
-    pub(crate) commit_list_receiver:
-        Option<mpsc::Receiver<Result<crate::github::CommitListPage, String>>>,
-    /// コミット diff レシーバー（(sha, diff_text) タプル）
-    pub(crate) commit_diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
-}
-
-impl Default for GitLogState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GitLogState {
-    pub fn new() -> Self {
-        Self::with_max_cache(MAX_STORE_ENTRIES)
-    }
-
-    pub fn with_max_cache(max_diff_cache: usize) -> Self {
-        Self {
-            commits: Vec::new(),
-            selected_commit: 0,
-            commit_list_scroll_offset: 0,
-            commit_diff: None,
-            diff_store: DiffCacheStore::new(max_diff_cache),
-            diff_scroll: DiffScrollState::new(ScrollMode::Edge),
-            diff_loading: false,
-            commits_loading: true,
-            commits_has_more: false,
-            commits_page: 1,
-            commits_error: None,
-            diff_error: None,
-            pending_diff_sha: None,
-            commit_list_receiver: None,
-            commit_diff_receiver: None,
-        }
-    }
-}
-
 /// Git status のファイルステータス
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
@@ -585,6 +517,61 @@ pub enum UndoAction {
     StageAll { tree_hash: Option<String> },
 }
 
+/// GitOps 左ペインのサブフォーカス
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LeftPaneFocus {
+    #[default]
+    Tree,
+    Commits,
+}
+
+/// コミット履歴関連の全状態（GitOpsState のサブ構造体）
+pub struct CommitLogState {
+    pub commits: Vec<PrCommit>,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub diff_store: DiffCacheStore<String>,
+    pub diff_scroll: DiffScrollState,
+    pub diff_loading: bool,
+    pub loading: bool,
+    pub has_more: bool,
+    pub page: u32,
+    pub error: Option<String>,
+    pub diff_error: Option<String>,
+    pub pending_diff_sha: Option<String>,
+    pub(crate) list_receiver: Option<mpsc::Receiver<Result<CommitListPage, String>>>,
+    pub(crate) diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
+    pub initialized: bool,
+}
+
+impl Default for CommitLogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommitLogState {
+    pub fn new() -> Self {
+        Self {
+            commits: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
+            diff_scroll: DiffScrollState::new(ScrollMode::Edge),
+            diff_loading: false,
+            loading: false,
+            has_more: false,
+            page: 0,
+            error: None,
+            diff_error: None,
+            pending_diff_sha: None,
+            list_receiver: None,
+            diff_receiver: None,
+            initialized: false,
+        }
+    }
+}
+
 /// GitOps 画面の全状態
 pub struct GitOpsState {
     pub entries: Vec<GitStatusEntry>,
@@ -610,6 +597,12 @@ pub struct GitOpsState {
     pub visible_rows: Vec<TreeRow>,
     /// status 更新フラグ（prefetch トリガー用）
     pub(crate) status_updated: bool,
+    /// 左ペインのサブフォーカス（Tree / Commits）
+    pub left_focus: LeftPaneFocus,
+    /// Diff から戻る先の左サブペイン
+    pub left_return_focus: LeftPaneFocus,
+    /// コミット履歴（サブ構造体）
+    pub commit_log: CommitLogState,
 }
 
 /// ツリー表示の1行
@@ -638,6 +631,9 @@ impl GitOpsState {
             expanded_dirs: std::collections::HashSet::new(),
             visible_rows: Vec::new(),
             status_updated: false,
+            left_focus: LeftPaneFocus::Tree,
+            left_return_focus: LeftPaneFocus::Tree,
+            commit_log: CommitLogState::new(),
         }
     }
 
