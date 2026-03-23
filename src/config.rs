@@ -29,7 +29,6 @@ pub struct Config {
     pub git_log: GitLogConfig,
     /// Show only one pane at a time in split view. Selecting a file shows the diff
     /// pane full-width; pressing ←/h returns to the file list full-width.
-    #[serde(default)]
     pub single_pane_mode: bool,
     #[serde(skip)]
     pub project_root: PathBuf,

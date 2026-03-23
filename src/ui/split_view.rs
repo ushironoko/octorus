@@ -36,8 +36,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // 横並びレイアウト: シングルペインモード時はアクティブペインを全幅表示
     let (left_pct, right_pct) = if app.single_pane_mode {
         match app.state {
-            AppState::SplitViewDiff => (0, 100),
-            _ => (100, 0),
+            AppState::SplitViewDiff     => (0, 100),
+            AppState::SplitViewFileList => (100, 0),
+            _                           => (100, 0),
         }
     } else {
         (35, 65)
