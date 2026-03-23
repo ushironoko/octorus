@@ -123,9 +123,10 @@ fn render_tree_pane(
             );
         frame.render_widget(empty, chunks[1]);
     } else {
-        let total = ops.visible_rows.len();
-        let selected = ops.selected_index;
+        let total = ops.tree.visible_rows.len();
+        let selected = ops.tree.selected_row;
         let items: Vec<ListItem> = ops
+            .tree
             .visible_rows
             .iter()
             .enumerate()
@@ -142,14 +143,14 @@ fn render_tree_pane(
             .highlight_style(Style::default().bg(Color::DarkGray));
 
         let mut list_state = ListState::default()
-            .with_offset(ops.tree_scroll_offset)
+            .with_offset(ops.tree.scroll_offset)
             .with_selected(Some(selected));
 
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
         // Update scroll offset from list state
         if let Some(ref mut ops) = app.git_ops_state {
-            ops.tree_scroll_offset = list_state.offset();
+            ops.tree.scroll_offset = list_state.offset();
         }
 
         if total > 1 {

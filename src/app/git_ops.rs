@@ -255,7 +255,7 @@ impl App {
                         ops.status_receiver = None;
                         status_updated = true;
                         ops.status_updated = true;
-                        rebuild_visible_rows(ops);
+                        rebuild_git_ops_tree(ops);
                     }
                     Ok(Err(_)) => {
                         ops.status_receiver = None;
@@ -337,7 +337,7 @@ impl App {
             ops.diff_store.poll_highlight();
 
             // --- プリフェッチ受信 ---
-            let selected = ops.selected_index;
+            let selected = ops.tree.selected_row;
             ops.diff_store.poll_prefetch(|k| {
                 ops.entries
                     .iter()
@@ -562,7 +562,7 @@ impl App {
             return;
         };
 
-        let selected = ops.visible_rows.get(ops.selected_index);
+        let selected = ops.tree.visible_rows.get(ops.tree.selected_row);
 
         match selected {
             Some(TreeRow::File(idx, _)) => {
@@ -1043,16 +1043,7 @@ impl App {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
         };
-
-        if let Some(TreeRow::Dir(ref path, _, _)) = ops.visible_rows.get(ops.selected_index) {
-            let path = path.clone();
-            if ops.expanded_dirs.contains(&path) {
-                ops.expanded_dirs.remove(&path);
-            } else {
-                ops.expanded_dirs.insert(path);
-            }
-            rebuild_visible_rows(ops);
-        }
+        ops.tree.toggle_expand();
     }
 
     /// GitOpsSplitTree の入力処理
@@ -1072,10 +1063,7 @@ impl App {
         // Move down
         if self.matches_single_key(&key, &kb.move_down) {
             if let Some(ref mut ops) = self.git_ops_state {
-                if !ops.visible_rows.is_empty() {
-                    ops.selected_index =
-                        (ops.selected_index + 1).min(ops.visible_rows.len() - 1);
-                }
+                ops.tree.move_down();
             }
             self.update_git_ops_diff();
             return;
@@ -1084,7 +1072,7 @@ impl App {
         // Move up
         if self.matches_single_key(&key, &kb.move_up) {
             if let Some(ref mut ops) = self.git_ops_state {
-                ops.selected_index = ops.selected_index.saturating_sub(1);
+                ops.tree.move_up();
             }
             self.update_git_ops_diff();
             return;
@@ -1137,7 +1125,7 @@ impl App {
             let is_dir = self
                 .git_ops_state
                 .as_ref()
-                .and_then(|ops| ops.visible_rows.get(ops.selected_index))
+                .and_then(|ops| ops.tree.visible_rows.get(ops.tree.selected_row))
                 .map(|row| matches!(row, TreeRow::Dir(..)))
                 .unwrap_or(false);
 
@@ -1566,94 +1554,15 @@ fn build_git_ops_diff_from_patch(
     ops.diff_store.set_highlight_rx(rx);
 }
 
-/// ツリービューの可視行を再構築
-pub(crate) fn rebuild_visible_rows(ops: &mut GitOpsState) {
-    ops.visible_rows.clear();
-
-    // ディレクトリパスを収集
-    let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for entry in &ops.entries {
-        let parts: Vec<&str> = entry.path.split('/').collect();
-        let mut current = String::new();
-        for (i, part) in parts.iter().enumerate() {
-            if i < parts.len() - 1 {
-                if !current.is_empty() {
-                    current.push('/');
-                }
-                current.push_str(part);
-                dirs.insert(current.clone());
-            }
-        }
-    }
-
-    // 初回ビルド時は全ディレクトリを展開
-    if ops.expanded_dirs.is_empty() && !dirs.is_empty() {
-        ops.expanded_dirs = dirs.iter().cloned().collect();
-    }
-
-    // ソート済みインデックス
-    let mut sorted_indices: Vec<usize> = (0..ops.entries.len()).collect();
-    sorted_indices.sort_by(|a, b| ops.entries[*a].path.cmp(&ops.entries[*b].path));
-
-    let mut added_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for &idx in &sorted_indices {
-        let path = &ops.entries[idx].path;
-        let parts: Vec<&str> = path.split('/').collect();
-
-        // 親ディレクトリ行を追加
-        let mut current = String::new();
-        for (depth, part) in parts.iter().enumerate() {
-            if depth < parts.len() - 1 {
-                if !current.is_empty() {
-                    current.push('/');
-                }
-                current.push_str(part);
-
-                if !added_dirs.contains(&current) {
-                    let parent = if depth == 0 {
-                        None
-                    } else {
-                        current.rsplit_once('/').map(|(p, _)| p.to_string())
-                    };
-
-                    let parent_expanded = parent
-                        .as_ref()
-                        .map(|p| ops.expanded_dirs.contains(p))
-                        .unwrap_or(true);
-
-                    if parent_expanded {
-                        let is_expanded = ops.expanded_dirs.contains(&current);
-                        ops.visible_rows
-                            .push(TreeRow::Dir(current.clone(), depth, is_expanded));
-                        added_dirs.insert(current.clone());
-                    }
-                }
-            }
-        }
-
-        // ファイル行を追加（親ディレクトリが展開中の場合のみ）
-        let parent_dir = if parts.len() > 1 {
-            Some(parts[..parts.len() - 1].join("/"))
-        } else {
-            None
-        };
-
-        let visible = parent_dir
-            .as_ref()
-            .map(|p| ops.expanded_dirs.contains(p))
-            .unwrap_or(true);
-
-        if visible {
-            let depth = parts.len() - 1;
-            ops.visible_rows.push(TreeRow::File(idx, depth));
-        }
-    }
-
-    // selected_index をクランプ
-    if !ops.visible_rows.is_empty() && ops.selected_index >= ops.visible_rows.len() {
-        ops.selected_index = ops.visible_rows.len() - 1;
-    }
+/// GitOpsState のツリーを再構築するヘルパー
+pub(crate) fn rebuild_git_ops_tree(ops: &mut GitOpsState) {
+    let paths: Vec<(usize, &str)> = ops
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (i, e.path.as_str()))
+        .collect();
+    ops.tree.rebuild(&paths);
 }
 
 /// 2フェーズプリフェッチ: 並列 diff 取得 → 単一 spawn_blocking でハイライト
@@ -1766,7 +1675,7 @@ mod tests {
 
     /// visible_rows を人間が読める文字列にダンプ
     fn dump_visible_rows(ops: &GitOpsState) -> String {
-        ops.visible_rows
+        ops.tree.visible_rows
             .iter()
             .map(|row| match row {
                 TreeRow::Dir(path, depth, expanded) => {
@@ -1844,9 +1753,9 @@ mod tests {
             unmerged: false,
         }];
         let mut ops = GitOpsState::new(entries);
-        rebuild_visible_rows(&mut ops);
-        assert_eq!(ops.visible_rows.len(), 1);
-        assert!(matches!(ops.visible_rows[0], TreeRow::File(0, 0)));
+        rebuild_git_ops_tree(&mut ops);
+        assert_eq!(ops.tree.visible_rows.len(), 1);
+        assert!(matches!(ops.tree.visible_rows[0], TreeRow::File(0, 0)));
     }
 
     #[test]
@@ -1876,9 +1785,9 @@ mod tests {
             },
         ];
         let mut ops = GitOpsState::new(entries);
-        rebuild_visible_rows(&mut ops);
+        rebuild_git_ops_tree(&mut ops);
         // src/ dir, src/app/ dir, src/app/mod.rs file, src/lib.rs file
-        assert_eq!(ops.visible_rows.len(), 4);
+        assert_eq!(ops.tree.visible_rows.len(), 4);
     }
 
     #[test]
@@ -2012,9 +1921,8 @@ mod tests {
             entry("tests/integration.rs", FileStatus::Untracked, FileStatus::Untracked),
         ];
         let mut ops = GitOpsState::new(entries);
-        rebuild_visible_rows(&mut ops);
+        rebuild_git_ops_tree(&mut ops);
         assert_snapshot!(dump_visible_rows(&ops), @"
-        M  README.md
         ▼ src/
           ▼ app/
             M  mod.rs
@@ -2022,6 +1930,7 @@ mod tests {
           M  lib.rs
         ▼ tests/
           ?? integration.rs
+        M  README.md
         ");
     }
 
@@ -2034,11 +1943,11 @@ mod tests {
             entry("src/lib.rs", FileStatus::Modified, FileStatus::Unmodified),
         ];
         let mut ops = GitOpsState::new(entries);
-        rebuild_visible_rows(&mut ops);
+        rebuild_git_ops_tree(&mut ops);
 
         // src/app/ を折りたたみ
-        ops.expanded_dirs.remove("src/app");
-        rebuild_visible_rows(&mut ops);
+        ops.tree.expanded_dirs.remove("src/app");
+        rebuild_git_ops_tree(&mut ops);
         assert_snapshot!(dump_visible_rows(&ops), @"
         ▼ src/
           ▶ app/

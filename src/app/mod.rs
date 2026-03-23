@@ -37,6 +37,7 @@ use types::MarkViewedResult;
 mod ai_rally;
 mod comments;
 mod diff_cache;
+pub mod file_tree;
 mod filter;
 mod git_ops;
 mod input;
@@ -232,6 +233,10 @@ pub struct App {
     /// Latest available version (None = not checked yet or up-to-date)
     pub update_available: Option<String>,
     update_check_receiver: Option<mpsc::Receiver<Option<String>>>,
+    /// ファイル一覧のツリー表示モード ON/OFF
+    pub tree_mode_active: bool,
+    /// ファイルツリー状態（初回トグルで生成、展開状態を保持）
+    pub file_tree_state: Option<file_tree::FileTreeState>,
 }
 
 impl App {
@@ -343,6 +348,8 @@ impl App {
             issue_detail_return: false,
             update_available: None,
             update_check_receiver: None,
+            tree_mode_active: false,
+            file_tree_state: None,
         };
 
         (app, tx)
@@ -450,6 +457,8 @@ impl App {
             issue_detail_return: false,
             update_available: None,
             update_check_receiver: None,
+            tree_mode_active: false,
+            file_tree_state: None,
         }
     }
 
@@ -700,7 +709,14 @@ impl App {
             issue_detail_return: false,
             update_available: None,
             update_check_receiver: None,
+            tree_mode_active: false,
+            file_tree_state: None,
         }
+    }
+
+    /// ファイルツリーモードが有効で表示すべきかを判定
+    pub fn is_file_tree_active(&self) -> bool {
+        self.tree_mode_active && self.file_tree_state.is_some() && self.file_list_filter.is_none()
     }
 
     /// Set the comment_submitting flag for testing.

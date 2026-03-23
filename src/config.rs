@@ -189,6 +189,9 @@ pub struct KeybindingsConfig {
     // Mark viewed
     pub mark_viewed: KeySequence,
     pub mark_viewed_dir: KeySequence,
+
+    // Tree view toggle
+    pub tree_toggle: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -295,6 +298,8 @@ impl Default for KeybindingsConfig {
             // Mark viewed
             mark_viewed: KeySequence::single(KeyBinding::char('v')),
             mark_viewed_dir: KeySequence::single(KeyBinding::char('V')),
+            // Tree view toggle
+            tree_toggle: KeySequence::single(KeyBinding::char('t')),
         }
     }
 }
@@ -356,6 +361,7 @@ impl KeybindingsConfig {
             ("tab_switch", &self.tab_switch),
             ("mark_viewed", &self.mark_viewed),
             ("mark_viewed_dir", &self.mark_viewed_dir),
+            ("tree_toggle", &self.tree_toggle),
         ];
 
         for (name, seq) in &bindings {
@@ -431,6 +437,7 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         "tab_switch",
         "mark_viewed",
         "mark_viewed_dir",
+        "tree_toggle",
     ];
 
     let context_groups: &[&[&str]] = &[
@@ -529,6 +536,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("tab_switch", &seq_to_value(&self.tab_switch))?;
         map.serialize_entry("mark_viewed", &seq_to_value(&self.mark_viewed))?;
         map.serialize_entry("mark_viewed_dir", &seq_to_value(&self.mark_viewed_dir))?;
+        map.serialize_entry("tree_toggle", &seq_to_value(&self.tree_toggle))?;
 
         map.end()
     }
@@ -1611,6 +1619,7 @@ timeout_secs = 3600
             "tab_switch",
             "mark_viewed",
             "mark_viewed_dir",
+            "tree_toggle",
         ];
 
         for field in &expected_fields {

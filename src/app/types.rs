@@ -575,8 +575,8 @@ impl CommitLogState {
 /// GitOps 画面の全状態
 pub struct GitOpsState {
     pub entries: Vec<GitStatusEntry>,
-    pub selected_index: usize,
-    pub tree_scroll_offset: usize,
+    /// ツリービュー状態（FileTreeState に委譲）
+    pub tree: crate::app::file_tree::FileTreeState,
     pub diff_store: DiffCacheStore<String>,
     pub diff_scroll: DiffScrollState,
     /// 呼び出し元の AppState（close 時に復帰）
@@ -591,10 +591,6 @@ pub struct GitOpsState {
     pub op_message: Option<(String, std::time::Instant)>,
     /// Undo スタック
     pub undo_stack: Vec<UndoAction>,
-    /// ツリービュー: 展開中ディレクトリのパス集合
-    pub expanded_dirs: std::collections::HashSet<String>,
-    /// 表示行 → entries インデックスのマッピング（ツリー表示用）
-    pub visible_rows: Vec<TreeRow>,
     /// status 更新フラグ（prefetch トリガー用）
     pub(crate) status_updated: bool,
     /// 左ペインのサブフォーカス（Tree / Commits）
@@ -618,8 +614,7 @@ impl GitOpsState {
     pub fn new(entries: Vec<GitStatusEntry>) -> Self {
         Self {
             entries,
-            selected_index: 0,
-            tree_scroll_offset: 0,
+            tree: crate::app::file_tree::FileTreeState::new(),
             diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
             diff_scroll: DiffScrollState::new(ScrollMode::Margin),
             return_state: AppState::FileList,
@@ -628,8 +623,6 @@ impl GitOpsState {
             op_receiver: None,
             op_message: None,
             undo_stack: Vec::new(),
-            expanded_dirs: std::collections::HashSet::new(),
-            visible_rows: Vec::new(),
             status_updated: false,
             left_focus: LeftPaneFocus::Tree,
             left_return_focus: LeftPaneFocus::Tree,
@@ -649,10 +642,9 @@ impl GitOpsState {
 
     /// 現在選択中のエントリのパスを返す
     pub fn selected_path(&self) -> Option<&str> {
-        match self.visible_rows.get(self.selected_index) {
-            Some(TreeRow::File(idx, _)) => self.entries.get(*idx).map(|e| e.path.as_str()),
-            _ => None,
-        }
+        self.tree
+            .selected_file_index()
+            .and_then(|idx| self.entries.get(idx).map(|e| e.path.as_str()))
     }
 }
 
