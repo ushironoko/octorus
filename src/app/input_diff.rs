@@ -124,6 +124,12 @@ impl App {
             }
         }
 
+        // Toggle single pane mode
+        if self.matches_single_key(&key, &kb.toggle_single_pane) {
+            self.single_pane_mode = !self.single_pane_mode;
+            return Ok(());
+        }
+
         // Focus diff pane
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
@@ -448,6 +454,12 @@ impl App {
         // Variant-specific quit/back handling (outside panel)
         match variant {
             DiffViewVariant::SplitPane => {
+                // Toggle single pane mode
+                if self.matches_single_key(&key, &kb.toggle_single_pane) {
+                    self.single_pane_mode = !self.single_pane_mode;
+                    return Ok(());
+                }
+
                 // Go to fullscreen diff
                 if self.matches_single_key(&key, &kb.move_right) || key.code == KeyCode::Right {
                     self.diff_view_return_state = AppState::SplitViewDiff;

@@ -33,10 +33,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints(outer_constraints)
         .split(frame.area());
 
-    // 横並びレイアウト: 左35% / 右65%
+    // 横並びレイアウト: シングルペインモード時はアクティブペインを全幅表示
+    let (left_pct, right_pct) = if app.single_pane_mode {
+        match app.state {
+            AppState::SplitViewDiff => (0, 100),
+            _ => (100, 0),
+        }
+    } else {
+        (35, 65)
+    };
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .constraints([Constraint::Percentage(left_pct), Constraint::Percentage(right_pct)])
         .split(outer_chunks[0]);
 
     let is_file_focused = app.state == AppState::SplitViewFileList;
@@ -227,9 +235,9 @@ fn render_file_list_pane(
     // Footer
     let help_text = if is_focused {
         if app.file_list_filter.is_some() {
-            "j/k/↑↓: move | Esc: clear filter | Enter/→/l: diff | ←/h/q: back"
+            "j/k/↑↓: move | Esc: clear filter | Enter/→/l: diff | Z: single pane | ←/h/q: back"
         } else {
-            "j/k/↑↓: move | Space /: filter | Enter/→/l: diff | O: browser | ←/h/q: back"
+            "j/k/↑↓: move | Space /: filter | Enter/→/l: diff | Z: single pane | O: browser | ←/h/q: back"
         }
     } else {
         "←/h: focus files"
@@ -333,9 +341,9 @@ fn render_diff_pane_normal(
     // Footer
     let footer_text = if is_focused {
         if app.is_local_mode() {
-            "j/k/↑↓: scroll | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
+            "j/k/↑↓: scroll | M: markdown rich | Z: single pane | →/l: fullscreen | ←/h: files | q: back"
         } else {
-            "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
+            "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | M: markdown rich | Z: single pane | →/l: fullscreen | ←/h: files | q: back"
         }
     } else {
         "Enter/→: focus diff"

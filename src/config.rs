@@ -27,6 +27,10 @@ pub struct Config {
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
     pub git_log: GitLogConfig,
+    /// Show only one pane at a time in split view. Selecting a file shows the diff
+    /// pane full-width; pressing ←/h returns to the file list full-width.
+    #[serde(default)]
+    pub single_pane_mode: bool,
     #[serde(skip)]
     pub project_root: PathBuf,
     /// Path of the global config file if it was loaded successfully.
@@ -175,6 +179,9 @@ pub struct KeybindingsConfig {
 
     // Issue list
     pub issue_list: KeySequence,
+
+    // Single pane mode toggle
+    pub toggle_single_pane: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -263,6 +270,9 @@ impl Default for KeybindingsConfig {
 
             // Issue list
             issue_list: KeySequence::single(KeyBinding::char('I')),
+
+            // Single pane mode toggle
+            toggle_single_pane: KeySequence::single(KeyBinding::char('Z')),
         }
     }
 }
@@ -315,6 +325,7 @@ impl KeybindingsConfig {
             ("ci_checks", &self.ci_checks),
             ("git_log", &self.git_log),
             ("issue_list", &self.issue_list),
+            ("toggle_single_pane", &self.toggle_single_pane),
         ];
 
         for (name, seq) in &bindings {
@@ -457,6 +468,10 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("ci_checks", &seq_to_value(&self.ci_checks))?;
         map.serialize_entry("git_log", &seq_to_value(&self.git_log))?;
         map.serialize_entry("issue_list", &seq_to_value(&self.issue_list))?;
+        map.serialize_entry(
+            "toggle_single_pane",
+            &seq_to_value(&self.toggle_single_pane),
+        )?;
 
         map.end()
     }

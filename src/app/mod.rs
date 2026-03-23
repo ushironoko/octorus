@@ -213,6 +213,8 @@ pub struct App {
     pub symbol_search: SymbolSearchState,
     /// インメモリセッションキャッシュ
     pub session_cache: SessionCache,
+    /// シングルペインモード（true = アクティブペインのみ全幅表示）
+    pub single_pane_mode: bool,
     /// Markdown リッチ表示モード（見出し太字・斜体等を適用）
     markdown_rich: bool,
     /// サジェスチョン入力のシンタックスハイライトキャッシュ
@@ -260,6 +262,7 @@ impl App {
         config: Config,
     ) -> (Self, mpsc::Sender<DataLoadResult>) {
         let (tx, rx) = mpsc::channel(2);
+        let single_pane_mode = config.single_pane_mode;
 
         let app = Self {
             repo: repo.to_string(),
@@ -345,6 +348,7 @@ impl App {
             symbol_popup: None,
             symbol_search: SymbolSearchState::Idle,
             session_cache: SessionCache::new(),
+            single_pane_mode,
             markdown_rich: false,
             suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
@@ -375,6 +379,7 @@ impl App {
 
     /// PR一覧表示モードで開始（--pr省略時）
     pub fn new_pr_list(repo: &str, config: Config) -> Self {
+        let single_pane_mode = config.single_pane_mode;
         Self {
             repo: repo.to_string(),
             pr_number: None,
@@ -459,6 +464,7 @@ impl App {
             watcher_handle: None,
             refresh_pending: None,
             session_cache: SessionCache::new(),
+            single_pane_mode,
             markdown_rich: false,
             suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
@@ -632,6 +638,7 @@ impl App {
 
     pub fn new_for_test() -> Self {
         let config = Config::default();
+        let single_pane_mode = config.single_pane_mode;
         Self {
             repo: "test/repo".to_string(),
             pr_number: Some(1),
@@ -716,6 +723,7 @@ impl App {
             saved_local_snapshot: None,
             watcher_handle: None,
             refresh_pending: None,
+            single_pane_mode,
             markdown_rich: false,
             suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,

@@ -385,6 +385,11 @@ Run `or init` to create default config files, or create `~/.config/octorus/confi
 # Supports arguments: editor = "code --wait"
 # editor = "vim"
 
+# Show only one pane at a time in split view (default: false)
+# When enabled, selecting a file shows the diff pane full-width; pressing ←/h
+# returns to the file list full-width. Toggle at runtime with Z.
+# single_pane_mode = true
+
 [diff]
 # Syntax highlighting theme for diff view
 # See "Theme" section below for available options
@@ -866,6 +871,7 @@ go_to_definition = ["g", "d"]
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
 | `toggle_markdown_rich` | `M` | Toggle Markdown rich display |
+| `toggle_single_pane` | `Z` | Toggle single pane mode (show one pane at a time) |
 | `pr_description` | `d` | View PR description |
 | **Diff Operations** |||
 | `go_to_definition` | `gd` | Go to definition |
