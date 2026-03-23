@@ -794,6 +794,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key("R", key_width)
         )),
         Line::from(format!(
+            "{}  Push to origin",
+            fmt_key("P", key_width)
+        )),
+        Line::from(format!(
             "{}  Toggle directory expand/collapse",
             fmt_key("Enter", key_width)
         )),
@@ -849,17 +853,20 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
-            "{}  Page scroll",
+            "{}  Page scroll (also J/K)",
             fmt_key(
                 &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
                 key_width
             )
         )),
         Line::from(format!(
-            "  g/{}            Jump to first/last",
-            kb.jump_to_last.display()
+            "{}  Jump to first/last",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
-        Line::from("  h/Left/Esc      Back to tree"),
+        Line::from("  h/Left/Esc      Back to previous pane"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Git Ops View",
@@ -938,17 +945,20 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
-            "{}  Page scroll",
+            "{}  Page scroll (also J/K)",
             fmt_key(
                 &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
                 key_width
             )
         )),
         Line::from(format!(
-            "  g/{}            Jump to first/last",
-            kb.jump_to_last.display()
+            "{}  Jump to first/last",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
-        Line::from("  h/Left/Esc      Back to tree"),
+        Line::from("  h/Left/Esc      Back to previous pane"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "PR List View",

@@ -1,4 +1,4 @@
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -983,6 +983,61 @@ impl App {
         });
     }
 
+    /// P: git push origin <current-branch>
+    fn git_ops_push(&mut self) {
+        let working_dir = self.working_dir.clone();
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        ops.op_receiver = Some(rx);
+
+        tokio::spawn(async move {
+            // ブランチ名を取得
+            let dir = working_dir.as_deref().unwrap_or(".");
+            let branch_output = tokio::process::Command::new("git")
+                .args(["branch", "--show-current"])
+                .current_dir(dir)
+                .output()
+                .await;
+
+            let branch = match branch_output {
+                Ok(o) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                }
+                _ => {
+                    let _ = tx.send(Err("Failed to get current branch".to_string())).await;
+                    return;
+                }
+            };
+
+            if branch.is_empty() {
+                let _ = tx.send(Err("Detached HEAD: cannot push".to_string())).await;
+                return;
+            }
+
+            let push_output = tokio::process::Command::new("git")
+                .args(["push", "origin", &branch])
+                .current_dir(dir)
+                .output()
+                .await;
+
+            match push_output {
+                Ok(o) if o.status.success() => {
+                    let _ = tx.send(Ok(format!("Pushed to origin/{}", branch))).await;
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    let _ = tx.send(Err(format!("Push failed: {}", stderr))).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Push failed: {}", e))).await;
+                }
+            }
+        });
+    }
+
     /// ディレクトリの展開/折りたたみトグル
     pub(crate) fn toggle_dir_expand(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
@@ -1006,140 +1061,217 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.close_git_ops();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    if !ops.visible_rows.is_empty() {
-                        ops.selected_index =
-                            (ops.selected_index + 1).min(ops.visible_rows.len() - 1);
-                    }
-                }
-                self.update_git_ops_diff();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.selected_index = ops.selected_index.saturating_sub(1);
-                }
-                self.update_git_ops_diff();
-            }
-            KeyCode::Char(' ') => {
-                // Space: stage/unstage（ディレクトリの場合は配下を一括stage/unstage）
-                self.toggle_stage();
-            }
-            KeyCode::Char('s') => {
-                self.stage_all();
-            }
-            KeyCode::Char('d') => {
-                self.discard_changes();
-            }
-            KeyCode::Char('c') => {
-                let _ = self.git_ops_commit(terminal);
-            }
-            KeyCode::Char('u') => {
-                self.execute_undo();
-            }
-            KeyCode::Char('R') => {
-                self.refresh_git_status();
-            }
-            KeyCode::Enter => {
-                // Enter: ディレクトリなら展開/折りたたみ、ファイルならdiffペインへ
-                let is_dir = self
-                    .git_ops_state
-                    .as_ref()
-                    .and_then(|ops| ops.visible_rows.get(ops.selected_index))
-                    .map(|row| matches!(row, TreeRow::Dir(..)))
-                    .unwrap_or(false);
+        let kb = self.config.keybindings.clone();
 
-                if is_dir {
-                    self.toggle_dir_expand();
-                } else {
-                    self.state = AppState::GitOpsSplitDiff;
+        // Quit / Esc
+        if self.matches_single_key(&key, &kb.quit) {
+            self.close_git_ops();
+            return;
+        }
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                if !ops.visible_rows.is_empty() {
+                    ops.selected_index =
+                        (ops.selected_index + 1).min(ops.visible_rows.len() - 1);
                 }
             }
-            KeyCode::Char('l') | KeyCode::Right => {
+            self.update_git_ops_diff();
+            return;
+        }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                ops.selected_index = ops.selected_index.saturating_sub(1);
+            }
+            self.update_git_ops_diff();
+            return;
+        }
+
+        // Stage/unstage
+        if self.matches_single_key(&key, &kb.git_ops_stage) {
+            self.toggle_stage();
+            return;
+        }
+
+        // Stage all
+        if self.matches_single_key(&key, &kb.git_ops_stage_all) {
+            self.stage_all();
+            return;
+        }
+
+        // Discard
+        if self.matches_single_key(&key, &kb.git_ops_discard) {
+            self.discard_changes();
+            return;
+        }
+
+        // Commit
+        if self.matches_single_key(&key, &kb.git_ops_commit) {
+            let _ = self.git_ops_commit(terminal);
+            return;
+        }
+
+        // Undo
+        if self.matches_single_key(&key, &kb.git_ops_undo) {
+            self.execute_undo();
+            return;
+        }
+
+        // Push
+        if self.matches_single_key(&key, &kb.git_ops_push) {
+            self.git_ops_push();
+            return;
+        }
+
+        // Refresh
+        if self.matches_single_key(&key, &kb.refresh) {
+            self.refresh_git_status();
+            return;
+        }
+
+        // Enter: ディレクトリなら展開/折りたたみ、ファイルならdiffペインへ
+        if self.matches_single_key(&key, &kb.open_panel) {
+            let is_dir = self
+                .git_ops_state
+                .as_ref()
+                .and_then(|ops| ops.visible_rows.get(ops.selected_index))
+                .map(|row| matches!(row, TreeRow::Dir(..)))
+                .unwrap_or(false);
+
+            if is_dir {
+                self.toggle_dir_expand();
+            } else {
                 if let Some(ref mut ops) = self.git_ops_state {
                     ops.left_return_focus = LeftPaneFocus::Tree;
                 }
                 self.state = AppState::GitOpsSplitDiff;
             }
-            KeyCode::Tab => {
-                self.toggle_git_ops_left_focus();
+            return;
+        }
+
+        // Move right / l: focus diff
+        if self.matches_single_key(&key, &kb.move_right) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                ops.left_return_focus = LeftPaneFocus::Tree;
             }
-            _ => {}
+            self.state = AppState::GitOpsSplitDiff;
+            return;
+        }
+
+        // Tab: switch to commits
+        if self.matches_single_key(&key, &kb.tab_switch) {
+            self.toggle_git_ops_left_focus();
         }
     }
 
     /// Commits フォーカスの入力処理
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.close_git_ops();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    let cl = &mut ops.commit_log;
-                    if !cl.commits.is_empty() {
-                        cl.selected = (cl.selected + 1).min(cl.commits.len() - 1);
+        let kb = self.config.keybindings.clone();
+
+        // gg シーケンス処理（先頭ジャンプ）
+        if let Some(kb_event) = crate::keybinding::event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                if self.try_match_sequence(&kb.jump_to_first)
+                    == crate::keybinding::SequenceMatch::Full
+                {
+                    self.clear_pending_keys();
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.commit_log.selected = 0;
                     }
-                    // 末尾に近づいたら追加ロード
-                    if cl.selected + 5 >= cl.commits.len() && cl.has_more && !cl.loading {
-                        // load_more は &mut self が必要なので後で呼ぶ
-                    }
+                    self.start_fetch_git_ops_commit_diff();
+                    return;
                 }
-                self.start_fetch_git_ops_commit_diff();
-                // 末尾接近時の追加ロード
-                let should_load_more = self
-                    .git_ops_state
-                    .as_ref()
-                    .map(|ops| {
-                        let cl = &ops.commit_log;
-                        cl.selected + 5 >= cl.commits.len() && cl.has_more && !cl.loading
-                    })
-                    .unwrap_or(false);
-                if should_load_more {
-                    self.load_more_git_ops_commits();
+
+                self.clear_pending_keys();
+            } else {
+                let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
+                if could_start_gg {
+                    self.push_pending_key(kb_event);
+                    return;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.commit_log.selected = ops.commit_log.selected.saturating_sub(1);
-                }
-                self.start_fetch_git_ops_commit_diff();
-            }
-            KeyCode::Char('g') => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.commit_log.selected = 0;
-                }
-                self.start_fetch_git_ops_commit_diff();
-            }
-            KeyCode::Char('G') => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    let cl = &mut ops.commit_log;
-                    if !cl.commits.is_empty() {
-                        cl.selected = cl.commits.len() - 1;
-                    }
-                }
-                self.start_fetch_git_ops_commit_diff();
-            }
-            KeyCode::Char('u') => {
-                // ローカルモードのみ: 選択中コミットに対して reset --soft
-                if self.local_mode {
-                    self.reset_soft_to_selected_commit();
+        }
+
+        // Quit / Esc
+        if self.matches_single_key(&key, &kb.quit) {
+            self.close_git_ops();
+            return;
+        }
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                let cl = &mut ops.commit_log;
+                if !cl.commits.is_empty() {
+                    cl.selected = (cl.selected + 1).min(cl.commits.len() - 1);
                 }
             }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.left_return_focus = LeftPaneFocus::Commits;
+            self.start_fetch_git_ops_commit_diff();
+            // 末尾接近時の追加ロード
+            let should_load_more = self
+                .git_ops_state
+                .as_ref()
+                .map(|ops| {
+                    let cl = &ops.commit_log;
+                    cl.selected + 5 >= cl.commits.len() && cl.has_more && !cl.loading
+                })
+                .unwrap_or(false);
+            if should_load_more {
+                self.load_more_git_ops_commits();
+            }
+            return;
+        }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                ops.commit_log.selected = ops.commit_log.selected.saturating_sub(1);
+            }
+            self.start_fetch_git_ops_commit_diff();
+            return;
+        }
+
+        // Jump to last (G)
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                let cl = &mut ops.commit_log;
+                if !cl.commits.is_empty() {
+                    cl.selected = cl.commits.len() - 1;
                 }
-                self.state = AppState::GitOpsSplitDiff;
             }
-            KeyCode::Tab => {
-                self.toggle_git_ops_left_focus();
+            self.start_fetch_git_ops_commit_diff();
+            return;
+        }
+
+        // Undo / reset --soft（ローカルモードのみ）
+        if self.matches_single_key(&key, &kb.git_ops_undo) {
+            if self.local_mode {
+                self.reset_soft_to_selected_commit();
             }
-            _ => {}
+            return;
+        }
+
+        // Enter / move_right / →: focus diff
+        if self.matches_single_key(&key, &kb.open_panel)
+            || self.matches_single_key(&key, &kb.move_right)
+                   {
+            if let Some(ref mut ops) = self.git_ops_state {
+                ops.left_return_focus = LeftPaneFocus::Commits;
+            }
+            self.state = AppState::GitOpsSplitDiff;
+            return;
+        }
+
+        // Tab: switch to tree
+        if self.matches_single_key(&key, &kb.tab_switch) {
+            self.toggle_git_ops_left_focus();
         }
     }
 
@@ -1180,47 +1312,93 @@ impl App {
 
     /// GitOpsSplitDiff の入力処理
     pub(crate) fn handle_git_ops_diff_input(&mut self, key: event::KeyEvent) {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
-                self.return_from_git_ops_diff();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(scroll) = self.active_git_ops_diff_scroll() {
-                    scroll.move_down();
+        let kb = self.config.keybindings.clone();
+
+        // gg シーケンス処理
+        if let Some(kb_event) = crate::keybinding::event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                if self.try_match_sequence(&kb.jump_to_first)
+                    == crate::keybinding::SequenceMatch::Full
+                {
+                    self.clear_pending_keys();
+                    if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                        scroll.jump_to_first();
+                    }
+                    return;
+                }
+
+                self.clear_pending_keys();
+            } else {
+                let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
+                if could_start_gg {
+                    self.push_pending_key(kb_event);
+                    return;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(scroll) = self.active_git_ops_diff_scroll() {
-                    scroll.move_up();
-                }
+        }
+
+        // Quit / Esc / h / Left: back
+        if self.matches_single_key(&key, &kb.quit)
+                       || self.matches_single_key(&key, &kb.move_left)
+                   {
+            self.return_from_git_ops_diff();
+            return;
+        }
+
+        // Page down (Ctrl-d, also J)
+        if self.matches_single_key(&key, &kb.page_down)
+            || Self::is_shift_char_shortcut(&key, 'j')
+        {
+            if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                scroll.page_down(20);
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(scroll) = self.active_git_ops_diff_scroll() {
-                    scroll.page_down(20);
-                }
+            return;
+        }
+
+        // Page up (Ctrl-u, also K)
+        if self.matches_single_key(&key, &kb.page_up)
+            || Self::is_shift_char_shortcut(&key, 'k')
+        {
+            if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                scroll.page_up(20);
             }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(scroll) = self.active_git_ops_diff_scroll() {
-                    scroll.page_up(20);
-                }
+            return;
+        }
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) {
+            if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                scroll.move_down();
             }
-            KeyCode::Char('g') => {
-                if let Some(scroll) = self.active_git_ops_diff_scroll() {
-                    scroll.jump_to_first();
-                }
+            return;
+        }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) {
+            if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                scroll.move_up();
             }
-            KeyCode::Char('G') => {
-                if let Some(scroll) = self.active_git_ops_diff_scroll() {
-                    scroll.jump_to_last();
-                }
+            return;
+        }
+
+        // Jump to last (G)
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if let Some(scroll) = self.active_git_ops_diff_scroll() {
+                scroll.jump_to_last();
             }
-            KeyCode::Tab => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.left_focus = LeftPaneFocus::Tree;
-                }
-                self.state = AppState::GitOpsSplitTree;
+            return;
+        }
+
+        // Tab: switch to tree
+        if self.matches_single_key(&key, &kb.tab_switch) {
+            if let Some(ref mut ops) = self.git_ops_state {
+                ops.left_focus = LeftPaneFocus::Tree;
             }
-            _ => {}
+            self.state = AppState::GitOpsSplitTree;
         }
     }
 }

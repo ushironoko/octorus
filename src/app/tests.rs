@@ -2378,7 +2378,8 @@ fn test_pending_approve_choice_esc_cancels() {
     let mut app = App::new_for_test();
     app.pending_approve_body = Some("some body".to_string());
 
-    let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Esc));
+    // quit キー（デフォルト: q）でキャンセル
+    let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('q')));
 
     assert_eq!(choice, PendingApproveChoice::Cancel);
     assert!(app.pending_approve_body.is_none());
@@ -2760,7 +2761,7 @@ fn test_clear_pending_keys_resets() {
 #[test]
 fn test_matches_single_key_basic() {
     let app = App::new_for_test();
-    let seq = crate::keybinding::KeySequence(vec![crate::keybinding::KeyBinding::char('j')]);
+    let seq = crate::keybinding::KeySequence::single(crate::keybinding::KeyBinding::char('j'));
     let key = make_key(KeyCode::Char('j'));
     assert!(app.matches_single_key(&key, &seq));
 }
@@ -2768,10 +2769,10 @@ fn test_matches_single_key_basic() {
 #[test]
 fn test_matches_single_key_ignores_sequence() {
     let app = App::new_for_test();
-    let seq = crate::keybinding::KeySequence(vec![
+    let seq = crate::keybinding::KeySequence::double(
         crate::keybinding::KeyBinding::char('g'),
         crate::keybinding::KeyBinding::char('d'),
-    ]);
+    );
     let key = make_key(KeyCode::Char('g'));
     assert!(!app.matches_single_key(&key, &seq));
 }
@@ -2781,7 +2782,7 @@ fn test_try_match_sequence_full_partial_none() {
     use crate::keybinding::{KeyBinding, KeySequence, SequenceMatch};
 
     let mut app = App::new_for_test();
-    let seq = KeySequence(vec![KeyBinding::char('g'), KeyBinding::char('d')]);
+    let seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('d'));
 
     // No pending keys
     assert_eq!(app.try_match_sequence(&seq), SequenceMatch::None);
@@ -2800,7 +2801,7 @@ fn test_key_could_match_sequence_start() {
     use crate::keybinding::{KeyBinding, KeySequence};
 
     let app = App::new_for_test();
-    let seq = KeySequence(vec![KeyBinding::char('g'), KeyBinding::char('d')]);
+    let seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('d'));
     let key = make_key(KeyCode::Char('g'));
     assert!(app.key_could_match_sequence(&key, &seq));
 }
@@ -2810,7 +2811,7 @@ fn test_key_could_match_sequence_no_match() {
     use crate::keybinding::{KeyBinding, KeySequence};
 
     let app = App::new_for_test();
-    let seq = KeySequence(vec![KeyBinding::char('g'), KeyBinding::char('d')]);
+    let seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('d'));
     let key = make_key(KeyCode::Char('x'));
     assert!(!app.key_could_match_sequence(&key, &seq));
 }
@@ -5836,6 +5837,110 @@ fn test_git_ops_state_has_left_focus_and_commit_log() {
     assert_eq!(ops.left_focus, LeftPaneFocus::Tree);
     assert_eq!(ops.left_return_focus, LeftPaneFocus::Tree);
     assert!(ops.commit_log.commits.is_empty());
+}
+
+// ============================================================
+// KeySequence alt (代替キー) テスト
+// ============================================================
+
+#[test]
+fn test_matches_single_key_alt() {
+    use crate::keybinding::KeyBinding;
+    let app = App::new_for_test();
+    let seq = crate::keybinding::KeySequence::single(KeyBinding::char('j'))
+        .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Down)]);
+
+    // Primary matches
+    assert!(app.matches_single_key(&make_key(KeyCode::Char('j')), &seq));
+    // Alt matches
+    assert!(app.matches_single_key(&make_key(KeyCode::Down), &seq));
+    // Unrelated does not match
+    assert!(!app.matches_single_key(&make_key(KeyCode::Char('k')), &seq));
+}
+
+#[test]
+fn test_matches_single_key_no_alt_no_arrow() {
+    use crate::keybinding::KeyBinding;
+    let app = App::new_for_test();
+    // User configured move_down = "j" without alt
+    let seq = crate::keybinding::KeySequence::single(KeyBinding::char('j'));
+
+    assert!(app.matches_single_key(&make_key(KeyCode::Char('j')), &seq));
+    // Arrow key does NOT match when no alt is set
+    assert!(!app.matches_single_key(&make_key(KeyCode::Down), &seq));
+}
+
+#[test]
+fn test_default_move_down_matches_arrow() {
+    let app = App::new_for_test();
+    let kb = &app.config.keybindings;
+
+    // Default move_down = "j/Down"
+    assert!(app.matches_single_key(&make_key(KeyCode::Char('j')), &kb.move_down));
+    assert!(app.matches_single_key(&make_key(KeyCode::Down), &kb.move_down));
+}
+
+#[test]
+fn test_default_quit_matches_esc() {
+    let app = App::new_for_test();
+    let kb = &app.config.keybindings;
+
+    // Default quit = "q/Esc"
+    assert!(app.matches_single_key(&make_key(KeyCode::Char('q')), &kb.quit));
+    assert!(app.matches_single_key(&make_key(KeyCode::Esc), &kb.quit));
+}
+
+#[test]
+fn test_key_sequence_alt_deserialize_roundtrip() {
+    use crate::keybinding::KeySequence;
+    // "j/Down" → primary j, alt Down
+    let toml_str = r#"key = "j/Down""#;
+    #[derive(serde::Deserialize)]
+    struct Test {
+        key: KeySequence,
+    }
+    let test: Test = toml::from_str(toml_str).unwrap();
+    assert_eq!(test.key.keys.len(), 1);
+    assert_eq!(test.key.alt.len(), 1);
+    assert_eq!(test.key.display(), "j/Down");
+}
+
+#[test]
+fn test_key_sequence_no_alt_deserialize() {
+    use crate::keybinding::KeySequence;
+    // "j" → primary j, no alt
+    let toml_str = r#"key = "j""#;
+    #[derive(serde::Deserialize)]
+    struct Test {
+        key: KeySequence,
+    }
+    let test: Test = toml::from_str(toml_str).unwrap();
+    assert_eq!(test.key.keys.len(), 1);
+    assert!(test.key.alt.is_empty());
+    assert_eq!(test.key.display(), "j");
+}
+
+#[test]
+fn test_try_match_sequence_alt() {
+    use crate::keybinding::{KeyBinding, KeySequence, SequenceMatch};
+
+    let mut app = App::new_for_test();
+    // gg with alt Home
+    let seq = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'))
+        .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Home)]);
+
+    // Alt single key: Home → Full match (alt is single key)
+    app.push_pending_key(KeyBinding::named(crate::keybinding::NamedKey::Home));
+    assert_eq!(app.try_match_sequence(&seq), SequenceMatch::Full);
+    app.clear_pending_keys();
+
+    // Primary sequence: g → Partial
+    app.push_pending_key(KeyBinding::char('g'));
+    assert_eq!(app.try_match_sequence(&seq), SequenceMatch::Partial);
+
+    // Primary sequence: gg → Full
+    app.push_pending_key(KeyBinding::char('g'));
+    assert_eq!(app.try_match_sequence(&seq), SequenceMatch::Full);
 }
 
 // ============================================================

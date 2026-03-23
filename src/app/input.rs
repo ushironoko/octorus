@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -146,13 +146,13 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Esc: フィルタ適用中なら解除
-        if key.code == KeyCode::Esc && self.handle_filter_esc("file") {
+        // Quit: フィルタ適用中なら解除
+        if self.matches_single_key(&key, &kb.quit) && self.handle_filter_esc("file") {
             return Ok(());
         }
 
         // Move down (j or Down arrow - arrows always work)
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("file", true);
             } else if !self.files().is_empty() {
@@ -163,7 +163,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         // Move up (k or Up arrow)
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("file", false);
             } else {
@@ -238,8 +238,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         // Open split view (Enter, Right arrow, or l)
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
-            || key.code == KeyCode::Right
-        {
+                   {
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
@@ -418,16 +417,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return false;
         }
 
-        let is_mark_file = key.code == KeyCode::Char('v')
-            && !key.modifiers.contains(KeyModifiers::SHIFT)
-            && !key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
-        let is_mark_directory = key.code == KeyCode::Char('V')
-            || (key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::SHIFT));
-        let has_unexpected_modifiers = key.modifiers.contains(KeyModifiers::CONTROL)
-            || key.modifiers.contains(KeyModifiers::ALT);
+        let kb = &self.config.keybindings;
+        let is_mark_file = self.matches_single_key(&key, &kb.mark_viewed);
+        let is_mark_directory = self.matches_single_key(&key, &kb.mark_viewed_dir);
 
-        if has_unexpected_modifiers || (!is_mark_file && !is_mark_directory) {
+        if !is_mark_file && !is_mark_directory {
             return false;
         }
 
@@ -607,13 +601,13 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let check_count = self.checks.as_ref().map(|c| c.len()).unwrap_or(0);
 
         // Quit / back
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = self.checks_return_state;
             return Ok(());
         }
 
         // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if check_count > 0 {
                 self.selected_check = (self.selected_check + 1).min(check_count.saturating_sub(1));
             }
@@ -621,7 +615,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             self.selected_check = self.selected_check.saturating_sub(1);
             return Ok(());
         }

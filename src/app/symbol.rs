@@ -253,8 +253,7 @@ impl App {
         // Close
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.help)
-            || key.code == KeyCode::Esc
-        {
+                   {
             self.state = self.previous_state;
             return Ok(());
         }
@@ -348,8 +347,7 @@ impl App {
         let kb = &self.config.keybindings;
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.help)
-            || key.code == KeyCode::Esc
-        {
+                   {
             self.state = self.previous_state;
             return;
         } else if Self::is_shift_char_shortcut(&key, 'j') {

@@ -176,7 +176,7 @@ fn render_tree_pane(
         let Some(ref ops) = app.git_ops_state else {
             return;
         };
-        let base = "j/k: move | Space: stage/unstage | s: stage all | d: discard | c: commit | u: undo | q: quit";
+        let base = "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits";
         if let Some((ref msg, _)) = ops.op_message {
             // op_message が表示中の場合はそちらを優先
             msg.as_str()
@@ -184,7 +184,7 @@ fn render_tree_pane(
             base
         }
     } else {
-        "h/Left: focus tree"
+        "Tab/h: focus tree"
     };
     let footer_line = super::footer::build_footer_line(app, help_text);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
@@ -249,9 +249,9 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
 
     // Footer
     let footer_text = if is_focused {
-        "j/k: scroll | g/G: top/bottom | Ctrl-d/u: page | h/Left/q: back"
+        "j/k: scroll | J/K: page | gg/G: top/bottom | Ctrl-d/u: page | Tab: tree | h/Esc: back"
     } else {
-        "Enter/Tab/l: focus diff"
+        "Enter/l: focus diff"
     };
     let footer_line = super::footer::build_footer_line(app, footer_text);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(

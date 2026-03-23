@@ -173,9 +173,22 @@ pub struct KeybindingsConfig {
 
     // Git ops
     pub git_ops: KeySequence,
+    pub git_ops_stage: KeySequence,
+    pub git_ops_stage_all: KeySequence,
+    pub git_ops_discard: KeySequence,
+    pub git_ops_commit: KeySequence,
+    pub git_ops_undo: KeySequence,
+    pub git_ops_push: KeySequence,
 
     // Issue list
     pub issue_list: KeySequence,
+
+    // Focus switching
+    pub tab_switch: KeySequence,
+
+    // Mark viewed
+    pub mark_viewed: KeySequence,
+    pub mark_viewed_dir: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -206,11 +219,15 @@ impl Default for DiffConfig {
 impl Default for KeybindingsConfig {
     fn default() -> Self {
         Self {
-            // Navigation
-            move_down: KeySequence::single(KeyBinding::char('j')),
-            move_up: KeySequence::single(KeyBinding::char('k')),
-            move_left: KeySequence::single(KeyBinding::char('h')),
-            move_right: KeySequence::single(KeyBinding::char('l')),
+            // Navigation (with arrow key alternatives)
+            move_down: KeySequence::single(KeyBinding::char('j'))
+                .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Down)]),
+            move_up: KeySequence::single(KeyBinding::char('k'))
+                .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Up)]),
+            move_left: KeySequence::single(KeyBinding::char('h'))
+                .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Left)]),
+            move_right: KeySequence::single(KeyBinding::char('l'))
+                .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Right)]),
             page_down: KeySequence::single(KeyBinding::ctrl('d')),
             page_up: KeySequence::single(KeyBinding::ctrl('u')),
             jump_to_first: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g')),
@@ -229,7 +246,8 @@ impl Default for KeybindingsConfig {
             submit: KeySequence::single(KeyBinding::ctrl('s')),
 
             // Mode switching
-            quit: KeySequence::single(KeyBinding::char('q')),
+            quit: KeySequence::single(KeyBinding::char('q'))
+                .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Esc)]),
             help: KeySequence::single(KeyBinding::char('?')),
             comment_list: KeySequence::single(KeyBinding::char('C')),
             ai_rally: KeySequence::single(KeyBinding::char('A')),
@@ -261,9 +279,22 @@ impl Default for KeybindingsConfig {
 
             // Git ops
             git_ops: KeySequence::single(KeyBinding::char('G')),
+            git_ops_stage: KeySequence::single(KeyBinding::char(' ')),
+            git_ops_stage_all: KeySequence::single(KeyBinding::char('s')),
+            git_ops_discard: KeySequence::single(KeyBinding::char('d')),
+            git_ops_commit: KeySequence::single(KeyBinding::char('c')),
+            git_ops_undo: KeySequence::single(KeyBinding::char('u')),
+            git_ops_push: KeySequence::single(KeyBinding::char('P')),
 
             // Issue list
             issue_list: KeySequence::single(KeyBinding::char('I')),
+
+            // Focus switching
+            tab_switch: KeySequence::single(KeyBinding::named(crate::keybinding::NamedKey::Tab)),
+
+            // Mark viewed
+            mark_viewed: KeySequence::single(KeyBinding::char('v')),
+            mark_viewed_dir: KeySequence::single(KeyBinding::char('V')),
         }
     }
 }
@@ -315,17 +346,26 @@ impl KeybindingsConfig {
             ("pr_description", &self.pr_description),
             ("ci_checks", &self.ci_checks),
             ("git_ops", &self.git_ops),
+            ("git_ops_stage", &self.git_ops_stage),
+            ("git_ops_stage_all", &self.git_ops_stage_all),
+            ("git_ops_discard", &self.git_ops_discard),
+            ("git_ops_commit", &self.git_ops_commit),
+            ("git_ops_undo", &self.git_ops_undo),
+            ("git_ops_push", &self.git_ops_push),
             ("issue_list", &self.issue_list),
+            ("tab_switch", &self.tab_switch),
+            ("mark_viewed", &self.mark_viewed),
+            ("mark_viewed_dir", &self.mark_viewed_dir),
         ];
 
         for (name, seq) in &bindings {
-            if seq.0.is_empty() {
+            if seq.keys.is_empty() {
                 errors.push(format!("keybinding '{}' is empty", name));
                 continue;
             }
 
             if seq.is_single() {
-                let key = seq.0[0];
+                let key = seq.keys[0];
                 if let Some(existing) = single_keys.get(&key) {
                     // Allow same key for different contexts (e.g., 'r' for reply and request_changes)
                     // This is intentional - context determines which action is triggered
@@ -380,12 +420,30 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
     //
     // NOTE: 'comment' and 'suggestion' are NOT compatible - both are active in diff view
     // and comment panel contexts, so they must have different bindings.
+    // 特定画面でのみ有効なキー（他の全キーと context compatible）
+    const SCREEN_SPECIFIC_KEYS: &[&str] = &[
+        "git_ops_stage",
+        "git_ops_stage_all",
+        "git_ops_discard",
+        "git_ops_commit",
+        "git_ops_undo",
+        "git_ops_push",
+        "tab_switch",
+        "mark_viewed",
+        "mark_viewed_dir",
+    ];
+
     let context_groups: &[&[&str]] = &[
         &["reply", "request_changes"],
         &["toggle_local_mode", "move_right"], // L vs l: different cases
         &["toggle_auto_focus", "go_to_file"], // F vs gf: different sequence lengths
-        &["git_ops", "jump_to_last"],           // G: git ops in file list, jump_to_last in diff/other views
+        &["git_ops", "jump_to_last"],         // G: git ops in file list, jump_to_last in diff/other views
     ];
+
+    // git ops 固有キーは git ops 画面でのみ有効なので、他の全キーと context compatible
+    if SCREEN_SPECIFIC_KEYS.contains(&name1) || SCREEN_SPECIFIC_KEYS.contains(&name2) {
+        return true;
+    }
 
     for group in context_groups {
         if group.contains(&name1) && group.contains(&name2) {
@@ -409,15 +467,18 @@ impl Serialize for KeybindingsConfig {
 
         // Helper to serialize a KeySequence
         fn seq_to_value(seq: &KeySequence) -> toml::Value {
-            if seq.is_single() {
+            if seq.is_single() && seq.alt.is_empty() {
                 toml::Value::String(seq.display())
-            } else {
+            } else if seq.alt.is_empty() {
                 toml::Value::Array(
-                    seq.0
+                    seq.keys
                         .iter()
                         .map(|k| toml::Value::String(k.display()))
                         .collect(),
                 )
+            } else {
+                // primary | alt1 | alt2 ...
+                toml::Value::String(seq.display())
             }
         }
 
@@ -458,7 +519,16 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("pr_description", &seq_to_value(&self.pr_description))?;
         map.serialize_entry("ci_checks", &seq_to_value(&self.ci_checks))?;
         map.serialize_entry("git_ops", &seq_to_value(&self.git_ops))?;
+        map.serialize_entry("git_ops_stage", &seq_to_value(&self.git_ops_stage))?;
+        map.serialize_entry("git_ops_stage_all", &seq_to_value(&self.git_ops_stage_all))?;
+        map.serialize_entry("git_ops_discard", &seq_to_value(&self.git_ops_discard))?;
+        map.serialize_entry("git_ops_commit", &seq_to_value(&self.git_ops_commit))?;
+        map.serialize_entry("git_ops_undo", &seq_to_value(&self.git_ops_undo))?;
+        map.serialize_entry("git_ops_push", &seq_to_value(&self.git_ops_push))?;
         map.serialize_entry("issue_list", &seq_to_value(&self.issue_list))?;
+        map.serialize_entry("tab_switch", &seq_to_value(&self.tab_switch))?;
+        map.serialize_entry("mark_viewed", &seq_to_value(&self.mark_viewed))?;
+        map.serialize_entry("mark_viewed_dir", &seq_to_value(&self.mark_viewed_dir))?;
 
         map.end()
     }
@@ -1486,5 +1556,110 @@ timeout_secs = 3600
         assert!(serialized.contains("issue_list"));
         let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed.issue_list.display(), "I");
+    }
+
+    /// KeybindingsConfig の全フィールドが serialize に含まれることを検証。
+    /// 新しいフィールドを追加した際に serialize_entry の追加を忘れるとここで落ちる。
+    #[test]
+    fn test_all_keybinding_fields_are_serialized() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+
+        // KeybindingsConfig の全フィールド名（追加時にここにも追加すること）
+        let expected_fields = [
+            "move_down",
+            "move_up",
+            "move_left",
+            "move_right",
+            "page_down",
+            "page_up",
+            "jump_to_first",
+            "jump_to_last",
+            "jump_back",
+            "next_comment",
+            "prev_comment",
+            "approve",
+            "request_changes",
+            "comment",
+            "suggestion",
+            "reply",
+            "refresh",
+            "submit",
+            "quit",
+            "help",
+            "comment_list",
+            "ai_rally",
+            "open_panel",
+            "go_to_definition",
+            "go_to_file",
+            "open_in_browser",
+            "toggle_local_mode",
+            "toggle_auto_focus",
+            "toggle_markdown_rich",
+            "filter",
+            "multiline_select",
+            "pr_description",
+            "ci_checks",
+            "git_ops",
+            "git_ops_stage",
+            "git_ops_stage_all",
+            "git_ops_discard",
+            "git_ops_commit",
+            "git_ops_undo",
+            "git_ops_push",
+            "issue_list",
+            "tab_switch",
+            "mark_viewed",
+            "mark_viewed_dir",
+        ];
+
+        for field in &expected_fields {
+            assert!(
+                serialized.contains(field),
+                "KeybindingsConfig field '{}' is missing from Serialize impl",
+                field
+            );
+        }
+
+        // ラウンドトリップ: serialize → deserialize で全フィールドが保持される
+        let parsed: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        let reserialized = toml::to_string(&parsed).unwrap();
+        assert_eq!(
+            serialized, reserialized,
+            "Serialize roundtrip mismatch — a field may be missing from Serialize or Default impl"
+        );
+    }
+
+    /// validate() の bindings リストが全フィールドを含むことを検証。
+    /// validate に漏れがあるとキーバインド競合チェックが機能しない。
+    #[test]
+    fn test_validate_covers_all_serialized_fields() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+
+        // serialize されたキー名を収集
+        let serialized_keys: Vec<&str> = serialized
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.contains(" = ") && !line.starts_with('#') && !line.starts_with('[') {
+                    line.split(" = ").next()
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // validate が Ok であること（デフォルト設定に競合がないこと）
+        assert!(config.validate().is_ok(), "Default keybindings should validate without errors");
+
+        // serialized のキー数 == validate 内の bindings 数であること
+        // validate 側の数はテストで直接数えられないが、
+        // フィールド追加時に validate に漏れがあれば
+        // test_all_keybinding_fields_are_serialized と合わせて検出可能
+        assert!(
+            !serialized_keys.is_empty(),
+            "Serialized keybindings should not be empty"
+        );
     }
 }

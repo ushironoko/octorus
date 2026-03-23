@@ -26,7 +26,7 @@ impl App {
         let has_filter = self.file_list_filter.is_some();
 
         // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("file", true);
             } else if !self.files().is_empty() {
@@ -38,7 +38,7 @@ impl App {
         }
 
         // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("file", false);
             } else if self.selected_file > 0 {
@@ -71,8 +71,8 @@ impl App {
             return Ok(());
         }
 
-        // Esc: フィルタ適用中なら解除、なければ通常動作
-        if key.code == KeyCode::Esc {
+        // Quit: フィルタ適用中なら解除、なければ通常動作
+        if self.matches_single_key(&key, &kb.quit) {
             if self.handle_filter_esc("file") {
                 return Ok(());
             }
@@ -125,8 +125,7 @@ impl App {
         // Focus diff pane
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
-            || key.code == KeyCode::Right
-        {
+                   {
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
@@ -139,8 +138,7 @@ impl App {
         // Back to file list
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.move_left)
-            || key.code == KeyCode::Left
-        {
+                   {
             self.state = AppState::FileList;
             return Ok(());
         }
@@ -216,7 +214,7 @@ impl App {
         // 複数行選択モード中
         if self.multiline_selection.is_some() {
             // Move down: カーソルを下に移動
-            if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if self.matches_single_key(&key, &kb.move_down) {
                 if self.diff_scroll.line_count > 0 {
                     let new_cursor =
                         (self.diff_scroll.selected_line + 1).min(self.diff_scroll.line_count.saturating_sub(1));
@@ -230,7 +228,7 @@ impl App {
             }
 
             // Move up: カーソルを上に移動
-            if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            if self.matches_single_key(&key, &kb.move_up) {
                 let new_cursor = self.diff_scroll.selected_line.saturating_sub(1);
                 self.diff_scroll.selected_line = new_cursor;
                 if let Some(ref mut sel) = self.multiline_selection {
@@ -254,7 +252,7 @@ impl App {
             }
 
             // Esc / q: 選択モードをキャンセル
-            if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+            if self.matches_single_key(&key, &kb.quit) {
                 self.multiline_selection = None;
                 return Ok(());
             }
@@ -266,7 +264,7 @@ impl App {
         // コメントパネルフォーカス中
         if self.comment_panel_open {
             // Move down in panel
-            if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if self.matches_single_key(&key, &kb.move_down) {
                 let max_scroll = self.max_comment_panel_scroll(term_h, term_w);
                 self.comment_panel_scroll =
                     self.comment_panel_scroll.saturating_add(1).min(max_scroll);
@@ -274,7 +272,7 @@ impl App {
             }
 
             // Move up in panel
-            if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            if self.matches_single_key(&key, &kb.move_up) {
                 self.comment_panel_scroll = self.comment_panel_scroll.saturating_sub(1);
                 return Ok(());
             }
@@ -324,7 +322,7 @@ impl App {
             }
 
             // Tab - select next inline comment
-            if key.code == KeyCode::Tab {
+            if self.matches_single_key(&key, &kb.tab_switch) {
                 if self.has_comment_at_current_line() {
                     let count = self.get_comment_indices_at_current_line().len();
                     if count > 1 && self.selected_inline_comment + 1 < count {
@@ -357,7 +355,7 @@ impl App {
             match variant {
                 DiffViewVariant::SplitPane => {
                     // Go to fullscreen diff
-                    if self.matches_single_key(&key, &kb.move_right) || key.code == KeyCode::Right {
+                    if self.matches_single_key(&key, &kb.move_right) {
                         self.diff_view_return_state = AppState::SplitViewDiff;
                         self.preview_return_state = AppState::DiffView;
                         self.state = AppState::DiffView;
@@ -367,9 +365,7 @@ impl App {
                     // Close panel
                     if self.matches_single_key(&key, &kb.quit)
                         || self.matches_single_key(&key, &kb.move_left)
-                        || key.code == KeyCode::Left
-                        || key.code == KeyCode::Esc
-                    {
+                                                                  {
                         self.comment_panel_open = false;
                         self.comment_panel_scroll = 0;
                         return Ok(());
@@ -377,13 +373,13 @@ impl App {
                 }
                 DiffViewVariant::Fullscreen => {
                     // Back
-                    if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
+                    if self.matches_single_key(&key, &kb.move_left) {
                         self.state = self.diff_view_return_state;
                         return Ok(());
                     }
 
                     // Close panel
-                    if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+                    if self.matches_single_key(&key, &kb.quit) {
                         self.comment_panel_open = false;
                         self.comment_panel_scroll = 0;
                         return Ok(());
@@ -447,7 +443,7 @@ impl App {
         match variant {
             DiffViewVariant::SplitPane => {
                 // Go to fullscreen diff
-                if self.matches_single_key(&key, &kb.move_right) || key.code == KeyCode::Right {
+                if self.matches_single_key(&key, &kb.move_right) {
                     self.diff_view_return_state = AppState::SplitViewDiff;
                     self.preview_return_state = AppState::DiffView;
                     self.state = AppState::DiffView;
@@ -455,13 +451,13 @@ impl App {
                 }
 
                 // Back to file list focus
-                if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
+                if self.matches_single_key(&key, &kb.move_left) {
                     self.state = AppState::SplitViewFileList;
                     return Ok(());
                 }
 
                 // Quit to file list
-                if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+                if self.matches_single_key(&key, &kb.quit) {
                     self.state = AppState::FileList;
                     return Ok(());
                 }
@@ -480,7 +476,7 @@ impl App {
             }
             DiffViewVariant::Fullscreen => {
                 // Quit/back
-                if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+                if self.matches_single_key(&key, &kb.quit) {
                     // If started from PR list and we're at the file list level, go back to PR list
                     if self.started_from_pr_list
                         && self.diff_view_return_state == AppState::FileList
@@ -493,7 +489,7 @@ impl App {
                 }
 
                 // Back (left arrow or h) - goes to file list, not PR list
-                if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
+                if self.matches_single_key(&key, &kb.move_left) {
                     self.state = self.diff_view_return_state;
                     return Ok(());
                 }
@@ -517,7 +513,7 @@ impl App {
         }
 
         // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if self.diff_scroll.line_count > 0 {
                 self.diff_scroll.selected_line =
                     (self.diff_scroll.selected_line + 1).min(self.diff_scroll.line_count.saturating_sub(1));
@@ -527,7 +523,7 @@ impl App {
         }
 
         // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             self.diff_scroll.selected_line = self.diff_scroll.selected_line.saturating_sub(1);
             self.adjust_scroll(visible_lines);
             return Ok(());

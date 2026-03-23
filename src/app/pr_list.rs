@@ -36,7 +36,7 @@ impl App {
         let has_filter = self.pr_list_filter.is_some();
 
         // Move down (j or Down arrow)
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("pr", true);
             } else if pr_count > 0 {
@@ -53,7 +53,7 @@ impl App {
         }
 
         // Move up (k or Up arrow)
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("pr", false);
             } else {
@@ -85,8 +85,8 @@ impl App {
             return Ok(());
         }
 
-        // Esc: フィルタ適用中なら解除
-        if key.code == KeyCode::Esc && self.handle_filter_esc("pr") {
+        // Quit: フィルタ適用中なら解除
+        if self.matches_single_key(&key, &kb.quit) && self.handle_filter_esc("pr") {
             return Ok(());
         }
 
