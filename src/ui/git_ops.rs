@@ -197,17 +197,17 @@ fn render_tree_pane(
                 confirm_text.as_str()
             }
         }
-    } else if is_focused {
+    } else {
         let Some(ref ops) = app.git_ops_state else {
             return;
         };
         if let Some((ref msg, _)) = ops.op_message {
             msg.as_str()
-        } else {
+        } else if is_focused {
             "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits"
+        } else {
+            "Tab/h: focus tree"
         }
-    } else {
-        "Tab/h: focus tree"
     };
     if has_pending_confirm {
         let line = Line::from(Span::styled(
@@ -934,5 +934,52 @@ mod tests {
             render_tree_pane_border_color(&mut app, false),
             Color::DarkGray
         );
+    }
+
+    #[test]
+    fn test_footer_op_message_focused() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        ops.op_message = Some(("Pushed to origin/main".to_string(), std::time::Instant::now()));
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, true), @r"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Pushed to origin/main                                                                             │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_op_message_unfocused() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        ops.op_message = Some(("Pushed to origin/main".to_string(), std::time::Instant::now()));
+        app.git_ops_state = Some(ops);
+
+        // unfocused 時に op_message が見えるかどうか
+        assert_snapshot!(render_tree_pane_footer(&mut app, false), @r"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Pushed to origin/main                                                                             │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_op_message_empty_entries_focused() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.op_message = Some(("Pushed to origin/main".to_string(), std::time::Instant::now()));
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, true), @r"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Pushed to origin/main                                                                             │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
     }
 }
