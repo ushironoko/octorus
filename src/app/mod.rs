@@ -28,7 +28,8 @@ pub use types::{
     CommitLogState, DataState, DiffCache, FileStatus, GitOpsState, GitStatusEntry, HelpTab,
     IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
     LeftPaneFocus, LineInputContext, LogEntry, LogEventType, MultilineSelection, PauseState,
-    PermissionInfo, RefreshRequest, RepoSymbolSearchResult, ReviewAction, SymbolPopupState,
+    PendingGitOpsConfirm, PermissionInfo, RefreshRequest, RepoSymbolSearchResult, ReviewAction,
+    SymbolPopupState,
     SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)

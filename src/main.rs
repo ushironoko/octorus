@@ -51,6 +51,10 @@ struct Args {
     #[arg(short, long, conflicts_with_all = ["pr", "local"], num_args = 0..=1, default_missing_value = "0")]
     issue: Option<u32>,
 
+    /// Start in Git Ops view directly
+    #[arg(long, default_value = "false")]
+    git_ops: bool,
+
     /// Auto-focus changed file when local diff updates (for local mode)
     #[arg(long, default_value = "false")]
     auto_focus: bool,
@@ -264,6 +268,9 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
     if args.ai_rally {
         app.set_start_ai_rally_on_load(true);
     }
+    if args.git_ops {
+        app.open_git_ops();
+    }
 
     let cancel_token = CancellationToken::new();
     let token_clone = cancel_token.clone();
@@ -383,16 +390,16 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     start_update_check(&mut app);
     setup_working_dir(&mut app, args);
 
-    // Set flag to start AI Rally mode when --ai-rally is passed
     if args.ai_rally {
         app.set_start_ai_rally_on_load(true);
     }
+    if args.git_ops {
+        app.open_git_ops();
+    }
 
-    // Cancellation token for graceful shutdown
     let cancel_token = CancellationToken::new();
     let token_clone = cancel_token.clone();
 
-    // バックグラウンドでAPI取得
     let repo_clone = repo.to_string();
     let pr_number = pr;
     let working_dir = args.working_dir.clone();
@@ -462,9 +469,11 @@ async fn run_with_pr_list(
     start_update_check(&mut app);
     setup_working_dir(&mut app, args);
 
-    // Set pending AI Rally flag if --ai-rally was passed
     if args.ai_rally {
         app.set_pending_ai_rally(true);
+    }
+    if args.git_ops {
+        app.open_git_ops();
     }
 
     // --issue: Issue モードで開始

@@ -78,7 +78,14 @@ fn render_tree_pane(
     area: ratatui::layout::Rect,
     is_focused: bool,
 ) {
-    let border_color = if is_focused {
+    let has_pending_confirm = app
+        .git_ops_state
+        .as_ref()
+        .is_some_and(|ops| ops.pending_confirm.is_some());
+
+    let border_color = if has_pending_confirm && is_focused {
+        Color::Red
+    } else if is_focused {
         Color::Yellow
     } else {
         Color::DarkGray
@@ -173,26 +180,50 @@ fn render_tree_pane(
     }
 
     // Footer
+    let confirm_text;
     let help_text = if is_focused {
         let Some(ref ops) = app.git_ops_state else {
             return;
         };
-        let base = "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits";
-        if let Some((ref msg, _)) = ops.op_message {
-            // op_message が表示中の場合はそちらを優先
+        if let Some(ref confirm) = ops.pending_confirm {
+            match confirm {
+                crate::app::PendingGitOpsConfirm::Discard { ref path } => {
+                    let name = path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path);
+                    confirm_text = format!("Discard changes to {}? (Y/n)", name);
+                    confirm_text.as_str()
+                }
+                crate::app::PendingGitOpsConfirm::Undo => "Undo last operation? (Y/n)",
+            }
+        } else if let Some((ref msg, _)) = ops.op_message {
             msg.as_str()
         } else {
-            base
+            "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits"
         }
     } else {
         "Tab/h: focus tree"
     };
-    let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
-        app,
-        Style::default().fg(border_color),
-    ));
-    frame.render_widget(footer, chunks[2]);
+    if has_pending_confirm && is_focused {
+        let line = Line::from(Span::styled(
+            help_text,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        let footer = Paragraph::new(line).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        );
+        frame.render_widget(footer, chunks[2]);
+    } else {
+        let footer_line = super::footer::build_footer_line(app, help_text);
+        let footer =
+            Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+                app,
+                Style::default().fg(border_color),
+            ));
+        frame.render_widget(footer, chunks[2]);
+    }
 }
 
 /// 右ペイン: Diff プレビュー

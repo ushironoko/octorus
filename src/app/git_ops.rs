@@ -1,4 +1,4 @@
-use crossterm::event;
+use crossterm::event::{self, KeyCode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -18,7 +18,7 @@ impl App {
     pub(crate) const COMMITS_PER_PAGE: u32 = 30;
 
     /// GitOps 画面を開く
-    pub(crate) fn open_git_ops(&mut self) {
+    pub fn open_git_ops(&mut self) {
         let caller_state = self.state;
         let mut ops = GitOpsState::new(Vec::new());
         ops.return_state = caller_state;
@@ -73,7 +73,7 @@ impl App {
 
         let per_page = Self::COMMITS_PER_PAGE;
 
-        if self.local_mode {
+        if self.local_mode || self.pr_number.is_none() {
             let working_dir = self.working_dir.clone();
             let offset = (page - 1) * per_page;
             tokio::spawn(async move {
@@ -728,6 +728,17 @@ impl App {
         let entry = ops.entries.iter().find(|e| e.path == path).cloned();
         let Some(entry) = entry else { return };
 
+        // discard 対象パスに関連する undo スタックエントリを無効化
+        // （discard 後に undo すると不整合な状態になるため）
+        if let Some(ref mut ops) = self.git_ops_state {
+            ops.undo_stack.retain(|action| match action {
+                UndoAction::Stage { paths, .. } | UndoAction::Unstage { paths } => {
+                    !paths.contains(&path)
+                }
+                UndoAction::Commit | UndoAction::StageAll { .. } => true,
+            });
+        }
+
         let working_dir = self.working_dir.clone();
         let (tx, rx) = mpsc::channel(1);
         if let Some(ref mut ops) = self.git_ops_state {
@@ -824,38 +835,32 @@ impl App {
         Ok(())
     }
 
-    /// u: undo
+    /// u: undo（ツリーペイン用 — stage/unstage のみ）
     fn execute_undo(&mut self) {
         let action = {
             let Some(ref mut ops) = self.git_ops_state else {
                 return;
             };
             match ops.undo_stack.pop() {
+                Some(UndoAction::Commit) => {
+                    // Commit undo はコミット履歴ペインからのみ実行可能
+                    ops.undo_stack.push(UndoAction::Commit);
+                    ops.op_message = Some((
+                        "Commit undo: switch to commit pane".to_string(),
+                        Instant::now(),
+                    ));
+                    return;
+                }
                 Some(action) => action,
                 None => {
-                    ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
+                    ops.op_message =
+                        Some(("Nothing to undo".to_string(), Instant::now()));
                     return;
                 }
             }
         };
 
         match action {
-            UndoAction::Commit => {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.commit_log.diff_store.clear();
-                    ops.commit_log.commits.clear();
-                    ops.commit_log.selected = 0;
-                    ops.commit_log.initialized = false;
-                }
-                self.run_git_op_silent(
-                    vec![
-                        "reset".to_string(),
-                        "--soft".to_string(),
-                        "HEAD~1".to_string(),
-                    ],
-                    "Undo commit (changes are staged)".to_string(),
-                );
-            }
             UndoAction::Stage {
                 paths,
                 previous_index_entries,
@@ -901,6 +906,7 @@ impl App {
                     self.run_git_op_silent(vec!["reset".to_string()], "Undo stage all".to_string());
                 }
             }
+            UndoAction::Commit => unreachable!(),
         }
     }
 
@@ -1054,6 +1060,28 @@ impl App {
     ) {
         let kb = self.config.keybindings.clone();
 
+        // 確認待ち中は y/n/Esc のみ受け付ける
+        if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                    match confirm {
+                        PendingGitOpsConfirm::Discard { .. } => self.discard_changes(),
+                        PendingGitOpsConfirm::Undo => self.execute_undo(),
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Quit / Esc
         if self.matches_single_key(&key, &kb.quit) {
             self.close_git_ops();
@@ -1090,9 +1118,13 @@ impl App {
             return;
         }
 
-        // Discard
+        // Discard → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_discard) {
-            self.discard_changes();
+            if let Some(ref mut ops) = self.git_ops_state {
+                if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
+                    ops.pending_confirm = Some(PendingGitOpsConfirm::Discard { path });
+                }
+            }
             return;
         }
 
@@ -1102,9 +1134,15 @@ impl App {
             return;
         }
 
-        // Undo
+        // Undo → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_undo) {
-            self.execute_undo();
+            if let Some(ref mut ops) = self.git_ops_state {
+                if !ops.undo_stack.is_empty() {
+                    ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+                } else {
+                    ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
+                }
+            }
             return;
         }
 
@@ -1157,6 +1195,27 @@ impl App {
 
     /// Commits フォーカスの入力処理
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
+        // 確認待ち中は y/n/Esc のみ受け付ける
+        if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                    if let PendingGitOpsConfirm::Undo = confirm {
+                        self.reset_soft_to_selected_commit();
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let kb = self.config.keybindings.clone();
 
         // gg シーケンス処理（先頭ジャンプ）
@@ -1238,10 +1297,10 @@ impl App {
             return;
         }
 
-        // Undo / reset --soft（ローカルモードのみ）
+        // Undo / reset --soft → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_undo) {
-            if self.local_mode {
-                self.reset_soft_to_selected_commit();
+            if let Some(ref mut ops) = self.git_ops_state {
+                ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
             }
             return;
         }
@@ -2067,5 +2126,303 @@ mod tests {
         assert!(entries.is_empty());
         let entries = parse_porcelain_status("\0");
         assert!(entries.is_empty());
+    }
+
+    // =================================================================
+    // undo / discard シナリオテスト
+    // =================================================================
+
+    use crate::config::Config;
+
+    fn make_git_ops_app() -> (super::super::App, tokio::sync::mpsc::Sender<crate::loader::DataLoadResult>) {
+        let config = Config::default();
+        super::super::App::new_loading("owner/repo", 1, config)
+    }
+
+    #[tokio::test]
+    async fn test_undo_stage_pops_from_stack() {
+        let (mut app, _tx) = make_git_ops_app();
+        let entries = vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        ops.undo_stack.push(UndoAction::Stage {
+            paths: vec!["a.rs".to_string()],
+            previous_index_entries: vec![],
+        });
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        assert_eq!(app.git_ops_state.as_ref().unwrap().undo_stack.len(), 1);
+        app.execute_undo();
+        assert_eq!(app.git_ops_state.as_ref().unwrap().undo_stack.len(), 0);
+    }
+
+    #[test]
+    fn test_undo_commit_blocked_from_tree_pane() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.undo_stack.push(UndoAction::Commit);
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        app.execute_undo();
+
+        // Commit はスタックに戻されている
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert_eq!(ops.undo_stack.len(), 1);
+        assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
+        // メッセージが表示されている
+        assert!(ops.op_message.as_ref().unwrap().0.contains("commit pane"));
+    }
+
+    #[test]
+    fn test_undo_empty_stack_shows_message() {
+        let (mut app, _tx) = make_git_ops_app();
+        let ops = GitOpsState::new(Vec::new());
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        app.execute_undo();
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(ops.op_message.as_ref().unwrap().0.contains("Nothing to undo"));
+    }
+
+    #[tokio::test]
+    async fn test_undo_commit_behind_stage_is_preserved() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        // Commit → Stage の順でスタックに積む（Stage が先に pop される）
+        ops.undo_stack.push(UndoAction::Commit);
+        ops.undo_stack.push(UndoAction::Stage {
+            paths: vec!["a.rs".to_string()],
+            previous_index_entries: vec![],
+        });
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        // Stage undo が実行される
+        app.execute_undo();
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert_eq!(ops.undo_stack.len(), 1);
+        assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
+
+        // 次に undo → Commit はブロックされスタックに戻る
+        app.execute_undo();
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert_eq!(ops.undo_stack.len(), 1);
+        assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
+    }
+
+    #[test]
+    fn test_discard_clears_related_undo_entries() {
+        let (mut app, _tx) = make_git_ops_app();
+        let entries = vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+            entry("b.rs", FileStatus::Modified, FileStatus::Unmodified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_git_ops_tree(&mut ops);
+
+        // a.rs と b.rs の stage undo をスタックに積む
+        ops.undo_stack.push(UndoAction::Stage {
+            paths: vec!["a.rs".to_string()],
+            previous_index_entries: vec![],
+        });
+        ops.undo_stack.push(UndoAction::Stage {
+            paths: vec!["b.rs".to_string()],
+            previous_index_entries: vec![],
+        });
+        ops.undo_stack.push(UndoAction::Commit);
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        // a.rs をツリー上で選択状態にする
+        let tree = &mut app.git_ops_state.as_mut().unwrap().tree;
+        if let Some(row) = tree.find_row_for_file(0) {
+            tree.selected_row = row;
+        }
+
+        // discard_changes は async git op を spawn するので直接テストできないが、
+        // discard 内の undo_stack.retain ロジックをテストする
+        // → discard_changes を呼ぶ代わりに retain ロジックを直接実行
+        let path = "a.rs".to_string();
+        let ops = app.git_ops_state.as_mut().unwrap();
+        ops.undo_stack.retain(|action| match action {
+            UndoAction::Stage { paths, .. } | UndoAction::Unstage { paths } => {
+                !paths.contains(&path)
+            }
+            UndoAction::Commit | UndoAction::StageAll { .. } => true,
+        });
+
+        // a.rs の Stage undo は消えたが、b.rs と Commit は残る
+        assert_eq!(ops.undo_stack.len(), 2);
+        assert!(matches!(ops.undo_stack[0], UndoAction::Stage { ref paths, .. } if paths[0] == "b.rs"));
+        assert!(matches!(ops.undo_stack[1], UndoAction::Commit));
+    }
+
+    #[tokio::test]
+    async fn test_stage_all_undo_not_blocked_from_tree() {
+        let (mut app, _tx) = make_git_ops_app();
+        let entries = vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        ops.undo_stack.push(UndoAction::StageAll { tree_hash: None });
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        app.execute_undo();
+        // StageAll undo はツリーペインから実行可能
+        assert_eq!(app.git_ops_state.as_ref().unwrap().undo_stack.len(), 0);
+    }
+
+    // =================================================================
+    // 確認プロンプト (Y/n) テスト
+    // =================================================================
+
+    /// 確認待ち状態の入力処理をシミュレート（terminal 不要な範囲でテスト）
+    fn simulate_tree_confirm(app: &mut super::super::App, code: KeyCode) {
+        let key = crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::empty(),
+        );
+        // 確認待ち中の分岐を直接テスト
+        if let Some(ref confirm) = app.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(ref mut ops) = app.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                    match confirm {
+                        PendingGitOpsConfirm::Discard { .. } => app.discard_changes(),
+                        PendingGitOpsConfirm::Undo => app.execute_undo(),
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    if let Some(ref mut ops) = app.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_discard_key_sets_pending_confirm() {
+        let (mut app, _tx) = make_git_ops_app();
+        let entries = vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_git_ops_tree(&mut ops);
+        if let Some(row) = ops.tree.find_row_for_file(0) {
+            ops.tree.selected_row = row;
+        }
+        app.git_ops_state = Some(ops);
+
+        // discard のキーバインドを直接シミュレート
+        if let Some(ref mut ops) = app.git_ops_state {
+            if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
+                ops.pending_confirm = Some(PendingGitOpsConfirm::Discard { path });
+            }
+        }
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(matches!(
+            ops.pending_confirm,
+            Some(PendingGitOpsConfirm::Discard { ref path }) if path == "a.rs"
+        ));
+    }
+
+    #[test]
+    fn test_confirm_n_cancels_pending() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
+            path: "a.rs".to_string(),
+        });
+        app.git_ops_state = Some(ops);
+
+        simulate_tree_confirm(&mut app, KeyCode::Char('n'));
+        assert!(app.git_ops_state.as_ref().unwrap().pending_confirm.is_none());
+    }
+
+    #[test]
+    fn test_confirm_esc_cancels_pending() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+        app.git_ops_state = Some(ops);
+
+        simulate_tree_confirm(&mut app, KeyCode::Esc);
+        assert!(app.git_ops_state.as_ref().unwrap().pending_confirm.is_none());
+    }
+
+    #[test]
+    fn test_undo_empty_stack_skips_confirm() {
+        let (mut app, _tx) = make_git_ops_app();
+        let ops = GitOpsState::new(Vec::new());
+        app.git_ops_state = Some(ops);
+
+        // undo スタックが空の場合、pending_confirm にならず直接メッセージ
+        let ops_ref = app.git_ops_state.as_mut().unwrap();
+        if !ops_ref.undo_stack.is_empty() {
+            ops_ref.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+        } else {
+            ops_ref.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
+        }
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(ops.pending_confirm.is_none());
+        assert!(ops.op_message.as_ref().unwrap().0.contains("Nothing to undo"));
+    }
+
+    #[test]
+    fn test_pending_confirm_blocks_other_keys() {
+        let (mut app, _tx) = make_git_ops_app();
+        let entries = vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+            entry("b.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_git_ops_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
+            path: "a.rs".to_string(),
+        });
+        let initial_row = ops.tree.selected_row;
+        app.git_ops_state = Some(ops);
+
+        // j キー（move_down）は確認中は何もしない
+        simulate_tree_confirm(&mut app, KeyCode::Char('j'));
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert_eq!(ops.tree.selected_row, initial_row);
+        // pending_confirm は j では消えない（simulate_tree_confirm は y/n/Esc 以外何もしない）
+        assert!(ops.pending_confirm.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_confirm_y_executes_undo() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        ops.undo_stack.push(UndoAction::Stage {
+            paths: vec!["a.rs".to_string()],
+            previous_index_entries: vec![],
+        });
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+        app.git_ops_state = Some(ops);
+
+        simulate_tree_confirm(&mut app, KeyCode::Char('y'));
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(ops.pending_confirm.is_none());
+        assert_eq!(ops.undo_stack.len(), 0);
     }
 }

@@ -517,6 +517,13 @@ pub enum UndoAction {
     StageAll { tree_hash: Option<String> },
 }
 
+/// GitOps の破壊的操作の確認待ち状態
+#[derive(Debug, Clone)]
+pub enum PendingGitOpsConfirm {
+    Discard { path: String },
+    Undo,
+}
+
 /// GitOps 左ペインのサブフォーカス
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LeftPaneFocus {
@@ -591,6 +598,8 @@ pub struct GitOpsState {
     pub op_message: Option<(String, std::time::Instant)>,
     /// Undo スタック
     pub undo_stack: Vec<UndoAction>,
+    /// 破壊的操作の確認待ち
+    pub pending_confirm: Option<PendingGitOpsConfirm>,
     /// status 更新フラグ（prefetch トリガー用）
     pub(crate) status_updated: bool,
     /// 左ペインのサブフォーカス（Tree / Commits）
@@ -630,6 +639,7 @@ impl GitOpsState {
             op_receiver: None,
             op_message: None,
             undo_stack: Vec::new(),
+            pending_confirm: None,
             status_updated: false,
             left_focus: LeftPaneFocus::Tree,
             left_return_focus: LeftPaneFocus::Tree,
