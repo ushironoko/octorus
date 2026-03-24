@@ -289,6 +289,10 @@ impl App {
         self.file_list_filter = None;
         self.pending_approve_body = None;
 
+        // PR遷移時にファイルツリー状態をリセット
+        self.tree_mode_active = false;
+        self.file_tree_state = None;
+
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
         self.diff_store.clear();
         self.diff_scroll.reset();
@@ -381,6 +385,8 @@ impl App {
                 self.selected_file = 0;
                 self.file_list_scroll_offset = 0;
                 self.file_list_filter = None;
+                self.tree_mode_active = false;
+                self.file_tree_state = None;
                 self.checks = None;
                 self.checks_loading = false;
                 self.checks_target_pr = None;
@@ -420,6 +426,8 @@ impl App {
             self.selected_file = 0;
             self.file_list_scroll_offset = 0;
             self.file_list_filter = None;
+            self.tree_mode_active = false;
+            self.file_tree_state = None;
             self.checks = None;
             self.checks_loading = false;
             self.checks_target_pr = None;

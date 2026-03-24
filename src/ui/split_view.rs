@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::common::render_rally_status_bar;
 use super::diff_view;
-use super::file_list::build_file_list_items;
+use super::file_list::{build_file_list_items, build_tree_row_item};
 use crate::app::{App, AppState, DataState};
 use crate::github::ChangedFile;
 
@@ -159,6 +159,52 @@ fn render_file_list_pane(
                     &mut scrollbar_state,
                 );
             }
+        }
+    } else if app.is_file_tree_active() {
+        let tree = app.file_tree_state.as_ref().unwrap();
+        let row_count = tree.row_count();
+        let items: Vec<ListItem> = tree
+            .visible_rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row))
+            .collect();
+
+        let title = format!("Files ({}) [tree]", total_files);
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color))
+                    .title(title),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray));
+
+        let mut list_state = ListState::default()
+            .with_offset(tree.scroll_offset)
+            .with_selected(Some(tree.selected_row));
+
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+        if let Some(ref mut tree) = app.file_tree_state {
+            tree.scroll_offset = list_state.offset();
+        }
+
+        if row_count > 1 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+            let selected = app.file_tree_state.as_ref().map_or(0, |t| t.selected_row);
+            let mut scrollbar_state =
+                ScrollbarState::new(row_count.saturating_sub(1)).position(selected);
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
         }
     } else {
         let items = build_file_list_items(files, app.selected_file);

@@ -6044,3 +6044,502 @@ async fn test_diff_returns_to_left_return_focus() {
     let ops = app.git_ops_state.as_ref().unwrap();
     assert_eq!(ops.left_focus, LeftPaneFocus::Commits);
 }
+
+// ============================================================
+// FileTree integration tests (Step 4)
+// ============================================================
+
+fn make_test_pr() -> Box<PullRequest> {
+    Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "f".to_string(),
+            sha: "a".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "m".to_string(),
+            sha: "b".to_string(),
+        },
+        user: crate::github::User {
+            login: "u".to_string(),
+        },
+        updated_at: String::new(),
+    })
+}
+
+fn make_changed_file(name: &str) -> ChangedFile {
+    ChangedFile {
+        filename: name.to_string(),
+        status: "modified".to_string(),
+        additions: 1,
+        deletions: 0,
+        patch: Some("@@ -1 +1 @@\n-old\n+new".to_string()),
+        viewed: false,
+    }
+}
+
+fn make_app_with_files(filenames: &[&str]) -> App {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    let files: Vec<ChangedFile> = filenames.iter().map(|n| make_changed_file(n)).collect();
+    app.data_state = DataState::Loaded {
+        pr: make_test_pr(),
+        files,
+    };
+    app.state = AppState::FileList;
+    app
+}
+
+#[test]
+fn test_toggle_file_tree_on() {
+    let mut app = make_app_with_files(&[
+        "src/app/mod.rs",
+        "src/lib.rs",
+        "README.md",
+    ]);
+
+    assert!(!app.tree_mode_active);
+    assert!(app.file_tree_state.is_none());
+
+    app.toggle_file_tree();
+
+    assert!(app.tree_mode_active);
+    assert!(app.file_tree_state.is_some());
+    assert!(app.is_file_tree_active());
+
+    // ツリーが構築されていること
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(tree.row_count() > 0);
+}
+
+#[test]
+fn test_toggle_file_tree_off_preserves_state() {
+    let mut app = make_app_with_files(&[
+        "src/app/mod.rs",
+        "src/lib.rs",
+    ]);
+
+    app.toggle_file_tree(); // ON
+    assert!(app.tree_mode_active);
+
+    // ディレクトリを折り畳む
+    {
+        let tree = app.file_tree_state.as_mut().unwrap();
+        let app_dir = tree.find_row_for_dir("src/app").unwrap();
+        tree.selected_row = app_dir;
+        tree.toggle_expand();
+    }
+
+    app.toggle_file_tree(); // OFF
+
+    // tree_mode_active は false だが file_tree_state は保持される
+    assert!(!app.tree_mode_active);
+    assert!(app.file_tree_state.is_some());
+    assert!(!app.is_file_tree_active());
+
+    // 折り畳み状態が保持されている
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(!tree.expanded_dirs.contains("src/app"));
+}
+
+#[test]
+fn test_toggle_preserves_selection() {
+    let mut app = make_app_with_files(&[
+        "src/app/mod.rs",
+        "src/lib.rs",
+        "README.md",
+    ]);
+    app.selected_file = 1; // src/lib.rs
+
+    app.toggle_file_tree(); // ON
+
+    // ツリーモードでも selected_file は変わらない
+    assert_eq!(app.selected_file, 1);
+
+    // ツリーのカーソルが selected_file=1 の行を指していること
+    let tree = app.file_tree_state.as_ref().unwrap();
+    let row = tree.find_row_for_file(1);
+    assert!(row.is_some());
+    assert_eq!(tree.selected_row, row.unwrap());
+}
+
+#[test]
+fn test_retoggle_restores_expanded_dirs() {
+    let mut app = make_app_with_files(&[
+        "src/app/mod.rs",
+        "src/lib.rs",
+    ]);
+
+    app.toggle_file_tree(); // ON
+
+    // src/app/ を折り畳む
+    {
+        let tree = app.file_tree_state.as_mut().unwrap();
+        let app_dir = tree.find_row_for_dir("src/app").unwrap();
+        tree.selected_row = app_dir;
+        tree.toggle_expand();
+    }
+
+    app.toggle_file_tree(); // OFF
+    app.toggle_file_tree(); // ON again
+
+    // expanded_dirs が維持されている（src/app は折り畳みのまま）
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(!tree.expanded_dirs.contains("src/app"));
+}
+
+#[test]
+fn test_tree_nav_down_updates_selected_file() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // toggle 後、selected_file=0 なので tree の row 1 (File(0) main.rs) にカーソルがある。
+    // ツリー構造 (DirsFirst):
+    //   row 0: Dir "src/"
+    //   row 1: File(0) "main.rs"  ← カーソルここ
+    //   row 2: File(1) "README.md"
+    assert_eq!(app.selected_file, 0);
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert_eq!(tree.selected_row, 1);
+
+    app.file_tree_move_down(); // row 1 → row 2 (File README.md)
+    assert_eq!(app.selected_file, 1);
+
+    app.file_tree_move_down(); // 境界: row 2 のまま
+    assert_eq!(app.selected_file, 1);
+}
+
+#[test]
+fn test_tree_nav_on_dir_keeps_selected_file() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "tests/test.rs",
+        "README.md",
+    ]);
+    app.selected_file = 2; // README.md
+
+    app.toggle_file_tree();
+
+    // row 0 は Dir 行のはず (DirsFirst: src/ が先)
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(tree.selected_dir_path().is_some() || tree.selected_file_index().is_some());
+
+    // Dir 行に移動しても selected_file は変わらない
+    let old_selected = app.selected_file;
+    // Dir 行にカーソルを強制配置
+    if let Some(dir_row) = app.file_tree_state.as_ref().unwrap().find_row_for_dir("src") {
+        app.file_tree_state.as_mut().unwrap().selected_row = dir_row;
+    }
+    // file_tree_move_down で Dir 行を通過
+    app.file_tree_move_down();
+    // Dir→File に移動したら selected_file が更新される
+    // Dir→Dir に留まったら selected_file は不変
+    let tree = app.file_tree_state.as_ref().unwrap();
+    if tree.selected_file_index().is_none() {
+        // Dir 行にいる場合、selected_file は変わらない
+        assert_eq!(app.selected_file, old_selected);
+    }
+}
+
+#[test]
+fn test_tree_enter_dir_toggles_expand() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // src/ ディレクトリ行にカーソルを合わせる
+    let tree = app.file_tree_state.as_mut().unwrap();
+    let src_row = tree.find_row_for_dir("src").unwrap();
+    tree.selected_row = src_row;
+
+    let initial_count = tree.row_count();
+
+    // Enter: Dir の展開トグル（diff 遷移しない）
+    let is_dir = app.file_tree_enter();
+    assert!(is_dir); // Dir 行だったので true を返す
+
+    // 折り畳まれて行数が減る
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(tree.row_count() < initial_count);
+
+    // state は変わらない（diff 遷移しない）
+    assert_eq!(app.state, AppState::FileList);
+}
+
+#[test]
+fn test_tree_enter_file_opens_split() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // README.md (File 行) にカーソルを合わせる
+    let tree = app.file_tree_state.as_mut().unwrap();
+    let readme_row = tree.find_row_for_file(1).unwrap();
+    tree.selected_row = readme_row;
+
+    // Enter: File 行では false を返す（呼び出し元が diff 遷移を行う）
+    let is_dir = app.file_tree_enter();
+    assert!(!is_dir);
+}
+
+#[test]
+fn test_tree_dir_row_blocks_mark_viewed() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // Dir 行にカーソル
+    let tree = app.file_tree_state.as_mut().unwrap();
+    let src_row = tree.find_row_for_dir("src").unwrap();
+    tree.selected_row = src_row;
+
+    // is_on_dir_row() が true ならば mark_viewed (v) を無効化すべき
+    assert!(app.is_file_tree_on_dir_row());
+}
+
+#[test]
+fn test_tree_filter_shows_flat() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+    assert!(app.is_file_tree_active());
+
+    // フィルタを設定
+    app.file_list_filter = Some(crate::filter::ListFilter::new());
+
+    // フィルタ有効中は is_file_tree_active() == false
+    assert!(!app.is_file_tree_active());
+}
+
+#[test]
+fn test_tree_survives_filter_clear() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+    let tree_row_count = app.file_tree_state.as_ref().unwrap().row_count();
+
+    // フィルタを設定→解除
+    app.file_list_filter = Some(crate::filter::ListFilter::new());
+    assert!(!app.is_file_tree_active());
+
+    app.file_list_filter = None;
+    // フィルタ解除後、rebuild_file_tree_if_active でツリー復元
+    app.rebuild_file_tree_if_active();
+
+    assert!(app.is_file_tree_active());
+    // ツリーが再構築されている
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(tree.row_count() > 0);
+}
+
+#[test]
+fn test_selected_file_always_valid_index() {
+    let mut app = make_app_with_files(&[
+        "src/app/mod.rs",
+        "src/lib.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // 様々なナビゲーション操作後も selected_file は有効
+    for _ in 0..10 {
+        app.file_tree_move_down();
+        assert!(app.selected_file < app.files().len(),
+            "selected_file {} >= files().len() {}", app.selected_file, app.files().len());
+    }
+    for _ in 0..10 {
+        app.file_tree_move_up();
+        assert!(app.selected_file < app.files().len(),
+            "selected_file {} >= files().len() {}", app.selected_file, app.files().len());
+    }
+}
+
+#[test]
+fn test_rebuild_on_data_reload() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    let old_count = app.file_tree_state.as_ref().unwrap().row_count();
+
+    // データリロード: ファイルが増える
+    let files = vec![
+        make_changed_file("src/main.rs"),
+        make_changed_file("src/lib.rs"),
+        make_changed_file("README.md"),
+    ];
+    app.data_state = DataState::Loaded {
+        pr: make_test_pr(),
+        files,
+    };
+
+    app.rebuild_file_tree_if_active();
+
+    // ツリーが再構築されている（行数が変わる）
+    let new_count = app.file_tree_state.as_ref().unwrap().row_count();
+    assert_ne!(old_count, new_count, "tree should be rebuilt with new data");
+}
+
+#[test]
+fn test_tree_page_down_up() {
+    let mut app = make_app_with_files(&[
+        "src/a.rs",
+        "src/b.rs",
+        "src/c.rs",
+        "src/d.rs",
+        "src/e.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // page_down で大きく移動
+    app.file_tree_page_down(3);
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(tree.selected_row >= 3);
+
+    // page_up で戻る
+    app.file_tree_page_up(3);
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert!(tree.selected_row <= 1); // 0 or near start
+}
+
+#[test]
+fn test_tree_jump_to_first_last() {
+    let mut app = make_app_with_files(&[
+        "src/a.rs",
+        "src/b.rs",
+        "README.md",
+    ]);
+
+    app.toggle_file_tree();
+
+    // jump to last
+    app.file_tree_jump_to_last();
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert_eq!(tree.selected_row, tree.row_count() - 1);
+
+    // jump to first
+    app.file_tree_jump_to_first();
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert_eq!(tree.selected_row, 0);
+}
+
+#[test]
+fn test_collect_unviewed_paths_under_dir() {
+    let files = vec![
+        make_changed_file("src/app/mod.rs"),
+        make_changed_file("src/app/types.rs"),
+        make_changed_file("src/lib.rs"),
+        make_changed_file("README.md"),
+    ];
+
+    let paths = App::collect_unviewed_paths_under_dir(&files, "src/app");
+    assert_eq!(paths.len(), 2);
+    assert!(paths.contains(&"src/app/mod.rs".to_string()));
+    assert!(paths.contains(&"src/app/types.rs".to_string()));
+
+    // src/ 全体
+    let paths = App::collect_unviewed_paths_under_dir(&files, "src");
+    assert_eq!(paths.len(), 3);
+
+    // ルートだと空（ルートディレクトリは "/" にならないため）
+    let paths = App::collect_unviewed_paths_under_dir(&files, "");
+    assert_eq!(paths.len(), 0);
+}
+
+#[test]
+fn test_deep_nested_collapse_hides_descendants() {
+    // 3階層以上のネストで祖先を折り畳むと、全子孫が非表示になること
+    use crate::app::file_tree::FileTreeState;
+
+    let mut tree = FileTreeState::new();
+    tree.rebuild(&[
+        (0, "a/b/c/file.rs"),
+        (1, "a/b/other.rs"),
+        (2, "a/top.rs"),
+    ]);
+
+    // 初回: 全ディレクトリ展開、全ファイル表示
+    assert!(tree.find_row_for_file(0).is_some(), "file.rs should be visible");
+    assert!(tree.find_row_for_file(1).is_some(), "other.rs should be visible");
+    assert!(tree.find_row_for_file(2).is_some(), "top.rs should be visible");
+
+    // "a" を折り畳む → 全子孫が非表示
+    let a_row = tree.find_row_for_dir("a").unwrap();
+    tree.selected_row = a_row;
+    tree.toggle_expand();
+
+    // "a" 行のみ残る
+    assert_eq!(tree.row_count(), 1, "only 'a' dir should remain, dump:\n{}", tree.dump_tree());
+    assert!(tree.find_row_for_dir("a/b").is_none(), "a/b should be hidden");
+    assert!(tree.find_row_for_dir("a/b/c").is_none(), "a/b/c should be hidden");
+    assert!(tree.find_row_for_file(0).is_none(), "file.rs should be hidden");
+    assert!(tree.find_row_for_file(1).is_none(), "other.rs should be hidden");
+    assert!(tree.find_row_for_file(2).is_none(), "top.rs should be hidden");
+
+    // "a" を再展開 → "a/b" は expanded のまま、"a/b/c" も
+    tree.toggle_expand();
+    assert!(tree.find_row_for_file(0).is_some(), "file.rs should be visible again");
+    assert!(tree.find_row_for_file(1).is_some(), "other.rs should be visible again");
+    assert!(tree.find_row_for_file(2).is_some(), "top.rs should be visible again");
+}
+
+#[test]
+fn test_select_pr_resets_tree_state() {
+    let mut app = make_app_with_files(&[
+        "src/main.rs",
+        "README.md",
+    ]);
+    app.started_from_pr_list = true;
+
+    app.toggle_file_tree();
+    assert!(app.tree_mode_active);
+    assert!(app.file_tree_state.is_some());
+
+    app.select_pr(2);
+
+    assert!(!app.tree_mode_active);
+    assert!(app.file_tree_state.is_none());
+}
+
+#[test]
+fn test_toggle_file_tree_with_empty_files() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    // DataState::Loading — files() returns empty
+    app.state = AppState::FileList;
+
+    app.toggle_file_tree();
+
+    // 空ファイルの場合、tree_mode_active は false のまま
+    assert!(!app.tree_mode_active);
+    assert!(app.file_tree_state.is_none());
+}

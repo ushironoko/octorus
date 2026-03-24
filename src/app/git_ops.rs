@@ -565,8 +565,8 @@ impl App {
         let selected = ops.tree.visible_rows.get(ops.tree.selected_row);
 
         match selected {
-            Some(TreeRow::File(idx, _)) => {
-                let Some(entry) = ops.entries.get(*idx) else {
+            Some(TreeRow::File { index, .. }) => {
+                let Some(entry) = ops.entries.get(*index) else {
                     return;
                 };
                 let path = entry.path.clone();
@@ -577,9 +577,9 @@ impl App {
                     self.stage_files(vec![path]);
                 }
             }
-            Some(TreeRow::Dir(dir_path, _, _)) => {
+            Some(TreeRow::Dir { ref path, .. }) => {
                 // 配下の全ファイルを収集
-                let prefix = format!("{}/", dir_path);
+                let prefix = format!("{}/", path);
                 let paths: Vec<String> = ops
                     .entries
                     .iter()
@@ -1126,7 +1126,7 @@ impl App {
                 .git_ops_state
                 .as_ref()
                 .and_then(|ops| ops.tree.visible_rows.get(ops.tree.selected_row))
-                .map(|row| matches!(row, TreeRow::Dir(..)))
+                .map(|row| matches!(row, TreeRow::Dir { .. }))
                 .unwrap_or(false);
 
             if is_dir {
@@ -1678,14 +1678,14 @@ mod tests {
         ops.tree.visible_rows
             .iter()
             .map(|row| match row {
-                TreeRow::Dir(path, depth, expanded) => {
+                TreeRow::Dir { ref path, depth, expanded } => {
                     let indent = "  ".repeat(*depth);
                     let icon = if *expanded { "▼" } else { "▶" };
                     format!("{}{} {}/", indent, icon, path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path))
                 }
-                TreeRow::File(idx, depth) => {
+                TreeRow::File { index, depth } => {
                     let indent = "  ".repeat(*depth);
-                    let e = &ops.entries[*idx];
+                    let e = &ops.entries[*index];
                     let label = e.change_type_label();
                     format!("{}{} {}", indent, label, e.path.rsplit_once('/').map(|(_, n)| n).unwrap_or(&e.path))
                 }
@@ -1755,7 +1755,7 @@ mod tests {
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
         assert_eq!(ops.tree.visible_rows.len(), 1);
-        assert!(matches!(ops.tree.visible_rows[0], TreeRow::File(0, 0)));
+        assert!(matches!(ops.tree.visible_rows[0], TreeRow::File { index: 0, depth: 0 }));
     }
 
     #[test]

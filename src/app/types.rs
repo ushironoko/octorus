@@ -604,10 +604,17 @@ pub struct GitOpsState {
 /// ツリー表示の1行
 #[derive(Debug, Clone)]
 pub enum TreeRow {
-    /// ディレクトリ行（パス, 深さ, 展開中か）
-    Dir(String, usize, bool),
-    /// ファイル行（entries インデックス, 深さ）
-    File(usize, usize),
+    /// ディレクトリ行
+    Dir {
+        path: String,
+        depth: usize,
+        expanded: bool,
+    },
+    /// ファイル行
+    File {
+        index: usize,
+        depth: usize,
+    },
 }
 
 impl GitOpsState {

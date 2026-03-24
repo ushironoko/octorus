@@ -34,7 +34,10 @@ impl App {
             KeyCode::Esc => {
                 match target {
                     "pr" => self.pr_list_filter = None,
-                    "file" => self.file_list_filter = None,
+                    "file" => {
+                        self.file_list_filter = None;
+                        self.rebuild_file_tree_if_active();
+                    }
                     "issue" => {
                         if let Some(ref mut s) = self.issue_state {
                             s.issue_list_filter = None;
@@ -51,7 +54,7 @@ impl App {
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
                 };
-                if let Some(f) = filter {
+                let did_clear_file = if let Some(f) = filter {
                     if f.query.is_empty() {
                         match target {
                             "pr" => self.pr_list_filter = None,
@@ -63,9 +66,16 @@ impl App {
                             }
                             _ => {}
                         }
+                        target == "file"
                     } else {
                         f.input_active = false;
+                        false
                     }
+                } else {
+                    false
+                };
+                if did_clear_file {
+                    self.rebuild_file_tree_if_active();
                 }
                 true
             }
@@ -266,7 +276,11 @@ impl App {
         if has_filter {
             match target {
                 "pr" => self.pr_list_filter = None,
-                "file" => self.file_list_filter = None,
+                "file" => {
+                    self.file_list_filter = None;
+                    // フィルタ解除時にツリーを復元
+                    self.rebuild_file_tree_if_active();
+                }
                 "issue" => {
                     if let Some(ref mut s) = self.issue_state {
                         s.issue_list_filter = None;

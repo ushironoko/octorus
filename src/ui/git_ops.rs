@@ -572,7 +572,7 @@ fn build_tree_row_item<'a>(
     is_selected: bool,
 ) -> ListItem<'a> {
     match row {
-        TreeRow::Dir(path, depth, expanded) => {
+        TreeRow::Dir { ref path, depth, expanded } => {
             let indent = "  ".repeat(*depth);
             let icon = if *expanded { "▼" } else { "▶" };
             // ディレクトリ名はパスの最後のコンポーネント
@@ -595,8 +595,8 @@ fn build_tree_row_item<'a>(
             ]);
             ListItem::new(line)
         }
-        TreeRow::File(idx, depth) => {
-            let Some(entry) = ops.entries.get(*idx) else {
+        TreeRow::File { index, depth } => {
+            let Some(entry) = ops.entries.get(*index) else {
                 return ListItem::new(Line::from(""));
             };
 

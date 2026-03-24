@@ -883,6 +883,8 @@ impl App {
                 if self.file_list_filter.is_some() {
                     self.reapply_filter("file");
                 }
+                // ファイルツリーを再構築（ツリーモードがアクティブな場合のみ）
+                self.rebuild_file_tree_if_active();
                 // selected_file が変更された場合、コメント位置キャッシュを再計算
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();

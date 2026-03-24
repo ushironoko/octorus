@@ -24,16 +24,28 @@ impl App {
 
         let kb = self.config.keybindings.clone();
         let has_filter = self.file_list_filter.is_some();
+        let tree_active = self.is_file_tree_active();
+
+        // Tree toggle
+        if self.matches_single_key(&key, &kb.tree_toggle) && !has_filter {
+            self.toggle_file_tree();
+            return Ok(());
+        }
 
         // Move down
         if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("file", true);
+            } else if tree_active {
+                self.file_tree_move_down();
             } else if !self.files().is_empty() {
                 self.selected_file =
                     (self.selected_file + 1).min(self.files().len().saturating_sub(1));
             }
-            self.sync_diff_to_selected_file();
+            // File 行移動時のみ diff 同期（Dir 行ではスキップ → 直前ファイルの diff を維持）
+            if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+                self.sync_diff_to_selected_file();
+            }
             return Ok(());
         }
 
@@ -41,21 +53,31 @@ impl App {
         if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("file", false);
+            } else if tree_active {
+                self.file_tree_move_up();
             } else if self.selected_file > 0 {
                 self.selected_file = self.selected_file.saturating_sub(1);
             }
-            self.sync_diff_to_selected_file();
+            if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+                self.sync_diff_to_selected_file();
+            }
             return Ok(());
         }
 
         // Page down (Ctrl-d by default, also J)
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
-            if !self.files().is_empty() && !has_filter {
+            if !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
                 let step = page_step.max(1);
-                self.selected_file =
-                    (self.selected_file + step).min(self.files().len().saturating_sub(1));
-                self.sync_diff_to_selected_file();
+                if tree_active {
+                    self.file_tree_page_down(step);
+                } else if !self.files().is_empty() {
+                    self.selected_file =
+                        (self.selected_file + step).min(self.files().len().saturating_sub(1));
+                }
+                if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+                    self.sync_diff_to_selected_file();
+                }
             }
             return Ok(());
         }
@@ -65,8 +87,14 @@ impl App {
             if !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
                 let step = page_step.max(1);
-                self.selected_file = self.selected_file.saturating_sub(step);
-                self.sync_diff_to_selected_file();
+                if tree_active {
+                    self.file_tree_page_up(step);
+                } else {
+                    self.selected_file = self.selected_file.saturating_sub(step);
+                }
+                if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+                    self.sync_diff_to_selected_file();
+                }
             }
             return Ok(());
         }
@@ -110,16 +138,40 @@ impl App {
                     return Ok(());
                 }
 
+                // gg: Jump to first
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    if tree_active {
+                        self.file_tree_jump_to_first();
+                    } else {
+                        self.selected_file = 0;
+                    }
+                    self.sync_diff_to_selected_file();
+                    return Ok(());
+                }
+
                 // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
                 // シーケンス開始チェック
                 let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
-                if could_start_filter {
+                let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
+                if could_start_filter || could_start_gg {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }
             }
+        }
+
+        // G: Jump to last
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if tree_active {
+                self.file_tree_jump_to_last();
+            } else if !self.files().is_empty() {
+                self.selected_file = self.files().len().saturating_sub(1);
+            }
+            self.sync_diff_to_selected_file();
+            return Ok(());
         }
 
         // Focus diff pane
@@ -129,16 +181,18 @@ impl App {
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
+            // ツリーモード: Dir 行なら展開トグル
+            if tree_active && self.file_tree_enter() {
+                return Ok(());
+            }
             if !self.files().is_empty() {
                 self.state = AppState::SplitViewDiff;
             }
             return Ok(());
         }
 
-        // Back to file list
-        if self.matches_single_key(&key, &kb.quit)
-            || self.matches_single_key(&key, &kb.move_left)
-                   {
+        // Back to file list (h / ←)
+        if self.matches_single_key(&key, &kb.move_left) {
             self.state = AppState::FileList;
             return Ok(());
         }

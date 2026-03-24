@@ -26,15 +26,19 @@ impl FileTreeState {
         }
     }
 
-    /// パスからツリーを構築。paths は (元インデックス, パス文字列) のペア。
     pub fn rebuild(&mut self, paths: &[(usize, &str)]) {
         self.cached_paths = paths.iter().map(|(i, p)| (*i, p.to_string())).collect();
         self.rebuild_inner();
     }
 
+    pub fn rebuild_owned(&mut self, paths: Vec<(usize, String)>) {
+        self.cached_paths = paths;
+        self.rebuild_inner();
+    }
+
     /// カーソル位置のディレクトリを展開/折畳トグルし、ツリーを再構築。
     pub fn toggle_expand(&mut self) {
-        if let Some(TreeRow::Dir(ref path, _, _)) = self.visible_rows.get(self.selected_row) {
+        if let Some(TreeRow::Dir { ref path, .. }) = self.visible_rows.get(self.selected_row) {
             let path = path.clone();
             if self.expanded_dirs.contains(&path) {
                 self.expanded_dirs.remove(&path);
@@ -48,7 +52,7 @@ impl FileTreeState {
     /// 現在選択中の行がファイルならそのソースインデックスを返す。
     pub fn selected_file_index(&self) -> Option<usize> {
         match self.visible_rows.get(self.selected_row) {
-            Some(TreeRow::File(idx, _)) => Some(*idx),
+            Some(TreeRow::File { index, .. }) => Some(*index),
             _ => None,
         }
     }
@@ -56,7 +60,7 @@ impl FileTreeState {
     /// 現在選択中の行がディレクトリならそのパスを返す。
     pub fn selected_dir_path(&self) -> Option<&str> {
         match self.visible_rows.get(self.selected_row) {
-            Some(TreeRow::Dir(ref path, _, _)) => Some(path),
+            Some(TreeRow::Dir { ref path, .. }) => Some(path),
             _ => None,
         }
     }
@@ -65,14 +69,14 @@ impl FileTreeState {
     pub fn find_row_for_file(&self, file_index: usize) -> Option<usize> {
         self.visible_rows
             .iter()
-            .position(|row| matches!(row, TreeRow::File(idx, _) if *idx == file_index))
+            .position(|row| matches!(row, TreeRow::File { index, .. } if *index == file_index))
     }
 
     /// ディレクトリパスに対応する visible_rows 内の行位置を返す。
     pub fn find_row_for_dir(&self, dir_path: &str) -> Option<usize> {
         self.visible_rows
             .iter()
-            .position(|row| matches!(row, TreeRow::Dir(ref p, _, _) if p == dir_path))
+            .position(|row| matches!(row, TreeRow::Dir { ref path, .. } if path == dir_path))
     }
 
     pub fn move_down(&mut self) {
@@ -87,8 +91,7 @@ impl FileTreeState {
 
     pub fn page_down(&mut self, step: usize) {
         if !self.visible_rows.is_empty() {
-            self.selected_row =
-                (self.selected_row + step).min(self.visible_rows.len() - 1);
+            self.selected_row = (self.selected_row + step).min(self.visible_rows.len() - 1);
         }
     }
 
@@ -115,21 +118,22 @@ impl FileTreeState {
         let mut lines = Vec::new();
         for row in &self.visible_rows {
             match row {
-                TreeRow::Dir(path, depth, expanded) => {
+                TreeRow::Dir {
+                    ref path,
+                    depth,
+                    expanded,
+                } => {
                     let indent = "  ".repeat(*depth);
                     let icon = if *expanded { "▼" } else { "▶" };
-                    let dir_name = path
-                        .rsplit_once('/')
-                        .map(|(_, name)| name)
-                        .unwrap_or(path);
+                    let dir_name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
                     lines.push(format!("{}{} {}/", indent, icon, dir_name));
                 }
-                TreeRow::File(idx, depth) => {
+                TreeRow::File { index, depth } => {
                     let indent = "  ".repeat(*depth);
                     let filename = self
                         .cached_paths
                         .iter()
-                        .find(|(i, _)| *i == *idx)
+                        .find(|(i, _)| *i == *index)
                         .map(|(_, p)| {
                             p.rsplit_once('/')
                                 .map(|(_, name)| name)
@@ -174,13 +178,14 @@ impl FileTreeState {
         }
 
         // ソート: ディレクトリ優先（同階層でディレクトリをファイルより先に表示）
-        // 各パスを (parent_dir, is_file, name) でソートする
+        // sort key を事前計算してアロケーションを O(n) に抑える
+        let split_cache: Vec<Vec<&str>> = self
+            .cached_paths
+            .iter()
+            .map(|(_, p)| p.split('/').collect())
+            .collect();
         let mut sorted_indices: Vec<usize> = (0..self.cached_paths.len()).collect();
-        sorted_indices.sort_by(|a, b| {
-            let path_a = &self.cached_paths[*a].1;
-            let path_b = &self.cached_paths[*b].1;
-            dirs_first_cmp(path_a, path_b)
-        });
+        sorted_indices.sort_by(|a, b| dirs_first_cmp_parts(&split_cache[*a], &split_cache[*b]));
 
         let mut added_dirs: HashSet<String> = HashSet::new();
 
@@ -198,28 +203,31 @@ impl FileTreeState {
                     current.push_str(part);
 
                     if !added_dirs.contains(&current) {
-                        let parent = if depth == 0 {
-                            None
+                        // 親が visible かつ展開中の場合のみ表示。
+                        // ルートレベル (depth==0) は常に表示。
+                        let parent_visible_and_expanded = if depth == 0 {
+                            true
                         } else {
-                            current.rsplit_once('/').map(|(p, _)| p.to_string())
+                            let parent = current.rsplit_once('/').map(|(p, _)| p);
+                            parent
+                                .map(|p| added_dirs.contains(p) && self.expanded_dirs.contains(p))
+                                .unwrap_or(true)
                         };
 
-                        let parent_expanded = parent
-                            .as_ref()
-                            .map(|p| self.expanded_dirs.contains(p))
-                            .unwrap_or(true);
-
-                        if parent_expanded {
+                        if parent_visible_and_expanded {
                             let is_expanded = self.expanded_dirs.contains(&current);
-                            self.visible_rows
-                                .push(TreeRow::Dir(current.clone(), depth, is_expanded));
+                            self.visible_rows.push(TreeRow::Dir {
+                                path: current.clone(),
+                                depth,
+                                expanded: is_expanded,
+                            });
                             added_dirs.insert(current.clone());
                         }
                     }
                 }
             }
 
-            // ファイル行を追加（親ディレクトリが展開中の場合のみ）
+            // ファイル行を追加（直接の親ディレクトリが added_dirs に存在する場合のみ）
             let parent_dir = if parts.len() > 1 {
                 Some(parts[..parts.len() - 1].join("/"))
             } else {
@@ -228,12 +236,15 @@ impl FileTreeState {
 
             let visible = parent_dir
                 .as_ref()
-                .map(|p| self.expanded_dirs.contains(p))
+                .map(|p| added_dirs.contains(p.as_str()) && self.expanded_dirs.contains(p.as_str()))
                 .unwrap_or(true);
 
             if visible {
                 let depth = parts.len() - 1;
-                self.visible_rows.push(TreeRow::File(source_idx, depth));
+                self.visible_rows.push(TreeRow::File {
+                    index: source_idx,
+                    depth,
+                });
             }
         }
 
@@ -244,13 +255,8 @@ impl FileTreeState {
     }
 }
 
-/// ディレクトリ優先ソート用比較関数。
-/// 同じ親ディレクトリ内で、ディレクトリを持つパスをファイルのみのパスより先に並べる。
-fn dirs_first_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let a_parts: Vec<&str> = a.split('/').collect();
-    let b_parts: Vec<&str> = b.split('/').collect();
-
-    // 共通の深さまでコンポーネントを比較
+/// 同階層でディレクトリをファイルより先に並べる。
+fn dirs_first_cmp_parts(a_parts: &[&str], b_parts: &[&str]) -> std::cmp::Ordering {
     let min_len = a_parts.len().min(b_parts.len());
     for i in 0..min_len {
         let a_is_last = i == a_parts.len() - 1;
@@ -258,15 +264,12 @@ fn dirs_first_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 
         // 片方がファイル（最後のコンポーネント）で他方がディレクトリ（まだ子がある）
         if a_is_last && !b_is_last {
-            // a はファイル、b はディレクトリ → b が先
             return std::cmp::Ordering::Greater;
         }
         if !a_is_last && b_is_last {
-            // a はディレクトリ、b はファイル → a が先
             return std::cmp::Ordering::Less;
         }
 
-        // 同じレベルのコンポーネント同士を比較
         let cmp = a_parts[i].cmp(b_parts[i]);
         if cmp != std::cmp::Ordering::Equal {
             return cmp;
@@ -294,17 +297,20 @@ mod tests {
         tree.rebuild(&[(0, "Cargo.toml"), (1, "README.md")]);
         // ルート直下ファイルのみ → Dir 行なし
         assert_eq!(tree.row_count(), 2);
-        assert!(matches!(tree.visible_rows[0], TreeRow::File(0, 0)));
-        assert!(matches!(tree.visible_rows[1], TreeRow::File(1, 0)));
+        assert!(matches!(
+            tree.visible_rows[0],
+            TreeRow::File { index: 0, depth: 0 }
+        ));
+        assert!(matches!(
+            tree.visible_rows[1],
+            TreeRow::File { index: 1, depth: 0 }
+        ));
     }
 
     #[test]
     fn test_nested_dirs() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/app/mod.rs"),
-            (1, "src/lib.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/app/mod.rs"), (1, "src/lib.rs")]);
         // src/, src/app/ ディレクトリが生成される
         let dump = tree.dump_tree();
         assert!(dump.contains("▼ src/"), "dump:\n{}", dump);
@@ -316,10 +322,7 @@ mod tests {
     #[test]
     fn test_initial_expand_all() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/main.rs"),
-            (1, "tests/test.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/main.rs"), (1, "tests/test.rs")]);
         // 初回 rebuild で全ディレクトリ展開
         assert!(tree.expanded_dirs.contains("src"));
         assert!(tree.expanded_dirs.contains("tests"));
@@ -330,10 +333,7 @@ mod tests {
     #[test]
     fn test_toggle_collapse() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/app/mod.rs"),
-            (1, "src/lib.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/app/mod.rs"), (1, "src/lib.rs")]);
         let initial_count = tree.row_count();
 
         // src/app/ ディレクトリを折り畳む
@@ -351,10 +351,7 @@ mod tests {
     #[test]
     fn test_toggle_reexpand() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/app/mod.rs"),
-            (1, "src/lib.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/app/mod.rs"), (1, "src/lib.rs")]);
         let initial_count = tree.row_count();
 
         let app_row = tree.find_row_for_dir("src/app").unwrap();
@@ -369,9 +366,7 @@ mod tests {
     #[test]
     fn test_selected_file_index() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/main.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/main.rs")]);
         // 最初の行は Dir (src/)
         assert_eq!(tree.selected_row, 0);
         assert!(tree.selected_dir_path().is_some());
@@ -386,10 +381,7 @@ mod tests {
     #[test]
     fn test_find_row_for_file() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/main.rs"),
-            (1, "README.md"),
-        ]);
+        tree.rebuild(&[(0, "src/main.rs"), (1, "README.md")]);
         // file index 0 (src/main.rs) がツリー内に見つかる
         let row = tree.find_row_for_file(0);
         assert!(row.is_some());
@@ -403,9 +395,7 @@ mod tests {
     #[test]
     fn test_find_row_for_dir() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/app/mod.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/app/mod.rs")]);
         assert!(tree.find_row_for_dir("src").is_some());
         assert!(tree.find_row_for_dir("src/app").is_some());
         assert!(tree.find_row_for_dir("nonexistent").is_none());
@@ -414,11 +404,7 @@ mod tests {
     #[test]
     fn test_move_down_up() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "a.rs"),
-            (1, "b.rs"),
-            (2, "c.rs"),
-        ]);
+        tree.rebuild(&[(0, "a.rs"), (1, "b.rs"), (2, "c.rs")]);
         assert_eq!(tree.selected_row, 0);
         tree.move_down();
         assert_eq!(tree.selected_row, 1);
@@ -437,11 +423,7 @@ mod tests {
     #[test]
     fn test_clamp_on_rebuild() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "a.rs"),
-            (1, "b.rs"),
-            (2, "c.rs"),
-        ]);
+        tree.rebuild(&[(0, "a.rs"), (1, "b.rs"), (2, "c.rs")]);
         tree.selected_row = 2;
         // 行数が減る
         tree.rebuild(&[(0, "a.rs")]);
@@ -463,19 +445,26 @@ mod tests {
         let tests_pos = dump.find("▼ tests/").expect("tests/ not found");
         let cargo_pos = dump.find("Cargo.toml").expect("Cargo.toml not found");
         let readme_pos = dump.find("README.md").expect("README.md not found");
-        assert!(src_pos < cargo_pos, "src/ should be before Cargo.toml\n{}", dump);
-        assert!(tests_pos < cargo_pos, "tests/ should be before Cargo.toml\n{}", dump);
-        assert!(cargo_pos < readme_pos || readme_pos < cargo_pos,
-            "files should be alphabetical among themselves");
+        assert!(
+            src_pos < cargo_pos,
+            "src/ should be before Cargo.toml\n{}",
+            dump
+        );
+        assert!(
+            tests_pos < cargo_pos,
+            "tests/ should be before Cargo.toml\n{}",
+            dump
+        );
+        assert!(
+            cargo_pos < readme_pos || readme_pos < cargo_pos,
+            "files should be alphabetical among themselves"
+        );
     }
 
     #[test]
     fn test_toggle_expand_self_contained() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/main.rs"),
-            (1, "README.md"),
-        ]);
+        tree.rebuild(&[(0, "src/main.rs"), (1, "README.md")]);
         let initial_count = tree.row_count();
 
         // src/ を折り畳む
@@ -494,10 +483,7 @@ mod tests {
     #[test]
     fn test_rebuild_preserves_expanded_dirs() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/app/mod.rs"),
-            (1, "src/lib.rs"),
-        ]);
+        tree.rebuild(&[(0, "src/app/mod.rs"), (1, "src/lib.rs")]);
 
         // src/app/ を折り畳む
         let app_row = tree.find_row_for_dir("src/app").unwrap();
@@ -522,10 +508,7 @@ mod tests {
     #[test]
     fn test_dump_tree() {
         let mut tree = FileTreeState::new();
-        tree.rebuild(&[
-            (0, "src/main.rs"),
-            (1, "README.md"),
-        ]);
+        tree.rebuild(&[(0, "src/main.rs"), (1, "README.md")]);
         let dump = tree.dump_tree();
         assert!(dump.contains("▼ src/"));
         assert!(dump.contains("main.rs"));
