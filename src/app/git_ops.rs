@@ -138,7 +138,7 @@ impl App {
         let (tx, rx) = mpsc::channel(1);
         cl.diff_receiver = Some(rx);
 
-        if self.local_mode {
+        if self.local_mode || self.pr_number.is_none() {
             let working_dir = self.working_dir.clone();
             tokio::spawn(async move {
                 let result = github::fetch_local_commit_diff(working_dir.as_deref(), &sha)
@@ -192,7 +192,7 @@ impl App {
         let (result_tx, result_rx) = mpsc::channel(max_cache);
         cl.diff_store.set_prefetch_rx(result_rx);
 
-        let local_mode = self.local_mode;
+        let use_local = self.local_mode || self.pr_number.is_none();
         let repo = self.repo.clone();
         let working_dir = self.working_dir.clone();
         let theme = self.config.diff.theme.clone();
@@ -204,7 +204,7 @@ impl App {
             let working_dir = working_dir.clone();
 
             tokio::spawn(async move {
-                let diff_text = if local_mode {
+                let diff_text = if use_local {
                     github::fetch_local_commit_diff(working_dir.as_deref(), &sha).await
                 } else {
                     github::fetch_commit_diff(&repo, &sha).await
@@ -2424,4 +2424,5 @@ mod tests {
         assert!(ops.pending_confirm.is_none());
         assert_eq!(ops.undo_stack.len(), 0);
     }
+
 }

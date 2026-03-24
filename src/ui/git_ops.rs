@@ -982,4 +982,150 @@ mod tests {
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
+
+    // =================================================================
+    // コミット diff ペイン スナップショット
+    // =================================================================
+
+    fn make_commit(sha: &str, message: &str) -> crate::github::PrCommit {
+        crate::github::PrCommit {
+            sha: sha.to_string(),
+            message: message.to_string(),
+            author_name: "tester".to_string(),
+            author_login: None,
+            date: "2025-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// render_diff_pane を描画し、diff body 部分のテキストを返す
+    fn render_diff_pane_body(app: &App) -> String {
+        let backend = TestBackend::new(80, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 80, 15);
+        terminal
+            .draw(|frame| {
+                render_diff_pane(frame, app, area, false);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        // Header: row 0-2, Body: row 3-11, Footer: row 12-14
+        let body_start = 3usize;
+        let body_end = 12usize;
+        let mut lines = Vec::new();
+        for y in body_start..body_end {
+            let mut line = String::new();
+            for x in 0..area.width as usize {
+                let cell = &buf[(x as u16, y as u16)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn test_diff_pane_commit_loading() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log.commits.push(make_commit("abc1234", "test commit"));
+        ops.commit_log.selected = 0;
+        ops.commit_log.diff_loading = true;
+        ops.left_return_focus = LeftPaneFocus::Commits;
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_diff_pane_body(&app), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Loading diff...                                                               │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_diff_pane_commit_error() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log.commits.push(make_commit("abc1234", "test commit"));
+        ops.commit_log.selected = 0;
+        ops.commit_log.diff_error = Some("gh: Not Found (HTTP 404)".to_string());
+        ops.left_return_focus = LeftPaneFocus::Commits;
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_diff_pane_body(&app), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Error: gh: Not Found (HTTP 404)                                               │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_diff_pane_no_commit_selected() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.left_return_focus = LeftPaneFocus::Commits;
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_diff_pane_body(&app), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Select a commit to preview diff                                               │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    /// poll 後に diff_loading=true になることを UI で検証
+    #[tokio::test]
+    async fn test_diff_pane_after_commit_list_arrives_without_pr() {
+        let (mut app, _tx) = make_app();
+        app.pr_number = None;
+
+        let mut ops = GitOpsState::new(Vec::new());
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        ops.commit_log.list_receiver = Some(rx);
+        ops.commit_log.loading = true;
+        ops.left_return_focus = LeftPaneFocus::Commits;
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        let page = crate::github::CommitListPage {
+            items: vec![make_commit("local_sha", "local commit")],
+            has_more: false,
+        };
+        tx.send(Ok(page)).await.unwrap();
+
+        app.poll_git_ops_updates();
+
+        // poll 後: diff 取得が開始されている → "Loading diff..." が表示される
+        let cl = &app.git_ops_state.as_ref().unwrap().commit_log;
+        assert!(cl.diff_loading);
+        assert!(cl.diff_receiver.is_some());
+
+        assert_snapshot!(render_diff_pane_body(&app), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Loading diff...                                                               │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
 }
