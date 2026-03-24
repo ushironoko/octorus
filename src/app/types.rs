@@ -639,6 +639,12 @@ pub struct GitOpsState {
     pub pending_confirm: Option<PendingGitOpsConfirm>,
     /// status 更新フラグ（prefetch トリガー用）
     pub(crate) status_updated: bool,
+    /// Push 実行中フラグ
+    pub pushing: bool,
+    /// ローカルがリモートより先行しているコミット数
+    pub ahead_count: u32,
+    /// ahead_count 非同期受信
+    pub(crate) ahead_receiver: Option<mpsc::Receiver<u32>>,
     /// 左ペインのサブフォーカス（Tree / Commits）
     pub left_focus: LeftPaneFocus,
     /// Diff から戻る先の左サブペイン
@@ -677,6 +683,9 @@ impl GitOpsState {
             op_message: None,
             undo_stack: Vec::new(),
             pending_confirm: None,
+            pushing: false,
+            ahead_count: 0,
+            ahead_receiver: None,
             status_updated: false,
             left_focus: LeftPaneFocus::Tree,
             left_return_focus: LeftPaneFocus::Tree,

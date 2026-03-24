@@ -201,7 +201,11 @@ fn render_tree_pane(
         let Some(ref ops) = app.git_ops_state else {
             return;
         };
-        if let Some((ref msg, _)) = ops.op_message {
+        if ops.pushing {
+            let spinner = app.spinner_char();
+            confirm_text = format!("{} Pushing...", spinner);
+            confirm_text.as_str()
+        } else if let Some((ref msg, _)) = ops.op_message {
             msg.as_str()
         } else if is_focused {
             "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits"
@@ -471,6 +475,7 @@ fn render_commits_pane(
     let Some(ref mut ops) = app.git_ops_state else {
         return;
     };
+    let ahead_count = ops.ahead_count;
     let cl = &mut ops.commit_log;
 
     if cl.loading && cl.commits.is_empty() {
@@ -532,10 +537,15 @@ fn render_commits_pane(
         ))));
     }
 
-    let title = if cl.has_more {
-        format!("Commits ({}+)", total)
+    let count_str = if cl.has_more {
+        format!("{}+", total)
     } else {
-        format!("Commits ({})", total)
+        format!("{}", total)
+    };
+    let title = if ahead_count > 0 {
+        format!("Commits ({}) \u{2191}{}", count_str, ahead_count)
+    } else {
+        format!("Commits ({})", count_str)
     };
 
     let list = List::new(items)
@@ -1127,5 +1137,168 @@ mod tests {
         │                                                                              │
         └──────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    // =================================================================
+    // Push ローディング / ahead count スナップショット
+    // =================================================================
+
+    #[test]
+    fn test_footer_pushing_spinner() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        rebuild_tree(&mut ops);
+        ops.pushing = true;
+        app.git_ops_state = Some(ops);
+
+        let footer = render_tree_pane_footer(&mut app, true);
+        assert!(
+            footer.contains("Pushing..."),
+            "should show pushing spinner, got: {}",
+            footer
+        );
+    }
+
+    #[test]
+    fn test_footer_pushing_spinner_unfocused() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        rebuild_tree(&mut ops);
+        ops.pushing = true;
+        app.git_ops_state = Some(ops);
+
+        let footer = render_tree_pane_footer(&mut app, false);
+        assert!(
+            footer.contains("Pushing..."),
+            "pushing spinner should show even when unfocused, got: {}",
+            footer
+        );
+    }
+
+    /// commits pane のタイトルに ahead count を表示
+    fn render_commits_pane_text(app: &mut App, is_focused: bool) -> String {
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 60, 10);
+        terminal
+            .draw(|frame| {
+                render_commits_pane(frame, app, area, is_focused);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..area.height as usize {
+            let mut line = String::new();
+            for x in 0..area.width as usize {
+                let cell = &buf[(x as u16, y as u16)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn test_commits_pane_title_with_ahead_count() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log.commits.push(make_commit("abc123", "test commit"));
+        ops.commit_log.initialized = true;
+        ops.ahead_count = 3;
+        app.git_ops_state = Some(ops);
+
+        let output = render_commits_pane_text(&mut app, false);
+        assert!(
+            output.contains("\u{2191}3"),
+            "should show ↑3 in title, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_commits_pane_title_without_ahead() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log.commits.push(make_commit("abc123", "test commit"));
+        ops.commit_log.initialized = true;
+        ops.ahead_count = 0;
+        app.git_ops_state = Some(ops);
+
+        let output = render_commits_pane_text(&mut app, false);
+        assert!(
+            !output.contains("\u{2191}"),
+            "should not show ↑ when ahead=0, got: {}",
+            output
+        );
+        assert!(output.contains("Commits (1)"), "got: {}", output);
+    }
+
+    /// コミット作成後→ahead_count受信→タイトルに↑Nが反映される
+    #[tokio::test]
+    async fn test_ahead_count_updates_after_commit() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log.commits.push(make_commit("sha1", "initial"));
+        ops.commit_log.initialized = true;
+        ops.ahead_count = 0;
+
+        // コミット成功後の状態: ahead_receiver にカウントが送られてくる
+        let (ahead_tx, ahead_rx) = tokio::sync::mpsc::channel(1);
+        ops.ahead_receiver = Some(ahead_rx);
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        // ahead=0 の時点ではタイトルに ↑ がない
+        let before = render_commits_pane_text(&mut app, false);
+        assert!(!before.contains("\u{2191}"), "before poll: no arrow, got: {}", before);
+
+        // ahead_count が到着
+        ahead_tx.send(2).await.unwrap();
+        app.poll_git_ops_updates();
+
+        // poll 後: タイトルに ↑2 が表示される
+        let after = render_commits_pane_text(&mut app, false);
+        assert!(
+            after.contains("\u{2191}2"),
+            "after poll: should show ↑2, got: {}",
+            after
+        );
+    }
+
+    /// Push 完了後→ahead_count=0にリセット→↑表示が消える
+    #[tokio::test]
+    async fn test_ahead_count_resets_after_push() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log.commits.push(make_commit("sha1", "initial"));
+        ops.commit_log.initialized = true;
+        ops.ahead_count = 3;
+        ops.pushing = true;
+
+        // push 結果が op_receiver に到着
+        let (op_tx, op_rx) = tokio::sync::mpsc::channel(1);
+        ops.op_receiver = Some(op_rx);
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        // push 前: ↑3 が表示されている
+        let before = render_commits_pane_text(&mut app, false);
+        assert!(before.contains("\u{2191}3"), "before push: got: {}", before);
+
+        // push 成功
+        op_tx.send(Ok("Pushed to origin/main".to_string())).await.unwrap();
+        app.poll_git_ops_updates();
+
+        // push 後: ahead_count=0 にリセット → ↑ 消える
+        let after = render_commits_pane_text(&mut app, false);
+        assert!(
+            !after.contains("\u{2191}"),
+            "after push: arrow should disappear, got: {}",
+            after
+        );
     }
 }

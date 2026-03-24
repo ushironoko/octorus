@@ -26,6 +26,7 @@ impl App {
         self.state = AppState::GitOpsSplitTree;
         self.refresh_git_status();
         self.fetch_git_ops_commits(1);
+        self.refresh_ahead_count();
     }
 
     /// GitOps 画面を閉じる
@@ -243,6 +244,35 @@ impl App {
         });
     }
 
+    /// リモートに対するローカルの先行コミット数を非同期で更新
+    fn refresh_ahead_count(&mut self) {
+        let working_dir = self.working_dir.clone();
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel(1);
+        ops.ahead_receiver = Some(rx);
+
+        tokio::spawn(async move {
+            let dir = working_dir.as_deref().unwrap_or(".");
+            let output = tokio::process::Command::new("git")
+                .args(["rev-list", "--count", "@{upstream}..HEAD"])
+                .current_dir(dir)
+                .output()
+                .await;
+            let count = match output {
+                Ok(o) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<u32>()
+                        .unwrap_or(0)
+                }
+                _ => 0,
+            };
+            let _ = tx.send(count).await;
+        });
+    }
+
     /// GitOps 関連の非同期結果をポーリング
     pub(crate) fn poll_git_ops_updates(&mut self) {
         // --- status 受信 ---
@@ -316,11 +346,17 @@ impl App {
             if let Some(ref mut rx) = ops.op_receiver {
                 match rx.try_recv() {
                     Ok(Ok(msg)) => {
+                        let was_pushing = ops.pushing;
+                        ops.pushing = false;
                         ops.op_message = Some((msg, Instant::now()));
                         ops.op_receiver = None;
                         op_succeeded = true;
+                        if was_pushing {
+                            ops.ahead_count = 0;
+                        }
                     }
                     Ok(Err(msg)) => {
+                        ops.pushing = false;
                         ops.op_message = Some((format!("Error: {}", msg), Instant::now()));
                         ops.op_receiver = None;
                         // エラー時もステータス再取得（楽観的更新の巻き戻し）
@@ -328,7 +364,22 @@ impl App {
                     }
                     Err(mpsc::error::TryRecvError::Empty) => {}
                     Err(mpsc::error::TryRecvError::Disconnected) => {
+                        ops.pushing = false;
                         ops.op_receiver = None;
+                    }
+                }
+            }
+
+            // --- ahead_count 受信 ---
+            if let Some(ref mut rx) = ops.ahead_receiver {
+                match rx.try_recv() {
+                    Ok(count) => {
+                        ops.ahead_count = count;
+                        ops.ahead_receiver = None;
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {}
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        ops.ahead_receiver = None;
                     }
                 }
             }
@@ -350,6 +401,7 @@ impl App {
         // --- 操作完了後にステータス再取得 ---
         if op_succeeded {
             self.refresh_git_status();
+            self.refresh_ahead_count();
         }
 
         // --- コミット一覧が未初期化ならリフレッシュ ---
@@ -811,6 +863,7 @@ impl App {
                     ops.commit_log.initialized = false;
                 }
                 self.refresh_git_status();
+                self.refresh_ahead_count();
                 self.retry_load();
             }
             _ => {
@@ -987,6 +1040,7 @@ impl App {
 
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
+        ops.pushing = true;
 
         tokio::spawn(async move {
             // ブランチ名を取得
