@@ -728,17 +728,6 @@ impl App {
         let entry = ops.entries.iter().find(|e| e.path == path).cloned();
         let Some(entry) = entry else { return };
 
-        // discard 対象パスに関連する undo スタックエントリを無効化
-        // （discard 後に undo すると不整合な状態になるため）
-        if let Some(ref mut ops) = self.git_ops_state {
-            ops.undo_stack.retain(|action| match action {
-                UndoAction::Stage { paths, .. } | UndoAction::Unstage { paths } => {
-                    !paths.contains(&path)
-                }
-                UndoAction::Commit | UndoAction::StageAll { .. } => true,
-            });
-        }
-
         let working_dir = self.working_dir.clone();
         let (tx, rx) = mpsc::channel(1);
         if let Some(ref mut ops) = self.git_ops_state {
@@ -1069,7 +1058,7 @@ impl App {
                     }
                     match confirm {
                         PendingGitOpsConfirm::Discard { .. } => self.discard_changes(),
-                        PendingGitOpsConfirm::Undo => self.execute_undo(),
+                        PendingGitOpsConfirm::Undo { .. } => self.execute_undo(),
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -1121,8 +1110,13 @@ impl App {
         // Discard → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_discard) {
             if let Some(ref mut ops) = self.git_ops_state {
-                if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
-                    ops.pending_confirm = Some(PendingGitOpsConfirm::Discard { path });
+                if let Some(entry) = ops.selected_path().and_then(|p| {
+                    ops.entries.iter().find(|e| e.path == p)
+                }) {
+                    let command = entry.describe_discard_command();
+                    let path = entry.path.clone();
+                    ops.pending_confirm =
+                        Some(PendingGitOpsConfirm::Discard { path, command });
                 }
             }
             return;
@@ -1137,8 +1131,10 @@ impl App {
         // Undo → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_undo) {
             if let Some(ref mut ops) = self.git_ops_state {
-                if !ops.undo_stack.is_empty() {
-                    ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+                if let Some(action) = ops.undo_stack.last() {
+                    let command = action.describe_command();
+                    ops.pending_confirm =
+                        Some(PendingGitOpsConfirm::Undo { command });
                 } else {
                     ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
                 }
@@ -1202,7 +1198,7 @@ impl App {
                     if let Some(ref mut ops) = self.git_ops_state {
                         ops.pending_confirm = None;
                     }
-                    if let PendingGitOpsConfirm::Undo = confirm {
+                    if let PendingGitOpsConfirm::Undo { .. } = confirm {
                         self.reset_soft_to_selected_commit();
                     }
                 }
@@ -1300,7 +1296,17 @@ impl App {
         // Undo / reset --soft → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_undo) {
             if let Some(ref mut ops) = self.git_ops_state {
-                ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+                let sha = ops
+                    .commit_log
+                    .commits
+                    .get(ops.commit_log.selected)
+                    .map(|c| &c.sha[..c.sha.len().min(7)]);
+                let command = match sha {
+                    Some(s) => format!("git reset --soft {}", s),
+                    None => "git reset --soft".to_string(),
+                };
+                ops.pending_confirm =
+                    Some(PendingGitOpsConfirm::Undo { command });
             }
             return;
         }
@@ -2218,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_discard_clears_related_undo_entries() {
+    fn test_discard_preserves_undo_stack() {
         let (mut app, _tx) = make_git_ops_app();
         let entries = vec![
             entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
@@ -2227,7 +2233,6 @@ mod tests {
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
 
-        // a.rs と b.rs の stage undo をスタックに積む
         ops.undo_stack.push(UndoAction::Stage {
             paths: vec!["a.rs".to_string()],
             previous_index_entries: vec![],
@@ -2240,28 +2245,9 @@ mod tests {
         app.git_ops_state = Some(ops);
         app.state = AppState::GitOpsSplitTree;
 
-        // a.rs をツリー上で選択状態にする
-        let tree = &mut app.git_ops_state.as_mut().unwrap().tree;
-        if let Some(row) = tree.find_row_for_file(0) {
-            tree.selected_row = row;
-        }
-
-        // discard_changes は async git op を spawn するので直接テストできないが、
-        // discard 内の undo_stack.retain ロジックをテストする
-        // → discard_changes を呼ぶ代わりに retain ロジックを直接実行
-        let path = "a.rs".to_string();
-        let ops = app.git_ops_state.as_mut().unwrap();
-        ops.undo_stack.retain(|action| match action {
-            UndoAction::Stage { paths, .. } | UndoAction::Unstage { paths } => {
-                !paths.contains(&path)
-            }
-            UndoAction::Commit | UndoAction::StageAll { .. } => true,
-        });
-
-        // a.rs の Stage undo は消えたが、b.rs と Commit は残る
-        assert_eq!(ops.undo_stack.len(), 2);
-        assert!(matches!(ops.undo_stack[0], UndoAction::Stage { ref paths, .. } if paths[0] == "b.rs"));
-        assert!(matches!(ops.undo_stack[1], UndoAction::Commit));
+        // discard はスタックを変更しない（undo は引き続き可能）
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert_eq!(ops.undo_stack.len(), 3);
     }
 
     #[tokio::test]
@@ -2299,7 +2285,7 @@ mod tests {
                     }
                     match confirm {
                         PendingGitOpsConfirm::Discard { .. } => app.discard_changes(),
-                        PendingGitOpsConfirm::Undo => app.execute_undo(),
+                        PendingGitOpsConfirm::Undo { .. } => app.execute_undo(),
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -2327,15 +2313,20 @@ mod tests {
 
         // discard のキーバインドを直接シミュレート
         if let Some(ref mut ops) = app.git_ops_state {
-            if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
-                ops.pending_confirm = Some(PendingGitOpsConfirm::Discard { path });
+            if let Some(entry) = ops.selected_path().and_then(|p| {
+                ops.entries.iter().find(|e| e.path == p)
+            }) {
+                let command = entry.describe_discard_command();
+                let path = entry.path.clone();
+                ops.pending_confirm =
+                    Some(PendingGitOpsConfirm::Discard { path, command });
             }
         }
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(matches!(
             ops.pending_confirm,
-            Some(PendingGitOpsConfirm::Discard { ref path }) if path == "a.rs"
+            Some(PendingGitOpsConfirm::Discard { ref path, .. }) if path == "a.rs"
         ));
     }
 
@@ -2345,6 +2336,7 @@ mod tests {
         let mut ops = GitOpsState::new(Vec::new());
         ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
             path: "a.rs".to_string(),
+            command: "git restore -- a.rs".to_string(),
         });
         app.git_ops_state = Some(ops);
 
@@ -2356,7 +2348,9 @@ mod tests {
     fn test_confirm_esc_cancels_pending() {
         let (mut app, _tx) = make_git_ops_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
+            command: "git reset".to_string(),
+        });
         app.git_ops_state = Some(ops);
 
         simulate_tree_confirm(&mut app, KeyCode::Esc);
@@ -2371,8 +2365,10 @@ mod tests {
 
         // undo スタックが空の場合、pending_confirm にならず直接メッセージ
         let ops_ref = app.git_ops_state.as_mut().unwrap();
-        if !ops_ref.undo_stack.is_empty() {
-            ops_ref.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+        if let Some(action) = ops_ref.undo_stack.last() {
+            let command = action.describe_command();
+            ops_ref.pending_confirm =
+                Some(PendingGitOpsConfirm::Undo { command });
         } else {
             ops_ref.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
         }
@@ -2393,6 +2389,7 @@ mod tests {
         rebuild_git_ops_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
             path: "a.rs".to_string(),
+            command: "git restore -- a.rs".to_string(),
         });
         let initial_row = ops.tree.selected_row;
         app.git_ops_state = Some(ops);
@@ -2416,7 +2413,9 @@ mod tests {
             paths: vec!["a.rs".to_string()],
             previous_index_entries: vec![],
         });
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
+            command: "git update-index (restore 1 file(s))".to_string(),
+        });
         app.git_ops_state = Some(ops);
 
         simulate_tree_confirm(&mut app, KeyCode::Char('y'));

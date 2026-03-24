@@ -83,7 +83,7 @@ fn render_tree_pane(
         .as_ref()
         .is_some_and(|ops| ops.pending_confirm.is_some());
 
-    let border_color = if has_pending_confirm && is_focused {
+    let border_color = if has_pending_confirm {
         Color::Red
     } else if is_focused {
         Color::Yellow
@@ -181,20 +181,27 @@ fn render_tree_pane(
 
     // Footer
     let confirm_text;
-    let help_text = if is_focused {
+    let pending = app
+        .git_ops_state
+        .as_ref()
+        .and_then(|ops| ops.pending_confirm.as_ref());
+    let help_text = if let Some(confirm) = pending {
+        match confirm {
+            crate::app::PendingGitOpsConfirm::Discard { ref path, ref command } => {
+                let name = path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path);
+                confirm_text = format!("Discard {}? [{}] (Y/n)", name, command);
+                confirm_text.as_str()
+            }
+            crate::app::PendingGitOpsConfirm::Undo { ref command } => {
+                confirm_text = format!("Undo? [{}] (Y/n)", command);
+                confirm_text.as_str()
+            }
+        }
+    } else if is_focused {
         let Some(ref ops) = app.git_ops_state else {
             return;
         };
-        if let Some(ref confirm) = ops.pending_confirm {
-            match confirm {
-                crate::app::PendingGitOpsConfirm::Discard { ref path } => {
-                    let name = path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path);
-                    confirm_text = format!("Discard changes to {}? (Y/n)", name);
-                    confirm_text.as_str()
-                }
-                crate::app::PendingGitOpsConfirm::Undo => "Undo last operation? (Y/n)",
-            }
-        } else if let Some((ref msg, _)) = ops.op_message {
+        if let Some((ref msg, _)) = ops.op_message {
             msg.as_str()
         } else {
             "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits"
@@ -202,7 +209,7 @@ fn render_tree_pane(
     } else {
         "Tab/h: focus tree"
     };
-    if has_pending_confirm && is_focused {
+    if has_pending_confirm {
         let line = Line::from(Span::styled(
             help_text,
             Style::default()
@@ -713,4 +720,219 @@ fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
     }
 
     (staged, unstaged, untracked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{FileStatus, GitOpsState, GitStatusEntry, PendingGitOpsConfirm};
+    use crate::config::Config;
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+
+    fn make_app() -> (App, tokio::sync::mpsc::Sender<crate::loader::DataLoadResult>) {
+        let config = Config::default();
+        App::new_loading("owner/repo", 1, config)
+    }
+
+    fn entry(path: &str, index: FileStatus, worktree: FileStatus) -> GitStatusEntry {
+        GitStatusEntry {
+            path: path.to_string(),
+            index_status: index,
+            worktree_status: worktree,
+            additions: 0,
+            deletions: 0,
+            staged_additions: 0,
+            staged_deletions: 0,
+            orig_path: None,
+            unmerged: false,
+        }
+    }
+
+    fn rebuild_tree(ops: &mut GitOpsState) {
+        let paths: Vec<(usize, &str)> = ops
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.path.as_str()))
+            .collect();
+        ops.tree.rebuild(&paths);
+    }
+
+    /// render_tree_pane を TestBackend に描画し、フッター行（下3行）のテキストを返す
+    fn render_tree_pane_footer(app: &mut App, is_focused: bool) -> String {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 100, 20);
+        terminal
+            .draw(|frame| {
+                render_tree_pane(frame, app, area, is_focused);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let footer_start = area.height.saturating_sub(3) as usize;
+        let mut lines = Vec::new();
+        for y in footer_start..area.height as usize {
+            let mut line = String::new();
+            for x in 0..area.width as usize {
+                let cell = &buf[(x as u16, y as u16)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    fn render_tree_pane_border_color(app: &mut App, is_focused: bool) -> Color {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 80, 20);
+        terminal
+            .draw(|frame| {
+                render_tree_pane(frame, app, area, is_focused);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        buf[(0u16, 0u16)].fg
+    }
+
+    #[test]
+    fn test_footer_discard_confirm_focused() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("src/main.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
+            path: "src/main.rs".to_string(),
+            command: "git restore -- src/main.rs".to_string(),
+        });
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Discard main.rs? [git restore -- src/main.rs] (Y/n)                                               │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_discard_confirm_unfocused() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
+            path: "a.rs".to_string(),
+            command: "git restore -- a.rs".to_string(),
+        });
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Discard a.rs? [git restore -- a.rs] (Y/n)                                                         │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_undo_confirm_focused() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
+            command: "git update-index (restore 1 file(s))".to_string(),
+        });
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Undo? [git update-index (restore 1 file(s))] (Y/n)                                                │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_undo_confirm_unfocused() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
+            command: "git reset --soft abc1234".to_string(),
+        });
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Undo? [git reset --soft abc1234] (Y/n)                                                            │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_no_confirm_focused() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab:│
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_no_confirm_unfocused() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Tab/h: focus tree                                                                                 │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_border_red_on_pending_confirm() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
+            command: "git reset".to_string(),
+        });
+        app.git_ops_state = Some(ops);
+
+        assert_eq!(render_tree_pane_border_color(&mut app, false), Color::Red);
+    }
+
+    #[test]
+    fn test_border_not_red_without_confirm() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+        app.git_ops_state = Some(ops);
+
+        assert_eq!(
+            render_tree_pane_border_color(&mut app, true),
+            Color::Yellow
+        );
+        assert_eq!(
+            render_tree_pane_border_color(&mut app, false),
+            Color::DarkGray
+        );
+    }
 }

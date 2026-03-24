@@ -452,6 +452,18 @@ impl GitStatusEntry {
         )
     }
 
+    pub fn describe_discard_command(&self) -> String {
+        if self.worktree_status == FileStatus::Untracked
+            && self.index_status == FileStatus::Untracked
+        {
+            format!("git clean -f -- {}", self.path)
+        } else if self.is_staged() && !self.has_worktree_changes() {
+            format!("git restore --staged --source=HEAD -- {}", self.path)
+        } else {
+            format!("git restore -- {}", self.path)
+        }
+    }
+
     /// 変更種別ラベル: ファイルの性質を固定幅2文字で返す
     ///
     /// stage/unstage で変化しない。色だけが変わる。
@@ -517,11 +529,36 @@ pub enum UndoAction {
     StageAll { tree_hash: Option<String> },
 }
 
+impl UndoAction {
+    pub fn describe_command(&self) -> String {
+        match self {
+            UndoAction::Commit => "git reset --soft HEAD~1".to_string(),
+            UndoAction::Stage { paths, .. } => {
+                format!("git update-index (restore {} file(s))", paths.len())
+            }
+            UndoAction::Unstage { paths } => {
+                if paths.len() == 1 {
+                    format!("git add -- {}", paths[0])
+                } else {
+                    format!("git add -- ({} files)", paths.len())
+                }
+            }
+            UndoAction::StageAll { tree_hash } => {
+                if let Some(hash) = tree_hash {
+                    format!("git read-tree {}", &hash[..hash.len().min(7)])
+                } else {
+                    "git reset".to_string()
+                }
+            }
+        }
+    }
+}
+
 /// GitOps の破壊的操作の確認待ち状態
 #[derive(Debug, Clone)]
 pub enum PendingGitOpsConfirm {
-    Discard { path: String },
-    Undo,
+    Discard { path: String, command: String },
+    Undo { command: String },
 }
 
 /// GitOps 左ペインのサブフォーカス

@@ -282,6 +282,7 @@ fn dirs_first_cmp_parts(a_parts: &[&str], b_parts: &[&str]) -> std::cmp::Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
 
     #[test]
     fn test_empty_paths() {
@@ -311,12 +312,12 @@ mod tests {
     fn test_nested_dirs() {
         let mut tree = FileTreeState::new();
         tree.rebuild(&[(0, "src/app/mod.rs"), (1, "src/lib.rs")]);
-        // src/, src/app/ ディレクトリが生成される
-        let dump = tree.dump_tree();
-        assert!(dump.contains("▼ src/"), "dump:\n{}", dump);
-        assert!(dump.contains("▼ app/"), "dump:\n{}", dump);
-        assert!(dump.contains("mod.rs"), "dump:\n{}", dump);
-        assert!(dump.contains("lib.rs"), "dump:\n{}", dump);
+        assert_snapshot!(tree.dump_tree(), @"
+        ▼ src/
+          ▼ app/
+            mod.rs
+          lib.rs
+        ");
     }
 
     #[test]
@@ -509,9 +510,10 @@ mod tests {
     fn test_dump_tree() {
         let mut tree = FileTreeState::new();
         tree.rebuild(&[(0, "src/main.rs"), (1, "README.md")]);
-        let dump = tree.dump_tree();
-        assert!(dump.contains("▼ src/"));
-        assert!(dump.contains("main.rs"));
-        assert!(dump.contains("README.md"));
+        assert_snapshot!(tree.dump_tree(), @"
+        ▼ src/
+          main.rs
+        README.md
+        ");
     }
 }
