@@ -7,6 +7,20 @@ use tokio::time::timeout;
 
 const GIT_TIMEOUT_SECS: u64 = 30;
 
+/// Resolve the git repository root from a given directory (or CWD if None).
+pub async fn get_repo_root(working_dir: Option<&str>) -> Result<String> {
+    let dir = working_dir.unwrap_or(".");
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .await?;
+    if !output.status.success() {
+        bail!("Not in a git repository (resolved from '{}')", dir);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 pub enum WorktreeSetup {
     Created { path: String, branch: String },
     ExistingReused { path: String },

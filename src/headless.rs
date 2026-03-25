@@ -62,7 +62,8 @@ pub async fn run_headless_rally(
     let working_dir_mode = if working_dir_mode.is_explicit()
         && !std::path::Path::new(working_dir_mode.path()).exists()
     {
-        let repo_root = get_repo_root(None).await?;
+        // Path doesn't exist yet — resolve source repo root from CWD to create worktree from
+        let repo_root = crate::ai::worktree::get_repo_root(None).await?;
         let setup = crate::ai::worktree::setup_rally_worktree(
             &repo_root,
             working_dir_mode.path(),
@@ -82,7 +83,8 @@ pub async fn run_headless_rally(
     } else if working_dir_mode.is_explicit()
         && std::path::Path::new(working_dir_mode.path()).exists()
     {
-        let repo_root = get_repo_root(None).await?;
+        // Path exists — resolve repo root from the existing working dir, not CWD
+        let repo_root = crate::ai::worktree::get_repo_root(Some(working_dir_mode.path())).await?;
         crate::ai::worktree::validate_existing_worktree(working_dir_mode.path(), &repo_root)
             .await?;
         working_dir_mode
@@ -220,19 +222,6 @@ pub async fn run_headless_rally_local(
         output_path,
     )
     .await
-}
-
-async fn get_repo_root(working_dir: Option<&str>) -> Result<String> {
-    let dir = working_dir.unwrap_or(".");
-    let output = tokio::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(dir)
-        .output()
-        .await?;
-    if !output.status.success() {
-        anyhow::bail!("Not in a git repository");
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Collect sensitive local overrides from config and local prompt files.

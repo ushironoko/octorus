@@ -624,6 +624,63 @@ impl App {
         let pr_number = self.pr_number();
 
         let handle = tokio::spawn(async move {
+            // Set up or validate worktree for explicit --working-dir before running orchestrator
+            if context.working_dir_mode.is_explicit() {
+                let target_path = context.working_dir_mode.path().to_string();
+                let setup_result: Result<(), anyhow::Error> = async {
+                    if !std::path::Path::new(&target_path).exists() {
+                        // Path doesn't exist — create worktree from source repo (CWD)
+                        let repo_root = crate::ai::worktree::get_repo_root(None).await?;
+                        let setup = crate::ai::worktree::setup_rally_worktree(
+                            &repo_root,
+                            &target_path,
+                            context.pr_number,
+                            &context.head_sha,
+                        )
+                        .await?;
+                        match setup {
+                            crate::ai::worktree::WorktreeSetup::Created {
+                                ref path,
+                                ref branch,
+                            } => {
+                                let _ = event_tx
+                                    .send(RallyEvent::AgentThinking(format!(
+                                        "Created rally worktree at {} on branch {}",
+                                        path, branch
+                                    )))
+                                    .await;
+                            }
+                            crate::ai::worktree::WorktreeSetup::ExistingReused { ref path } => {
+                                let _ = event_tx
+                                    .send(RallyEvent::AgentThinking(format!(
+                                        "Using existing directory at {}",
+                                        path
+                                    )))
+                                    .await;
+                            }
+                        }
+                    } else {
+                        // Path exists — validate it as a proper worktree
+                        let repo_root =
+                            crate::ai::worktree::get_repo_root(Some(&target_path)).await?;
+                        crate::ai::worktree::validate_existing_worktree(&target_path, &repo_root)
+                            .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+
+                if let Err(e) = setup_result {
+                    let _ = event_tx
+                        .send(RallyEvent::Error(format!(
+                            "Failed to set up worktree: {}",
+                            e
+                        )))
+                        .await;
+                    return;
+                }
+            }
+
             let orchestrator_result = Orchestrator::new(
                 &repo,
                 pr_number,

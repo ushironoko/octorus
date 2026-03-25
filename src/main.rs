@@ -196,7 +196,14 @@ async fn main() -> Result<()> {
     });
 
     let config = if let Some(ref dir) = args.working_dir {
-        config::Config::load_for_dir(Path::new(dir))?
+        let path = Path::new(dir);
+        if path.exists() {
+            config::Config::load_for_dir(path)?
+        } else {
+            // Worktree not yet created — load config from source repo (CWD)
+            // so that .octorus/ config and prompts are resolved correctly
+            config::Config::load()?
+        }
     } else {
         config::Config::load()?
     };
