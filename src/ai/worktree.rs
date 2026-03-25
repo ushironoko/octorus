@@ -86,10 +86,9 @@ pub async fn setup_rally_worktree(
         _ => {}
     }
 
-    let branch = rally_branch_name(pr_number);
-    let branch_exists = check_branch_exists(repo_root, &branch).await;
+    let branch = find_available_rally_branch(repo_root, pr_number).await;
 
-    if branch_exists {
+    if check_branch_exists(repo_root, &branch).await {
         let output = Command::new("git")
             .args(["worktree", "add", abs_target_str.as_ref(), &branch])
             .current_dir(repo_root)
@@ -237,6 +236,41 @@ fn absolutize_path(path: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(p)
     }
+}
+
+/// Find a rally branch name that is not currently checked out in another worktree.
+/// Tries `octorus/rally/{pr}`, then `octorus/rally/{pr}-2`, `-3`, etc.
+async fn find_available_rally_branch(repo_root: &str, pr_number: u32) -> String {
+    let base = rally_branch_name(pr_number);
+    if !is_branch_locked_by_worktree(repo_root, &base).await {
+        return base;
+    }
+    for suffix in 2..=100 {
+        let candidate = format!("{}-{}", base, suffix);
+        if !is_branch_locked_by_worktree(repo_root, &candidate).await {
+            return candidate;
+        }
+    }
+    // Extremely unlikely, but fall back to base and let git report the error
+    base
+}
+
+async fn is_branch_locked_by_worktree(repo_root: &str, branch: &str) -> bool {
+    // A branch is "locked" if it exists AND is currently checked out in a worktree.
+    // `git worktree list --porcelain` lists all worktrees with their branches.
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo_root)
+        .output()
+        .await;
+    let Ok(output) = output else { return false };
+    if !output.status.success() {
+        return false;
+    }
+    let needle = format!("branch refs/heads/{}", branch);
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line == needle)
 }
 
 async fn check_branch_exists(repo_root: &str, branch: &str) -> bool {
@@ -587,5 +621,68 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let result = get_repo_root(Some(tempdir.path().to_str().unwrap())).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_setup_uses_suffixed_branch_when_base_is_locked() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let head_sha = init_repo(&repo_dir);
+
+        // First worktree locks octorus/rally/10
+        let wt1 = tempdir.path().join("wt1");
+        let result1 = setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt1.to_str().unwrap(),
+            10,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+        match &result1 {
+            WorktreeSetup::Created { branch, .. } => {
+                assert_eq!(branch, "octorus/rally/10");
+            }
+            _ => panic!("expected Created"),
+        }
+
+        // Second worktree for same PR should get suffixed branch
+        let wt2 = tempdir.path().join("wt2");
+        let result2 = setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt2.to_str().unwrap(),
+            10,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+        match &result2 {
+            WorktreeSetup::Created { branch, .. } => {
+                assert_eq!(branch, "octorus/rally/10-2");
+            }
+            _ => panic!("expected Created"),
+        }
+
+        // Third worktree increments further
+        let wt3 = tempdir.path().join("wt3");
+        let result3 = setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt3.to_str().unwrap(),
+            10,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+        match &result3 {
+            WorktreeSetup::Created { branch, .. } => {
+                assert_eq!(branch, "octorus/rally/10-3");
+            }
+            _ => panic!("expected Created"),
+        }
+
+        assert!(wt1.exists());
+        assert!(wt2.exists());
+        assert!(wt3.exists());
     }
 }
