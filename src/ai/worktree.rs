@@ -256,3 +256,336 @@ pub fn cleanup_commands(worktree_path: &str, pr_number: u32) -> String {
         worktree_path, branch
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command as StdCommand;
+    use tempfile::tempdir;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = StdCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {:?} failed: {}", args, status);
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn init_repo(dir: &Path) -> String {
+        run_git(dir, &["init", "-b", "main"]);
+        write_file(&dir.join("README.md"), "# test\n");
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "initial"]);
+
+        let output = StdCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn test_rally_branch_name() {
+        assert_eq!(rally_branch_name(123), "octorus/rally/123");
+        assert_eq!(rally_branch_name(0), "octorus/rally/0");
+    }
+
+    #[test]
+    fn test_default_worktree_path() {
+        assert_eq!(
+            default_worktree_path("/home/user/repos/octorus", 42),
+            "/home/user/repos/octorus-rally-42"
+        );
+        assert_eq!(
+            default_worktree_path("/repos/my-app", 1),
+            "/repos/my-app-rally-1"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_commands() {
+        assert_eq!(
+            cleanup_commands("/tmp/wt", 99),
+            "git worktree remove /tmp/wt && git branch -D octorus/rally/99"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_setup_creates_worktree_for_nonexistent_path() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let head_sha = init_repo(&repo_dir);
+
+        let wt_path = tempdir.path().join("repo-rally-1");
+        let result = setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            1,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join("README.md").exists());
+        match result {
+            WorktreeSetup::Created { ref branch, .. } => {
+                assert_eq!(branch, "octorus/rally/1");
+            }
+            WorktreeSetup::ExistingReused { .. } => panic!("expected Created"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_setup_reuses_existing_clean_worktree() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let head_sha = init_repo(&repo_dir);
+
+        let wt_path = tempdir.path().join("repo-rally-2");
+        // First creation
+        setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            2,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+
+        // Second call reuses
+        let result = setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            2,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+
+        matches!(result, WorktreeSetup::ExistingReused { .. });
+    }
+
+    #[tokio::test]
+    async fn test_setup_resets_existing_branch_to_head_sha() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let sha1 = init_repo(&repo_dir);
+
+        // Add a second commit
+        write_file(&repo_dir.join("second.txt"), "second\n");
+        run_git(&repo_dir, &["add", "."]);
+        run_git(&repo_dir, &["commit", "-m", "second"]);
+        let sha2 = StdCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo_dir)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+
+        let wt_path = tempdir.path().join("repo-rally-3");
+
+        // Create worktree at sha1
+        setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            3,
+            &sha1,
+        )
+        .await
+        .unwrap();
+
+        // Remove worktree to free the branch
+        StdCommand::new("git")
+            .args(["worktree", "remove", wt_path.to_str().unwrap()])
+            .current_dir(&repo_dir)
+            .status()
+            .unwrap();
+
+        // Re-create at sha2 — branch already exists, should reset
+        setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            3,
+            &sha2,
+        )
+        .await
+        .unwrap();
+
+        // Verify HEAD in worktree matches sha2
+        let wt_head = StdCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&wt_path)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+        assert_eq!(wt_head, sha2);
+    }
+
+    #[tokio::test]
+    async fn test_validate_rejects_non_git_directory() {
+        let tempdir = tempdir().unwrap();
+        let non_git = tempdir.path().join("not-a-repo");
+        std::fs::create_dir_all(&non_git).unwrap();
+
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+
+        let err = validate_existing_worktree(
+            non_git.to_str().unwrap(),
+            repo_dir.to_str().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_rejects_dirty_worktree() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let head_sha = init_repo(&repo_dir);
+
+        let wt_path = tempdir.path().join("repo-rally-4");
+        setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            4,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+
+        // Dirty the worktree
+        write_file(&wt_path.join("dirty.txt"), "uncommitted\n");
+
+        let err = validate_existing_worktree(
+            wt_path.to_str().unwrap(),
+            repo_dir.to_str().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("uncommitted changes"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_rejects_different_repository() {
+        let tempdir = tempdir().unwrap();
+
+        let repo_a = tempdir.path().join("repo-a");
+        std::fs::create_dir_all(&repo_a).unwrap();
+        init_repo(&repo_a);
+
+        let repo_b = tempdir.path().join("repo-b");
+        std::fs::create_dir_all(&repo_b).unwrap();
+        init_repo(&repo_b);
+
+        let err = validate_existing_worktree(
+            repo_b.to_str().unwrap(),
+            repo_a.to_str().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("different repository"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_rejects_subdirectory() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+
+        let subdir = repo_dir.join("src");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let err = validate_existing_worktree(
+            subdir.to_str().unwrap(),
+            repo_dir.to_str().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("subdirectory"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_accepts_same_repo_worktree() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let head_sha = init_repo(&repo_dir);
+
+        let wt_path = tempdir.path().join("repo-rally-5");
+        setup_rally_worktree(
+            repo_dir.to_str().unwrap(),
+            wt_path.to_str().unwrap(),
+            5,
+            &head_sha,
+        )
+        .await
+        .unwrap();
+
+        // Should pass validation
+        validate_existing_worktree(
+            wt_path.to_str().unwrap(),
+            repo_dir.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_repo_root_returns_toplevel() {
+        let tempdir = tempdir().unwrap();
+        let repo_dir = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+
+        let subdir = repo_dir.join("src");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let root = get_repo_root(Some(subdir.to_str().unwrap())).await.unwrap();
+        let expected = std::fs::canonicalize(&repo_dir).unwrap();
+        let actual = std::fs::canonicalize(root).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_get_repo_root_fails_for_non_repo() {
+        let tempdir = tempdir().unwrap();
+        let result = get_repo_root(Some(tempdir.path().to_str().unwrap())).await;
+        assert!(result.is_err());
+    }
+}
