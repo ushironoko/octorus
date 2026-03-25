@@ -133,7 +133,7 @@ impl App {
         }
 
         // Quit / back
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             if self.handle_filter_esc("issue") {
                 return Ok(());
             }
@@ -161,7 +161,7 @@ impl App {
         let has_filter = state.issue_list_filter.is_some();
 
         // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("issue", true);
             } else if issue_count > 0 {
@@ -181,7 +181,7 @@ impl App {
         }
 
         // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("issue", false);
             } else {

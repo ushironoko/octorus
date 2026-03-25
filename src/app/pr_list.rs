@@ -36,7 +36,7 @@ impl App {
         let has_filter = self.pr_list_filter.is_some();
 
         // Move down (j or Down arrow)
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("pr", true);
             } else if pr_count > 0 {
@@ -53,7 +53,7 @@ impl App {
         }
 
         // Move up (k or Up arrow)
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("pr", false);
             } else {
@@ -85,8 +85,8 @@ impl App {
             return Ok(());
         }
 
-        // Esc: フィルタ適用中なら解除
-        if key.code == KeyCode::Esc && self.handle_filter_esc("pr") {
+        // Quit: フィルタ適用中なら解除
+        if self.matches_single_key(&key, &kb.quit) && self.handle_filter_esc("pr") {
             return Ok(());
         }
 
@@ -289,17 +289,17 @@ impl App {
         self.file_list_filter = None;
         self.pending_approve_body = None;
 
+        // PR遷移時にファイルツリー状態をリセット
+        self.tree_mode_active = false;
+        self.file_tree_state = None;
+
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
-        self.diff_cache_receiver = None;
-        self.prefetch_receiver = None;
+        self.diff_store.clear();
+        self.diff_scroll.reset();
         self.mark_viewed_receiver = None;
         self.batch_diff_receiver = None;
         self.lazy_diff_receiver = None;
         self.lazy_diff_pending_file = None;
-        self.highlighted_cache_store.clear();
-        self.diff_cache = None;
-        self.suggestion_highlight_cache = None;
-        self.input_mode = None;
         self.selected_file = 0;
         self.file_list_scroll_offset = 0;
         self.checks = None;
@@ -338,7 +338,7 @@ impl App {
                 pr: cached.pr.clone(),
                 files: cached.files.clone(),
             };
-            self.diff_line_count = diff_line_count;
+            self.diff_scroll.line_count = diff_line_count;
             self.start_prefetch_all_files();
             // キャッシュHit時はhandle_data_resultを経由しないため、ここでRally起動
             if self.start_ai_rally_on_load {
@@ -358,9 +358,8 @@ impl App {
             if self.issue_detail_return {
                 self.issue_detail_return = false;
 
-                // Local モードから戻る場合はスナップショット保存 + watcher 停止
+                // Local モードから戻る場合は watcher 停止
                 if self.local_mode {
-                    self.saved_local_snapshot = Some(self.save_view_snapshot());
                     self.deactivate_watcher();
                     self.local_mode = false;
                 }
@@ -370,10 +369,9 @@ impl App {
                 self.data_state = DataState::Loading;
                 self.review_comments = None;
                 self.discussion_comments = None;
-                self.diff_cache = None;
+                self.diff_store.clear();
+                self.diff_scroll.reset();
                 self.comment_receiver = None;
-                self.diff_cache_receiver = None;
-                self.prefetch_receiver = None;
                 self.discussion_comment_receiver = None;
                 self.comment_submit_receiver = None;
                 self.mark_viewed_receiver = None;
@@ -384,14 +382,11 @@ impl App {
                 self.pending_approve_body = None;
                 self.comments_loading = false;
                 self.discussion_comments_loading = false;
-                self.highlighted_cache_store.clear();
-                self.suggestion_highlight_cache = None;
-                self.input_mode = None;
                 self.selected_file = 0;
                 self.file_list_scroll_offset = 0;
-                self.selected_line = 0;
-                self.scroll_offset = 0;
                 self.file_list_filter = None;
+                self.tree_mode_active = false;
+                self.file_tree_state = None;
                 self.checks = None;
                 self.checks_loading = false;
                 self.checks_target_pr = None;
@@ -402,9 +397,8 @@ impl App {
                 return;
             }
 
-            // Local モードから戻る場合はスナップショット保存 + watcher 停止
+            // Local モードから戻る場合は watcher 停止
             if self.local_mode {
-                self.saved_local_snapshot = Some(self.save_view_snapshot());
                 self.deactivate_watcher();
                 self.local_mode = false;
             }
@@ -414,12 +408,11 @@ impl App {
             self.data_state = DataState::Loading;
             self.review_comments = None;
             self.discussion_comments = None;
-            self.diff_cache = None;
+            self.diff_store.clear();
+            self.diff_scroll.reset();
             // in-flight view 系レシーバーをクリア（late response による panic 防止）
             // data_receiver / retry_sender は永続のため維持
             self.comment_receiver = None;
-            self.diff_cache_receiver = None;
-            self.prefetch_receiver = None;
             self.discussion_comment_receiver = None;
             self.comment_submit_receiver = None;
             self.mark_viewed_receiver = None;
@@ -430,14 +423,11 @@ impl App {
             self.pending_approve_body = None;
             self.comments_loading = false;
             self.discussion_comments_loading = false;
-            self.highlighted_cache_store.clear();
-            self.suggestion_highlight_cache = None;
-            self.input_mode = None;
             self.selected_file = 0;
             self.file_list_scroll_offset = 0;
-            self.selected_line = 0;
-            self.scroll_offset = 0;
             self.file_list_filter = None;
+            self.tree_mode_active = false;
+            self.file_tree_state = None;
             self.checks = None;
             self.checks_loading = false;
             self.checks_target_pr = None;

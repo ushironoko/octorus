@@ -78,7 +78,7 @@ impl App {
         let kb = self.config.keybindings.clone();
 
         // Quit / back
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = AppState::IssueList;
             return Ok(());
         }
@@ -97,13 +97,13 @@ impl App {
         match focus {
             IssueDetailFocus::Body => {
                 // Body scroll
-                if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                if self.matches_single_key(&key, &kb.move_down) {
                     let state = self.issue_state.as_mut().unwrap();
                     state.issue_detail_scroll_offset =
                         state.issue_detail_scroll_offset.saturating_add(1);
                     return Ok(());
                 }
-                if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                if self.matches_single_key(&key, &kb.move_up) {
                     let state = self.issue_state.as_mut().unwrap();
                     state.issue_detail_scroll_offset =
                         state.issue_detail_scroll_offset.saturating_sub(1);
@@ -129,7 +129,7 @@ impl App {
             IssueDetailFocus::LinkedPrs => {
                 let pr_count = state.linked_prs.as_ref().map(|p| p.len()).unwrap_or(0);
 
-                if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                if self.matches_single_key(&key, &kb.move_down) {
                     if pr_count > 0 {
                         let state = self.issue_state.as_mut().unwrap();
                         state.selected_linked_pr =
@@ -137,7 +137,7 @@ impl App {
                     }
                     return Ok(());
                 }
-                if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                if self.matches_single_key(&key, &kb.move_up) {
                     let state = self.issue_state.as_mut().unwrap();
                     state.selected_linked_pr = state.selected_linked_pr.saturating_sub(1);
                     return Ok(());
@@ -159,7 +159,7 @@ impl App {
         }
 
         // Tab: フォーカス切替（linked PRs が存在する場合のみ）
-        if key.code == KeyCode::Tab {
+        if self.matches_single_key(&key, &kb.tab_switch) {
             let has_linked_prs = state
                 .linked_prs
                 .as_ref()
@@ -300,7 +300,7 @@ impl App {
         }
 
         // Quit / back → IssueDetail に戻る
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = AppState::IssueDetail;
             return Ok(());
         }
@@ -308,7 +308,7 @@ impl App {
         let comment_count = state.issue_comments.as_ref().map(|c| c.len()).unwrap_or(0);
 
         // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if comment_count > 0 {
                 let state = self.issue_state.as_mut().unwrap();
                 state.selected_issue_comment =
@@ -318,7 +318,7 @@ impl App {
         }
 
         // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             let state = self.issue_state.as_mut().unwrap();
             state.selected_issue_comment = state.selected_issue_comment.saturating_sub(1);
             return Ok(());
@@ -400,8 +400,7 @@ impl App {
 
         // Quit / Esc / Enter: detail を閉じてリストに戻る
         if self.matches_single_key(&key, &kb.quit)
-            || key.code == KeyCode::Esc
-            || self.matches_single_key(&key, &kb.open_panel)
+                       || self.matches_single_key(&key, &kb.open_panel)
         {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_mode = false;
@@ -415,14 +414,14 @@ impl App {
         }
 
         // Scroll down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll = state.issue_comment_detail_scroll.saturating_add(1);
             return Ok(());
         }
 
         // Scroll up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll = state.issue_comment_detail_scroll.saturating_sub(1);
             return Ok(());
@@ -588,7 +587,8 @@ mod tests {
         app.issue_state = Some(state);
         app.state = AppState::IssueCommentList;
 
-        let key = crossterm::event::KeyEvent::new(KeyCode::Esc, event::KeyModifiers::NONE);
+        // quit キー（デフォルト: q）で戻る
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), event::KeyModifiers::NONE);
         app.handle_issue_comment_list_input(key).unwrap();
 
         let state = app.issue_state.as_ref().unwrap();

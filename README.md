@@ -109,6 +109,7 @@ or --issue 10
 | `-i, --issue [NUMBER]` | Open issue list, or open a specific issue directly if number is provided |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
+| `--git-ops` | Open Git Ops view directly on startup |
 | `--accept-local-overrides` | Accept local `.octorus/` overrides for AI settings in headless mode |
 
 ### Subcommands
@@ -401,7 +402,7 @@ request_changes = "r"
 comment = "c"
 suggestion = "s"
 
-[git_log]
+[git_ops]
 # Maximum number of cached commit diffs (default: 20)
 max_diff_cache = 20
 
@@ -593,8 +594,9 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 | `d` | View PR description |
 | `A` | Start AI Rally |
 | `S` | View CI checks status |
-| `gl` | Open git log view |
+| `G` | Open git ops view |
 | `I` | Open issue list |
+| `t` | Toggle file tree view |
 | `Space /` | Keyword filter |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
@@ -611,6 +613,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 |-----|--------|
 | `j` / `↓` | Move file selection (diff follows) |
 | `k` / `↑` | Move file selection (diff follows) |
+| `t` | Toggle file tree view |
 | `Enter` / `→` / `l` | Focus diff pane |
 | `←` / `h` / `q` | Back to file list |
 
@@ -696,38 +699,58 @@ When adding a comment, suggestion, or reply, you enter the built-in text input m
 
 Multi-line input is supported. Press `Enter` to insert a newline.
 
-### Git Log View
+### Git Ops View
 
-The git log view lets you browse PR commits with syntax-highlighted diff preview.
+The git ops view provides staging, committing, and commit history browsing in a single screen. The left pane is split vertically: file tree (70%) and commit history (30%). The right pane shows the diff preview.
 
-**Commit List Focus (Split View):**
+Destructive operations (discard, undo, reset) show a Y/n confirmation prompt with the exact git command that will be executed. The commits pane title shows `↑N` when local commits are ahead of the remote.
+
+Can be opened directly from CLI with `--git-ops` flag.
+
+**Tree Focus:**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Space` | Stage/unstage file or directory |
+| `s` | Stage all files |
+| `d` | Discard changes (Y/n confirmation) |
+| `c` | Commit (opens editor) |
+| `u` | Undo last operation (Y/n confirmation) |
+| `R` | Refresh status |
+| `P` | Push to origin (shows loading spinner) |
+| `Enter` | Toggle directory expand/collapse, or focus diff |
+| `Tab` | Switch to commits pane |
+| `l` / `→` | Focus diff pane |
+| `q` / `Esc` | Close git ops |
+
+**Commits Focus:**
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Move down in commit list |
 | `k` / `↑` | Move up in commit list |
-| `Shift+j` | Page down |
-| `Shift+k` | Page up |
 | `g` | Jump to first commit |
 | `G` | Jump to last commit |
-| `Enter` / `Tab` / `→` / `l` | Focus diff pane |
-| `r` | Retry (on error) |
-| `q` / `Esc` / `←` / `h` | Back to file list |
+| `u` | Reset --soft to selected commit (local mode only, Y/n confirmation) |
+| `Tab` | Switch to tree pane |
+| `Enter` / `l` / `→` | Focus diff pane (commit diff) |
+| `q` / `Esc` | Close git ops |
 
-**Diff Focus (Split View):**
+**Diff Focus:**
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Scroll diff |
 | `k` / `↑` | Scroll diff |
+| `J` / `K` | Page down / up |
 | `gg` / `G` | Jump to first/last line |
-| `Ctrl-d` | Page down |
-| `Ctrl-u` | Page up |
-| `Tab` / `→` / `l` | Open fullscreen diff view |
-| `←` / `h` | Focus commit list |
-| `q` | Back to file list |
+| `Ctrl-d` / `Ctrl-u` | Page down / up |
+| `Tab` | Switch to tree pane |
+| `h` / `←` / `Esc` | Back to previous left pane |
 
-Commits are loaded with infinite scroll — additional commits are fetched automatically as you scroll down. Diffs are prefetched in the background for faster navigation.
+Commits are loaded with infinite scroll. Diffs are prefetched in the background for faster navigation.
 
 ### CI Checks View
 
@@ -861,7 +884,7 @@ go_to_definition = ["g", "d"]
 | `open_panel` | `Enter` | Open panel / select |
 | `open_in_browser` | `O` | Open PR in browser |
 | `ci_checks` | `S` | View CI checks status |
-| `git_log` | `gl` | Open git log view |
+| `git_ops` | `G` | Open git ops view |
 | `issue_list` | `I` | Open issue list |
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
@@ -871,6 +894,7 @@ go_to_definition = ["g", "d"]
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |
 | `multiline_select` | `V` | Enter multiline selection mode |
+| `tree_toggle` | `t` | Toggle file tree view |
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
 

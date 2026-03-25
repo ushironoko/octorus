@@ -8,6 +8,7 @@ pub mod ai;
 pub mod app;
 pub mod cache;
 pub mod config;
+pub mod diff_store;
 pub mod diff;
 pub mod editor;
 pub mod filter;

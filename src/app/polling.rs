@@ -6,12 +6,12 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
+use crate::diff_store::{MAX_PREFETCH_FILES, PrefetchItem};
 use crate::github::{ChangedFile, CiStatus};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
-use crate::syntax::ParserPool;
 
 use super::types::*;
-use super::{App, DataState, MAX_HIGHLIGHTED_CACHE_ENTRIES, MAX_PREFETCH_FILES};
+use super::{App, DataState};
 
 impl App {
     pub(crate) fn poll_pr_list_updates(&mut self) {
@@ -164,44 +164,11 @@ impl App {
 
     /// バックグラウンドdiffキャッシュ構築のポーリング
     pub(crate) fn poll_diff_cache_updates(&mut self) {
-        let Some(ref mut rx) = self.diff_cache_receiver else {
+        // DataState::Loaded でなければポーリングしない（PR遷移中のstaleキャッシュ防止）
+        if !matches!(self.data_state, DataState::Loaded { .. }) {
             return;
-        };
-
-        match rx.try_recv() {
-            Ok(cache) => {
-                // DataState::Loaded でなければ破棄（PR遷移中のstaleキャッシュ防止）
-                if !matches!(self.data_state, DataState::Loaded { .. }) {
-                    self.diff_cache_receiver = None;
-                    return;
-                }
-                // バリデーション: ファイル切替されていないか確認
-                if cache.file_index != self.selected_file {
-                    self.diff_cache_receiver = None;
-                    return;
-                }
-                // patch変更されていないか確認（ファイルが存在しない場合も破棄）
-                let Some(file) = self.files().get(self.selected_file) else {
-                    self.diff_cache_receiver = None;
-                    return;
-                };
-                let Some(ref patch) = file.patch else {
-                    self.diff_cache_receiver = None;
-                    return;
-                };
-                if cache.patch_hash != hash_string(patch) {
-                    self.diff_cache_receiver = None;
-                    return;
-                }
-                // キャッシュをスワップ（再描画は次フレームで自動）
-                self.diff_cache = Some(cache);
-                self.diff_cache_receiver = None;
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {}
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.diff_cache_receiver = None;
-            }
         }
+        self.diff_store.poll_highlight();
     }
 
     /// ファイルのハイライトキャッシュを事前構築（バックグラウンド）
@@ -210,103 +177,46 @@ impl App {
     /// 既にキャッシュ済みのファイルはスキップする。
     pub(crate) fn start_prefetch_all_files(&mut self) {
         // 既存のプリフェッチを中断
-        self.prefetch_receiver = None;
+        self.diff_store.drop_prefetch_rx();
 
         // キャッシュ済みファイルをスキップし、上限まで収集
         // poll_prefetch_updates() で現在表示中のハイライト済みファイルはストアに格納されないため、
         // ここでも同じ条件で除外する（除外しないとプリフェッチが永久ループする）
-        let files: Vec<_> = self
+        let items: Vec<PrefetchItem<usize>> = self
             .files()
             .iter()
             .enumerate()
             .filter(|(i, f)| {
                 f.patch.is_some()
-                    && !self.highlighted_cache_store.contains_key(i)
-                    && !self
-                        .diff_cache
-                        .as_ref()
-                        .is_some_and(|c| c.file_index == *i && c.highlighted)
+                    && !self.diff_store.store_contains_key(i)
+                    && self.diff_store.current_key() != Some(i)
             })
             .take(MAX_PREFETCH_FILES)
-            .map(|(i, f)| (i, f.filename.clone(), f.patch.clone().unwrap()))
+            .map(|(i, f)| PrefetchItem {
+                key: i,
+                file_index: i,
+                filename: f.filename.clone(),
+                patch: f.patch.clone().unwrap(),
+            })
             .collect();
-
-        if files.is_empty() {
-            return;
-        }
 
         let theme = self.config.diff.theme.clone();
         let markdown_rich = self.markdown_rich;
         let tab_width = self.config.diff.tab_width;
-        let channel_size = files.len().min(MAX_PREFETCH_FILES);
-        let (tx, rx) = mpsc::channel(channel_size);
-        self.prefetch_receiver = Some(rx);
-
-        tokio::task::spawn_blocking(move || {
-            let mut parser_pool = ParserPool::new();
-
-            for (index, filename, patch) in &files {
-                let mut cache = crate::ui::diff_view::build_diff_cache(
-                    patch,
-                    filename,
-                    &theme,
-                    &mut parser_pool,
-                    markdown_rich,
-                    tab_width,
-                );
-                cache.file_index = *index;
-                if tx.blocking_send(cache).is_err() {
-                    break; // receiver がドロップされた
-                }
-            }
-        });
+        self.diff_store
+            .start_prefetch(items, &theme, markdown_rich, tab_width);
     }
 
-    /// プリフェッチ結果をポーリングして highlighted_cache_store に格納
+    /// プリフェッチ結果をポーリングして diff_store に格納
     pub(crate) fn poll_prefetch_updates(&mut self) {
-        let Some(ref mut rx) = self.prefetch_receiver else {
-            return;
-        };
+        let had_rx = self.diff_store.has_prefetch_rx();
+        let selected = self.selected_file;
+        self.diff_store.poll_prefetch(|k| k.abs_diff(selected));
 
-        loop {
-            match rx.try_recv() {
-                Ok(cache) => {
-                    let file_index = cache.file_index;
-                    // 現在表示中でハイライト済みならスキップ
-                    if self
-                        .diff_cache
-                        .as_ref()
-                        .is_some_and(|c| c.file_index == file_index && c.highlighted)
-                    {
-                        continue;
-                    }
-                    // ストアに既にあればスキップ
-                    if self.highlighted_cache_store.contains_key(&file_index) {
-                        continue;
-                    }
-                    // サイズ上限チェック: 超過時は現在選択中のファイルから最も遠いエントリを削除
-                    if self.highlighted_cache_store.len() >= MAX_HIGHLIGHTED_CACHE_ENTRIES {
-                        // 現在選択中のファイルから最も遠いエントリを削除
-                        let evict_key = self
-                            .highlighted_cache_store
-                            .keys()
-                            .max_by_key(|k| (**k).abs_diff(self.selected_file))
-                            .copied();
-                        if let Some(key) = evict_key {
-                            self.highlighted_cache_store.remove(&key);
-                        }
-                    }
-                    self.highlighted_cache_store.insert(file_index, cache);
-                }
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.prefetch_receiver = None;
-                    // プリフェッチ完了後、まだ未キャッシュのファイルがあれば再起動
-                    // （バッチ進行中に新しい patch が到着した分をカバーする）
-                    self.start_prefetch_all_files();
-                    break;
-                }
-            }
+        // プリフェッチ完了後（rx が消えた）、まだ未キャッシュのファイルがあれば再起動
+        // （バッチ進行中に新しい patch が到着した分をカバーする）
+        if had_rx && !self.diff_store.has_prefetch_rx() {
+            self.start_prefetch_all_files();
         }
     }
 
@@ -437,15 +347,14 @@ impl App {
 
         // ループ終了後にまとめて後処理
         if current_file_updated {
-            self.diff_cache = None;
-            self.diff_cache_receiver = None;
+            self.diff_store.clear_current();
             self.lazy_diff_receiver = None;
             self.lazy_diff_pending_file = None;
             self.update_diff_line_count();
             self.ensure_diff_cache();
         }
 
-        if any_received && self.prefetch_receiver.is_none() {
+        if any_received && !self.diff_store.has_prefetch_rx() {
             self.start_prefetch_all_files();
         }
     }
@@ -509,8 +418,7 @@ impl App {
                         .update_file_patch(&key, &result.filename, result.patch);
                 }
 
-                self.diff_cache = None;
-                self.diff_cache_receiver = None;
+                self.diff_store.clear_current();
                 self.update_diff_line_count();
                 self.ensure_diff_cache();
             }
@@ -911,10 +819,8 @@ impl App {
                 }
 
                 if next_selected != old_selected {
-                    self.diff_cache = None;
-                    self.diff_cache_receiver = None;
-                    self.selected_line = 0;
-                    self.scroll_offset = 0;
+                    self.diff_store.clear_current();
+                    self.diff_scroll.reset();
                     self.comment_panel_open = false;
                     self.comment_panel_scroll = 0;
                 }
@@ -942,9 +848,10 @@ impl App {
                     self.file_list_scroll_offset =
                         self.file_list_scroll_offset.min(self.selected_file);
                 }
-                self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
+                let line_count = Self::calc_diff_line_count(&files, self.selected_file);
+                self.diff_scroll.set_line_count(line_count);
                 // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
-                self.highlighted_cache_store.clear();
+                self.diff_store.clear();
                 // Check if we need to start AI Rally (--ai-rally flag was passed)
                 let should_start_rally =
                     self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loading);
@@ -976,6 +883,8 @@ impl App {
                 if self.file_list_filter.is_some() {
                     self.reapply_filter("file");
                 }
+                // ファイルツリーを再構築（ツリーモードがアクティブな場合のみ）
+                self.rebuild_file_tree_if_active();
                 // selected_file が変更された場合、コメント位置キャッシュを再計算
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();
@@ -1185,10 +1094,8 @@ impl App {
             if idx != self.selected_file {
                 self.selected_file = idx;
                 self.file_list_scroll_offset = self.file_list_scroll_offset.min(idx);
-                self.diff_cache = None;
-                self.diff_cache_receiver = None;
-                self.selected_line = 0;
-                self.scroll_offset = 0;
+                self.diff_store.clear_current();
+                self.diff_scroll.reset();
                 self.comment_panel_open = false;
                 self.comment_panel_scroll = 0;
                 if matches!(self.state, AppState::FileList | AppState::SplitViewFileList) {

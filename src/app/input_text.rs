@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode, KeyEvent};
+use crossterm::event::{self, KeyEvent};
 use tokio::sync::mpsc;
 
 use crate::github;
@@ -213,8 +213,7 @@ impl App {
         if self.matches_single_key(key, &self.config.keybindings.approve) {
             PendingApproveChoice::Submit
         } else if self.matches_single_key(key, &self.config.keybindings.quit)
-            || key.code == KeyCode::Esc
-        {
+                   {
             self.pending_approve_body = None;
             self.submission_result = None;
             self.submission_result_time = None;

@@ -1075,8 +1075,10 @@ mod tests {
         std::fs::create_dir_all(&prompts_dir).unwrap();
         std::fs::write(prompts_dir.join("reviewer.md"), "custom prompt").unwrap();
 
-        let mut config = Config::default();
-        config.project_root = project_root;
+        let config = Config {
+            project_root,
+            ..Config::default()
+        };
 
         let overrides = collect_sensitive_overrides(&config);
         assert_eq!(overrides.len(), 1);
@@ -1091,8 +1093,10 @@ mod tests {
         std::fs::create_dir_all(&prompts_dir).unwrap();
         std::fs::write(prompts_dir.join("reviewee.md"), "custom").unwrap();
 
-        let mut config = Config::default();
-        config.project_root = project_root;
+        let mut config = Config {
+            project_root,
+            ..Config::default()
+        };
         config.local_overrides.insert("ai.auto_post".to_string());
 
         let overrides = collect_sensitive_overrides(&config);

@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::common::render_rally_status_bar;
 use super::diff_view;
-use super::file_list::build_file_list_items;
+use super::file_list::{build_file_list_items, build_tree_row_item};
 use crate::app::{App, AppState, DataState};
 use crate::github::ChangedFile;
 
@@ -159,6 +159,52 @@ fn render_file_list_pane(
                     &mut scrollbar_state,
                 );
             }
+        }
+    } else if app.is_file_tree_active() {
+        let tree = app.file_tree_state.as_ref().unwrap();
+        let row_count = tree.row_count();
+        let items: Vec<ListItem> = tree
+            .visible_rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row))
+            .collect();
+
+        let title = format!("Files ({}) [tree]", total_files);
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color))
+                    .title(title),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray));
+
+        let mut list_state = ListState::default()
+            .with_offset(tree.scroll_offset)
+            .with_selected(Some(tree.selected_row));
+
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+        if let Some(ref mut tree) = app.file_tree_state {
+            tree.scroll_offset = list_state.offset();
+        }
+
+        if row_count > 1 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+            let selected = app.file_tree_state.as_ref().map_or(0, |t| t.selected_row);
+            let mut scrollbar_state =
+                ScrollbarState::new(row_count.saturating_sub(1)).position(selected);
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
         }
     } else {
         let items = build_file_list_items(files, app.selected_file);
@@ -490,11 +536,11 @@ fn render_diff_body(
     border_color: Color,
 ) {
     let visible_height = area.height.saturating_sub(2) as usize;
-    let (lines, scroll_row) = if let Some(ref cache) = app.diff_cache {
+    let (lines, scroll_row) = if let Some(ref cache) = app.diff_store.current {
         let line_count = cache.lines.len();
         // Slice from scroll_offset, bounded to visible viewport + buffer for wrap handling.
         let max_scroll = line_count.saturating_sub(visible_height);
-        let start = app.scroll_offset.min(max_scroll);
+        let start = app.diff_scroll.scroll_offset.min(max_scroll);
         let end = (start + visible_height + 10).min(line_count);
         let multiline_range = app
             .multiline_selection
@@ -503,7 +549,7 @@ fn render_diff_body(
         let rendered = diff_view::render_cached_lines(
             cache,
             start..end,
-            app.selected_line,
+            app.diff_scroll.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
@@ -524,7 +570,7 @@ fn render_diff_body(
             },
             None => vec![Line::from("No file selected")],
         };
-        (rendered, app.scroll_offset as u16)
+        (rendered, app.diff_scroll.scroll_offset as u16)
     };
 
     let diff_block = Paragraph::new(lines)
@@ -539,7 +585,7 @@ fn render_diff_body(
     frame.render_widget(diff_block, area);
 
     // Render scrollbar for diff content
-    if let Some(ref cache) = app.diff_cache {
+    if let Some(ref cache) = app.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;
         let max_scroll = total_lines.saturating_sub(visible_height);
@@ -548,7 +594,7 @@ fn render_diff_body(
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
 
-            let clamped_position = app.scroll_offset.min(max_scroll);
+            let clamped_position = app.diff_scroll.scroll_offset.min(max_scroll);
             let mut scrollbar_state = ScrollbarState::new(max_scroll).position(clamped_position);
 
             frame.render_stateful_widget(

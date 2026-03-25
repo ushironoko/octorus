@@ -21,34 +21,25 @@ impl App {
             .unwrap_or(false);
 
         if current_is_md {
-            self.diff_cache = None;
-            self.diff_cache_receiver = None;
+            self.diff_store.clear_current();
         }
 
         // ストア内のmarkdownファイルのキャッシュのみ無効化
-        let files = self.files();
-        let md_indices: Vec<usize> = self
-            .highlighted_cache_store
-            .keys()
-            .copied()
-            .filter(|idx| {
-                files
-                    .get(*idx)
-                    .map(|f| crate::language::is_markdown_ext_from_filename(&f.filename))
-                    .unwrap_or(false)
-            })
-            .collect();
-        for idx in md_indices {
-            self.highlighted_cache_store.remove(&idx);
-        }
+        let markdown_rich = self.markdown_rich;
+        self.diff_store
+            .invalidate_if(|_k, cache| cache.markdown_rich != markdown_rich);
 
         // PR description キャッシュも無効化
         self.pr_description_cache = None;
 
         // プリフェッチも停止（markdown_richフラグが変わったため再構築が必要）
-        self.prefetch_receiver = None;
+        self.diff_store.drop_prefetch_rx();
     }
 
+    /// L キー: 現在のモードを閉じ、反対のモードをクリーン起動する
+    ///
+    /// スナップショットの保存・復元は行わない。
+    /// 毎回クリーンな状態で起動するため、状態の不整合が発生しない。
     pub(crate) fn toggle_local_mode(&mut self) {
         // フォアグラウンド Rally 中はブロック
         if matches!(self.state, AppState::AiRally) {
@@ -58,90 +49,47 @@ impl App {
             return;
         }
 
-        // PR モードの in-flight viewed mutation を破棄
-        self.mark_viewed_receiver = None;
-        // Local モードの in-flight バッチ/lazy diff を破棄（クロスPRキャッシュ汚染防止）
-        self.batch_diff_receiver = None;
-        self.lazy_diff_receiver = None;
-        self.lazy_diff_pending_file = None;
-
         if self.local_mode {
-            // Local → PR
-            self.deactivate_watcher();
-            self.saved_local_snapshot = Some(self.save_view_snapshot());
-            self.local_mode = false;
-            // モード切替時にファイルフィルタをリセット（stale indices による OOB 防止）
-            self.file_list_filter = None;
+            // Local → PR: 切替可能かチェック（reset_view_state の前）
+            let has_valid_repo = self.repo.contains('/');
+            let has_original_pr = self.original_pr_number.filter(|&n| n != 0).is_some();
 
-            if let Some(snapshot) = self.saved_pr_snapshot.take() {
-                let pr_number = snapshot.pr_number;
-                self.restore_view_snapshot(snapshot);
-
-                // data_receiver の origin_pr を更新
-                if let Some(pr) = pr_number {
-                    self.update_data_receiver_origin(pr);
-                }
-
-                // SessionCache からデータ復元
-                self.restore_data_from_cache();
-            } else if let Some(pr) = self.original_pr_number {
-                // original_pr_number で復帰
-                self.pr_number = Some(pr);
-                self.update_data_receiver_origin(pr);
-                self.restore_data_from_cache();
-            } else if self.started_from_pr_list {
-                self.back_to_pr_list();
-            } else {
-                // 復帰先がない → local に戻してエラー表示
-                self.local_mode = true;
-                self.saved_local_snapshot = None; // 戻す
-                if let Some(handle) = &self.watcher_handle {
-                    handle.active.store(true, Ordering::Release);
-                }
+            if !has_valid_repo && !has_original_pr {
+                // repo がダミー値（"local" 等）で復帰先PRもない → 切替不可
                 self.submission_result = Some((false, "No PR to return to".to_string()));
                 self.submission_result_time = Some(Instant::now());
                 return;
             }
 
+            self.deactivate_watcher();
+            self.reset_view_state();
+            self.local_mode = false;
+
+            if let Some(pr) = self.original_pr_number.filter(|&n| n != 0) {
+                // CLI --pr 指定あり → そのPRを開く
+                self.pr_number = Some(pr);
+                self.state = AppState::FileList;
+                self.update_data_receiver_origin(pr);
+                self.restore_data_from_cache();
+            } else {
+                // PR指定なし → PR一覧を開く
+                self.pr_number = None;
+                self.state = AppState::PullRequestList;
+                self.started_from_pr_list = true;
+                self.data_state = DataState::Loading;
+                self.reload_pr_list();
+            }
+
             self.submission_result = Some((true, "Switched to PR mode".to_string()));
         } else {
-            // PR → Local
-            let from_pr_list = matches!(self.state, AppState::PullRequestList);
-            self.saved_pr_snapshot = Some(self.save_view_snapshot());
+            // PR → Local: PR状態を破棄 → Local モードをクリーン起動
+            self.reset_view_state();
             self.local_mode = true;
-            // モード切替時にファイルフィルタをリセット（stale indices による OOB 防止）
-            self.file_list_filter = None;
-
-            // PR リストから来た場合は FileList に遷移
-            if from_pr_list {
-                self.state = AppState::FileList;
-            }
-
-            if let Some(snapshot) = self.saved_local_snapshot.take() {
-                self.restore_view_snapshot(snapshot);
-            } else {
-                // 初回: ビューリセット
-                self.selected_file = 0;
-                self.file_list_scroll_offset = 0;
-                self.selected_line = 0;
-                self.scroll_offset = 0;
-                self.diff_cache = None;
-                self.highlighted_cache_store.clear();
-                self.review_comments = None;
-                self.discussion_comments = None;
-            }
-
-            // restore_view_snapshot がスナップショットの pr_number で上書きする可能性があるため、
-            // Local モードでは常に 0 を強制
             self.pr_number = Some(0);
-
-            // data_receiver の origin_pr を 0 (local) に更新
+            self.state = AppState::FileList;
             self.update_data_receiver_origin(0);
-            // stale な in-flight view 系 receiver をクリア
-            self.diff_cache_receiver = None;
-            self.prefetch_receiver = None;
 
-            // SessionCache からデータ復元
+            // SessionCache にローカルデータがあれば復元
             let cache_key = PrCacheKey {
                 repo: self.repo.clone(),
                 pr_number: 0,
@@ -151,21 +99,41 @@ impl App {
                     pr: cached.pr.clone(),
                     files: cached.files.clone(),
                 };
-                self.diff_line_count =
-                    Self::calc_diff_line_count(&cached.files, self.selected_file);
+                self.diff_scroll
+                    .set_line_count(Self::calc_diff_line_count(&cached.files, 0));
                 self.start_prefetch_all_files();
             } else {
                 self.data_state = DataState::Loading;
             }
 
             self.activate_watcher();
-            // 常にバックグラウンドで最新データを取得
             self.retry_load();
 
             self.submission_result = Some((true, "Switched to Local mode".to_string()));
         }
 
         self.submission_result_time = Some(Instant::now());
+    }
+
+    /// ビュー状態を全リセット（モード切替の共通前処理）
+    fn reset_view_state(&mut self) {
+        self.selected_file = 0;
+        self.file_list_scroll_offset = 0;
+        self.diff_scroll.reset();
+        self.diff_store.clear();
+        self.file_list_filter = None;
+        self.review_comments = None;
+        self.discussion_comments = None;
+        self.comment_receiver = None;
+        self.discussion_comment_receiver = None;
+        self.comment_submit_receiver = None;
+        self.mark_viewed_receiver = None;
+        self.batch_diff_receiver = None;
+        self.lazy_diff_receiver = None;
+        self.lazy_diff_pending_file = None;
+        self.comment_submitting = false;
+        self.comments_loading = false;
+        self.discussion_comments_loading = false;
     }
 
     /// data_receiver の origin_pr を更新（channel 自体は再作成しない）
@@ -187,7 +155,7 @@ impl App {
                 pr: cached.pr.clone(),
                 files: cached.files.clone(),
             };
-            self.diff_line_count = Self::calc_diff_line_count(&cached.files, self.selected_file);
+            self.diff_scroll.line_count = Self::calc_diff_line_count(&cached.files, self.selected_file);
             self.start_prefetch_all_files();
         } else {
             self.data_state = DataState::Loading;
@@ -229,53 +197,6 @@ impl App {
         }
 
         None
-    }
-
-    /// 現在のビュー状態をスナップショットとして保存（O(1) 移動）
-    ///
-    /// データは `SessionCache` に格納済みのため、`data_state` は保存しない。
-    pub(crate) fn save_view_snapshot(&mut self) -> ViewSnapshot {
-        ViewSnapshot {
-            pr_number: self.pr_number,
-            selected_file: self.selected_file,
-            file_list_scroll_offset: self.file_list_scroll_offset,
-            selected_line: self.selected_line,
-            scroll_offset: self.scroll_offset,
-            diff_cache: self.diff_cache.take(),
-            highlighted_cache_store: std::mem::take(&mut self.highlighted_cache_store),
-            review_comments: self.review_comments.take(),
-            discussion_comments: self.discussion_comments.take(),
-            local_file_signatures: std::mem::take(&mut self.local_file_signatures),
-            local_file_patch_signatures: std::mem::take(&mut self.local_file_patch_signatures),
-        }
-    }
-
-    /// スナップショットから UI 状態を復元（O(1) 移動）
-    ///
-    /// channel は触らない（永続チャンネルのため）。
-    /// データは `SessionCache` から別途取得する。
-    pub(crate) fn restore_view_snapshot(&mut self, snapshot: ViewSnapshot) {
-        self.pr_number = snapshot.pr_number;
-        self.selected_file = snapshot.selected_file;
-        self.file_list_scroll_offset = snapshot.file_list_scroll_offset;
-        self.selected_line = snapshot.selected_line;
-        self.scroll_offset = snapshot.scroll_offset;
-        self.diff_cache = snapshot.diff_cache;
-        self.highlighted_cache_store = snapshot.highlighted_cache_store;
-        self.review_comments = snapshot.review_comments;
-        self.discussion_comments = snapshot.discussion_comments;
-        self.local_file_signatures = snapshot.local_file_signatures;
-        self.local_file_patch_signatures = snapshot.local_file_patch_signatures;
-
-        // stale な in-flight view 系 receiver をクリア
-        self.diff_cache_receiver = None;
-        self.prefetch_receiver = None;
-        self.comment_receiver = None;
-        self.discussion_comment_receiver = None;
-        self.comment_submit_receiver = None;
-        self.comment_submitting = false;
-        self.comments_loading = false;
-        self.discussion_comments_loading = false;
     }
 
     /// ファイルウォッチャーを有効化（初回は作成、2回目以降は active フラグを ON）

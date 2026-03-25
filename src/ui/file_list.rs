@@ -13,6 +13,7 @@ use super::common::{
     build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar,
 };
 use crate::app::App;
+use crate::app::TreeRow;
 use crate::github::ChangedFile;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -110,6 +111,47 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+    } else if app.is_file_tree_active() {
+        let tree = app.file_tree_state.as_ref().unwrap();
+        let row_count = tree.row_count();
+        let items: Vec<ListItem> = tree
+            .visible_rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row))
+            .collect();
+
+        let title = format!("Changed Files ({}) [tree]", total_files);
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().bg(Color::DarkGray));
+
+        let mut list_state = ListState::default()
+            .with_offset(tree.scroll_offset)
+            .with_selected(Some(tree.selected_row));
+
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+        if let Some(ref mut tree) = app.file_tree_state {
+            tree.scroll_offset = list_state.offset();
+        }
+
+        if row_count > 1 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+            let selected = app.file_tree_state.as_ref().map_or(0, |t| t.selected_row);
+            let mut scrollbar_state =
+                ScrollbarState::new(row_count.saturating_sub(1)).position(selected);
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
     } else {
         let items = build_file_list_items(files, app.selected_file);
 
@@ -127,14 +169,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
-        // Persist both offset and clamped selected index from ListState
-        // (render_stateful_widget may clamp selected if list shrank)
         app.file_list_scroll_offset = list_state.offset();
         if let Some(sel) = list_state.selected() {
             app.selected_file = sel;
         }
 
-        // Render scrollbar if there are more files than visible
         if total_files > 1 {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
@@ -367,4 +406,87 @@ fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListIte
     ]);
 
     ListItem::new(line)
+}
+
+pub(crate) fn build_tree_row_item<'a>(
+    files: &'a [ChangedFile],
+    row: &TreeRow,
+    is_selected: bool,
+) -> ListItem<'a> {
+    match row {
+        TreeRow::Dir { ref path, depth, expanded } => {
+            let indent = "  ".repeat(*depth);
+            let icon = if *expanded { "▼" } else { "▶" };
+            let dir_name = path
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(path);
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(format!("{} {}/", icon, dir_name), style),
+            ]);
+            ListItem::new(line)
+        }
+        TreeRow::File { index, depth } => {
+            let Some(file) = files.get(*index) else {
+                return ListItem::new(Line::from(""));
+            };
+            let indent = "  ".repeat(*depth);
+            let filename = file
+                .filename
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(&file.filename);
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let status_color = match file.status.as_str() {
+                "added" => Color::Green,
+                "removed" => Color::Red,
+                "modified" => Color::Yellow,
+                "copied" => Color::Cyan,
+                _ => Color::White,
+            };
+
+            let status_char = match file.status.as_str() {
+                "added" => 'A',
+                "removed" => 'D',
+                "modified" => 'M',
+                "renamed" => 'R',
+                "copied" => 'C',
+                _ => '?',
+            };
+
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(
+                    format!("[{}] ", status_char),
+                    Style::default().fg(status_color),
+                ),
+                if file.viewed {
+                    Span::styled("✓ ", Style::default().fg(Color::Green))
+                } else {
+                    Span::raw("  ")
+                },
+                Span::styled(filename, style),
+                Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
+            ]);
+            ListItem::new(line)
+        }
+    }
 }
