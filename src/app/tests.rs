@@ -6655,3 +6655,24 @@ fn test_no_zen_mode_started_from_pr_list_quit_returns_to_pr_list() {
     // Without zen_mode, back_to_pr_list() fires → PullRequestList
     assert_eq!(app.state, AppState::PullRequestList);
 }
+
+#[test]
+fn test_zen_mode_preserves_split_view_state() {
+    let mut app = App::new_for_test();
+    app.zen_mode = true;
+
+    // From SplitViewFileList, zen mode should stay in split view (not fullscreen)
+    app.state = AppState::SplitViewFileList;
+    app.enter_diff_from_file_list();
+    assert_eq!(app.state, AppState::SplitViewDiff);
+}
+
+#[test]
+fn test_no_zen_mode_split_view_file_list_goes_to_split_view_diff() {
+    let mut app = App::new_for_test();
+    app.zen_mode = false;
+
+    app.state = AppState::SplitViewFileList;
+    app.enter_diff_from_file_list();
+    assert_eq!(app.state, AppState::SplitViewDiff);
+}

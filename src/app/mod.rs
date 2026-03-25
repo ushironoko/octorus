@@ -588,7 +588,10 @@ impl App {
     }
 
     pub(crate) fn enter_diff_from_file_list(&mut self) {
-        if self.zen_mode {
+        if self.state == AppState::SplitViewFileList {
+            // Preserve split-view context regardless of zen mode
+            self.state = AppState::SplitViewDiff;
+        } else if self.zen_mode {
             self.diff_view_return_state = AppState::FileList;
             self.state = AppState::DiffView;
         } else {
