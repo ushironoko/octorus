@@ -304,7 +304,6 @@ impl App {
                 }
             }
             KeyCode::Char('G') => {
-                // Jump to bottom
                 if let Some(ref mut rally_state) = self.ai_rally_state {
                     let total_logs = rally_state.logs.len();
                     if total_logs > 0 {
@@ -314,7 +313,6 @@ impl App {
                 }
             }
             KeyCode::Char('g') => {
-                // Jump to top
                 if let Some(ref mut rally_state) = self.ai_rally_state {
                     if !rally_state.logs.is_empty() {
                         rally_state.selected_log_index = Some(0);
@@ -538,7 +536,6 @@ impl App {
             file_patches,
         };
 
-        // Check for sensitive local config overrides
         let mut warnings: Vec<(String, String)> = crate::config::SENSITIVE_AI_KEYS
             .iter()
             .filter(|key| self.config.local_overrides.contains(**key))
@@ -548,7 +545,6 @@ impl App {
             })
             .collect();
 
-        // Check for local prompt overrides
         let prompt_loader = PromptLoader::new(&self.config.ai, &self.config.project_root);
         for (filename, source) in prompt_loader.resolve_all_sources() {
             if let PromptSource::Local(path) = source {

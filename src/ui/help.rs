@@ -24,23 +24,16 @@ fn fmt_label(label: &str, width: usize) -> String {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Tab header
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
         .split(frame.area());
 
-    // Tab header
     render_tab_header(frame, app, chunks[0]);
 
-    // Content
     match app.help_tab {
         HelpTab::Keybindings => render_keybindings_tab(frame, app, chunks[1]),
         HelpTab::Config => render_config_tab(frame, app, chunks[1]),
     }
 
-    // Footer
     render_help_footer(frame, app, chunks[2]);
 }
 

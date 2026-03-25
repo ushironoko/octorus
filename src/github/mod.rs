@@ -4,7 +4,6 @@ mod commit;
 mod issue;
 mod pr;
 
-// Explicit re-exports - only export what is actually used
 pub use client::{detect_repo, gh_command, DetectRepoError};
 pub use comment::{create_multiline_review_comment, create_reply_comment, create_review_comment};
 pub use commit::{

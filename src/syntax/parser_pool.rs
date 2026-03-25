@@ -43,7 +43,6 @@ impl ParserPool {
     /// This is particularly important for injection processing (e.g., Svelte)
     /// where multiple queries are needed per file.
     pub fn get_or_create_query(&mut self, lang: SupportedLanguage) -> Option<&Query> {
-        // If query doesn't exist, compile it
         if let Entry::Vacant(e) = self.queries.entry(lang) {
             let ts_language = lang.ts_language();
             let query_source = lang.highlights_query();
@@ -60,7 +59,6 @@ impl ParserPool {
     pub fn get_or_create(&mut self, ext: &str) -> Option<&mut Parser> {
         let lang = SupportedLanguage::from_extension(ext)?;
 
-        // If parser doesn't exist, create it
         if let Entry::Vacant(e) = self.parsers.entry(lang) {
             let ts_language = lang.ts_language();
             let mut parser = Parser::new();

@@ -120,7 +120,6 @@ where
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct KeybindingsConfig {
-    // Navigation
     pub move_down: KeySequence,
     pub move_up: KeySequence,
     pub move_left: KeySequence,
@@ -133,7 +132,6 @@ pub struct KeybindingsConfig {
     pub next_comment: KeySequence,
     pub prev_comment: KeySequence,
 
-    // Actions
     pub approve: KeySequence,
     pub request_changes: KeySequence,
     pub comment: KeySequence,
@@ -142,41 +140,25 @@ pub struct KeybindingsConfig {
     pub refresh: KeySequence,
     pub submit: KeySequence,
 
-    // Mode switching
     pub quit: KeySequence,
     pub help: KeySequence,
     pub comment_list: KeySequence,
     pub ai_rally: KeySequence,
     pub open_panel: KeySequence,
 
-    // Diff operations
     pub go_to_definition: KeySequence,
     pub go_to_file: KeySequence,
     pub open_in_browser: KeySequence,
 
-    // Local mode
     pub toggle_local_mode: KeySequence,
     pub toggle_auto_focus: KeySequence,
 
-    // Zen mode
     pub toggle_zen_mode: KeySequence,
-
-    // Markdown rich display
     pub toggle_markdown_rich: KeySequence,
-
-    // List filter
     pub filter: KeySequence,
-
-    // Multiline selection (fallback for Shift+Enter)
     pub multiline_select: KeySequence,
-
-    // PR description
     pub pr_description: KeySequence,
-
-    // CI Checks
     pub ci_checks: KeySequence,
-
-    // Git ops
     pub git_ops: KeySequence,
     pub git_ops_stage: KeySequence,
     pub git_ops_stage_all: KeySequence,
@@ -185,17 +167,11 @@ pub struct KeybindingsConfig {
     pub git_ops_undo: KeySequence,
     pub git_ops_push: KeySequence,
 
-    // Issue list
     pub issue_list: KeySequence,
-
-    // Focus switching
     pub tab_switch: KeySequence,
-
-    // Mark viewed
     pub mark_viewed: KeySequence,
     pub mark_viewed_dir: KeySequence,
 
-    // Tree view toggle
     pub tree_toggle: KeySequence,
 }
 
@@ -228,7 +204,6 @@ impl Default for DiffConfig {
 impl Default for KeybindingsConfig {
     fn default() -> Self {
         Self {
-            // Navigation (with arrow key alternatives)
             move_down: KeySequence::single(KeyBinding::char('j'))
                 .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Down)]),
             move_up: KeySequence::single(KeyBinding::char('k'))
@@ -245,7 +220,6 @@ impl Default for KeybindingsConfig {
             next_comment: KeySequence::single(KeyBinding::char('n')),
             prev_comment: KeySequence::single(KeyBinding::char('N')),
 
-            // Actions
             approve: KeySequence::single(KeyBinding::char('a')),
             request_changes: KeySequence::single(KeyBinding::char('r')),
             comment: KeySequence::single(KeyBinding::char('c')),
@@ -254,7 +228,6 @@ impl Default for KeybindingsConfig {
             refresh: KeySequence::single(KeyBinding::char('R')),
             submit: KeySequence::single(KeyBinding::ctrl('s')),
 
-            // Mode switching
             quit: KeySequence::single(KeyBinding::char('q'))
                 .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Esc)]),
             help: KeySequence::single(KeyBinding::char('?')),
@@ -262,34 +235,19 @@ impl Default for KeybindingsConfig {
             ai_rally: KeySequence::single(KeyBinding::char('A')),
             open_panel: KeySequence::single(KeyBinding::named(NamedKey::Enter)),
 
-            // Diff operations
             go_to_definition: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('d')),
             go_to_file: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('f')),
             open_in_browser: KeySequence::single(KeyBinding::char('O')),
 
-            // Local mode
             toggle_local_mode: KeySequence::single(KeyBinding::char('L')),
             toggle_auto_focus: KeySequence::single(KeyBinding::char('F')),
 
-            // Zen mode
             toggle_zen_mode: KeySequence::single(KeyBinding::char('Z')),
-
-            // Markdown rich display
             toggle_markdown_rich: KeySequence::single(KeyBinding::char('M')),
-
-            // List filter
             filter: KeySequence::double(KeyBinding::char(' '), KeyBinding::char('/')),
-
-            // Multiline selection (fallback for Shift+Enter)
             multiline_select: KeySequence::single(KeyBinding::char('V')),
-
-            // PR description
             pr_description: KeySequence::single(KeyBinding::char('d')),
-
-            // CI Checks
             ci_checks: KeySequence::single(KeyBinding::char('S')),
-
-            // Git ops
             git_ops: KeySequence::single(KeyBinding::char('G')),
             git_ops_stage: KeySequence::single(KeyBinding::char(' ')),
             git_ops_stage_all: KeySequence::single(KeyBinding::char('s')),
@@ -298,16 +256,10 @@ impl Default for KeybindingsConfig {
             git_ops_undo: KeySequence::single(KeyBinding::char('u')),
             git_ops_push: KeySequence::single(KeyBinding::char('P')),
 
-            // Issue list
             issue_list: KeySequence::single(KeyBinding::char('I')),
-
-            // Focus switching
             tab_switch: KeySequence::single(KeyBinding::named(crate::keybinding::NamedKey::Tab)),
-
-            // Mark viewed
             mark_viewed: KeySequence::single(KeyBinding::char('v')),
             mark_viewed_dir: KeySequence::single(KeyBinding::char('V')),
-            // Tree view toggle
             tree_toggle: KeySequence::single(KeyBinding::char('t')),
         }
     }
@@ -324,7 +276,6 @@ impl KeybindingsConfig {
         let mut single_keys: HashMap<KeyBinding, &str> = HashMap::new();
         let mut sequence_prefixes: HashMap<KeyBinding, &str> = HashMap::new();
 
-        // Collect all keybindings
         let bindings: Vec<(&str, &KeySequence)> = vec![
             ("move_down", &self.move_down),
             ("move_up", &self.move_up),

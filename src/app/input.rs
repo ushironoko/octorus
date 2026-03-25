@@ -123,7 +123,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        // フィルタ入力中はフィルタ処理を優先
         if self.handle_filter_input(&key, "file") {
             return Ok(());
         }
@@ -151,13 +150,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let has_filter = self.file_list_filter.is_some();
         let tree_active = self.is_file_tree_active();
 
-        // Tree toggle
         if self.matches_single_key(&key, &kb.tree_toggle) && !has_filter {
             self.toggle_file_tree();
             return Ok(());
         }
 
-        // Quit: フィルタ適用中なら解除を優先、そうでなければ PR 一覧に戻る/終了
         if self.matches_single_key(&key, &kb.quit) {
             if self.handle_filter_esc("file") {
                 return Ok(());
@@ -170,7 +167,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Move down (j or Down arrow - arrows always work)
         if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("file", true);
@@ -183,7 +179,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Move up (k or Up arrow)
         if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("file", false);
@@ -195,7 +190,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Page down (Ctrl-d by default, also J)
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
@@ -210,7 +204,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Page up (Ctrl-u by default, also K)
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             if !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
@@ -224,20 +217,17 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // G: Git Ops 画面
         if self.matches_single_key(&key, &kb.git_ops) {
             self.open_git_ops();
             return Ok(());
         }
 
-        // Space+/ シーケンス処理（ファイル一覧でのフィルタ起動）
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
             if !self.pending_keys.is_empty() {
                 self.push_pending_key(kb_event);
 
-                // Space+/: フィルタ起動
                 if self.try_match_sequence(&kb.filter) == SequenceMatch::Full {
                     self.clear_pending_keys();
                     if let Some(ref mut filter) = self.file_list_filter {
@@ -265,10 +255,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                     return Ok(());
                 }
 
-                // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
-                // シーケンス開始チェック
                 let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
                 let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
                 if could_start_filter || could_start_gg {
@@ -306,7 +294,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Actions (disabled in local mode - no PR to submit reviews to)
         if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(());
@@ -318,27 +305,23 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Note: In FileList, 'comment' key triggers review comment (not inline comment)
         // Using separate check for review comment in FileList context
         if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal).await?;
             return Ok(());
         }
 
-        // Comment list
         if self.matches_single_key(&key, &kb.comment_list) {
             self.previous_state = AppState::FileList;
             self.open_comment_list();
             return Ok(());
         }
 
-        // Refresh
         if self.matches_single_key(&key, &kb.refresh) {
             self.refresh_all();
             return Ok(());
         }
 
-        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
         // ローカルモードではコメント投稿等のAPI呼び出しはオーケストレーター側でスキップされる。
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
@@ -353,13 +336,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Toggle local mode
         if self.matches_single_key(&key, &kb.toggle_local_mode) {
             self.toggle_local_mode();
             return Ok(());
         }
 
-        // Toggle auto-focus (local mode only)
         if self.matches_single_key(&key, &kb.toggle_auto_focus) {
             if self.local_mode {
                 self.toggle_auto_focus();
@@ -367,19 +348,16 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Toggle zen mode
         if self.matches_single_key(&key, &kb.toggle_zen_mode) {
             self.toggle_zen_mode();
             return Ok(());
         }
 
-        // PR description (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
             self.open_pr_description();
             return Ok(());
         }
 
-        // CI Checks (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.ci_checks) {
             if let Some(pr_number) = self.pr_number {
                 self.open_checks_list(pr_number);
@@ -387,7 +365,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
             self.state = AppState::Help;
@@ -410,7 +387,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
 
         let kb = &self.config.keybindings;
 
-        // Review actions (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(true);
@@ -432,7 +408,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(true);
         }
 
-        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(true);
@@ -445,13 +420,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(true);
         }
 
-        // PR description (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
             self.open_pr_description();
             return Ok(true);
         }
 
-        // CI Checks (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.ci_checks) {
             if let Some(pr_number) = self.pr_number {
                 self.open_checks_list(pr_number);
@@ -459,13 +432,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(true);
         }
 
-        // Toggle local mode
         if self.matches_single_key(&key, &kb.toggle_local_mode) {
             self.toggle_local_mode();
             return Ok(true);
         }
 
-        // Toggle auto-focus (local mode only)
         if self.matches_single_key(&key, &kb.toggle_auto_focus) {
             if self.local_mode {
                 self.toggle_auto_focus();
@@ -473,7 +444,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(true);
         }
 
-        // Toggle zen mode
         if self.matches_single_key(&key, &kb.toggle_zen_mode) {
             self.toggle_zen_mode();
             return Ok(true);
@@ -621,15 +591,12 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             .collect()
     }
     pub(crate) fn refresh_all(&mut self) {
-        // インメモリキャッシュを全削除
         self.session_cache.invalidate_all();
-        // コメントデータをクリア
         self.review_comments = None;
         self.discussion_comments = None;
         self.comments_loading = false;
         self.discussion_comments_loading = false;
         self.file_list_filter = None;
-        // 強制的に Loading 状態にしてから再取得
         self.data_state = DataState::Loading;
         self.retry_load();
     }
@@ -669,13 +636,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let kb = self.config.keybindings.clone();
         let check_count = self.checks.as_ref().map(|c| c.len()).unwrap_or(0);
 
-        // Quit / back
         if self.matches_single_key(&key, &kb.quit) {
             self.state = self.checks_return_state;
             return Ok(());
         }
 
-        // Move down
         if self.matches_single_key(&key, &kb.move_down) {
             if check_count > 0 {
                 self.selected_check = (self.selected_check + 1).min(check_count.saturating_sub(1));
@@ -683,13 +648,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Move up
         if self.matches_single_key(&key, &kb.move_up) {
             self.selected_check = self.selected_check.saturating_sub(1);
             return Ok(());
         }
 
-        // Jump to first (gg)
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -707,7 +670,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             }
         }
 
-        // Jump to last (G)
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if check_count > 0 {
                 self.selected_check = check_count.saturating_sub(1);
@@ -715,7 +677,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Enter: open in browser
         if self.matches_single_key(&key, &kb.open_panel) {
             if let Some(ref checks) = self.checks {
                 if let Some(check) = checks.get(self.selected_check) {
@@ -727,7 +688,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // R: refresh
         if self.matches_single_key(&key, &kb.refresh) {
             if let Some(pr_number) = self.checks_target_pr {
                 self.open_checks_list(pr_number);
@@ -735,7 +695,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // O: open PR in browser
         if self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.checks_target_pr {
                 self.open_pr_in_browser(pr_number);

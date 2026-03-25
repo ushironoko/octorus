@@ -24,27 +24,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .as_ref()
         .is_some_and(|f| f.input_active);
 
-    let mut constraints = vec![
-        Constraint::Length(3), // Header
-        Constraint::Min(0),    // File list
-    ];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(0)];
     if has_filter_bar {
-        constraints.push(Constraint::Length(3)); // Filter bar
+        constraints.push(Constraint::Length(3));
     }
     if has_update {
-        constraints.push(Constraint::Length(1)); // Update notification bar
+        constraints.push(Constraint::Length(1));
     }
     if has_rally {
-        constraints.push(Constraint::Length(1)); // Rally status bar
+        constraints.push(Constraint::Length(1));
     }
-    constraints.push(Constraint::Length(3)); // Footer
+    constraints.push(Constraint::Length(3));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
 
-    // Header
     let pr_info = build_pr_info(app);
     let ci_span = build_ci_status_span(app);
 
@@ -52,14 +48,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // File list
     let files = app.files();
     let total_files = files.len();
 
-    // フィルタ適用中はフィルタ済みサブセットを表示
     if let Some(ref filter) = app.file_list_filter {
         if filter.matched_indices.is_empty() {
-            // マッチ0件
             let empty_msg = format!("No matches for '{}'", filter.query);
             let empty = Paragraph::new(empty_msg)
                 .style(Style::default().fg(Color::DarkGray))
@@ -193,10 +186,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // Track chunk index for remaining elements
     let mut next_chunk = 2;
 
-    // Filter bar
     if has_filter_bar {
         if let Some(ref filter) = app.file_list_filter {
             render_filter_bar(frame, chunks[next_chunk], filter);
@@ -204,19 +195,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         next_chunk += 1;
     }
 
-    // Update notification bar
     if has_update {
         render_update_bar(frame, chunks[next_chunk], app);
         next_chunk += 1;
     }
 
-    // Rally status bar (if background rally exists)
     if has_rally {
         render_rally_status_bar(frame, chunks[next_chunk], app);
         next_chunk += 1;
     }
 
-    // Footer (dynamic based on rally state)
     let ai_rally_text = if app.has_background_rally() {
         "A: Resume Rally"
     } else {
@@ -262,7 +250,6 @@ fn render_filter_bar(
     frame.render_widget(filter_bar, area);
 }
 
-/// Loading状態の表示
 pub fn render_loading(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -273,7 +260,6 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    // Header
     let header_text = if app.is_local_mode() {
         let af = if app.is_local_auto_focus() { " AF" } else { "" };
         format!("[LOCAL{}] Loading...", af)
@@ -287,7 +273,6 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Loading message
     let loading_msg = if app.is_local_mode() {
         format!("{} Loading local diff...", app.spinner_char())
     } else {
@@ -303,13 +288,11 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         );
     frame.render_widget(loading, chunks[1]);
 
-    // Footer
     let footer = Paragraph::new(format!("{} Please wait... (q: quit)", app.spinner_char()))
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
-/// Error状態の表示
 pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -320,7 +303,6 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         ])
         .split(frame.area());
 
-    // Header
     let header_text = if app.is_local_mode() {
         "[LOCAL] Error".to_string()
     } else {
@@ -333,18 +315,15 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Error message
     let error = Paragraph::new(format!("Error: {}", error_msg))
         .style(Style::default().fg(Color::Red))
         .block(Block::default().borders(Borders::ALL).title("Error"));
     frame.render_widget(error, chunks[1]);
 
-    // Footer
     let footer = Paragraph::new("r: retry | q: quit").block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
-/// ファイル一覧のリストアイテムを構築する（side_by_side でも再利用）
 pub(crate) fn build_file_list_items<'a>(
     files: &'a [ChangedFile],
     selected_file: usize,
@@ -356,7 +335,6 @@ pub(crate) fn build_file_list_items<'a>(
         .collect()
 }
 
-/// フィルタ済みファイル一覧のリストアイテムを構築する
 fn build_file_list_items_ref<'a>(files: &[&'a ChangedFile], selected: usize) -> Vec<ListItem<'a>> {
     files
         .iter()

@@ -367,7 +367,6 @@ impl App {
             pr_number: self.pr_number(),
         };
 
-        // インメモリキャッシュを確認
         if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
             self.review_comments = Some(comments.to_vec());
             self.selected_comment = 0;
@@ -376,7 +375,6 @@ impl App {
             return;
         }
 
-        // キャッシュミス: API取得
         self.comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();
@@ -429,7 +427,6 @@ impl App {
             pr_number: self.pr_number(),
         };
 
-        // インメモリキャッシュを確認
         if let Some(comments) = self.session_cache.get_discussion_comments(&cache_key) {
             self.discussion_comments = Some(comments.to_vec());
             self.selected_discussion_comment = 0;
@@ -437,7 +434,6 @@ impl App {
             return;
         }
 
-        // キャッシュミス: API取得
         self.discussion_comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();
@@ -463,7 +459,6 @@ impl App {
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
-        // Handle detail mode input separately
         if self.discussion_comment_detail_mode {
             return self.handle_discussion_detail_input(key, visible_lines);
         }
@@ -551,7 +546,6 @@ impl App {
                     self.jump_to_comment();
                 }
                 CommentTab::Discussion => {
-                    // Enter detail mode for discussion comment
                     if self
                         .discussion_comments
                         .as_ref()
@@ -817,7 +811,6 @@ impl App {
     ) -> u16 {
         let panel_inner_width = self.comment_panel_inner_width(terminal_width);
         let content_lines = self.comment_panel_content_lines(panel_inner_width);
-        // コメントパネルは全体高さの約40%（Header/Footer/borders分を差し引き）
         let panel_inner_height = (terminal_height.saturating_sub(8) * 40 / 100).max(1);
         content_lines.saturating_sub(panel_inner_height) as u16
     }

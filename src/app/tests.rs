@@ -6339,7 +6339,7 @@ fn test_tree_survives_filter_clear() {
     ]);
 
     app.toggle_file_tree();
-    let tree_row_count = app.file_tree_state.as_ref().unwrap().row_count();
+    let _tree_row_count = app.file_tree_state.as_ref().unwrap().row_count();
 
     // フィルタを設定→解除
     app.file_list_filter = Some(crate::filter::ListFilter::new());

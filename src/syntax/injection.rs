@@ -26,7 +26,6 @@ pub fn extract_injections(
     language: &Language,
     injection_query: &str,
 ) -> Vec<InjectionRange> {
-    // Parse the injection query
     let query = match Query::new(language, injection_query) {
         Ok(q) => q,
         Err(_) => return Vec::new(),
@@ -35,7 +34,6 @@ pub fn extract_injections(
     let mut cursor = QueryCursor::new();
     let mut injections = Vec::new();
 
-    // Execute the query using StreamingIterator
     let mut matches = cursor.matches(&query, tree.root_node(), source);
 
     while let Some(match_) = matches.next() {
@@ -50,26 +48,20 @@ pub fn extract_injections(
                 content_range = Some(capture.node.byte_range());
                 content_node = Some(capture.node);
             } else if *capture_name == "injection.language" {
-                // Language from captured text
                 if let Ok(text) = capture.node.utf8_text(source) {
                     lang = Some(text.to_string());
                 }
             }
         }
 
-        // Check for #set! injection.language in query properties
         if lang.is_none() {
             lang = get_injection_language_from_pattern(&query, match_.pattern_index);
         }
 
-        // Get parent node kind from the content node
         let parent_node_kind = content_node.and_then(|node| {
-            // Walk up the tree to find a meaningful parent node kind
-            // (e.g., "script_element", "style_element")
             let mut current = node.parent();
             while let Some(parent) = current {
                 let kind = parent.kind();
-                // Look for element-level nodes that indicate the injection context
                 if kind.ends_with("_element") || kind == "script" || kind == "style" {
                     return Some(kind.to_string());
                 }
@@ -108,27 +100,22 @@ pub fn extract_injections(
 fn deduplicate_injections(mut injections: Vec<InjectionRange>) -> Vec<InjectionRange> {
     use std::collections::HashMap;
 
-    // Group injections by their byte range
     let mut range_map: HashMap<(usize, usize), Vec<InjectionRange>> = HashMap::new();
     for inj in injections.drain(..) {
         let key = (inj.range.start, inj.range.end);
         range_map.entry(key).or_default().push(inj);
     }
 
-    // For each range, pick the most specific language
     let mut result = Vec::new();
     for (_, mut group) in range_map {
         if group.len() == 1 {
             result.push(group.pop().unwrap());
         } else {
-            // Sort by language specificity (most specific first)
             group.sort_by_key(|inj| language_specificity(&inj.language));
-            // Take the most specific one
             result.push(group.remove(0));
         }
     }
 
-    // Sort by range start for deterministic output
     result.sort_by_key(|inj| inj.range.start);
     result
 }
@@ -149,7 +136,6 @@ fn language_specificity(lang: &str) -> u32 {
 
 /// Try to extract the injection language from query pattern settings.
 fn get_injection_language_from_pattern(query: &Query, pattern_index: usize) -> Option<String> {
-    // Check if there's a property setting for this pattern
     for setting in query.property_settings(pattern_index) {
         if setting.key.as_ref() == "injection.language" {
             if let Some(value) = &setting.value {

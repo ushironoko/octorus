@@ -509,7 +509,6 @@ impl App {
                 self.comment_submit_receiver = None;
                 self.submission_result = Some((true, "Submitted".to_string()));
                 self.submission_result_time = Some(Instant::now());
-                // インメモリキャッシュを破棄してコメントを再取得
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
                     pr_number: origin_pr,

@@ -29,7 +29,6 @@ impl App {
         self.diff_store
             .invalidate_if(|_k, cache| cache.markdown_rich != markdown_rich);
 
-        // PR description キャッシュも無効化
         self.pr_description_cache = None;
 
         // プリフェッチも停止（markdown_richフラグが変わったため再構築が必要）

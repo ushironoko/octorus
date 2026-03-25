@@ -16,13 +16,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Checks list
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
         ])
         .split(frame.area());
 
-    // Header
     let pr_label = app
         .checks_target_pr
         .map(|n| format!("PR #{}", n))
@@ -32,7 +31,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Checks list
     if app.checks_loading {
         let loading = Paragraph::new(format!("{} Loading checks...", app.spinner_char()))
             .block(Block::default().borders(Borders::ALL).title("CI Checks"));
@@ -88,7 +86,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.render_widget(empty, chunks[1]);
     }
 
-    // Footer
     let footer_text =
         "j/k/↑↓: move | Enter: open in browser | R: refresh | O: open PR | q: back | ?: help";
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
@@ -96,7 +93,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn check_status_icon(check: &CheckItem) -> (char, Color) {
-    // Use bucket first (stable), fall back to state
     match check.bucket.as_deref() {
         Some("pass") => ('✓', Color::Green),
         Some("fail") => ('✕', Color::Red),
@@ -104,7 +100,6 @@ fn check_status_icon(check: &CheckItem) -> (char, Color) {
         Some("skipping") => ('-', Color::DarkGray),
         Some("cancel") => ('✕', Color::DarkGray),
         _ => {
-            // Fallback to state field
             match check.state.as_str() {
                 "SUCCESS" | "PASS" => ('✓', Color::Green),
                 "FAILURE" | "FAIL" | "STARTUP_FAILURE" | "ERROR" => ('✕', Color::Red),
