@@ -286,6 +286,12 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
             "diff.bg_color",
             overrides,
         ),
+        config_value_line(
+            "Zen mode",
+            &config.diff.zen_mode.to_string(),
+            "diff.zen_mode",
+            overrides,
+        ),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Editor",
@@ -457,6 +463,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Toggle auto-focus (local mode)",
             fmt_key(&kb.toggle_auto_focus.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle zen mode",
+            fmt_key(&kb.toggle_zen_mode.display(), key_width)
         )),
         Line::from(format!(
             "{}  Filter list",

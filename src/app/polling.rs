@@ -841,7 +841,7 @@ impl App {
                     if !rally_running_in_bg
                         && matches!(self.state, AppState::FileList | AppState::SplitViewFileList)
                     {
-                        self.state = AppState::SplitViewDiff;
+                        self.enter_diff_from_file_list();
                     }
                     self.sync_diff_to_selected_file();
                 } else {
@@ -1099,7 +1099,7 @@ impl App {
                 self.comment_panel_open = false;
                 self.comment_panel_scroll = 0;
                 if matches!(self.state, AppState::FileList | AppState::SplitViewFileList) {
-                    self.state = AppState::SplitViewDiff;
+                    self.enter_diff_from_file_list();
                 }
                 self.sync_diff_to_selected_file();
             }

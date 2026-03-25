@@ -4,7 +4,7 @@ mod comment_list;
 mod common;
 pub mod diff_view;
 mod file_list;
-mod footer;
+pub(super) mod footer;
 mod git_ops;
 mod help;
 mod issue_comment_list;

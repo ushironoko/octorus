@@ -300,7 +300,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                 return Ok(());
             }
             if !self.files().is_empty() {
-                self.state = AppState::SplitViewDiff;
+                self.enter_diff_from_file_list();
                 self.sync_diff_to_selected_file();
             }
             return Ok(());
@@ -364,6 +364,12 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             if self.local_mode {
                 self.toggle_auto_focus();
             }
+            return Ok(());
+        }
+
+        // Toggle zen mode
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
             return Ok(());
         }
 
@@ -464,6 +470,12 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             if self.local_mode {
                 self.toggle_auto_focus();
             }
+            return Ok(true);
+        }
+
+        // Toggle zen mode
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
             return Ok(true);
         }
 

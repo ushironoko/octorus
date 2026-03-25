@@ -6562,3 +6562,274 @@ fn test_toggle_file_tree_with_empty_files() {
     assert!(!app.tree_mode_active);
     assert!(app.file_tree_state.is_none());
 }
+
+// ========== Zen Mode Tests ==========
+
+/// レンダリングバッファから先頭 N 行を抽出してスナップショット用文字列にする
+fn render_top_lines(app: &mut App, height: u16, n: usize) -> String {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let width = 80;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            crate::ui::render(frame, app);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    (0..n.min(height as usize))
+        .map(|y| {
+            let mut line = String::new();
+            for x in 0..width {
+                let cell = &buf[(x, y as u16)];
+                line.push_str(cell.symbol());
+            }
+            line.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn make_loaded_app() -> App {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Add zen mode".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feat-zen".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr,
+            files: vec![ChangedFile {
+                filename: "src/app.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 3,
+                deletions: 1,
+                patch: Some("@@ -1,3 +1,5 @@\n context\n-old line\n+new line\n+added\n+more".to_string()),
+                viewed: false,
+            }],
+        },
+    );
+    app
+}
+
+#[tokio::test]
+async fn test_zen_mode_navigation_scenario() {
+    use insta::assert_snapshot;
+
+    let mut app = make_loaded_app();
+    app.state = AppState::FileList;
+
+    // Step 1: FileList (zen OFF)
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────────────────────────────────────────────────────────┐
+    │PR #1: Add zen mode by @user                                                  │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌Changed Files (1)─────────────────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1                                                        │
+    │                                                                              │
+    "#);
+
+    // Step 2: Toggle zen ON → still FileList
+    app.toggle_zen_mode();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────────────────────────────────────────────────────────┐
+    │PR #1: Add zen mode by @user                                                  │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌Changed Files (1)─────────────────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1                                                        │
+    │                                                                              │
+    "#);
+
+    // Step 3: Enter → DiffView (fullscreen, NOT split)
+    app.enter_diff_from_file_list();
+    app.sync_diff_to_selected_file();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌Diff──────────────────────────────────────────────────────────────────────────┐
+    │src/app.rs (+3 -1)                                                            │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────┐
+    │@@ -1,3 +1,5 @@                                                               │
+    │ context                                                                      │
+    "#);
+
+    // Step 4: Quit → back to FileList
+    app.handle_fullscreen_diff_quit();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────────────────────────────────────────────────────────┐
+    │PR #1: Add zen mode by @user                                                  │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌Changed Files (1)─────────────────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1                                                        │
+    │                                                                              │
+    "#);
+
+    // Step 5: Toggle zen OFF → Enter → SplitView
+    app.toggle_zen_mode();
+    app.enter_diff_from_file_list();
+    app.sync_diff_to_selected_file();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────┐┌Diff Preview──────────────────────────────────────┐
+    │PR #1: Add zen mode       ││src/app.rs (+3 -1)                                │
+    └──────────────────────────┘└──────────────────────────────────────────────────┘
+    ┌Files (1)─────────────────┐┌──────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1    ││@@ -1,3 +1,5 @@                                   │
+    │                          ││ context                                          │
+    "#);
+}
+
+#[tokio::test]
+async fn test_zen_mode_pr_list_origin_quit_scenario() {
+    use insta::assert_snapshot;
+
+    let mut app = make_loaded_app();
+    app.started_from_pr_list = true;
+
+    // zen ON: FileList → DiffView → quit → FileList (not PR list)
+    app.zen_mode = true;
+    app.state = AppState::FileList;
+    app.enter_diff_from_file_list();
+    app.sync_diff_to_selected_file();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌Diff──────────────────────────────────────────────────────────────────────────┐
+    │src/app.rs (+3 -1)                                                            │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────┐
+    │@@ -1,3 +1,5 @@                                                               │
+    │ context                                                                      │
+    "#);
+
+    app.handle_fullscreen_diff_quit();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────────────────────────────────────────────────────────┐
+    │PR #1: Add zen mode by @user                                                  │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌Changed Files (1)─────────────────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1                                                        │
+    │                                                                              │
+    "#);
+
+    // zen OFF: same setup → quit → PullRequestList
+    app.zen_mode = false;
+    app.state = AppState::DiffView;
+    app.diff_view_return_state = AppState::FileList;
+    app.handle_fullscreen_diff_quit();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────────────────────────────────────────────────────────┐
+    │PR List: owner/repo (open)                                                    │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌Pull Requests─────────────────────────────────────────────────────────────────┐
+    │Failed to load pull requests                                                  │
+    │                                                                              │
+    "#);
+}
+
+#[tokio::test]
+async fn test_zen_mode_split_view_preservation_scenario() {
+    use insta::assert_snapshot;
+
+    let mut app = make_loaded_app();
+    app.zen_mode = true;
+
+    // SplitViewFileList → enter → SplitViewDiff (zen mode does NOT force fullscreen)
+    app.state = AppState::SplitViewFileList;
+    app.enter_diff_from_file_list();
+    app.sync_diff_to_selected_file();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────┐┌Diff Preview──────────────────────────────────────┐
+    │PR #1: Add zen mode       ││src/app.rs (+3 -1)                                │
+    └──────────────────────────┘└──────────────────────────────────────────────────┘
+    ┌Files (1)─────────────────┐┌──────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1    ││@@ -1,3 +1,5 @@                                   │
+    │                          ││ context                                          │
+    "#);
+
+    // Same with zen OFF
+    app.zen_mode = false;
+    app.state = AppState::SplitViewFileList;
+    app.enter_diff_from_file_list();
+    app.sync_diff_to_selected_file();
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌octorus───────────────────┐┌Diff Preview──────────────────────────────────────┐
+    │PR #1: Add zen mode       ││src/app.rs (+3 -1)                                │
+    └──────────────────────────┘└──────────────────────────────────────────────────┘
+    ┌Files (1)─────────────────┐┌──────────────────────────────────────────────────┐
+    │[M]   src/app.rs +3 -1    ││@@ -1,3 +1,5 @@                                   │
+    │                          ││ context                                          │
+    "#);
+}
+
+#[tokio::test]
+async fn test_zen_mode_auto_focus_transitions_to_diff_view() {
+    use insta::assert_snapshot;
+
+    let mut config = Config::default();
+    config.diff.zen_mode = true;
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.set_local_mode(true);
+    app.set_local_auto_focus(true);
+    app.state = AppState::FileList;
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr,
+            files: vec![ChangedFile {
+                filename: "initial.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 1,
+                patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+                viewed: false,
+            }],
+        },
+    );
+
+    // auto_focus + zen → fullscreen DiffView
+    assert_snapshot!(render_top_lines(&mut app, 20, 6), @r#"
+    ┌Diff──────────────────────────────────────────────────────────────────────────┐
+    │initial.rs (+1 -1)                                                            │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────┐
+    │@@ -1,1 +1,1 @@                                                               │
+    │-old                                                                          │
+    "#);
+}
