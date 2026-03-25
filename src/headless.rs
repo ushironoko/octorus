@@ -83,8 +83,8 @@ pub async fn run_headless_rally(
     } else if working_dir_mode.is_explicit()
         && std::path::Path::new(working_dir_mode.path()).exists()
     {
-        // Path exists — resolve repo root from the existing working dir, not CWD
-        let repo_root = crate::ai::worktree::get_repo_root(Some(working_dir_mode.path())).await?;
+        // Path exists — resolve repo root from CWD (source repo) for cross-repo validation
+        let repo_root = crate::ai::worktree::get_repo_root(None).await?;
         crate::ai::worktree::validate_existing_worktree(working_dir_mode.path(), &repo_root)
             .await?;
         working_dir_mode

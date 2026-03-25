@@ -660,9 +660,9 @@ impl App {
                             }
                         }
                     } else {
-                        // Path exists — validate it as a proper worktree
+                        // Path exists — resolve repo root from CWD (source repo) for cross-repo validation
                         let repo_root =
-                            crate::ai::worktree::get_repo_root(Some(&target_path)).await?;
+                            crate::ai::worktree::get_repo_root(None).await?;
                         crate::ai::worktree::validate_existing_worktree(&target_path, &repo_root)
                             .await?;
                     }
