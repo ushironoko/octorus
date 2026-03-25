@@ -4,7 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        ScrollbarState, Wrap,
     },
     Frame,
 };
@@ -312,6 +312,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
                     .border_style(border_style)
                     .title("Body"),
             )
+            .wrap(Wrap { trim: false })
             .scroll((scroll_offset as u16, 0));
         frame.render_widget(body, area);
 
@@ -340,12 +341,14 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
             .unwrap_or("(no description)")
             .to_string();
 
-        let body = Paragraph::new(body_text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title("Body"),
-        );
+        let body = Paragraph::new(body_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title("Body"),
+            )
+            .wrap(Wrap { trim: false });
         frame.render_widget(body, area);
     }
 }

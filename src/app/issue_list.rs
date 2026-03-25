@@ -361,6 +361,12 @@ impl App {
             return Ok(());
         }
 
+        // Toggle zen mode
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
+            return Ok(());
+        }
+
         // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::IssueList;

@@ -118,7 +118,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 format!("Pull Requests ({})", total_prs)
             };
 
-            let items = build_pr_list_items_ref(&display_prs, display_selected);
+            let inner_width = chunks[1].width.saturating_sub(3) as usize;
+            let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width);
 
             // Use ListState for stateful rendering with automatic scroll management
             let mut list_state = ListState::default()
@@ -206,15 +207,20 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     } else {
         "Space /: filter | "
     };
-    let footer_text = format!(
+    let help_text = format!(
         "j/k/↑↓: move | Enter: select | {}gg/G: top/bottom | O: browser | S: CI checks | o: open | c: closed | a: all | r: refresh | q: quit | ?: help",
         filter_hint
     );
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let line = super::footer::build_footer_line(app, &help_text);
+    let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
-fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<ListItem<'static>> {
+fn build_pr_list_items_ref(
+    prs: &[&PullRequestSummary],
+    selected: usize,
+    area_width: usize,
+) -> Vec<ListItem<'static>> {
     prs.iter()
         .enumerate()
         .map(|(i, pr)| {
@@ -233,8 +239,9 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
             };
             let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
-            // Draft + Title (truncate if too long, respecting char boundaries)
-            let title_width = 50;
+            let author_width = 4 + pr.author.login.chars().count();
+            let fixed_width = 6 + 2 + 2 + author_width;
+            let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);
             let title = truncate_string(&full_title, title_width);
             let title_style = if is_selected {

@@ -98,7 +98,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 format!("Issues ({})", total_issues)
             };
 
-            let items = build_issue_list_items(&display_issues, display_selected);
+            let inner_width = chunks[1].width.saturating_sub(3) as usize;
+            let items = build_issue_list_items(&display_issues, display_selected, inner_width);
 
             let mut list_state = ListState::default()
                 .with_offset(state.issue_list_scroll_offset)
@@ -183,15 +184,20 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     } else {
         "Space /: filter | "
     };
-    let footer_text = format!(
+    let help_text = format!(
         "j/k/↑↓: move | Enter: view | {}O: browser | o: open | c: closed | a: all | r: refresh | q: back | ?: help",
         filter_hint
     );
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let line = super::footer::build_footer_line(app, &help_text);
+    let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
-fn build_issue_list_items(issues: &[&IssueSummary], selected: usize) -> Vec<ListItem<'static>> {
+fn build_issue_list_items(
+    issues: &[&IssueSummary],
+    selected: usize,
+    area_width: usize,
+) -> Vec<ListItem<'static>> {
     issues
         .iter()
         .enumerate()
@@ -215,8 +221,9 @@ fn build_issue_list_items(issues: &[&IssueSummary], selected: usize) -> Vec<List
             };
             let number_span = Span::styled(format!("#{:<5}", issue.number), number_style);
 
-            // Title (truncate)
-            let title_width = 50;
+            let author_width = 4 + issue.author.login.chars().count();
+            let fixed_width = 2 + 6 + 2 + 2 + author_width;
+            let title_width = area_width.saturating_sub(fixed_width).max(20);
             let title = truncate_string(&issue.title, title_width);
             let title_style = if is_selected {
                 Style::default()

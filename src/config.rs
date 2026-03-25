@@ -94,6 +94,8 @@ pub struct DiffConfig {
     /// 追加/削除行に背景色を表示するかどうか
     #[serde(default = "default_true")]
     pub bg_color: bool,
+    #[serde(default)]
+    pub zen_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -156,6 +158,9 @@ pub struct KeybindingsConfig {
     pub toggle_local_mode: KeySequence,
     pub toggle_auto_focus: KeySequence,
 
+    // Zen mode
+    pub toggle_zen_mode: KeySequence,
+
     // Markdown rich display
     pub toggle_markdown_rich: KeySequence,
 
@@ -215,6 +220,7 @@ impl Default for DiffConfig {
             theme: "base16-ocean.dark".to_owned(),
             tab_width: 4,
             bg_color: true,
+            zen_mode: false,
         }
     }
 }
@@ -264,6 +270,9 @@ impl Default for KeybindingsConfig {
             // Local mode
             toggle_local_mode: KeySequence::single(KeyBinding::char('L')),
             toggle_auto_focus: KeySequence::single(KeyBinding::char('F')),
+
+            // Zen mode
+            toggle_zen_mode: KeySequence::single(KeyBinding::char('Z')),
 
             // Markdown rich display
             toggle_markdown_rich: KeySequence::single(KeyBinding::char('M')),
@@ -345,6 +354,7 @@ impl KeybindingsConfig {
             ("open_in_browser", &self.open_in_browser),
             ("toggle_local_mode", &self.toggle_local_mode),
             ("toggle_auto_focus", &self.toggle_auto_focus),
+            ("toggle_zen_mode", &self.toggle_zen_mode),
             ("toggle_markdown_rich", &self.toggle_markdown_rich),
             ("filter", &self.filter),
             ("multiline_select", &self.multiline_select),
@@ -517,6 +527,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("open_in_browser", &seq_to_value(&self.open_in_browser))?;
         map.serialize_entry("toggle_local_mode", &seq_to_value(&self.toggle_local_mode))?;
         map.serialize_entry("toggle_auto_focus", &seq_to_value(&self.toggle_auto_focus))?;
+        map.serialize_entry("toggle_zen_mode", &seq_to_value(&self.toggle_zen_mode))?;
         map.serialize_entry(
             "toggle_markdown_rich",
             &seq_to_value(&self.toggle_markdown_rich),
@@ -1603,6 +1614,7 @@ timeout_secs = 3600
             "open_in_browser",
             "toggle_local_mode",
             "toggle_auto_focus",
+            "toggle_zen_mode",
             "toggle_markdown_rich",
             "filter",
             "multiline_select",
@@ -1670,5 +1682,19 @@ timeout_secs = 3600
             !serialized_keys.is_empty(),
             "Serialized keybindings should not be empty"
         );
+    }
+
+    #[test]
+    fn test_zen_mode_deserialization() {
+        let toml = r#"
+[diff]
+zen_mode = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.diff.zen_mode);
+
+        // Default should be false
+        let default_config = Config::default();
+        assert!(!default_config.diff.zen_mode);
     }
 }
