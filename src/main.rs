@@ -619,6 +619,39 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn test_positional_pr_number_parsed() {
+        let args = Args::try_parse_from(["or", "123"]).unwrap();
+        assert_eq!(args.pr_positional, Some(123));
+        assert_eq!(args.pr, None);
+    }
+
+    #[test]
+    fn test_positional_pr_conflicts_with_flag() {
+        let result = Args::try_parse_from(["or", "123", "--pr", "456"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_positional_pr_conflicts_with_local() {
+        let result = Args::try_parse_from(["or", "123", "--local"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_flag_pr_still_works() {
+        let args = Args::try_parse_from(["or", "--pr", "456"]).unwrap();
+        assert_eq!(args.pr, Some(456));
+        assert_eq!(args.pr_positional, None);
+    }
+
+    #[test]
+    fn test_no_pr_shows_list() {
+        let args = Args::try_parse_from(["or"]).unwrap();
+        assert_eq!(args.pr, None);
+        assert_eq!(args.pr_positional, None);
+    }
+
+    #[test]
     fn test_should_refresh_local_change_ignores_access_events() {
         let paths = vec![PathBuf::from("src/main.rs")];
         let kind = EventKind::Access(AccessKind::Close(AccessMode::Write));

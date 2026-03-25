@@ -78,25 +78,28 @@ or init
 # 2. Open PR list for current repository (auto-detected from git remote)
 or
 
-# 3. Open specific PR
+# 3. Open specific PR (positional shorthand)
+or 123
+
+# 4. Open specific PR with explicit flag
 or --repo owner/repo --pr 123
 
-# 4. Start AI Rally (select PR from list, then auto-start)
+# 5. Start AI Rally (select PR from list, then auto-start)
 or --ai-rally
 
-# 5. Run AI Rally in headless mode (no TUI, CI/CD friendly)
+# 6. Run AI Rally in headless mode (no TUI, CI/CD friendly)
 or --repo owner/repo --pr 123 --ai-rally
 
-# 6. Run headless AI Rally on local diff
+# 7. Run headless AI Rally on local diff
 or --local --ai-rally
 
-# 7. Preview local working tree diff in real time
+# 8. Preview local working tree diff in real time
 or --local
 
-# 8. Open issue list
+# 9. Open issue list
 or --issue
 
-# 9. Open specific issue directly
+# 10. Open specific issue directly
 or --issue 10
 ```
 
@@ -105,6 +108,7 @@ or --issue 10
 | Option | Description |
 |--------|-------------|
 | `-r, --repo <REPO>` | Repository name (e.g., "owner/repo") |
+| `[PR_NUMBER]` | Pull request number (positional shorthand for `-p`) |
 | `-p, --pr <PR>` | Pull request number |
 | `--ai-rally` | Start AI Rally mode directly (headless when combined with `--pr` or `--local`) |
 | `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
