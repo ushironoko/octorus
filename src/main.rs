@@ -627,14 +627,20 @@ mod tests {
 
     #[test]
     fn test_positional_pr_conflicts_with_flag() {
-        let result = Args::try_parse_from(["or", "123", "--pr", "456"]);
-        assert!(result.is_err());
+        let err = Args::try_parse_from(["or", "123", "--pr", "456"]).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be used with"),
+            "expected conflict error, got: {err}"
+        );
     }
 
     #[test]
     fn test_positional_pr_conflicts_with_local() {
-        let result = Args::try_parse_from(["or", "123", "--local"]);
-        assert!(result.is_err());
+        let err = Args::try_parse_from(["or", "123", "--local"]).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be used with"),
+            "expected conflict error, got: {err}"
+        );
     }
 
     #[test]
@@ -704,5 +710,33 @@ mod tests {
             ".octorus/prompts/reviewer.md"
         )));
         assert!(!is_octorus_config_file(std::path::Path::new("src/main.rs")));
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use assert_cmd::Command;
+    use predicates::str::contains;
+
+    fn cmd() -> Command {
+        Command::cargo_bin("or").unwrap()
+    }
+
+    #[test]
+    fn positional_pr_conflicts_with_flag() {
+        cmd()
+            .args(["123", "--pr", "456"])
+            .assert()
+            .failure()
+            .stderr(contains("cannot be used with"));
+    }
+
+    #[test]
+    fn positional_pr_conflicts_with_local() {
+        cmd()
+            .args(["123", "--local"])
+            .assert()
+            .failure()
+            .stderr(contains("cannot be used with"));
     }
 }
