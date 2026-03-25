@@ -119,7 +119,6 @@ impl App {
         };
         let sha = commit.sha.clone();
 
-        // キャッシュヒットチェック
         if cl.diff_store.try_restore(&sha, None) {
             cl.diff_loading = false;
             cl.diff_error = None;
@@ -275,7 +274,6 @@ impl App {
 
     /// GitOps 関連の非同期結果をポーリング
     pub(crate) fn poll_git_ops_updates(&mut self) {
-        // --- status 受信 ---
         let mut status_updated = false;
         if let Some(ref mut ops) = self.git_ops_state {
             if let Some(ref mut rx) = ops.status_receiver {
@@ -285,6 +283,7 @@ impl App {
                         ops.status_receiver = None;
                         status_updated = true;
                         ops.status_updated = true;
+                        ops.diff_store.clear();
                         rebuild_git_ops_tree(ops);
                     }
                     Ok(Err(_)) => {
@@ -298,8 +297,8 @@ impl App {
             }
         }
 
-        // --- on-demand diff patch 受信 ---
-        // diff patch result を一度取り出してから処理（二重借用回避）
+        // extract before processing to avoid double &mut borrow
+
         let patch_result = if let Some(ref mut ops) = self.git_ops_state {
             if let Some(ref mut rx) = ops.diff_patch_receiver {
                 match rx.try_recv() {
@@ -340,7 +339,6 @@ impl App {
             }
         }
 
-        // --- 操作結果受信 ---
         let mut op_succeeded = false;
         if let Some(ref mut ops) = self.git_ops_state {
             if let Some(ref mut rx) = ops.op_receiver {
@@ -370,7 +368,6 @@ impl App {
                 }
             }
 
-            // --- ahead_count 受信 ---
             if let Some(ref mut rx) = ops.ahead_receiver {
                 match rx.try_recv() {
                     Ok(count) => {
@@ -384,10 +381,8 @@ impl App {
                 }
             }
 
-            // --- ハイライトキャッシュ受信 ---
             ops.diff_store.poll_highlight();
 
-            // --- プリフェッチ受信 ---
             let selected = ops.tree.selected_row;
             ops.diff_store.poll_prefetch(|k| {
                 ops.entries
@@ -398,14 +393,12 @@ impl App {
             });
         }
 
-        // --- 操作完了後にステータス再取得 ---
         if op_succeeded {
             self.refresh_git_status();
             self.refresh_ahead_count();
         }
 
-        // --- コミット一覧が未初期化ならリフレッシュ ---
-        // HEAD 変更操作（reset --soft, undo commit）で initialized=false にクリアされる
+        // HEAD-changing ops (reset --soft, undo commit) set initialized=false
         {
             let needs_refresh = self
                 .git_ops_state
@@ -421,8 +414,9 @@ impl App {
             }
         }
 
-        // --- status 更新後のプリフェッチ開始 ---
         if status_updated {
+            self.update_git_ops_diff();
+
             let working_dir = self.working_dir.clone();
             let theme = self.config.diff.theme.clone();
             let markdown_rich = self.markdown_rich;
@@ -433,7 +427,6 @@ impl App {
             }
         }
 
-        // --- コミット一覧の受信 ---
         let mut first_commit_page = false;
         if let Some(ref mut ops) = self.git_ops_state {
             let cl = &mut ops.commit_log;
@@ -466,7 +459,6 @@ impl App {
             self.start_prefetch_git_ops_commit_diffs();
         }
 
-        // --- コミット diff の受信 ---
         if let Some(ref mut ops) = self.git_ops_state {
             let cl = &mut ops.commit_log;
             if let Some(ref mut rx) = cl.diff_receiver {
@@ -521,14 +513,12 @@ impl App {
                 }
             }
 
-            // コミット diff のハイライトキャッシュ受信
             if cl.diff_store.poll_highlight() {
                 if let Some(ref c) = cl.diff_store.current {
                     cl.diff_scroll.set_line_count(c.lines.len());
                 }
             }
 
-            // コミット diff のプリフェッチ受信
             let selected = cl.selected;
             let commits = &cl.commits;
             cl.diff_store.poll_prefetch(|sha| {
@@ -539,7 +529,6 @@ impl App {
                     .unwrap_or(usize::MAX)
             });
 
-            // プレーンキャッシュのアップグレード
             if let Some(current_sha) = cl.commits.get(cl.selected).map(|c| c.sha.clone()) {
                 let is_plain = cl
                     .diff_store
@@ -557,7 +546,6 @@ impl App {
             }
         }
 
-        // --- op_message 3秒後に自動消去 ---
         if let Some(ref mut ops) = self.git_ops_state {
             if let Some((_, ref time)) = ops.op_message {
                 if time.elapsed().as_secs() >= 3 {
@@ -578,12 +566,10 @@ impl App {
             None => return,
         };
 
-        // 既に表示中ならスキップ
         if ops.diff_store.current_key() == Some(&path) {
             return;
         }
 
-        // プリフェッチキャッシュヒット
         if ops.diff_store.try_restore(&path, None) {
             if let Some(ref c) = ops.diff_store.current {
                 ops.diff_scroll.set_line_count(c.lines.len());
@@ -592,7 +578,6 @@ impl App {
             return;
         }
 
-        // キャッシュミス — on-demand fetch
         let (tx, rx) = mpsc::channel(1);
         ops.diff_patch_receiver = Some(rx);
 
@@ -630,7 +615,6 @@ impl App {
                 }
             }
             Some(TreeRow::Dir { ref path, .. }) => {
-                // 配下の全ファイルを収集
                 let prefix = format!("{}/", path);
                 let paths: Vec<String> = ops
                     .entries
@@ -641,7 +625,6 @@ impl App {
                 if paths.is_empty() {
                     return;
                 }
-                // 配下に1つでもunstagedがあれば全部stage、全部stagedならunstage
                 let all_staged = ops
                     .entries
                     .iter()
@@ -682,7 +665,6 @@ impl App {
             }
         });
 
-        // 楽観的更新
         for entry in &mut ops.entries {
             if paths.contains(&entry.path) {
                 optimistic_stage(entry);
@@ -699,6 +681,10 @@ impl App {
             return;
         };
         let count = paths.len();
+
+        // undo 用にインデックスエントリを事前キャプチャ
+        let previous_index_entries =
+            capture_index_entries(self.working_dir.as_deref(), &paths);
 
         let working_dir = self.working_dir.clone();
         let (tx, rx) = mpsc::channel(1);
@@ -725,7 +711,6 @@ impl App {
             }
         });
 
-        // 楽観的更新
         for entry in &mut ops.entries {
             if paths.contains(&entry.path) {
                 optimistic_unstage(entry);
@@ -734,7 +719,7 @@ impl App {
 
         ops.undo_stack.push(UndoAction::Stage {
             paths: paths.clone(),
-            previous_index_entries: Vec::new(),
+            previous_index_entries,
         });
     }
 
@@ -744,11 +729,21 @@ impl App {
             return;
         };
 
+        if ops.has_unmerged_files() {
+            ops.op_message = Some((
+                "Cannot stage all with unmerged files".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+
+        // undo 用にインデックスツリーハッシュを事前キャプチャ
+        let tree_hash = capture_tree_hash(self.working_dir.as_deref());
+
         let working_dir = self.working_dir.clone();
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
 
-        // 楽観的更新
         for entry in &mut ops.entries {
             optimistic_stage(entry);
         }
@@ -764,7 +759,7 @@ impl App {
             }
         });
 
-        ops.undo_stack.push(UndoAction::StageAll { tree_hash: None });
+        ops.undo_stack.push(UndoAction::StageAll { tree_hash });
     }
 
     /// d: 変更を破棄
@@ -790,17 +785,14 @@ impl App {
             let result = if entry.worktree_status == FileStatus::Untracked
                 && entry.index_status == FileStatus::Untracked
             {
-                // untracked: ファイル削除
                 run_git_op(working_dir.as_deref(), &["clean", "-f", "--", &path]).await
             } else if entry.is_staged() && !entry.has_worktree_changes() {
-                // staged のみ: HEAD から復元
                 run_git_op(
                     working_dir.as_deref(),
                     &["restore", "--staged", "--source=HEAD", "--", &path],
                 )
                 .await
             } else {
-                // worktree 変更: restore
                 run_git_op(working_dir.as_deref(), &["restore", "--", &path]).await
             };
 
@@ -841,7 +833,6 @@ impl App {
             return Ok(());
         }
 
-        // ターミナル復元 → git commit → ターミナル再初期化
         crate::ui::restore_terminal(terminal)?;
 
         let working_dir = self.working_dir.as_deref().unwrap_or(".");
@@ -1043,7 +1034,6 @@ impl App {
         ops.pushing = true;
 
         tokio::spawn(async move {
-            // ブランチ名を取得
             let dir = working_dir.as_deref().unwrap_or(".");
             let branch_output = tokio::process::Command::new("git")
                 .args(["branch", "--show-current"])
@@ -1103,7 +1093,6 @@ impl App {
     ) {
         let kb = self.config.keybindings.clone();
 
-        // 確認待ち中は y/n/Esc のみ受け付ける
         if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -1245,7 +1234,6 @@ impl App {
 
     /// Commits フォーカスの入力処理
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
-        // 確認待ち中は y/n/Esc のみ受け付ける
         if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -1311,7 +1299,6 @@ impl App {
                 }
             }
             self.start_fetch_git_ops_commit_diff();
-            // 末尾接近時の追加ロード
             let should_load_more = self
                 .git_ops_state
                 .as_ref()
@@ -1347,8 +1334,17 @@ impl App {
             return;
         }
 
-        // Undo / reset --soft → 確認待ちに遷移
+        // Undo / reset --soft → 確認待ちに遷移（ローカルモードのみ）
         if self.matches_single_key(&key, &kb.git_ops_undo) {
+            if !(self.local_mode || self.pr_number.is_none()) {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.op_message = Some((
+                        "Reset --soft is only available in local mode".to_string(),
+                        Instant::now(),
+                    ));
+                }
+                return;
+            }
             if let Some(ref mut ops) = self.git_ops_state {
                 let sha = ops
                     .commit_log
@@ -1394,7 +1390,6 @@ impl App {
             return;
         };
 
-        // diff store をクリア、コミット一覧を未初期化に戻す
         if let Some(ref mut ops) = self.git_ops_state {
             ops.diff_store.clear();
             ops.commit_log.diff_store.clear();
@@ -1510,10 +1505,6 @@ impl App {
     }
 }
 
-// ====================================================================
-// Free functions（self を借用しない）
-// ====================================================================
-
 /// git status --porcelain=v1 -z の出力をパース
 pub(crate) async fn fetch_git_status(
     working_dir: Option<&str>,
@@ -1524,7 +1515,6 @@ pub(crate) async fn fetch_git_status(
 
     let mut entries = parse_porcelain_status(&status_output);
 
-    // numstat でファイル行数を取得
     if let Ok(numstat) = run_git_op(working_dir, &["diff", "--numstat"]).await {
         apply_numstat(&mut entries, &numstat, false);
     }
@@ -1535,15 +1525,76 @@ pub(crate) async fn fetch_git_status(
     Ok(entries)
 }
 
-async fn run_git_op(working_dir: Option<&str>, args: &[&str]) -> Result<String, std::io::Error> {
+async fn run_git_op(working_dir: Option<&str>, args: &[&str]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(["-c", "core.quotePath=false"]);
     cmd.args(args);
     if let Some(dir) = working_dir {
         cmd.current_dir(dir);
     }
-    let output = cmd.output().await?;
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let args_str = args.join(" ");
+        return Err(if stderr.is_empty() {
+            format!("git {} failed (exit {})", args_str, output.status)
+        } else {
+            format!("git {} failed: {}", args_str, stderr)
+        });
+    }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// git ls-files --stage で対象パスのインデックスエントリを取得（同期）
+fn capture_index_entries(working_dir: Option<&str>, paths: &[String]) -> Vec<IndexEntry> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["ls-files", "--stage", "-z", "--"]);
+    for p in paths {
+        cmd.arg(p);
+    }
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let Ok(output) = cmd.output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .split('\0')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            // format: "<mode> <hash> <stage>\t<path>"
+            let (meta, path) = line.split_once('\t')?;
+            let parts: Vec<&str> = meta.split_whitespace().collect();
+            if parts.len() >= 2 {
+                Some(IndexEntry {
+                    mode: parts[0].to_string(),
+                    hash: parts[1].to_string(),
+                    path: path.to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// git write-tree で現在のインデックスツリーハッシュを取得（同期）
+fn capture_tree_hash(working_dir: Option<&str>) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("write-tree");
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
 }
 
 fn parse_porcelain_status(output: &str) -> Vec<GitStatusEntry> {
@@ -1561,7 +1612,6 @@ fn parse_porcelain_status(output: &str) -> Vec<GitStatusEntry> {
         let path = &part[3..];
 
         let (orig_path, final_path) = if matches!(index_char, 'R' | 'C') {
-            // 次のパートが新しいパス
             i += 1;
             let new_path = parts.get(i).unwrap_or(&"");
             (Some(path.to_string()), new_path.to_string())
@@ -1652,7 +1702,6 @@ fn build_git_ops_diff_from_patch(
     }
     ops.diff_scroll.reset();
 
-    // BG ハイライト構築
     let (tx, rx) = mpsc::channel(1);
     let patch_owned = patch.to_string();
     let filename_owned = filename.to_string();
@@ -1717,8 +1766,7 @@ fn start_git_ops_prefetch(
     let theme = theme.to_string();
     let wd = working_dir;
 
-    // Phase 1: 並列 async diff fetch
-    // Phase 2: 単一 spawn_blocking でハイライト（ParserPool 共有）
+    // ParserPool is !Send, so highlight must run in a single spawn_blocking
     tokio::spawn(async move {
         let mut diffs: Vec<(String, String)> = Vec::new();
         let mut handles = Vec::new();
@@ -1743,7 +1791,6 @@ fn start_git_ops_prefetch(
             return;
         }
 
-        // Phase 2: highlight
         let tx2 = tx;
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();

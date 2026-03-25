@@ -31,7 +31,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints(outer_constraints)
         .split(frame.area());
 
-    // 横並び: 左35% / 右65%
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -46,24 +45,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let is_tree_focused = !is_diff_focused && left_focus == LeftPaneFocus::Tree;
     let is_commits_focused = !is_diff_focused && left_focus == LeftPaneFocus::Commits;
 
-    // 左ペインを縦分割: 70% Tree / 30% Commits
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(h_chunks[0]);
 
-    // diff ペインの visible_lines を事前計算してセット
-    // 右ペインレイアウト: Header(3) + Diff(Min) + Footer(3) → border含めて -8
+    // Header(3) + Diff(Min) + Footer(3) + borders → -8
     let diff_visible_lines = h_chunks[1].height.saturating_sub(8) as usize;
     if let Some(ref mut ops) = app.git_ops_state {
         ops.diff_scroll.set_visible_lines(diff_visible_lines);
         ops.commit_log.diff_scroll.set_visible_lines(diff_visible_lines);
     }
 
-    // &mut app が必要なペインを先に描画（scroll_offset 更新のため）
+    // &mut borrow required for scroll_offset updates, so render before &app panes
     render_tree_pane(frame, app, left_chunks[0], is_tree_focused);
     render_commits_pane(frame, app, left_chunks[1], is_commits_focused);
-    // &app で十分なペインを後に描画
     render_diff_pane(frame, &*app, h_chunks[1], is_diff_focused);
 
     if has_rally {
@@ -104,7 +100,6 @@ fn render_tree_pane(
         return;
     };
 
-    // Header: "Git Status" with counts
     let (staged_count, unstaged_count, untracked_count) = count_statuses(ops);
     let header_text = format!(
         "staged:{} unstaged:{} untracked:{}",
@@ -118,7 +113,6 @@ fn render_tree_pane(
     );
     frame.render_widget(header, chunks[0]);
 
-    // Tree list
     if ops.entries.is_empty() {
         let empty = Paragraph::new("No changes")
             .style(Style::default().fg(Color::DarkGray))
@@ -155,7 +149,6 @@ fn render_tree_pane(
 
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
-        // Update scroll offset from list state
         if let Some(ref mut ops) = app.git_ops_state {
             ops.tree.scroll_offset = list_state.offset();
         }
@@ -179,7 +172,6 @@ fn render_tree_pane(
         }
     }
 
-    // Footer
     let confirm_text;
     let pending = app
         .git_ops_state
@@ -262,7 +254,6 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
 
     let is_commit_diff = ops.left_return_focus == LeftPaneFocus::Commits;
 
-    // Header
     let header_text = if is_commit_diff {
         ops.commit_log
             .commits
@@ -283,14 +274,12 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
     );
     frame.render_widget(header, chunks[0]);
 
-    // Diff body — left_return_focus に応じて diff_store / scroll を切り替え
     if is_commit_diff {
         render_commit_diff_body(frame, &ops.commit_log, chunks[1], border_color, bg_color);
     } else {
         render_diff_body(frame, ops, chunks[1], border_color, bg_color);
     }
 
-    // Footer
     let footer_text = if is_focused {
         "j/k: scroll | J/K: page | gg/G: top/bottom | Ctrl-d/u: page | Tab: tree | h/Esc: back"
     } else {
@@ -351,7 +340,6 @@ fn render_diff_body(
         .scroll((adjusted_scroll, 0));
     frame.render_widget(diff_block, area);
 
-    // Scrollbar
     if let Some(ref cache) = ops.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;
@@ -433,7 +421,6 @@ fn render_commit_diff_body(
         .scroll((adjusted_scroll, 0));
     frame.render_widget(diff_block, area);
 
-    // Scrollbar
     if let Some(ref cache) = cl.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;
@@ -623,7 +610,6 @@ fn build_tree_row_item<'a>(
         TreeRow::Dir { ref path, depth, expanded } => {
             let indent = "  ".repeat(*depth);
             let icon = if *expanded { "▼" } else { "▶" };
-            // ディレクトリ名はパスの最後のコンポーネント
             let dir_name = path
                 .rsplit_once('/')
                 .map(|(_, name)| name)
@@ -650,13 +636,8 @@ fn build_tree_row_item<'a>(
 
             let indent = "  ".repeat(*depth);
 
-            // 変更種別ラベル: ファイルの性質を表す固定テキスト（stage/unstageで不変）
             let label = entry.change_type_label();
-
-            // 色だけでstaged/unstagedを区別
             let status_color = status_color_for_entry(entry);
-
-            // ファイル名はパスの最後のコンポーネント
             let filename = entry
                 .path
                 .rsplit_once('/')
@@ -678,7 +659,6 @@ fn build_tree_row_item<'a>(
                 Span::styled(filename.to_string(), file_style),
             ];
 
-            // 行数情報（あれば）
             let total_add = entry.additions + entry.staged_additions;
             let total_del = entry.deletions + entry.staged_deletions;
             if total_add > 0 || total_del > 0 {
@@ -696,13 +676,9 @@ fn status_color_for_entry(entry: &crate::app::GitStatusEntry) -> Color {
     }
 
     match (entry.index_status, entry.worktree_status) {
-        // staged のみ
         (_, FileStatus::Unmodified) if entry.is_staged() => Color::Green,
-        // untracked
         (FileStatus::Untracked, FileStatus::Untracked) => Color::Magenta,
-        // worktree 変更あり
         (_, wt) if wt != FileStatus::Unmodified && wt != FileStatus::Ignored => Color::Red,
-        // staged + worktree 変更あり（MM 等）
         _ if entry.is_staged() && entry.has_worktree_changes() => Color::Yellow,
         _ => Color::White,
     }
