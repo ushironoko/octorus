@@ -336,7 +336,12 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         self.prefetch_rx = None;
     }
 
-    /// current + highlight_rx のみ破棄
+    /// store + prefetch のみ破棄（current は維持してフラッシュを回避）
+    pub fn clear_store_only(&mut self) {
+        self.store.clear();
+        self.prefetch_rx = None;
+    }
+
     pub fn clear_current(&mut self) {
         self.current = None;
         self.current_key = None;
@@ -1035,6 +1040,23 @@ mod tests {
         assert!(store.current_key.is_none());
         // ストアは維持
         assert!(store.store_contains_key(&1));
+    }
+
+    #[test]
+    fn test_clear_store_only() {
+        let mut store = DiffCacheStore::<usize>::new(50);
+        store.set_current(0, make_cache(true, 100));
+        store.store.insert(1, make_cache(true, 200));
+        store.store.insert(2, make_cache(true, 300));
+
+        store.clear_store_only();
+        // current is preserved
+        assert!(store.current.is_some());
+        assert_eq!(store.current_key, Some(0));
+        // store is cleared
+        assert_eq!(store.store_len(), 0);
+        assert!(!store.store_contains_key(&1));
+        assert!(!store.store_contains_key(&2));
     }
 
     #[test]

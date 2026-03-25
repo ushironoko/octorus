@@ -283,7 +283,9 @@ impl App {
                         ops.status_receiver = None;
                         status_updated = true;
                         ops.status_updated = true;
-                        ops.diff_store.clear();
+                        // invalidate store (prefetch will repopulate), but keep current
+                        // to avoid flash — update_git_ops_diff will re-fetch it
+                        ops.diff_store.clear_store_only();
                         rebuild_git_ops_tree(ops);
                     }
                     Ok(Err(_)) => {

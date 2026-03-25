@@ -1277,4 +1277,52 @@ mod tests {
             after
         );
     }
+
+    /// status refresh 後に diff pane が空にならない（フラッシュ防止）
+    #[tokio::test]
+    async fn test_status_refresh_does_not_flash_diff_pane() {
+        let (mut app, _tx) = make_app();
+        let entries = vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ];
+        let mut ops = GitOpsState::new(entries);
+        rebuild_tree(&mut ops);
+
+        // current diff cache をセット（表示中の状態を再現）
+        let cache = crate::app::DiffCache {
+            file_index: 0,
+            patch_hash: 42,
+            lines: vec![],
+            interner: lasso::Rodeo::new(),
+            highlighted: false,
+            markdown_rich: false,
+        };
+        ops.diff_store.set_current("a.rs".to_string(), cache);
+
+        // status_receiver に新しい entries を送る
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        ops.status_receiver = Some(rx);
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        let new_entries = vec![
+            entry("a.rs", FileStatus::Modified, FileStatus::Unmodified),
+        ];
+        tx.send(Ok(new_entries)).await.unwrap();
+
+        app.poll_git_ops_updates();
+
+        // current cache は維持されている（フラッシュなし）
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(
+            ops.diff_store.current.is_some(),
+            "current diff cache should be preserved after status refresh"
+        );
+        // store は空（prefetch で再構築される）
+        assert_eq!(
+            ops.diff_store.store_len(),
+            0,
+            "store should be cleared for re-prefetch"
+        );
+    }
 }
