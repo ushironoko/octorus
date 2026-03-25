@@ -109,6 +109,7 @@ or --issue 10
 | `-i, --issue [NUMBER]` | Open issue list, or open a specific issue directly if number is provided |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
+| `--git-ops` | Open Git Ops view directly on startup |
 | `--accept-local-overrides` | Accept local `.octorus/` overrides for AI settings in headless mode |
 
 ### Subcommands
@@ -595,6 +596,7 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 | `S` | View CI checks status |
 | `G` | Open git ops view |
 | `I` | Open issue list |
+| `t` | Toggle file tree view |
 | `Space /` | Keyword filter |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
@@ -611,6 +613,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 |-----|--------|
 | `j` / `↓` | Move file selection (diff follows) |
 | `k` / `↑` | Move file selection (diff follows) |
+| `t` | Toggle file tree view |
 | `Enter` / `→` / `l` | Focus diff pane |
 | `←` / `h` / `q` | Back to file list |
 
@@ -700,6 +703,10 @@ Multi-line input is supported. Press `Enter` to insert a newline.
 
 The git ops view provides staging, committing, and commit history browsing in a single screen. The left pane is split vertically: file tree (70%) and commit history (30%). The right pane shows the diff preview.
 
+Destructive operations (discard, undo, reset) show a Y/n confirmation prompt with the exact git command that will be executed. The commits pane title shows `↑N` when local commits are ahead of the remote.
+
+Can be opened directly from CLI with `--git-ops` flag.
+
 **Tree Focus:**
 
 | Key | Action |
@@ -708,11 +715,11 @@ The git ops view provides staging, committing, and commit history browsing in a 
 | `k` / `↑` | Move up |
 | `Space` | Stage/unstage file or directory |
 | `s` | Stage all files |
-| `d` | Discard changes |
+| `d` | Discard changes (Y/n confirmation) |
 | `c` | Commit (opens editor) |
-| `u` | Undo last operation |
+| `u` | Undo last operation (Y/n confirmation) |
 | `R` | Refresh status |
-| `P` | Push to origin |
+| `P` | Push to origin (shows loading spinner) |
 | `Enter` | Toggle directory expand/collapse, or focus diff |
 | `Tab` | Switch to commits pane |
 | `l` / `→` | Focus diff pane |
@@ -726,7 +733,7 @@ The git ops view provides staging, committing, and commit history browsing in a 
 | `k` / `↑` | Move up in commit list |
 | `g` | Jump to first commit |
 | `G` | Jump to last commit |
-| `u` | Reset --soft to selected commit (local mode only) |
+| `u` | Reset --soft to selected commit (local mode only, Y/n confirmation) |
 | `Tab` | Switch to tree pane |
 | `Enter` / `l` / `→` | Focus diff pane (commit diff) |
 | `q` / `Esc` | Close git ops |
@@ -887,6 +894,7 @@ go_to_definition = ["g", "d"]
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |
 | `multiline_select` | `V` | Enter multiline selection mode |
+| `tree_toggle` | `t` | Toggle file tree view |
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
 
