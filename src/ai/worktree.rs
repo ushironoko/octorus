@@ -154,9 +154,22 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
             .trim()
             .to_string();
 
-        // Canonicalize paths for reliable comparison
-        let target_canonical = std::fs::canonicalize(&target_path).unwrap_or(target_path.into());
-        let repo_canonical = std::fs::canonicalize(&repo_path).unwrap_or(repo_path.into());
+        // Resolve relative paths against the directory where each git command ran
+        let target_resolved = if Path::new(&target_path).is_relative() {
+            Path::new(target_dir).join(&target_path)
+        } else {
+            target_path.into()
+        };
+        let repo_resolved = if Path::new(&repo_path).is_relative() {
+            Path::new(repo_root).join(&repo_path)
+        } else {
+            repo_path.into()
+        };
+
+        let target_canonical =
+            std::fs::canonicalize(&target_resolved).unwrap_or(target_resolved);
+        let repo_canonical =
+            std::fs::canonicalize(&repo_resolved).unwrap_or(repo_resolved);
 
         if target_canonical != repo_canonical {
             bail!(
