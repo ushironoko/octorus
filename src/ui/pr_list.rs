@@ -118,7 +118,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 format!("Pull Requests ({})", total_prs)
             };
 
-            let items = build_pr_list_items_ref(&display_prs, display_selected);
+            // ボーダー(2) + スクロールバー(1) を除いた内側幅
+            let inner_width = chunks[1].width.saturating_sub(3) as usize;
+            let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width);
 
             // Use ListState for stateful rendering with automatic scroll management
             let mut list_state = ListState::default()
@@ -214,7 +216,11 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     frame.render_widget(footer, area);
 }
 
-fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<ListItem<'static>> {
+fn build_pr_list_items_ref(
+    prs: &[&PullRequestSummary],
+    selected: usize,
+    area_width: usize,
+) -> Vec<ListItem<'static>> {
     prs.iter()
         .enumerate()
         .map(|(i, pr)| {
@@ -233,8 +239,11 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
             };
             let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
-            // Draft + Title (truncate if too long, respecting char boundaries)
-            let title_width = 50;
+            // Draft + Title: 利用可能な幅から固定要素を引いてタイトル幅を動的に決定
+            // 固定要素: "#NNNNN" (6) + "  " (2) + "  " (2) + "by @author" (4+author)
+            let author_width = 4 + pr.author.login.chars().count(); // "by @" + login
+            let fixed_width = 6 + 2 + 2 + author_width;
+            let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);
             let title = truncate_string(&full_title, title_width);
             let title_style = if is_selected {
