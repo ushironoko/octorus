@@ -147,7 +147,6 @@ pub struct App {
     pub config_scroll_offset: usize,
     // Comment tab state
     pub comment_tab: CommentTab,
-    // AI Rally state
     pub ai_rally_state: Option<AiRallyState>,
     pub working_dir: Option<String>,
     // Receivers
@@ -215,7 +214,6 @@ pub struct App {
     lazy_diff_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
     /// 現在オンデマンドロード要求中のファイル名（重複リクエスト防止）
     lazy_diff_pending_file: Option<String>,
-    // CI Checks state
     pub checks: Option<Vec<CheckItem>>,
     pub selected_check: usize,
     pub checks_scroll_offset: usize,

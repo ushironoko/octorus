@@ -365,7 +365,6 @@ fn update_via_release(latest_tag: &str, latest_version: &str) -> Result<()> {
     let target = detect_target()?;
     let archive_name = format!("octorus-{}-{}.tar.gz", latest_version, target);
 
-    // Download archive + checksum to temp directory
     let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
     let temp_path = temp_dir.path();
 
@@ -373,14 +372,11 @@ fn update_via_release(latest_tag: &str, latest_version: &str) -> Result<()> {
     download_asset(latest_tag, &archive_name, temp_path)?;
     download_asset(latest_tag, &format!("{}.sha256", archive_name), temp_path)?;
 
-    // Verify checksum
     println!("Verifying checksum...");
     verify_checksum(temp_path, &archive_name)?;
 
-    // Extract
     extract_archive(temp_path, &archive_name)?;
 
-    // Locate the new binary inside the extracted directory
     let extracted_dir = format!("octorus-{}-{}", latest_version, target);
     let new_binary = temp_path.join(&extracted_dir).join("or");
 
@@ -391,7 +387,6 @@ fn update_via_release(latest_tag: &str, latest_version: &str) -> Result<()> {
         );
     }
 
-    // Replace current binary
     let current_exe =
         std::env::current_exe().context("Failed to determine current executable path")?;
     let current_exe = current_exe

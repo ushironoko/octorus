@@ -744,7 +744,6 @@ pub struct IssueState {
     pub issue_detail_cache: Option<DiffCache>,
     pub selected_linked_pr: usize,
     pub detail_focus: IssueDetailFocus,
-    // Comment list
     pub issue_comments: Option<Vec<IssueComment>>,
     pub selected_issue_comment: usize,
     pub issue_comment_list_scroll_offset: usize,

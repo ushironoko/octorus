@@ -86,7 +86,6 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
 
     let config_home = base_dirs.get_config_home();
 
-    // Create config directory if needed
     if !config_home.exists() {
         println!(
             "Creating configuration directory: {}",
@@ -95,24 +94,20 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
         fs::create_dir_all(&config_home).context("Failed to create config directory")?;
     }
 
-    // Track which files were actually written vs skipped
     let mut written_files: HashMap<String, bool> = HashMap::new();
 
-    // Write config.toml
     let config_path = config_home.join("config.toml");
     written_files.insert(
         "config.toml".to_string(),
         write_file_if_needed(&config_path, DEFAULT_CONFIG, force, "config.toml")?,
     );
 
-    // Create prompts directory
     let prompts_dir = config_home.join("prompts");
     if !prompts_dir.exists() {
         println!("Creating prompts directory: {}", prompts_dir.display());
         fs::create_dir_all(&prompts_dir).context("Failed to create prompts directory")?;
     }
 
-    // Write prompt templates
     for (name, content) in &[
         ("reviewer.md", DEFAULT_REVIEWER_PROMPT),
         ("reviewee.md", DEFAULT_REVIEWEE_PROMPT),
@@ -124,12 +119,10 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
         );
     }
 
-    // Generate agent skill for Claude Code (if ~/.claude exists)
     if let Err(e) = generate_agent_skill(force, &mut written_files) {
         eprintln!("Warning: Failed to generate agent skill: {}", e);
     }
 
-    // Write .version manifest
     write_init_manifest(&config_home, false, &written_files)?;
 
     println!();
@@ -223,30 +216,25 @@ fn generate_agent_skill(force: bool, written_files: &mut HashMap<String, bool>) 
 fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
     let octorus_dir = project_root.join(".octorus");
 
-    // Create .octorus directory if needed
     if !octorus_dir.exists() {
         println!("Creating local config directory: {}", octorus_dir.display());
         fs::create_dir_all(&octorus_dir).context("Failed to create .octorus directory")?;
     }
 
-    // Track which files were actually written vs skipped
     let mut written_files: HashMap<String, bool> = HashMap::new();
 
-    // Write config.toml
     let config_path = octorus_dir.join("config.toml");
     written_files.insert(
         "config.toml".to_string(),
         write_file_if_needed(&config_path, DEFAULT_LOCAL_CONFIG, force, "config.toml")?,
     );
 
-    // Create prompts directory
     let prompts_dir = octorus_dir.join("prompts");
     if !prompts_dir.exists() {
         println!("Creating prompts directory: {}", prompts_dir.display());
         fs::create_dir_all(&prompts_dir).context("Failed to create prompts directory")?;
     }
 
-    // Write prompt templates
     for (name, content) in &[
         ("reviewer.md", DEFAULT_REVIEWER_PROMPT),
         ("reviewee.md", DEFAULT_REVIEWEE_PROMPT),
@@ -258,7 +246,6 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
         );
     }
 
-    // Write .version manifest (local scope has no SKILL.md)
     write_init_manifest(&octorus_dir, true, &written_files)?;
 
     println!();
@@ -386,7 +373,6 @@ mod tests {
 
     /// Helper to run init with a specific temp directory
     fn run_init_in_temp_dir(temp_dir: &TempDir, force: bool) -> Result<()> {
-        // Create the base directories manually to avoid env var issues
         let config_home = temp_dir.path().join("octorus");
 
         if !config_home.exists() {
@@ -460,16 +446,13 @@ mod tests {
     fn test_run_init_skips_existing() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create config directory and file with custom content
         let config_dir = temp_dir.path().join("octorus");
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         fs::write(&config_path, "custom = true").unwrap();
 
-        // Run init without force
         run_init_in_temp_dir(&temp_dir, false).unwrap();
 
-        // Verify custom content is preserved
         let content = fs::read_to_string(&config_path).unwrap();
         assert_eq!(content, "custom = true");
     }
@@ -478,16 +461,13 @@ mod tests {
     fn test_run_init_force_overwrites() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create config directory and file with custom content
         let config_dir = temp_dir.path().join("octorus");
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         fs::write(&config_path, "custom = true").unwrap();
 
-        // Run init with force
         run_init_in_temp_dir(&temp_dir, true).unwrap();
 
-        // Verify content was overwritten
         let content = fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("# editor = \"vim\""));
         assert!(!content.contains("custom = true"));
@@ -570,7 +550,6 @@ mod tests {
             "Should contain --ai-rally flag"
         );
 
-        // Reference files should also be created
         let refs_dir = claude_dir.join("skills/octorus/references");
         let headless_path = refs_dir.join("headless-output.md");
         let config_ref_path = refs_dir.join("config-reference.md");
@@ -589,7 +568,6 @@ mod tests {
             "config-reference.md should contain config.toml reference"
         );
 
-        // written_files should track all 3 files
         assert_eq!(written.get("SKILL.md"), Some(&true));
         assert_eq!(written.get("headless-output.md"), Some(&true));
         assert_eq!(written.get("config-reference.md"), Some(&true));
@@ -607,7 +585,6 @@ mod tests {
         fs::write(refs_dir.join("headless-output.md"), "custom headless").unwrap();
         fs::write(refs_dir.join("config-reference.md"), "custom config").unwrap();
 
-        // force=false should skip all
         let mut written = HashMap::new();
         generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
         let content = fs::read_to_string(&skill_path).unwrap();
@@ -621,7 +598,6 @@ mod tests {
             "custom config"
         );
 
-        // force=true should overwrite all
         let mut written = HashMap::new();
         generate_agent_skill_in(&claude_dir, true, &mut written).unwrap();
         let content = fs::read_to_string(&skill_path).unwrap();
@@ -639,11 +615,8 @@ mod tests {
     fn test_generate_agent_skill_skips_when_claude_dir_missing() {
         let temp_dir = TempDir::new().unwrap();
         let claude_dir = temp_dir.path().join(".claude");
-        // .claude does not exist — simulate the wrapper's behavior
         assert!(!claude_dir.is_dir());
 
-        // The wrapper checks is_dir() and returns Ok(()) silently.
-        // Simulate the wrapper logic directly:
         let mut written = HashMap::new();
         if claude_dir.is_dir() {
             generate_agent_skill_in(&claude_dir, false, &mut written).unwrap();
@@ -664,11 +637,9 @@ mod tests {
     fn test_generate_agent_skill_skips_when_claude_is_file() {
         let temp_dir = TempDir::new().unwrap();
         let claude_path = temp_dir.path().join(".claude");
-        // Create .claude as a file, not a directory
         fs::write(&claude_path, "not a directory").unwrap();
         assert!(!claude_path.is_dir());
 
-        // Simulate the wrapper logic: is_dir() returns false for a file
         let mut written = HashMap::new();
         if claude_path.is_dir() {
             generate_agent_skill_in(&claude_path, false, &mut written).unwrap();
@@ -686,7 +657,6 @@ mod tests {
     fn test_generate_agent_skill_creates_intermediate_dirs() {
         let temp_dir = TempDir::new().unwrap();
         let claude_dir = temp_dir.path().join(".claude");
-        // Only create .claude, not skills/octorus/ or references/
         fs::create_dir_all(&claude_dir).unwrap();
 
         let mut written = HashMap::new();
@@ -717,7 +687,6 @@ mod tests {
         let manifest_path = temp_dir.path().join(".octorus/.version");
         let manifest = read_manifest(&manifest_path).expect("manifest should exist");
 
-        // All files should be Created on fresh init
         for name in &["config.toml", "reviewer.md", "reviewee.md", "rereview.md"] {
             let record = manifest.files.get(*name).unwrap_or_else(|| {
                 panic!("{} should be in manifest", name);
@@ -729,7 +698,6 @@ mod tests {
                 name
             );
         }
-        // Local init should NOT have SKILL.md or reference files
         assert!(
             !manifest.files.contains_key("SKILL.md"),
             "SKILL.md should not be in local manifest"
@@ -750,10 +718,8 @@ mod tests {
         let octorus_dir = temp_dir.path().join(".octorus");
         fs::create_dir_all(&octorus_dir).unwrap();
 
-        // Pre-create config.toml with custom content
         fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
 
-        // Also pre-create reviewer.md
         let prompts_dir = octorus_dir.join("prompts");
         fs::create_dir_all(&prompts_dir).unwrap();
         fs::write(prompts_dir.join("reviewer.md"), "custom reviewer").unwrap();
@@ -763,7 +729,6 @@ mod tests {
         let manifest_path = octorus_dir.join(".version");
         let manifest = read_manifest(&manifest_path).expect("manifest should exist");
 
-        // Skipped files should be CustomizedSkipped
         assert_eq!(
             manifest.files["config.toml"].status,
             FileRecordStatus::CustomizedSkipped,
@@ -775,7 +740,6 @@ mod tests {
             "pre-existing reviewer.md should be CustomizedSkipped"
         );
 
-        // Newly created files should be Created
         assert_eq!(
             manifest.files["reviewee.md"].status,
             FileRecordStatus::Created,
@@ -794,16 +758,13 @@ mod tests {
         let octorus_dir = temp_dir.path().join(".octorus");
         fs::create_dir_all(&octorus_dir).unwrap();
 
-        // Pre-create config.toml
         fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
 
-        // Force init should overwrite everything
         run_init_local(temp_dir.path(), true).unwrap();
 
         let manifest_path = octorus_dir.join(".version");
         let manifest = read_manifest(&manifest_path).expect("manifest should exist");
 
-        // With --force, all files should be Created (overwritten)
         for name in &["config.toml", "reviewer.md", "reviewee.md", "rereview.md"] {
             assert_eq!(
                 manifest.files[*name].status,
@@ -820,7 +781,6 @@ mod tests {
         let octorus_dir = temp_dir.path().join(".octorus");
         fs::create_dir_all(&octorus_dir).unwrap();
 
-        // Pre-create config.toml with custom (non-default) content
         fs::write(octorus_dir.join("config.toml"), "custom = true").unwrap();
 
         run_init_local(temp_dir.path(), false).unwrap();

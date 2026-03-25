@@ -18,11 +18,10 @@ use crate::github::ChangedFile;
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
 
-    // Rally status bar の有無で垂直分割
     let outer_constraints = if has_rally {
         vec![
-            Constraint::Min(0),    // Main content
-            Constraint::Length(1), // Rally status bar
+            Constraint::Min(0),
+            Constraint::Length(1),
         ]
     } else {
         vec![Constraint::Min(0)]
@@ -33,7 +32,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints(outer_constraints)
         .split(frame.area());
 
-    // 横並びレイアウト: 左35% / 右65%
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -45,7 +43,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_file_list_pane(frame, app, h_chunks[0], is_file_focused);
     render_diff_pane(frame, app, h_chunks[1], is_diff_focused);
 
-    // Rally status bar
     if has_rally {
         render_rally_status_bar(frame, outer_chunks[1], app);
     }
@@ -69,20 +66,19 @@ fn render_file_list_pane(
         .is_some_and(|f| f.input_active);
 
     let mut constraints = vec![
-        Constraint::Length(3), // Header
-        Constraint::Min(0),    // File list
+        Constraint::Length(3),
+        Constraint::Min(0),
     ];
     if has_filter_bar {
-        constraints.push(Constraint::Length(3)); // Filter bar
+        constraints.push(Constraint::Length(3));
     }
-    constraints.push(Constraint::Length(3)); // Footer
+    constraints.push(Constraint::Length(3));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    // Header
     let pr_info = match &app.data_state {
         DataState::Loaded { pr, .. } => {
             format!("PR #{}: {}", pr.number, pr.title)
@@ -101,7 +97,6 @@ fn render_file_list_pane(
     );
     frame.render_widget(header, chunks[0]);
 
-    // File list
     let files = app.files();
     let total_files = files.len();
 
@@ -248,10 +243,8 @@ fn render_file_list_pane(
         }
     }
 
-    // Track chunk index
     let mut next_chunk = 2;
 
-    // Filter bar
     if has_filter_bar {
         if let Some(ref filter) = app.file_list_filter {
             let cursor_display = format!("/{}", filter.query);
@@ -270,7 +263,6 @@ fn render_file_list_pane(
         next_chunk += 1;
     }
 
-    // Footer
     let help_text = if is_focused {
         if app.file_list_filter.is_some() {
             "j/k/↑↓: move | Esc: clear filter | Enter/→/l: diff | ←/h/q: back"
@@ -347,7 +339,6 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
         Color::DarkGray
     };
 
-    // コメントパネルが開いている場合は分割表示
     let has_inline_comment = is_focused && app.comment_panel_open;
 
     if has_inline_comment {
@@ -367,16 +358,15 @@ fn render_diff_pane_normal(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Diff content
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
         ])
         .split(area);
 
     render_diff_header(frame, app, chunks[0], border_color);
     render_diff_body(frame, app, chunks[1], border_color);
 
-    // Footer
     let footer_text = if is_focused {
         if app.is_local_mode() {
             "j/k/↑↓: scroll | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
@@ -414,17 +404,16 @@ fn render_diff_pane_with_comments(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(50), // Diff content
-            Constraint::Percentage(40), // Inline comments
-            Constraint::Length(3),      // Footer
+            Constraint::Length(3),
+            Constraint::Percentage(50),
+            Constraint::Percentage(40),
+            Constraint::Length(3),
         ])
         .split(area);
 
     render_diff_header(frame, app, chunks[0], border_color);
     render_diff_body(frame, app, chunks[1], border_color);
 
-    // Inline comments
     let indices = app.get_comment_indices_at_current_line();
     let mut lines: Vec<Line> = vec![];
 
@@ -478,7 +467,6 @@ fn render_diff_pane_with_comments(
         .scroll((app.comment_panel_scroll, 0));
     frame.render_widget(paragraph, chunks[2]);
 
-    // Render scrollbar if there is content
     if total_lines > 1 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
@@ -498,7 +486,6 @@ fn render_diff_pane_with_comments(
         );
     }
 
-    // Footer
     let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
     render_diff_footer(frame, app, chunks[3], footer_text, border_color);
 }
@@ -584,7 +571,6 @@ fn render_diff_body(
 
     frame.render_widget(diff_block, area);
 
-    // Render scrollbar for diff content
     if let Some(ref cache) = app.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;

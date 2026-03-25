@@ -14,19 +14,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Body
-            Constraint::Length(1), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
-    // Header
     render_header(frame, app, chunks[0]);
 
-    // Body
     render_body(frame, app, chunks[1]);
 
-    // Footer
     render_footer(frame, app, chunks[2]);
 }
 

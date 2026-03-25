@@ -23,27 +23,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .is_some_and(|f| f.input_active);
 
     let mut constraints = vec![
-        Constraint::Length(3), // Header
-        Constraint::Min(0),    // Issue list
+        Constraint::Length(3),
+        Constraint::Min(0),
     ];
     if has_filter_bar {
-        constraints.push(Constraint::Length(3)); // Filter bar
+        constraints.push(Constraint::Length(3));
     }
-    constraints.push(Constraint::Length(3)); // Footer
+    constraints.push(Constraint::Length(3));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
 
-    // Header
     let filter_str = state.issue_list_state_filter.display_name();
     let header_text = format!("Issue List: {} ({})", app.repo, filter_str);
     let header =
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Issue list
     if state.issue_list_loading && state.issues.is_none() {
         let loading = Paragraph::new(format!("{} Loading issues...", app.spinner_char()))
             .block(Block::default().borders(Borders::ALL).title("Issues"));
@@ -110,12 +108,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .highlight_style(Style::default().bg(Color::DarkGray));
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
-            // Update scroll offset
             if let Some(ref mut state) = app.issue_state {
                 state.issue_list_scroll_offset = list_state.offset();
             }
 
-            // Scrollbar
             if total_display > 1 {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
@@ -140,7 +136,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.render_widget(empty, chunks[1]);
     }
 
-    // Filter bar
     let mut next_chunk = 2;
     if has_filter_bar {
         if let Some(ref state) = app.issue_state {
@@ -151,7 +146,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         next_chunk += 1;
     }
 
-    // Footer
     render_footer(frame, chunks[next_chunk], app);
 }
 
@@ -204,14 +198,12 @@ fn build_issue_list_items(
         .map(|(i, issue)| {
             let is_selected = i == selected;
 
-            // State icon
             let state_icon = if issue.state.to_lowercase() == "open" {
                 Span::styled("● ", Style::default().fg(Color::Green))
             } else {
                 Span::styled("● ", Style::default().fg(Color::Magenta))
             };
 
-            // Issue number
             let number_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -237,13 +229,11 @@ fn build_issue_list_items(
                 title_style,
             );
 
-            // Author
             let author_span = Span::styled(
                 format!("by @{}", issue.author.login),
                 Style::default().fg(Color::Cyan),
             );
 
-            // Labels (show first 2)
             let labels_str = if !issue.labels.is_empty() {
                 let label_names: Vec<&str> = issue
                     .labels
@@ -261,7 +251,6 @@ fn build_issue_list_items(
             };
             let labels_span = Span::styled(labels_str, Style::default().fg(Color::Blue));
 
-            // Comment count
             let comment_count = issue.comments.len();
             let comment_span = if comment_count > 0 {
                 Span::styled(

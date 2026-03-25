@@ -14,7 +14,6 @@ use crate::ai::{RallyState, ReviewAction, RevieweeStatus};
 use crate::app::{AiRallyState, App, LogEntry, LogEventType, PauseState};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // Build PR info before borrowing ai_rally_state to avoid borrow conflict
     let pr_info = build_pr_info(app);
 
     let Some(rally_state) = &mut app.ai_rally_state else {
@@ -23,18 +22,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4), // Header (PR info + status)
-            Constraint::Min(10),   // Main content
-            Constraint::Length(3), // Status bar
-        ])
+        .constraints([Constraint::Length(4), Constraint::Min(10), Constraint::Length(3)])
         .split(frame.area());
 
     render_header(frame, chunks[0], rally_state, &pr_info);
     render_main_content(frame, chunks[1], rally_state);
     render_status_bar(frame, chunks[2], rally_state);
 
-    // Render modal on top if showing log detail
     if rally_state.showing_log_detail {
         render_log_detail_modal(frame, rally_state);
     }
@@ -103,13 +97,11 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
 }
 
 fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
-    // Show config warning if pending
     if state.pending_config_warning.is_some() {
         render_config_warning(frame, area, state);
         return;
     }
 
-    // Add waiting prompt area when in clarification/permission/post-confirmation state
     let is_waiting = matches!(
         state.state,
         RallyState::WaitingForClarification
@@ -121,17 +113,17 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) 
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(35), // History
-                Constraint::Length(6),      // Waiting prompt
-                Constraint::Min(10),        // Logs
+                Constraint::Percentage(35),
+                Constraint::Length(6),
+                Constraint::Min(10),
             ])
             .split(area)
     } else {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(50), // History
-                Constraint::Percentage(50), // Logs
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
             ])
             .split(area)
     };
@@ -357,7 +349,6 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         })
         .collect();
 
-    // Auto-scroll to show latest history entries
     let total = items.len();
     let scroll_offset = total.saturating_sub(visible_height);
     let visible_items: Vec<ListItem> = items.into_iter().skip(scroll_offset).collect();
@@ -373,13 +364,11 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
 }
 
 fn render_logs(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
-    let visible_height = area.height.saturating_sub(2) as usize; // subtract borders
+    let visible_height = area.height.saturating_sub(2) as usize;
     state.last_visible_log_height = visible_height;
     let total_logs = state.logs.len();
 
-    // Calculate scroll position (auto-scroll to bottom by default unless user has scrolled up)
     let scroll_offset = if state.log_scroll_offset == 0 {
-        // Auto-scroll: show latest logs
         total_logs.saturating_sub(visible_height)
     } else {
         state.log_scroll_offset
@@ -412,7 +401,6 @@ fn render_logs(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
     let list = List::new(items);
     frame.render_widget(list, inner_area);
 
-    // Render scrollbar if there are more logs than visible
     if total_logs > visible_height {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
@@ -433,8 +421,6 @@ fn render_logs(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
 }
 
 fn format_log_entry(entry: &LogEntry, is_selected: bool) -> ListItem<'static> {
-    // Use ASCII characters for better terminal compatibility
-    // Some terminals may not render emojis correctly
     let (icon, color) = match entry.event_type {
         LogEventType::Info => ("[i]", Color::Blue),
         LogEventType::Thinking => ("[~]", Color::Magenta),
@@ -457,10 +443,8 @@ fn format_log_entry(entry: &LogEntry, is_selected: bool) -> ListItem<'static> {
         LogEventType::Error => "Error",
     };
 
-    // Selection indicator
     let selector = if is_selected { ">" } else { " " };
 
-    // Truncate message for list display (full content available in detail modal)
     let display_message = truncate_string(&entry.message, 80);
 
     let mut item = ListItem::new(Line::from(vec![
@@ -482,7 +466,6 @@ fn format_log_entry(entry: &LogEntry, is_selected: bool) -> ListItem<'static> {
         Span::styled(display_message, Style::default().fg(Color::White)),
     ]));
 
-    // Highlight selected row
     if is_selected {
         item = item.style(Style::default().bg(Color::DarkGray));
     }
@@ -499,7 +482,6 @@ fn render_log_detail_modal(frame: &mut Frame, state: &AiRallyState) {
         return;
     };
 
-    // Calculate modal area (centered, 80% width, 60% height)
     let area = frame.area();
     let modal_width = (area.width as f32 * 0.8) as u16;
     let modal_height = (area.height as f32 * 0.6) as u16;
@@ -508,10 +490,8 @@ fn render_log_detail_modal(frame: &mut Frame, state: &AiRallyState) {
 
     let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
 
-    // Clear the area behind the modal
     frame.render_widget(Clear, modal_area);
 
-    // Get type label and color
     let (type_label, color) = match entry.event_type {
         LogEventType::Info => ("Info", Color::Blue),
         LogEventType::Thinking => ("Thinking", Color::Magenta),
@@ -525,7 +505,6 @@ fn render_log_detail_modal(frame: &mut Frame, state: &AiRallyState) {
 
     let title = format!(" {} - {} ", type_label, entry.timestamp);
 
-    // Build content with word wrap
     let content = Paragraph::new(entry.message.clone())
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(Color::White))

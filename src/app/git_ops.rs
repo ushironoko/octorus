@@ -1116,13 +1116,11 @@ impl App {
             return;
         }
 
-        // Quit / Esc
         if self.matches_single_key(&key, &kb.quit) {
             self.close_git_ops();
             return;
         }
 
-        // Move down
         if self.matches_single_key(&key, &kb.move_down) {
             if let Some(ref mut ops) = self.git_ops_state {
                 ops.tree.move_down();
@@ -1131,7 +1129,6 @@ impl App {
             return;
         }
 
-        // Move up
         if self.matches_single_key(&key, &kb.move_up) {
             if let Some(ref mut ops) = self.git_ops_state {
                 ops.tree.move_up();
@@ -1140,7 +1137,6 @@ impl App {
             return;
         }
 
-        // Stage/unstage
         if self.matches_single_key(&key, &kb.git_ops_stage) {
             self.toggle_stage();
             return;
@@ -1167,7 +1163,6 @@ impl App {
             return;
         }
 
-        // Commit
         if self.matches_single_key(&key, &kb.git_ops_commit) {
             let _ = self.git_ops_commit(terminal);
             return;
@@ -1187,19 +1182,16 @@ impl App {
             return;
         }
 
-        // Push
         if self.matches_single_key(&key, &kb.git_ops_push) {
             self.git_ops_push();
             return;
         }
 
-        // Refresh
         if self.matches_single_key(&key, &kb.refresh) {
             self.refresh_git_status();
             return;
         }
 
-        // Enter: ディレクトリなら展開/折りたたみ、ファイルならdiffペインへ
         if self.matches_single_key(&key, &kb.open_panel) {
             let is_dir = self
                 .git_ops_state
@@ -1228,7 +1220,6 @@ impl App {
             return;
         }
 
-        // Tab: switch to commits
         if self.matches_single_key(&key, &kb.tab_switch) {
             self.toggle_git_ops_left_focus();
         }
@@ -1286,13 +1277,11 @@ impl App {
             }
         }
 
-        // Quit / Esc
         if self.matches_single_key(&key, &kb.quit) {
             self.close_git_ops();
             return;
         }
 
-        // Move down
         if self.matches_single_key(&key, &kb.move_down) {
             if let Some(ref mut ops) = self.git_ops_state {
                 let cl = &mut ops.commit_log;
@@ -1315,7 +1304,6 @@ impl App {
             return;
         }
 
-        // Move up
         if self.matches_single_key(&key, &kb.move_up) {
             if let Some(ref mut ops) = self.git_ops_state {
                 ops.commit_log.selected = ops.commit_log.selected.saturating_sub(1);
@@ -1324,7 +1312,6 @@ impl App {
             return;
         }
 
-        // Jump to last (G)
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if let Some(ref mut ops) = self.git_ops_state {
                 let cl = &mut ops.commit_log;
@@ -1363,7 +1350,6 @@ impl App {
             return;
         }
 
-        // Enter / move_right / →: focus diff
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
                    {
@@ -1374,7 +1360,6 @@ impl App {
             return;
         }
 
-        // Tab: switch to tree
         if self.matches_single_key(&key, &kb.tab_switch) {
             self.toggle_git_ops_left_focus();
         }
@@ -1445,7 +1430,6 @@ impl App {
             }
         }
 
-        // Quit / Esc / h / Left: back
         if self.matches_single_key(&key, &kb.quit)
                        || self.matches_single_key(&key, &kb.move_left)
                    {
@@ -1453,7 +1437,6 @@ impl App {
             return;
         }
 
-        // Page down (Ctrl-d, also J)
         if self.matches_single_key(&key, &kb.page_down)
             || Self::is_shift_char_shortcut(&key, 'j')
         {
@@ -1463,7 +1446,6 @@ impl App {
             return;
         }
 
-        // Page up (Ctrl-u, also K)
         if self.matches_single_key(&key, &kb.page_up)
             || Self::is_shift_char_shortcut(&key, 'k')
         {
@@ -1473,7 +1455,6 @@ impl App {
             return;
         }
 
-        // Move down
         if self.matches_single_key(&key, &kb.move_down) {
             if let Some(scroll) = self.active_git_ops_diff_scroll() {
                 scroll.move_down();
@@ -1481,7 +1462,6 @@ impl App {
             return;
         }
 
-        // Move up
         if self.matches_single_key(&key, &kb.move_up) {
             if let Some(scroll) = self.active_git_ops_diff_scroll() {
                 scroll.move_up();
@@ -1489,7 +1469,6 @@ impl App {
             return;
         }
 
-        // Jump to last (G)
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if let Some(scroll) = self.active_git_ops_diff_scroll() {
                 scroll.jump_to_last();
@@ -1497,7 +1476,6 @@ impl App {
             return;
         }
 
-        // Tab: switch to tree
         if self.matches_single_key(&key, &kb.tab_switch) {
             if let Some(ref mut ops) = self.git_ops_state {
                 ops.left_focus = LeftPaneFocus::Tree;

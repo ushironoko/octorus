@@ -16,7 +16,6 @@ use super::diff_view;
 use crate::app::{App, AppState, CommitLogState, FileStatus, GitOpsState, LeftPaneFocus, TreeRow};
 use crate::github::{format_relative_time, PrCommit};
 
-/// GitOps 分割ビューを描画
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
 
@@ -50,14 +49,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(h_chunks[0]);
 
-    // Header(3) + Diff(Min) + Footer(3) + borders → -8
     let diff_visible_lines = h_chunks[1].height.saturating_sub(8) as usize;
     if let Some(ref mut ops) = app.git_ops_state {
         ops.diff_scroll.set_visible_lines(diff_visible_lines);
         ops.commit_log.diff_scroll.set_visible_lines(diff_visible_lines);
     }
 
-    // &mut borrow required for scroll_offset updates, so render before &app panes
     render_tree_pane(frame, app, left_chunks[0], is_tree_focused);
     render_commits_pane(frame, app, left_chunks[1], is_commits_focused);
     render_diff_pane(frame, &*app, h_chunks[1], is_diff_focused);
@@ -67,7 +64,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// 左ペイン: ツリービュー
 fn render_tree_pane(
     frame: &mut Frame,
     app: &mut App,
@@ -89,11 +85,7 @@ fn render_tree_pane(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Tree list
-            Constraint::Length(3), // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
         .split(area);
 
     let Some(ref ops) = app.git_ops_state else {
@@ -229,7 +221,6 @@ fn render_tree_pane(
     }
 }
 
-/// 右ペイン: Diff プレビュー
 fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, is_focused: bool) {
     let border_color = if is_focused {
         Color::Yellow
@@ -239,11 +230,7 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Diff content
-            Constraint::Length(3), // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
         .split(area);
 
     let bg_color = app.config.diff.bg_color;
@@ -293,7 +280,6 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
     frame.render_widget(footer, chunks[2]);
 }
 
-/// Diff 本文を描画
 fn render_diff_body(
     frame: &mut Frame,
     ops: &GitOpsState,
@@ -364,7 +350,6 @@ fn render_diff_body(
     }
 }
 
-/// コミット diff 本文を描画
 fn render_commit_diff_body(
     frame: &mut Frame,
     cl: &CommitLogState,
@@ -445,7 +430,6 @@ fn render_commit_diff_body(
     }
 }
 
-/// 左下ペイン: コミット一覧
 fn render_commits_pane(
     frame: &mut Frame,
     app: &mut App,
@@ -569,7 +553,6 @@ fn render_commits_pane(
     }
 }
 
-/// コミットアイテムを構築
 fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
     let style = if is_selected {
         Style::default()
@@ -600,7 +583,6 @@ fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
     ListItem::new(line)
 }
 
-/// ツリー行をリストアイテムに変換
 fn build_tree_row_item<'a>(
     ops: &GitOpsState,
     row: &TreeRow,
@@ -684,7 +666,6 @@ fn status_color_for_entry(entry: &crate::app::GitStatusEntry) -> Color {
     }
 }
 
-/// ステータスのカウントを集計
 fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
     let mut staged = 0;
     let mut unstaged = 0;

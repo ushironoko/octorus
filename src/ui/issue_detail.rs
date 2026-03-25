@@ -13,7 +13,6 @@ use crate::app::{App, IssueDetailFocus};
 use crate::diff::LineType;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // Early returns for loading/missing state (borrow app.issue_state briefly)
     {
         let Some(ref state) = app.issue_state else {
             return;
@@ -33,7 +32,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // Extract all values needed from state before mutable borrows
     let (
         linked_prs_count,
         linked_prs_loading,
@@ -59,7 +57,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         )
     };
 
-    // Calculate linked PRs panel height
     let linked_prs_height = if linked_prs_loading {
         3u16
     } else if linked_prs_count == 0 {
@@ -68,21 +65,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         (linked_prs_count as u16 + 2).min(10)
     };
 
-    let mut constraints = vec![Constraint::Length(3)]; // Header
+    let mut constraints = vec![Constraint::Length(3)];
     if linked_prs_height > 0 || linked_prs_loading {
-        constraints.push(Constraint::Min(4)); // Body
-        constraints.push(Constraint::Length(linked_prs_height)); // Linked PRs
+        constraints.push(Constraint::Min(4));
+        constraints.push(Constraint::Length(linked_prs_height));
     } else {
-        constraints.push(Constraint::Min(4)); // Body (full height)
+        constraints.push(Constraint::Min(4));
     }
-    constraints.push(Constraint::Length(1)); // Footer
+    constraints.push(Constraint::Length(1));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
 
-    // Header
     let state_icon = "●";
     let state_color = if detail_state.to_lowercase() == "open" {
         Color::Green
@@ -109,7 +105,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title("Issue Detail"));
     frame.render_widget(header, chunks[0]);
 
-    // Body
     let body_border_style = if detail_focus == IssueDetailFocus::Body {
         Style::default().fg(Color::Cyan)
     } else {
@@ -118,7 +113,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_body(frame, app, chunks[1], body_border_style);
 
-    // Linked PRs panel (if any)
     let linked_prs_chunk_idx = if linked_prs_height > 0 || linked_prs_loading {
         Some(2)
     } else {
@@ -189,7 +183,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                             Style::default().fg(Color::DarkGray),
                         ),
                     ];
-                    // クロスリポPRにはリポ名を表示
                     if let Some(ref repo) = pr.repo {
                         spans.push(Span::styled(
                             format!("  ({})", repo),
@@ -220,7 +213,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // Footer
     let footer_idx = chunks.len() - 1;
     let footer_line = if app.is_issue_comment_submitting() {
         Line::from(Span::styled(
@@ -262,7 +254,6 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
         .is_some_and(|s| s.issue_detail_cache.is_some());
 
     if has_cache {
-        // Build lines from cache (immutable borrow scope)
         let (body_lines, total_lines, scroll_offset) = {
             let state = app.issue_state.as_ref().unwrap();
             let cache = state.issue_detail_cache.as_ref().unwrap();
@@ -297,7 +288,6 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
             (lines, total, offset)
         };
 
-        // Update scroll offset (mutable borrow)
         if let Some(ref mut state) = app.issue_state {
             state.issue_detail_scroll_offset = scroll_offset;
         }
@@ -316,7 +306,6 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
             .scroll((scroll_offset as u16, 0));
         frame.render_widget(body, area);
 
-        // Scrollbar
         if total_lines > content_height {
             let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(scroll_offset);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -332,7 +321,6 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
             );
         }
     } else {
-        // No cache - plain text fallback
         let body_text = app
             .issue_state
             .as_ref()

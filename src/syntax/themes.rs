@@ -28,7 +28,6 @@ pub const MARKDOWN_INLINE_PUNCT_COLOR: Color = Color::Rgb(2, 2, 2);
 /// Each capture name maps to a list of scope candidates, tried in order.
 /// The first scope that has a style in the theme is used.
 static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_map! {
-    // Keywords
     "keyword" => &["keyword.control", "keyword"],
     "keyword.function" => &["keyword.control", "storage.type.function", "keyword"],
     "keyword.return" => &["keyword.control.return", "keyword.control", "keyword"],
@@ -42,7 +41,6 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
     "keyword.coroutine" => &["keyword.control.flow", "keyword.control", "keyword"],
     "keyword.storage" => &["storage.modifier", "storage", "keyword"],
 
-    // Functions
     "function" => &["entity.name.function", "support.function"],
     "function.call" => &["entity.name.function", "variable.function", "support.function"],
     "function.method" => &["entity.name.function.method", "entity.name.function"],
@@ -50,50 +48,42 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
     "function.macro" => &["entity.name.function.macro", "support.function"],
     "function.builtin" => &["support.function.builtin", "support.function"],
 
-    // Types
     "type" => &["storage.type", "support.type", "entity.name.type"],
     "type.builtin" => &["storage.type.builtin", "support.type.builtin", "storage.type"],
     "type.definition" => &["entity.name.type", "storage.type"],
     "type.qualifier" => &["storage.modifier", "keyword.other"],
 
-    // Strings & Literals
     "string" => &["string.quoted", "string"],
     "string.escape" => &["constant.character.escape"],
     "string.special" => &["string.regexp", "constant.other.placeholder", "string"],
     "string.regex" => &["string.regexp", "string"],
     "character" => &["constant.character", "string.quoted.single"],
 
-    // Numbers & Constants
     "number" => &["constant.numeric", "constant.numeric.integer"],
     "number.float" => &["constant.numeric.float", "constant.numeric"],
     "boolean" => &["constant.language.boolean", "constant.language"],
     "constant" => &["constant", "constant.other"],
     "constant.builtin" => &["constant.language", "constant"],
 
-    // Comments
     "comment" => &["comment", "comment.line", "comment.block"],
     "comment.line" => &["comment.line", "comment"],
     "comment.block" => &["comment.block", "comment"],
     "comment.documentation" => &["comment.block.documentation", "comment.block", "comment"],
 
-    // Variables
     "variable" => &["variable", "variable.other"],
     "variable.parameter" => &["variable.parameter", "variable"],
     "variable.member" => &["variable.other.member", "variable"],
 
-    // Properties & Fields
     "property" => &["variable.other.property", "entity.other.attribute-name"],
     "field" => &["variable.other.member", "variable.other.property"],
     "attribute" => &["entity.other.attribute-name", "meta.attribute"],
 
-    // Operators & Punctuation
     "operator" => &["keyword.operator", "punctuation"],
     "punctuation" => &["punctuation"],
     "punctuation.bracket" => &["punctuation.section", "punctuation"],
     "punctuation.delimiter" => &["punctuation.separator", "punctuation"],
     "punctuation.special" => &["punctuation.definition", "punctuation"],
 
-    // Markdown / text
     "text.title" => &["markup.heading", "entity.name.section"],
     "text.emphasis" => &["markup.italic"],
     "text.strong" => &["markup.bold"],
@@ -102,7 +92,6 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
     "text.reference" => &["constant.other.reference.link", "markup.underline.link"],
     "none" => &[],
 
-    // Other
     "label" => &["entity.name.label", "meta.label"],
     "tag" => &["entity.name.tag"],
     "namespace" => &["entity.name.namespace", "entity.name.module"],
@@ -219,7 +208,6 @@ fn find_style_for_scopes(scopes: &[&str], theme: &Theme) -> Option<Style> {
 fn find_style_for_scope(scope_str: &str, theme: &Theme) -> Option<Style> {
     let scope_stack = ScopeStack::from_str(scope_str).ok()?;
 
-    // Find the best matching scope in the theme
     let mut best_match: Option<(MatchPower, &ThemeItem)> = None;
 
     for item in &theme.scopes {
@@ -241,16 +229,12 @@ fn find_style_for_scope(scope_str: &str, theme: &Theme) -> Option<Style> {
 fn convert_theme_style(style_mod: &syntect::highlighting::StyleModifier, theme: &Theme) -> Style {
     let mut style = Style::default();
 
-    // Apply foreground color (fall back to theme's default foreground)
     if let Some(fg) = style_mod.foreground {
         style = style.fg(Color::Rgb(fg.r, fg.g, fg.b));
     } else if let Some(fg) = theme.settings.foreground {
         style = style.fg(Color::Rgb(fg.r, fg.g, fg.b));
     }
 
-    // Background color is NOT applied - we preserve terminal background
-
-    // Apply font style modifiers
     if let Some(font_style) = style_mod.font_style {
         if font_style.contains(FontStyle::BOLD) {
             style = style.add_modifier(Modifier::BOLD);
@@ -272,7 +256,6 @@ fn convert_theme_style(style_mod: &syntect::highlighting::StyleModifier, theme: 
 /// Capture names follow the convention from nvim-treesitter and other editors.
 pub fn style_for_capture(capture_name: &str) -> Style {
     match capture_name {
-        // Keywords
         "keyword"
         | "keyword.function"
         | "keyword.control"
@@ -288,12 +271,10 @@ pub fn style_for_capture(capture_name: &str) -> Style {
             .fg(Color::Magenta)
             .add_modifier(Modifier::ITALIC),
 
-        // Types
         "type" | "type.builtin" | "type.definition" | "type.qualifier" => {
             Style::default().fg(Color::Yellow)
         }
 
-        // Functions and methods
         "function"
         | "function.call"
         | "function.method"
@@ -301,47 +282,37 @@ pub fn style_for_capture(capture_name: &str) -> Style {
         | "function.builtin"
         | "function.macro" => Style::default().fg(Color::Blue),
 
-        // Strings and literals
         "string" | "string.special" | "string.escape" | "string.regex" | "character" => {
             Style::default().fg(Color::Green)
         }
 
-        // Numbers and constants
         "number" | "number.float" | "constant" | "constant.builtin" | "boolean" => {
             Style::default().fg(Color::Cyan)
         }
 
-        // Comments
         "comment" | "comment.line" | "comment.block" | "comment.documentation" => Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::ITALIC),
 
-        // Variables and parameters
         "variable" | "variable.parameter" | "variable.member" => Style::default().fg(Color::White),
 
-        // Properties and fields
         "property" | "field" | "attribute" => Style::default().fg(Color::LightBlue),
 
-        // Operators and punctuation
         "operator" => Style::default().fg(Color::White),
 
         "punctuation" | "punctuation.bracket" | "punctuation.delimiter" | "punctuation.special" => {
             Style::default().fg(Color::Gray)
         }
 
-        // Labels, tags, namespaces
         "label" | "tag" => Style::default().fg(Color::Red),
         "namespace" | "module" => Style::default().fg(Color::Yellow),
 
-        // Special
         "escape" => Style::default().fg(Color::Cyan),
         "constructor" => Style::default().fg(Color::Yellow),
         "include" => Style::default().fg(Color::Magenta),
 
-        // Embedded content (for interpolation, etc.)
         "embedded" => Style::default(),
 
-        // Markdown / text
         "text.title" => Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
@@ -354,7 +325,6 @@ pub fn style_for_capture(capture_name: &str) -> Style {
         "text.reference" => Style::default().fg(Color::Blue),
         "none" => Style::default(),
 
-        // Default: no special styling
         _ => Style::default(),
     }
 }
@@ -567,7 +537,6 @@ mod tests {
             "constructor",
             "include",
             "embedded",
-            // Markdown / text
             "text.title",
             "text.emphasis",
             "text.strong",

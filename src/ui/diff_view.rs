@@ -1127,7 +1127,6 @@ pub fn render_cached_lines<'a>(
 
             let line = Line::from(all_spans);
             if is_in_multiline {
-                // 複数行選択範囲: 青系背景で強調。カーソル行はさらに REVERSED。
                 if is_selected {
                     line.style(
                         Style::default()
@@ -1138,7 +1137,6 @@ pub fn render_cached_lines<'a>(
                     line.style(Style::default().bg(Color::Rgb(0, 40, 80)))
                 }
             } else if is_selected {
-                // 選択行: REVERSED のみ（背景色 + REVERSED は fg/bg 反転で視認性が低下するため省略）
                 line.style(Style::default().add_modifier(Modifier::REVERSED))
             } else if bg_color {
                 match cached.line_type {
@@ -1154,7 +1152,6 @@ pub fn render_cached_lines<'a>(
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
-    // If comment panel is open (focused), show split view with comment panel
     if app.comment_panel_open {
         render_with_inline_comment(frame, app);
         return;
@@ -1163,17 +1160,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     let has_rally = app.has_background_rally();
     let constraints = if has_rally {
         vec![
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Diff content
-            Constraint::Length(1), // Rally status bar
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(3),
         ]
     } else {
-        vec![
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Diff content
-            Constraint::Length(3), // Footer
-        ]
+        vec![Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)]
     };
 
     let chunks = Layout::default()
@@ -1184,7 +1177,6 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_header(frame, app, chunks[0]);
     render_diff_content(frame, app, chunks[1]);
 
-    // Rally status bar (if background rally exists)
     if has_rally {
         render_rally_status_bar(frame, chunks[2], app);
         render_footer(frame, app, chunks[3]);
@@ -1198,18 +1190,18 @@ fn render_with_inline_comment(frame: &mut Frame, app: &App) {
     let has_rally = app.has_background_rally();
     let constraints = if has_rally {
         vec![
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(50), // Diff content
-            Constraint::Length(1),      // Rally status bar
-            Constraint::Percentage(40), // Inline comments
-            Constraint::Length(3),      // Footer
+            Constraint::Length(3),
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Percentage(40),
+            Constraint::Length(3),
         ]
     } else {
         vec![
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(55), // Diff content
-            Constraint::Percentage(40), // Inline comments
-            Constraint::Length(3),      // Footer
+            Constraint::Length(3),
+            Constraint::Percentage(55),
+            Constraint::Percentage(40),
+            Constraint::Length(3),
         ]
     };
 
@@ -1308,7 +1300,6 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
 
     frame.render_widget(diff_block, area);
 
-    // Render scrollbar for diff content
     if let Some(ref cache) = app.diff_store.current {
         let total_lines = cache.lines.len();
         let visible_height = area.height.saturating_sub(2) as usize;
@@ -1496,7 +1487,6 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
     let mut lines: Vec<Line> = vec![];
 
     if indices.is_empty() {
-        // コメントなしの場合
         lines.push(Line::from(Span::styled(
             "No comments. c: comment, s: suggestion",
             Style::default().fg(Color::DarkGray),
@@ -1510,14 +1500,12 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
             };
 
             if i > 0 {
-                // Separator between multiple comments
                 lines.push(Line::from(Span::styled(
                     "───────────────────────────────────────",
                     Style::default().fg(Color::DarkGray),
                 )));
             }
 
-            // Selection indicator for multiple comments
             let indicator = if has_multiple {
                 if i == app.selected_inline_comment {
                     Span::styled("> ", Style::default().fg(Color::Yellow))
@@ -1528,7 +1516,6 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
                 Span::raw("")
             };
 
-            // Header: [>] @user (line N)
             lines.push(Line::from(vec![
                 indicator,
                 Span::styled(
@@ -1541,7 +1528,6 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
                 ),
             ]));
 
-            // Body
             for line in comment.body.lines() {
                 lines.push(Line::from(line.to_string()));
             }
@@ -1564,7 +1550,6 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
 
     frame.render_widget(paragraph, area);
 
-    // Render scrollbar if there is content
     if total_lines > 1 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
@@ -1590,9 +1575,9 @@ pub fn render_text_input(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(40), // Context info area
-            Constraint::Percentage(60), // TextArea
+            Constraint::Length(3),
+            Constraint::Percentage(40),
+            Constraint::Percentage(60),
         ])
         .split(frame.area());
 
@@ -1694,7 +1679,6 @@ fn render_suggestion_input(frame: &mut Frame, app: &App, area: ratatui::layout::
     let submit_key = app.input_text_area.submit_key_display();
     let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
 
-    // キャッシュ済みのハイライト結果を使用（ParserPool の毎フレーム再生成を回避）
     if let Some(ref cache) = app.suggestion_highlight_cache {
         app.input_text_area
             .render_highlighted(frame, area, &title, "Edit the code...", &cache.lines);
