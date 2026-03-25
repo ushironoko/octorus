@@ -758,7 +758,18 @@ mod tests {
             "html_url": "https://github.com/owner/repo/issues/42#issuecomment-123456789"
         });
         let comment = parse_rest_issue_comment(&json).unwrap();
-        insta::assert_debug_snapshot!(comment);
+        insta::assert_debug_snapshot!(comment, @r#"
+        IssueComment {
+            id: "123456789",
+            body: "This is a REST API comment",
+            author: User {
+                login: "restuser",
+            },
+            created_at: "2026-03-15T10:30:00Z",
+            author_association: "MEMBER",
+            url: "https://github.com/owner/repo/issues/42#issuecomment-123456789",
+        }
+        "#);
     }
 
     #[test]
@@ -772,7 +783,18 @@ mod tests {
             "url": "https://github.com/owner/repo/issues/10#issuecomment-456"
         });
         let comment = parse_rest_issue_comment(&json).unwrap();
-        insta::assert_debug_snapshot!(comment);
+        insta::assert_debug_snapshot!(comment, @r#"
+        IssueComment {
+            id: "IC_kwDOABC123",
+            body: "GraphQL format comment",
+            author: User {
+                login: "gqluser",
+            },
+            created_at: "2026-03-15T12:00:00Z",
+            author_association: "OWNER",
+            url: "https://github.com/owner/repo/issues/10#issuecomment-456",
+        }
+        "#);
     }
 
     #[test]
@@ -803,32 +825,82 @@ mod tests {
             }),
         ];
         let comments = parse_issue_comments(&raw);
-        insta::assert_debug_snapshot!(comments);
+        insta::assert_debug_snapshot!(comments, @r#"
+        [
+            IssueComment {
+                id: "IC_1",
+                body: "First comment\nwith multiple lines",
+                author: User {
+                    login: "alice",
+                },
+                created_at: "2026-01-01T00:00:00Z",
+                author_association: "OWNER",
+                url: "https://example.com/1",
+            },
+            IssueComment {
+                id: "IC_2",
+                body: "Second comment",
+                author: User {
+                    login: "bob",
+                },
+                created_at: "2026-01-02T00:00:00Z",
+                author_association: "CONTRIBUTOR",
+                url: "https://example.com/2",
+            },
+            IssueComment {
+                id: "IC_3",
+                body: "",
+                author: User {
+                    login: "charlie",
+                },
+                created_at: "2026-01-03T00:00:00Z",
+                author_association: "",
+                url: "",
+            },
+        ]
+        "#);
     }
 
     #[test]
     fn snapshot_reply_template_single_line() {
         let template = build_reply_template("alice", "Simple one-line comment");
-        insta::assert_snapshot!(template);
+        insta::assert_snapshot!(template, @r"
+        > @alice wrote:
+        > Simple one-line comment
+        ");
     }
 
     #[test]
     fn snapshot_reply_template_multiline() {
         let template = build_reply_template("bob", "Line one\nLine two\nLine three");
-        insta::assert_snapshot!(template);
+        insta::assert_snapshot!(template, @r"
+        > @bob wrote:
+        > Line one
+        > Line two
+        > Line three
+        ");
     }
 
     #[test]
     fn snapshot_reply_template_truncated() {
         let template =
             build_reply_template("charlie", "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
-        insta::assert_snapshot!(template);
+        insta::assert_snapshot!(template, @r"
+        > @charlie wrote:
+        > Line 1
+        > Line 2
+        > Line 3
+        > ...
+        ");
     }
 
     #[test]
     fn snapshot_reply_template_empty_body() {
         let template = build_reply_template("dave", "");
-        insta::assert_snapshot!(template);
+        insta::assert_snapshot!(template, @r"
+        > @dave wrote:
+        >
+        ");
     }
 
     #[test]
@@ -837,6 +909,12 @@ mod tests {
             "tanaka",
             "これはテストです\n二行目のコメント\n三行目\n四行目は省略されるはず",
         );
-        insta::assert_snapshot!(template);
+        insta::assert_snapshot!(template, @r"
+        > @tanaka wrote:
+        > これはテストです
+        > 二行目のコメント
+        > 三行目
+        > ...
+        ");
     }
 }

@@ -1,7 +1,0 @@
----
-source: src/github/issue.rs
-assertion_line: 812
-expression: template
----
-> @alice wrote:
-> Simple one-line comment
