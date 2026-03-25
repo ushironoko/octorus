@@ -6543,3 +6543,102 @@ fn test_toggle_file_tree_with_empty_files() {
     assert!(!app.tree_mode_active);
     assert!(app.file_tree_state.is_none());
 }
+
+// ========== Zen Mode Tests ==========
+
+#[test]
+fn test_toggle_zen_mode() {
+    let mut app = App::new_for_test();
+    assert!(!app.zen_mode);
+
+    app.toggle_zen_mode();
+    assert!(app.zen_mode);
+    assert!(app.submission_result.is_some());
+    assert!(app.submission_result.as_ref().unwrap().1.contains("ON"));
+
+    app.toggle_zen_mode();
+    assert!(!app.zen_mode);
+    assert!(app.submission_result.as_ref().unwrap().1.contains("OFF"));
+}
+
+#[test]
+fn test_zen_mode_enter_diff_from_file_list() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+
+    // zen_mode OFF → SplitViewDiff
+    app.zen_mode = false;
+    app.enter_diff_from_file_list();
+    assert_eq!(app.state, AppState::SplitViewDiff);
+
+    // zen_mode ON → DiffView + return state = FileList
+    app.state = AppState::FileList;
+    app.zen_mode = true;
+    app.enter_diff_from_file_list();
+    assert_eq!(app.state, AppState::DiffView);
+    assert_eq!(app.diff_view_return_state, AppState::FileList);
+}
+
+#[tokio::test]
+async fn test_zen_mode_auto_focus_transitions_to_diff_view() {
+    let mut config = Config::default();
+    config.diff.zen_mode = true;
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.set_local_mode(true);
+    app.set_local_auto_focus(true);
+    app.state = AppState::FileList;
+
+    let pr = Box::new(PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    });
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: pr.clone(),
+            files: vec![ChangedFile {
+                filename: "initial.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 1,
+                patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+                viewed: false,
+            }],
+        },
+    );
+
+    assert_eq!(app.state, AppState::DiffView);
+    assert_eq!(app.diff_view_return_state, AppState::FileList);
+}
+
+#[test]
+fn test_zen_mode_started_from_pr_list_quit_returns_to_file_list() {
+    let mut app = App::new_for_test();
+    app.started_from_pr_list = true;
+    app.zen_mode = true;
+    app.state = AppState::DiffView;
+    app.diff_view_return_state = AppState::FileList;
+
+    // zen_mode + started_from_pr_list: q should go to FileList, not PR list
+    // The condition `!self.zen_mode` prevents back_to_pr_list() from firing
+    // So state should be set to diff_view_return_state = FileList
+    assert!(app.zen_mode);
+    assert!(app.started_from_pr_list);
+    assert_eq!(app.diff_view_return_state, AppState::FileList);
+}

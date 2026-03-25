@@ -532,8 +532,10 @@ impl App {
                 // Quit/back
                 if self.matches_single_key(&key, &kb.quit) {
                     // If started from PR list and we're at the file list level, go back to PR list
+                    // (zen_mode では FileList→DiffView が通常の階層なので直帰しない)
                     if self.started_from_pr_list
                         && self.diff_view_return_state == AppState::FileList
+                        && !self.zen_mode
                     {
                         self.back_to_pr_list();
                     } else {

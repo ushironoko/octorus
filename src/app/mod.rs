@@ -89,6 +89,8 @@ pub struct App {
     local_mode: bool,
     /// `--auto-focus` オプション（ローカル差分時）
     local_auto_focus: bool,
+    /// FileList から直接 DiffView(フルスクリーン) に遷移するモード
+    pub(crate) zen_mode: bool,
     /// 直近のローカルファイル署名（差分変更を検出、base: patch 除外）
     local_file_signatures: HashMap<String, u64>,
     /// patch 内容を含む完全シグネチャ（バッチ diff 完了後に更新）
@@ -263,6 +265,7 @@ impl App {
             started_from_pr_list: false,
             local_mode: false,
             local_auto_focus: false,
+            zen_mode: config.diff.zen_mode,
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
             original_pr_number: Some(pr_number),
@@ -358,6 +361,7 @@ impl App {
 
     /// PR一覧表示モードで開始（--pr省略時）
     pub fn new_pr_list(repo: &str, config: Config) -> Self {
+        let zen_mode = config.diff.zen_mode;
         Self {
             repo: repo.to_string(),
             pr_number: None,
@@ -429,6 +433,7 @@ impl App {
             symbol_search: SymbolSearchState::Idle,
             local_mode: false,
             local_auto_focus: false,
+            zen_mode,
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
             original_pr_number: None,
@@ -571,6 +576,26 @@ impl App {
         self.markdown_rich
     }
 
+    pub(crate) fn toggle_zen_mode(&mut self) {
+        self.zen_mode = !self.zen_mode;
+        let msg = if self.zen_mode {
+            "Zen mode: ON"
+        } else {
+            "Zen mode: OFF"
+        };
+        self.submission_result = Some((true, msg.to_string()));
+        self.submission_result_time = Some(Instant::now());
+    }
+
+    pub(crate) fn enter_diff_from_file_list(&mut self) {
+        if self.zen_mode {
+            self.diff_view_return_state = AppState::FileList;
+            self.state = AppState::DiffView;
+        } else {
+            self.state = AppState::SplitViewDiff;
+        }
+    }
+
     /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
     pub fn set_start_ai_rally_on_load(&mut self, start: bool) {
         self.start_ai_rally_on_load = start;
@@ -682,6 +707,7 @@ impl App {
             session_cache: SessionCache::new(),
             local_mode: false,
             local_auto_focus: false,
+            zen_mode: false,
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
             original_pr_number: None,
