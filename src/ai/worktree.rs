@@ -29,6 +29,20 @@ pub fn rally_branch_name(pr_number: u32) -> String {
     format!("octorus/rally/{}", pr_number)
 }
 
+/// Sibling directory to the repo root: `{repo_root}/../{repo_name}-rally-{pr}`
+pub fn default_worktree_path(repo_root: &str, pr_number: u32) -> String {
+    let root = Path::new(repo_root);
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repo".to_string());
+    let sibling = root
+        .parent()
+        .unwrap_or(root)
+        .join(format!("{}-rally-{}", repo_name, pr_number));
+    sibling.to_string_lossy().to_string()
+}
+
 pub async fn setup_rally_worktree(
     repo_root: &str,
     target_dir: &str,

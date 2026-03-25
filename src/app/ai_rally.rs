@@ -610,7 +610,7 @@ impl App {
     /// or when no warnings are present.
     pub(crate) fn spawn_rally_orchestrator(
         &mut self,
-        context: Context,
+        mut context: Context,
         prompt_loader: PromptLoader,
     ) {
         let (event_tx, event_rx) = mpsc::channel(100);
@@ -625,16 +625,19 @@ impl App {
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
 
-        let enable_worktree = self.config.ai.enable_worktree;
+        let enable_worktree = self.config.ai.enable_worktree && !self.local_mode;
 
         let handle = tokio::spawn(async move {
-            // Set up or validate worktree for explicit --working-dir before running orchestrator
-            // In TUI mode, only when enable_worktree config is true
-            if context.working_dir_mode.is_explicit() && enable_worktree {
-                let target_path = context.working_dir_mode.path().to_string();
+            if enable_worktree {
                 let setup_result: Result<(), anyhow::Error> = async {
+                    let target_path = if context.working_dir_mode.is_explicit() {
+                        context.working_dir_mode.path().to_string()
+                    } else {
+                        let repo_root = crate::ai::worktree::get_repo_root(None).await?;
+                        crate::ai::worktree::default_worktree_path(&repo_root, context.pr_number)
+                    };
+
                     if !std::path::Path::new(&target_path).exists() {
-                        // Path doesn't exist — create worktree from source repo (CWD)
                         let repo_root = crate::ai::worktree::get_repo_root(None).await?;
                         let setup = crate::ai::worktree::setup_rally_worktree(
                             &repo_root,
@@ -643,34 +646,33 @@ impl App {
                             &context.head_sha,
                         )
                         .await?;
-                        match setup {
-                            crate::ai::worktree::WorktreeSetup::Created {
-                                ref path,
-                                ref branch,
-                            } => {
-                                let _ = event_tx
-                                    .send(RallyEvent::AgentThinking(format!(
-                                        "Created rally worktree at {} on branch {}",
-                                        path, branch
-                                    )))
-                                    .await;
-                            }
-                            crate::ai::worktree::WorktreeSetup::ExistingReused { ref path } => {
-                                let _ = event_tx
-                                    .send(RallyEvent::AgentThinking(format!(
-                                        "Using existing directory at {}",
-                                        path
-                                    )))
-                                    .await;
-                            }
+                        if let crate::ai::worktree::WorktreeSetup::Created {
+                            ref path,
+                            ref branch,
+                        } = setup
+                        {
+                            let _ = event_tx
+                                .send(RallyEvent::AgentThinking(format!(
+                                    "Created rally worktree at {} on branch {}",
+                                    path, branch
+                                )))
+                                .await;
                         }
                     } else {
-                        // Path exists — resolve repo root from CWD (source repo) for cross-repo validation
-                        let repo_root =
-                            crate::ai::worktree::get_repo_root(None).await?;
+                        let repo_root = crate::ai::worktree::get_repo_root(None).await?;
                         crate::ai::worktree::validate_existing_worktree(&target_path, &repo_root)
                             .await?;
+                        let _ = event_tx
+                            .send(RallyEvent::AgentThinking(format!(
+                                "Using existing worktree at {}",
+                                target_path
+                            )))
+                            .await;
                     }
+
+                    // Update context working_dir_mode to the resolved worktree path
+                    context.working_dir_mode =
+                        crate::ai::WorkingDirMode::Explicit(target_path);
                     Ok(())
                 }
                 .await;
