@@ -99,10 +99,7 @@ impl Highlighter {
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        // Try tree-sitter first
         if let Some(supported_lang) = SupportedLanguage::from_extension(ext) {
-            // Create style cache from theme for O(1) lookups
-            // Query compilation is deferred to parse_source() via ParserPool cache
             let theme = get_theme(theme_name);
             let style_cache = ThemeStyleCache::new(theme);
             return Highlighter::Cst {
@@ -111,7 +108,6 @@ impl Highlighter {
             };
         }
 
-        // Fall back to syntect
         if let Some(syntax) = syntax_for_file(filename) {
             let theme = get_theme(theme_name);
             return Highlighter::Syntect(HighlightLines::new(syntax, theme));
@@ -138,7 +134,6 @@ impl Highlighter {
                 supported_lang,
                 style_cache: _,
             } => {
-                // Get parser for this language
                 let parser = parser_pool.get_or_create(supported_lang.default_extension())?;
                 let tree = parser.parse(source, None)?;
                 Some(CstParseResult {
@@ -167,7 +162,6 @@ impl Highlighter {
     pub fn highlight_line(&mut self, line: &str, interner: &mut Rodeo) -> Vec<InternedSpan> {
         match self {
             Highlighter::Cst { .. } => {
-                // CST highlighting requires the tree, use highlight_line_with_tree instead
                 vec![InternedSpan {
                     content: interner.get_or_intern(line),
                     style: Style::default(),
@@ -208,7 +202,6 @@ pub fn collect_line_highlights(
     let mut cursor = QueryCursor::new();
     let mut captures_by_line: HashMap<usize, Vec<LineCapture>> = HashMap::new();
 
-    // Pre-compute line byte offsets for fast line lookup
     let line_offsets: Vec<usize> =
         std::iter::once(0)
             .chain(source.bytes().enumerate().filter_map(|(i, b)| {
@@ -220,7 +213,6 @@ pub fn collect_line_highlights(
             }))
             .collect();
 
-    // Run query once over the entire tree
     let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
     while let Some(mat) = matches.next() {
         for capture in mat.captures {
@@ -228,7 +220,6 @@ pub fn collect_line_highlights(
             let start_byte = node.start_byte();
             let end_byte = node.end_byte();
 
-            // Find which line(s) this capture spans
             let start_line = line_offsets
                 .binary_search(&start_byte)
                 .unwrap_or_else(|i| i.saturating_sub(1));
@@ -240,12 +231,10 @@ pub fn collect_line_highlights(
             let capture_name = &capture_names[capture.index as usize];
             let style = style_cache.get(capture_name);
 
-            // Skip captures with no style (e.g., raw_text, which would mask other captures)
             if style == Style::default() {
                 continue;
             }
 
-            // Add capture to each line it spans
             for line_idx in start_line..=end_line {
                 let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
                 let line_end = line_offsets
@@ -253,7 +242,6 @@ pub fn collect_line_highlights(
                     .map(|&off| off.saturating_sub(1))
                     .unwrap_or(source.len());
 
-                // Clamp capture to line boundaries
                 let local_start = start_byte.saturating_sub(line_start);
                 let local_end = end_byte
                     .saturating_sub(line_start)
@@ -273,7 +261,6 @@ pub fn collect_line_highlights(
         }
     }
 
-    // Sort captures within each line by start position
     for captures in captures_by_line.values_mut() {
         captures.sort_by_key(|c| c.local_start);
     }
@@ -307,7 +294,6 @@ pub fn collect_line_highlights_with_injections(
 ) -> LineHighlights {
     use crate::syntax::injection::{extract_injections, normalize_language_name};
 
-    // Get cached query for parent language
     let query = match parser_pool.get_or_create_query(lang) {
         Some(q) => q,
         None => return LineHighlights::empty(),
@@ -318,16 +304,13 @@ pub fn collect_line_highlights_with_injections(
         .map(|s| s.to_string())
         .collect();
 
-    // Start with parent language highlights
     let mut result = collect_line_highlights(source, tree, query, &capture_names, style_cache);
 
-    // Get parent language for injection query
     let parent_lang = match SupportedLanguage::from_extension(parent_ext) {
         Some(lang) => lang,
         None => return result,
     };
 
-    // Get injection query for parent language
     let injection_query = match parent_ext {
         "svelte" => tree_sitter_svelte_ng::INJECTIONS_QUERY,
         "vue" => tree_sitter_vue3::INJECTIONS_QUERY,
@@ -335,7 +318,6 @@ pub fn collect_line_highlights_with_injections(
         _ => return result, // No injection support for other languages yet
     };
 
-    // Extract injection ranges
     let ts_language = parent_lang.ts_language();
     let injections = extract_injections(tree, source.as_bytes(), &ts_language, injection_query);
 
@@ -343,7 +325,6 @@ pub fn collect_line_highlights_with_injections(
         return result;
     }
 
-    // Pre-compute line byte offsets for fast line lookup
     let line_offsets: Vec<usize> =
         std::iter::once(0)
             .chain(source.bytes().enumerate().filter_map(|(i, b)| {
@@ -355,7 +336,6 @@ pub fn collect_line_highlights_with_injections(
             }))
             .collect();
 
-    // Process each injection
     for injection in injections {
         let mut normalized_lang = normalize_language_name(&injection.language);
 
@@ -372,7 +352,6 @@ pub fn collect_line_highlights_with_injections(
             }
         }
 
-        // Map normalized language name to file extension
         let ext = match normalized_lang {
             "typescript" => "ts",
             "javascript" => "js",
@@ -398,15 +377,12 @@ pub fn collect_line_highlights_with_injections(
             _ => continue,      // Skip unsupported languages
         };
 
-        // Get the injection content
         let inj_source = &source[injection.range.clone()];
 
-        // Get injection language
         let Some(inj_lang) = SupportedLanguage::from_extension(ext) else {
             continue;
         };
 
-        // Parse the injection content (scoped to release parser borrow)
         let inj_tree = match parser_pool.get_or_create(ext) {
             Some(parser) => match parser.parse(inj_source, None) {
                 Some(tree) => tree,
@@ -414,9 +390,6 @@ pub fn collect_line_highlights_with_injections(
             },
             None => continue,
         };
-        // parser_pool borrow is released here
-
-        // Get cached highlight query for injection language
         let Some(inj_query) = parser_pool.get_or_create_query(inj_lang) else {
             continue;
         };
@@ -427,7 +400,6 @@ pub fn collect_line_highlights_with_injections(
             .map(|s| s.to_string())
             .collect();
 
-        // Collect highlights from injection
         let mut inj_cursor = QueryCursor::new();
         let mut inj_matches =
             inj_cursor.matches(inj_query, inj_tree.root_node(), inj_source.as_bytes());
@@ -435,15 +407,12 @@ pub fn collect_line_highlights_with_injections(
         while let Some(mat) = inj_matches.next() {
             for capture in mat.captures {
                 let node = capture.node;
-                // Byte offsets are relative to injection source
                 let local_start = node.start_byte();
                 let local_end = node.end_byte();
 
-                // Convert to absolute byte offset in full source
                 let abs_start = injection.range.start + local_start;
                 let abs_end = injection.range.start + local_end;
 
-                // Find which line(s) this capture spans
                 let start_line = line_offsets
                     .binary_search(&abs_start)
                     .unwrap_or_else(|i| i.saturating_sub(1));
@@ -455,12 +424,10 @@ pub fn collect_line_highlights_with_injections(
                 let capture_name = &inj_capture_names[capture.index as usize];
                 let style = style_cache.get(capture_name);
 
-                // Skip captures with no style
                 if style == Style::default() {
                     continue;
                 }
 
-                // Add capture to each line it spans
                 for line_idx in start_line..=end_line {
                     let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
                     let line_end = line_offsets
@@ -468,7 +435,6 @@ pub fn collect_line_highlights_with_injections(
                         .map(|&off| off.saturating_sub(1))
                         .unwrap_or(source.len());
 
-                    // Clamp capture to line boundaries (relative to line start)
                     let cap_local_start = abs_start.saturating_sub(line_start);
                     let cap_local_end = abs_end
                         .saturating_sub(line_start)
@@ -523,7 +489,6 @@ pub fn apply_line_highlights(
     let captures = match captures {
         Some(c) if !c.is_empty() => c,
         _ => {
-            // No highlights, return plain text
             return vec![InternedSpan {
                 content: interner.get_or_intern(line),
                 style: Style::default(),
@@ -531,16 +496,11 @@ pub fn apply_line_highlights(
         }
     };
 
-    // Build spans using an event-based approach instead of byte-map for better performance.
-    // This is O(m log m) where m is the number of captures, rather than O(n) where n is line length.
+    // O(m log m) where m is the number of captures, rather than O(n) where n is line length.
     // For long lines (e.g., minified code), this is much more efficient.
-
-    // Collect boundary events: (position, is_start, capture_index)
-    // We'll process these in order to build spans
     let mut events: Vec<(usize, bool, usize)> = Vec::with_capacity(captures.len() * 2);
 
     for (idx, capture) in captures.iter().enumerate() {
-        // Skip invalid captures
         if capture.local_start >= capture.local_end || capture.local_end > line.len() {
             continue;
         }
@@ -548,7 +508,6 @@ pub fn apply_line_highlights(
         events.push((capture.local_end, false, idx)); // end event
     }
 
-    // If no valid captures, return plain text
     if events.is_empty() {
         return vec![InternedSpan {
             content: interner.get_or_intern(line),
@@ -556,22 +515,17 @@ pub fn apply_line_highlights(
         }];
     }
 
-    // Sort events by position, with end events before start events at same position
     events.sort_by(|a, b| {
         a.0.cmp(&b.0).then_with(|| {
-            // End events (false) come before start events (true) at same position
             a.1.cmp(&b.1)
         })
     });
 
-    // Build spans by tracking active captures
-    // Use a stack approach: shorter captures (higher specificity) override longer ones
     let mut spans = Vec::new();
-    let mut active_captures: Vec<usize> = Vec::new(); // indices of currently active captures
+    let mut active_captures: Vec<usize> = Vec::new();
     let mut last_pos = 0;
 
     for (pos, is_start, capture_idx) in events {
-        // Emit span for the gap before this event if there's content
         if pos > last_pos {
             let style = active_captures
                 .last()
@@ -587,20 +541,14 @@ pub fn apply_line_highlights(
         }
 
         if is_start {
-            // Push new capture - shorter captures are processed after longer ones
-            // (due to sorting in collect_line_highlights), so they'll be on top
             active_captures.push(capture_idx);
-        } else {
-            // Remove this capture from active set
-            if let Some(idx) = active_captures.iter().rposition(|&c| c == capture_idx) {
-                active_captures.remove(idx);
-            }
+        } else if let Some(idx) = active_captures.iter().rposition(|&c| c == capture_idx) {
+            active_captures.remove(idx);
         }
 
         last_pos = pos;
     }
 
-    // Emit final span if there's remaining content
     if last_pos < line.len() {
         let style = active_captures
             .last()
@@ -615,7 +563,6 @@ pub fn apply_line_highlights(
         }
     }
 
-    // If no spans were created, return the whole line as plain text
     if spans.is_empty() {
         spans.push(InternedSpan {
             content: interner.get_or_intern(line),

@@ -24,23 +24,16 @@ fn fmt_label(label: &str, width: usize) -> String {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Tab header
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
         .split(frame.area());
 
-    // Tab header
     render_tab_header(frame, app, chunks[0]);
 
-    // Content
     match app.help_tab {
         HelpTab::Keybindings => render_keybindings_tab(frame, app, chunks[1]),
         HelpTab::Config => render_config_tab(frame, app, chunks[1]),
     }
 
-    // Footer
     render_help_footer(frame, app, chunks[2]);
 }
 
@@ -286,6 +279,12 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
             "diff.bg_color",
             overrides,
         ),
+        config_value_line(
+            "Zen mode",
+            &config.diff.zen_mode.to_string(),
+            "diff.zen_mode",
+            overrides,
+        ),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Editor",
@@ -459,6 +458,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.toggle_auto_focus.display(), key_width)
         )),
         Line::from(format!(
+            "{}  Toggle zen mode",
+            fmt_key(&kb.toggle_zen_mode.display(), key_width)
+        )),
+        Line::from(format!(
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
         )),
@@ -534,18 +537,22 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.go_to_file.display(), key_width)
         )),
         Line::from(format!(
-            "{}/{}  Jump to first/last line",
-            fmt_key(&kb.jump_to_first.display(), 10),
-            kb.jump_to_last.display()
+            "{}  Jump to first/last line",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Jump back",
             fmt_key(&kb.jump_back.display(), key_width)
         )),
         Line::from(format!(
-            "{}/{}  Next/prev comment",
-            fmt_key(&kb.next_comment.display(), 10),
-            kb.prev_comment.display()
+            "{}  Next/prev comment",
+            fmt_key(
+                &format!("{}/{}", kb.next_comment.display(), kb.prev_comment.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open comment panel",
@@ -590,9 +597,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.go_to_file.display(), key_width)
         )),
         Line::from(format!(
-            "{}/{}  Jump to first/last line",
-            fmt_key(&kb.jump_to_first.display(), 10),
-            kb.jump_to_last.display()
+            "{}  Jump to first/last line",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Jump back",
@@ -638,9 +647,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(format!(
-            "{}/{}  Extend selection",
-            fmt_key(&kb.move_down.display(), 10),
-            kb.move_up.display()
+            "{}  Extend selection",
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Comment on selection",
@@ -664,9 +675,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(format!(
-            "{}/{}  Scroll panel",
-            fmt_key(&kb.move_down.display(), 10),
-            kb.move_up.display()
+            "{}  Scroll panel",
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Add comment",
@@ -682,9 +695,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from("  Tab/Shift-Tab   Select reply target (multiple)"),
         Line::from(format!(
-            "{}/{}  Jump to next/prev comment",
-            fmt_key(&kb.next_comment.display(), 10),
-            kb.prev_comment.display()
+            "{}  Jump to next/prev comment",
+            fmt_key(
+                &format!("{}/{}", kb.next_comment.display(), kb.prev_comment.display()),
+                key_width
+            )
         )),
         Line::from(format!("  Esc/{}        Close panel", kb.quit.display())),
         Line::from(""),
@@ -745,21 +760,21 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Git Log View",
+            "Git Ops View",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(format!(
-            "{}  Open git log (from File List)",
-            fmt_key(&kb.git_log.display(), key_width)
+            "{}  Open git ops (from File List)",
+            fmt_key(&kb.git_ops.display(), key_width)
         )),
         Line::from(vec![Span::styled(
-            "  Commit List Focus:",
+            "  Tree Focus:",
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(format!(
-            "{}  Move commit selection",
+            "{}  Move selection",
             fmt_key(
                 &format!(
                     "{}/{}, Down/Up",
@@ -770,19 +785,75 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
+            "{}  Stage/unstage file or directory",
+            fmt_key("Space", key_width)
+        )),
+        Line::from(format!(
+            "{}  Stage all files",
+            fmt_key("s", key_width)
+        )),
+        Line::from(format!(
+            "{}  Discard changes",
+            fmt_key("d", key_width)
+        )),
+        Line::from(format!(
+            "{}  Commit (opens editor)",
+            fmt_key("c", key_width)
+        )),
+        Line::from(format!(
+            "{}  Undo last operation",
+            fmt_key("u", key_width)
+        )),
+        Line::from(format!(
+            "{}  Refresh status",
+            fmt_key("R", key_width)
+        )),
+        Line::from(format!(
+            "{}  Push to origin",
+            fmt_key("P", key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle directory expand/collapse",
+            fmt_key("Enter", key_width)
+        )),
+        Line::from(format!(
+            "{}  Switch to commits pane",
+            fmt_key("Tab", key_width)
+        )),
+        Line::from(format!(
             "{}  Focus diff pane",
-            fmt_key("Tab, Enter, l", key_width)
+            fmt_key("Enter (file), l", key_width)
         )),
         Line::from(format!(
-            "  g/{}            Jump to first/last",
-            kb.jump_to_last.display()
-        )),
-        Line::from(format!(
-            "{}  Back to file list",
+            "{}  Close git ops",
             fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
         )),
         Line::from(vec![Span::styled(
-            "  Diff Focus / Fullscreen:",
+            "  Commits Focus:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}  Move commit selection",
+            fmt_key("j/k, Down/Up", key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to first/last",
+            fmt_key("g/G", key_width)
+        )),
+        Line::from(format!(
+            "{}  Reset --soft (local mode only)",
+            fmt_key("u", key_width)
+        )),
+        Line::from(format!(
+            "{}  Switch to tree pane",
+            fmt_key("Tab", key_width)
+        )),
+        Line::from(format!(
+            "{}  Focus diff pane (commit diff)",
+            fmt_key("Enter, l", key_width)
+        )),
+        Line::from(vec![Span::styled(
+            "  Diff Focus:",
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(format!(
@@ -803,12 +874,106 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
                 key_width
             )
         )),
-        Line::from("  Enter/l         Open fullscreen diff (from split)"),
-        Line::from("  h/Left/Esc      Back to commit list (from split)"),
         Line::from(format!(
-            "{}  Back (from fullscreen)",
-            fmt_key(&format!("{}, Esc, h", kb.quit.display()), key_width)
+            "{}  Jump to first/last",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
+        Line::from("  h/Left/Esc      Back to previous pane"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Git Ops View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Open git ops (from File List)",
+            fmt_key(&kb.git_ops.display(), key_width)
+        )),
+        Line::from(vec![Span::styled(
+            "  Tree Focus:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}  Move selection",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Stage/unstage file or directory",
+            fmt_key("Space", key_width)
+        )),
+        Line::from(format!(
+            "{}  Stage all files",
+            fmt_key("s", key_width)
+        )),
+        Line::from(format!(
+            "{}  Discard changes",
+            fmt_key("d", key_width)
+        )),
+        Line::from(format!(
+            "{}  Commit (opens editor)",
+            fmt_key("c", key_width)
+        )),
+        Line::from(format!(
+            "{}  Undo last operation",
+            fmt_key("u", key_width)
+        )),
+        Line::from(format!(
+            "{}  Refresh status",
+            fmt_key("R", key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle directory expand/collapse",
+            fmt_key("Enter", key_width)
+        )),
+        Line::from(format!(
+            "{}  Focus diff pane",
+            fmt_key("Tab, l", key_width)
+        )),
+        Line::from(format!(
+            "{}  Close git ops",
+            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+        )),
+        Line::from(vec![Span::styled(
+            "  Diff Focus:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}  Scroll diff",
+            fmt_key(
+                &format!(
+                    "{}/{}, Down/Up",
+                    kb.move_down.display(),
+                    kb.move_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Page scroll (also J/K)",
+            fmt_key(
+                &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Jump to first/last",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
+        )),
+        Line::from("  h/Left/Esc      Back to previous pane"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "PR List View",

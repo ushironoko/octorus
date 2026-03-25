@@ -25,7 +25,7 @@ impl App {
         };
 
         // Get actual line number from diff
-        let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
+        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line) else {
             return;
         };
 
@@ -133,7 +133,7 @@ impl App {
         };
 
         // Check if this line can have a suggestion
-        let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
+        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line) else {
             return;
         };
 
@@ -182,7 +182,7 @@ impl App {
         let Some(patch) = file.patch.as_ref() else {
             return;
         };
-        let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
+        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line) else {
             return;
         };
         if !matches!(
@@ -192,8 +192,8 @@ impl App {
             return;
         }
         self.multiline_selection = Some(MultilineSelection {
-            anchor_line: self.selected_line,
-            cursor_line: self.selected_line,
+            anchor_line: self.diff_scroll.selected_line,
+            cursor_line: self.diff_scroll.selected_line,
         });
     }
     pub(crate) fn enter_multiline_comment_input(&mut self) {
@@ -367,7 +367,6 @@ impl App {
             pr_number: self.pr_number(),
         };
 
-        // インメモリキャッシュを確認
         if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
             self.review_comments = Some(comments.to_vec());
             self.selected_comment = 0;
@@ -376,7 +375,6 @@ impl App {
             return;
         }
 
-        // キャッシュミス: API取得
         self.comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();
@@ -429,7 +427,6 @@ impl App {
             pr_number: self.pr_number(),
         };
 
-        // インメモリキャッシュを確認
         if let Some(comments) = self.session_cache.get_discussion_comments(&cache_key) {
             self.discussion_comments = Some(comments.to_vec());
             self.selected_discussion_comment = 0;
@@ -437,7 +434,6 @@ impl App {
             return;
         }
 
-        // キャッシュミス: API取得
         self.discussion_comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();
@@ -463,7 +459,6 @@ impl App {
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
-        // Handle detail mode input separately
         if self.discussion_comment_detail_mode {
             return self.handle_discussion_detail_input(key, visible_lines);
         }
@@ -551,7 +546,6 @@ impl App {
                     self.jump_to_comment();
                 }
                 CommentTab::Discussion => {
-                    // Enter detail mode for discussion comment
                     if self
                         .discussion_comments
                         .as_ref()
@@ -627,8 +621,8 @@ impl App {
             self.selected_file = idx;
             self.diff_view_return_state = AppState::FileList;
             self.state = AppState::DiffView;
-            self.selected_line = 0;
-            self.scroll_offset = 0;
+            self.diff_scroll.selected_line = 0;
+            self.diff_scroll.scroll_offset = 0;
             self.update_diff_line_count();
             self.update_file_comment_positions();
             self.ensure_diff_cache();
@@ -641,8 +635,8 @@ impl App {
                 .map(|pos| pos.diff_line_index);
 
             if let Some(line_idx) = diff_line_index {
-                self.selected_line = line_idx;
-                self.scroll_offset = line_idx;
+                self.diff_scroll.selected_line = line_idx;
+                self.diff_scroll.scroll_offset = line_idx;
             }
         }
     }
@@ -717,7 +711,7 @@ impl App {
     pub fn get_comment_indices_at_current_line(&self) -> Vec<usize> {
         self.file_comment_positions
             .iter()
-            .filter(|pos| pos.diff_line_index == self.selected_line)
+            .filter(|pos| pos.diff_line_index == self.diff_scroll.selected_line)
             .map(|pos| pos.comment_index)
             .collect()
     }
@@ -726,7 +720,7 @@ impl App {
     pub fn has_comment_at_current_line(&self) -> bool {
         self.file_comment_positions
             .iter()
-            .any(|pos| pos.diff_line_index == self.selected_line)
+            .any(|pos| pos.diff_line_index == self.diff_scroll.selected_line)
     }
 
     /// テキスト行がパネル幅内で折り返される表示行数を計算
@@ -817,7 +811,6 @@ impl App {
     ) -> u16 {
         let panel_inner_width = self.comment_panel_inner_width(terminal_width);
         let content_lines = self.comment_panel_content_lines(panel_inner_width);
-        // コメントパネルは全体高さの約40%（Header/Footer/borders分を差し引き）
         let panel_inner_height = (terminal_height.saturating_sub(8) * 40 / 100).max(1);
         content_lines.saturating_sub(panel_inner_height) as u16
     }
@@ -825,11 +818,11 @@ impl App {
         let next = self
             .file_comment_positions
             .iter()
-            .find(|pos| pos.diff_line_index > self.selected_line);
+            .find(|pos| pos.diff_line_index > self.diff_scroll.selected_line);
 
         if let Some(pos) = next {
-            self.selected_line = pos.diff_line_index;
-            self.scroll_offset = self.selected_line;
+            self.diff_scroll.selected_line = pos.diff_line_index;
+            self.diff_scroll.scroll_offset = self.diff_scroll.selected_line;
         }
     }
 
@@ -839,11 +832,11 @@ impl App {
             .file_comment_positions
             .iter()
             .rev()
-            .find(|pos| pos.diff_line_index < self.selected_line);
+            .find(|pos| pos.diff_line_index < self.diff_scroll.selected_line);
 
         if let Some(pos) = prev {
-            self.selected_line = pos.diff_line_index;
-            self.scroll_offset = self.selected_line;
+            self.diff_scroll.selected_line = pos.diff_line_index;
+            self.diff_scroll.scroll_offset = self.diff_scroll.selected_line;
         }
     }
     pub(crate) fn enter_reply_input(&mut self) {

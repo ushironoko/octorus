@@ -18,32 +18,29 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let has_update = app.update_available.is_some();
 
     let mut constraints = vec![
-        Constraint::Length(3), // Header
-        Constraint::Min(0),    // PR list
+        Constraint::Length(3),
+        Constraint::Min(0),
     ];
     if has_filter_bar {
-        constraints.push(Constraint::Length(3)); // Filter bar
+        constraints.push(Constraint::Length(3));
     }
     if has_update {
-        constraints.push(Constraint::Length(1)); // Update notification bar
+        constraints.push(Constraint::Length(1));
     }
-    constraints.push(Constraint::Length(3)); // Footer
+    constraints.push(Constraint::Length(3));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
 
-    // Header
     let filter_str = app.pr_list_state_filter.display_name();
     let header_text = format!("PR List: {} ({})", app.repo, filter_str);
     let header =
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // PR list
     if app.pr_list_loading && app.pr_list.is_none() {
-        // 初回ローディング
         let loading = Paragraph::new(format!("{} Loading PRs...", app.spinner_char())).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -59,11 +56,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             );
             frame.render_widget(empty, chunks[1]);
         } else {
-            // フィルタ適用中はフィルタ済みサブセットを表示
             let (display_prs, display_selected, total_display) =
                 if let Some(ref filter) = app.pr_list_filter {
                     if filter.matched_indices.is_empty() {
-                        // マッチ0件
                         let empty_msg = format!("No matches for '{}'", filter.query);
                         let empty = Paragraph::new(empty_msg)
                             .style(Style::default().fg(Color::DarkGray))
@@ -74,20 +69,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                             );
                         frame.render_widget(empty, chunks[1]);
 
-                        // Filter bar
                         let mut next_chunk = 2;
                         if has_filter_bar {
                             render_filter_bar(frame, chunks[next_chunk], filter);
                             next_chunk += 1;
                         }
 
-                        // Update notification bar
                         if has_update {
                             render_update_bar(frame, chunks[next_chunk], app);
                             next_chunk += 1;
                         }
 
-                        // Footer
                         render_footer(frame, chunks[next_chunk], app);
                         return;
                     }
@@ -118,9 +110,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 format!("Pull Requests ({})", total_prs)
             };
 
-            let items = build_pr_list_items_ref(&display_prs, display_selected);
+            let inner_width = chunks[1].width.saturating_sub(3) as usize;
+            let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width);
 
-            // Use ListState for stateful rendering with automatic scroll management
             let mut list_state = ListState::default()
                 .with_offset(app.pr_list_scroll_offset)
                 .with_selected(Some(display_selected));
@@ -130,10 +122,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .highlight_style(Style::default().bg(Color::DarkGray));
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
-            // Update scroll offset from ListState for next frame
             app.pr_list_scroll_offset = list_state.offset();
 
-            // Scrollbar
             if total_display > 1 {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
@@ -153,7 +143,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
         }
     } else {
-        // pr_list が None (エラー時など)
         let empty = Paragraph::new("Failed to load pull requests").block(
             Block::default()
                 .borders(Borders::ALL)
@@ -162,7 +151,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.render_widget(empty, chunks[1]);
     }
 
-    // Filter bar
     let mut next_chunk = 2;
     if has_filter_bar {
         if let Some(ref filter) = app.pr_list_filter {
@@ -171,13 +159,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         next_chunk += 1;
     }
 
-    // Update notification bar
     if has_update {
         render_update_bar(frame, chunks[next_chunk], app);
         next_chunk += 1;
     }
 
-    // Footer
     render_footer(frame, chunks[next_chunk], app);
 }
 
@@ -206,24 +192,27 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     } else {
         "Space /: filter | "
     };
-    let footer_text = format!(
+    let help_text = format!(
         "j/k/↑↓: move | Enter: select | {}gg/G: top/bottom | O: browser | S: CI checks | o: open | c: closed | a: all | r: refresh | q: quit | ?: help",
         filter_hint
     );
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let line = super::footer::build_footer_line(app, &help_text);
+    let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
-fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<ListItem<'static>> {
+fn build_pr_list_items_ref(
+    prs: &[&PullRequestSummary],
+    selected: usize,
+    area_width: usize,
+) -> Vec<ListItem<'static>> {
     prs.iter()
         .enumerate()
         .map(|(i, pr)| {
             let is_selected = i == selected;
 
-            // Draft marker
             let draft_marker = if pr.is_draft { "[DRAFT] " } else { "" };
 
-            // PR number - yellow and bold when selected
             let number_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -233,8 +222,9 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
             };
             let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
-            // Draft + Title (truncate if too long, respecting char boundaries)
-            let title_width = 50;
+            let author_width = 4 + pr.author.login.chars().count();
+            let fixed_width = 6 + 2 + 2 + author_width;
+            let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);
             let title = truncate_string(&full_title, title_width);
             let title_style = if is_selected {
@@ -251,13 +241,11 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
                 title_style,
             );
 
-            // Author
             let author_span = Span::styled(
                 format!("by @{}", pr.author.login),
                 Style::default().fg(Color::Cyan),
             );
 
-            // Labels (show first 2)
             let labels_str = if !pr.labels.is_empty() {
                 let label_names: Vec<&str> =
                     pr.labels.iter().take(2).map(|l| l.name.as_str()).collect();
@@ -271,7 +259,6 @@ fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<
             };
             let labels_span = Span::styled(labels_str, Style::default().fg(Color::Blue));
 
-            // CI status icon
             let ci_status = CiStatus::from_rollup(&pr.status_check_rollup);
             let ci_span = match ci_status {
                 CiStatus::Success => Span::styled("  ✓", Style::default().fg(Color::Green)),

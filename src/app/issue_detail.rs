@@ -77,8 +77,7 @@ impl App {
     ) -> Result<()> {
         let kb = self.config.keybindings.clone();
 
-        // Quit / back
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = AppState::IssueList;
             return Ok(());
         }
@@ -87,7 +86,6 @@ impl App {
             return Ok(());
         };
 
-        // Loading中はquit以外受け付けない
         if state.issue_detail_loading {
             return Ok(());
         }
@@ -96,14 +94,13 @@ impl App {
 
         match focus {
             IssueDetailFocus::Body => {
-                // Body scroll
-                if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                if self.matches_single_key(&key, &kb.move_down) {
                     let state = self.issue_state.as_mut().unwrap();
                     state.issue_detail_scroll_offset =
                         state.issue_detail_scroll_offset.saturating_add(1);
                     return Ok(());
                 }
-                if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                if self.matches_single_key(&key, &kb.move_up) {
                     let state = self.issue_state.as_mut().unwrap();
                     state.issue_detail_scroll_offset =
                         state.issue_detail_scroll_offset.saturating_sub(1);
@@ -129,7 +126,7 @@ impl App {
             IssueDetailFocus::LinkedPrs => {
                 let pr_count = state.linked_prs.as_ref().map(|p| p.len()).unwrap_or(0);
 
-                if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                if self.matches_single_key(&key, &kb.move_down) {
                     if pr_count > 0 {
                         let state = self.issue_state.as_mut().unwrap();
                         state.selected_linked_pr =
@@ -137,13 +134,12 @@ impl App {
                     }
                     return Ok(());
                 }
-                if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                if self.matches_single_key(&key, &kb.move_up) {
                     let state = self.issue_state.as_mut().unwrap();
                     state.selected_linked_pr = state.selected_linked_pr.saturating_sub(1);
                     return Ok(());
                 }
 
-                // Enter: linked PRを選択してPR viewに遷移（クロスリポはブラウザで開く）
                 if self.matches_single_key(&key, &kb.open_panel) {
                     let pr_info = state
                         .linked_prs
@@ -158,8 +154,7 @@ impl App {
             }
         }
 
-        // Tab: フォーカス切替（linked PRs が存在する場合のみ）
-        if key.code == KeyCode::Tab {
+        if self.matches_single_key(&key, &kb.tab_switch) {
             let has_linked_prs = state
                 .linked_prs
                 .as_ref()
@@ -175,14 +170,12 @@ impl App {
             return Ok(());
         }
 
-        // M: toggle markdown rich
         if self.matches_single_key(&key, &kb.toggle_markdown_rich) {
             self.markdown_rich = !self.markdown_rich;
             self.rebuild_issue_detail_cache();
             return Ok(());
         }
 
-        // O: ブラウザで開く
         if self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(detail) = self
                 .issue_state
@@ -194,19 +187,16 @@ impl App {
             return Ok(());
         }
 
-        // c: 新規コメント投稿
         if self.matches_single_key(&key, &kb.comment) {
             self.enter_issue_comment_input();
             return Ok(());
         }
 
-        // C: コメントリスト
         if self.matches_single_key(&key, &kb.comment_list) {
             self.open_issue_comment_list();
             return Ok(());
         }
 
-        // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::IssueDetail;
             self.state = AppState::Help;
@@ -223,7 +213,6 @@ impl App {
             return;
         };
 
-        // 初回のみパース（キャッシュ再利用）
         if state.issue_comments.is_none() {
             let raw_comments = state
                 .issue_detail
@@ -241,7 +230,6 @@ impl App {
     }
 
     pub(crate) fn enter_issue_comment_input(&mut self) {
-        // 送信中はTextInput再オープンを防止
         if self.is_issue_comment_submitting() {
             return;
         }
@@ -259,7 +247,6 @@ impl App {
     }
 
     pub(crate) fn enter_issue_reply_input(&mut self) {
-        // 送信中はTextInput再オープンを防止
         if self.is_issue_comment_submitting() {
             return;
         }
@@ -294,21 +281,18 @@ impl App {
             return Ok(());
         };
 
-        // Detail mode は別ハンドラに委譲
         if state.issue_comment_detail_mode {
             return self.handle_issue_comment_detail_input(key);
         }
 
-        // Quit / back → IssueDetail に戻る
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = AppState::IssueDetail;
             return Ok(());
         }
 
         let comment_count = state.issue_comments.as_ref().map(|c| c.len()).unwrap_or(0);
 
-        // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if comment_count > 0 {
                 let state = self.issue_state.as_mut().unwrap();
                 state.selected_issue_comment =
@@ -317,14 +301,12 @@ impl App {
             return Ok(());
         }
 
-        // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             let state = self.issue_state.as_mut().unwrap();
             state.selected_issue_comment = state.selected_issue_comment.saturating_sub(1);
             return Ok(());
         }
 
-        // Page down
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if comment_count > 0 {
                 let state = self.issue_state.as_mut().unwrap();
@@ -334,16 +316,13 @@ impl App {
             return Ok(());
         }
 
-        // Page up
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             let state = self.issue_state.as_mut().unwrap();
             state.selected_issue_comment = state.selected_issue_comment.saturating_sub(20);
             return Ok(());
         }
 
-        // g: 先頭へ
         if self.matches_single_key(&key, &kb.jump_to_last) {
-            // G → 末尾
             if comment_count > 0 {
                 let state = self.issue_state.as_mut().unwrap();
                 state.selected_issue_comment = comment_count.saturating_sub(1);
@@ -351,7 +330,6 @@ impl App {
             return Ok(());
         }
 
-        // Enter: detail mode
         if self.matches_single_key(&key, &kb.open_panel) {
             if comment_count > 0 {
                 let state = self.issue_state.as_mut().unwrap();
@@ -361,7 +339,6 @@ impl App {
             return Ok(());
         }
 
-        // O: ブラウザで開く
         if self.matches_single_key(&key, &kb.open_in_browser) {
             let url = state
                 .issue_comments
@@ -377,13 +354,11 @@ impl App {
             return Ok(());
         }
 
-        // c: 新規コメント投稿
         if self.matches_single_key(&key, &kb.comment) {
             self.enter_issue_comment_input();
             return Ok(());
         }
 
-        // ?: ヘルプ
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::IssueCommentList;
             self.state = AppState::Help;
@@ -398,37 +373,31 @@ impl App {
     fn handle_issue_comment_detail_input(&mut self, key: event::KeyEvent) -> Result<()> {
         let kb = self.config.keybindings.clone();
 
-        // Quit / Esc / Enter: detail を閉じてリストに戻る
         if self.matches_single_key(&key, &kb.quit)
-            || key.code == KeyCode::Esc
-            || self.matches_single_key(&key, &kb.open_panel)
+                       || self.matches_single_key(&key, &kb.open_panel)
         {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_mode = false;
             return Ok(());
         }
 
-        // r: リプライ（detail mode で選択中のコメントに返信）
         if self.matches_single_key(&key, &kb.reply) {
             self.enter_issue_reply_input();
             return Ok(());
         }
 
-        // Scroll down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll = state.issue_comment_detail_scroll.saturating_add(1);
             return Ok(());
         }
 
-        // Scroll up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll = state.issue_comment_detail_scroll.saturating_sub(1);
             return Ok(());
         }
 
-        // Page down
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll =
@@ -436,7 +405,6 @@ impl App {
             return Ok(());
         }
 
-        // Page up
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll =
@@ -444,7 +412,6 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+d: half page down
         if key.code == KeyCode::Char('d') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll =
@@ -452,7 +419,6 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+u: half page up
         if key.code == KeyCode::Char('u') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_scroll =
@@ -588,7 +554,8 @@ mod tests {
         app.issue_state = Some(state);
         app.state = AppState::IssueCommentList;
 
-        let key = crossterm::event::KeyEvent::new(KeyCode::Esc, event::KeyModifiers::NONE);
+        // quit キー（デフォルト: q）で戻る
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), event::KeyModifiers::NONE);
         app.handle_issue_comment_list_input(key).unwrap();
 
         let state = app.issue_state.as_ref().unwrap();

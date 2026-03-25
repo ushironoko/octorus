@@ -13,6 +13,7 @@ use super::common::{
     build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar,
 };
 use crate::app::App;
+use crate::app::TreeRow;
 use crate::github::ChangedFile;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -23,27 +24,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .as_ref()
         .is_some_and(|f| f.input_active);
 
-    let mut constraints = vec![
-        Constraint::Length(3), // Header
-        Constraint::Min(0),    // File list
-    ];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(0)];
     if has_filter_bar {
-        constraints.push(Constraint::Length(3)); // Filter bar
+        constraints.push(Constraint::Length(3));
     }
     if has_update {
-        constraints.push(Constraint::Length(1)); // Update notification bar
+        constraints.push(Constraint::Length(1));
     }
     if has_rally {
-        constraints.push(Constraint::Length(1)); // Rally status bar
+        constraints.push(Constraint::Length(1));
     }
-    constraints.push(Constraint::Length(3)); // Footer
+    constraints.push(Constraint::Length(3));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
 
-    // Header
     let pr_info = build_pr_info(app);
     let ci_span = build_ci_status_span(app);
 
@@ -51,14 +48,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // File list
     let files = app.files();
     let total_files = files.len();
 
-    // フィルタ適用中はフィルタ済みサブセットを表示
     if let Some(ref filter) = app.file_list_filter {
         if filter.matched_indices.is_empty() {
-            // マッチ0件
             let empty_msg = format!("No matches for '{}'", filter.query);
             let empty = Paragraph::new(empty_msg)
                 .style(Style::default().fg(Color::DarkGray))
@@ -110,6 +104,47 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+    } else if app.is_file_tree_active() {
+        let tree = app.file_tree_state.as_ref().unwrap();
+        let row_count = tree.row_count();
+        let items: Vec<ListItem> = tree
+            .visible_rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row))
+            .collect();
+
+        let title = format!("Changed Files ({}) [tree]", total_files);
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().bg(Color::DarkGray));
+
+        let mut list_state = ListState::default()
+            .with_offset(tree.scroll_offset)
+            .with_selected(Some(tree.selected_row));
+
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+        if let Some(ref mut tree) = app.file_tree_state {
+            tree.scroll_offset = list_state.offset();
+        }
+
+        if row_count > 1 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+            let selected = app.file_tree_state.as_ref().map_or(0, |t| t.selected_row);
+            let mut scrollbar_state =
+                ScrollbarState::new(row_count.saturating_sub(1)).position(selected);
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
     } else {
         let items = build_file_list_items(files, app.selected_file);
 
@@ -127,14 +162,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
-        // Persist both offset and clamped selected index from ListState
-        // (render_stateful_widget may clamp selected if list shrank)
         app.file_list_scroll_offset = list_state.offset();
         if let Some(sel) = list_state.selected() {
             app.selected_file = sel;
         }
 
-        // Render scrollbar if there are more files than visible
         if total_files > 1 {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
@@ -154,10 +186,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // Track chunk index for remaining elements
     let mut next_chunk = 2;
 
-    // Filter bar
     if has_filter_bar {
         if let Some(ref filter) = app.file_list_filter {
             render_filter_bar(frame, chunks[next_chunk], filter);
@@ -165,19 +195,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         next_chunk += 1;
     }
 
-    // Update notification bar
     if has_update {
         render_update_bar(frame, chunks[next_chunk], app);
         next_chunk += 1;
     }
 
-    // Rally status bar (if background rally exists)
     if has_rally {
         render_rally_status_bar(frame, chunks[next_chunk], app);
         next_chunk += 1;
     }
 
-    // Footer (dynamic based on rally state)
     let ai_rally_text = if app.has_background_rally() {
         "A: Resume Rally"
     } else {
@@ -223,7 +250,6 @@ fn render_filter_bar(
     frame.render_widget(filter_bar, area);
 }
 
-/// Loading状態の表示
 pub fn render_loading(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -234,7 +260,6 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    // Header
     let header_text = if app.is_local_mode() {
         let af = if app.is_local_auto_focus() { " AF" } else { "" };
         format!("[LOCAL{}] Loading...", af)
@@ -248,7 +273,6 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Loading message
     let loading_msg = if app.is_local_mode() {
         format!("{} Loading local diff...", app.spinner_char())
     } else {
@@ -264,13 +288,11 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         );
     frame.render_widget(loading, chunks[1]);
 
-    // Footer
     let footer = Paragraph::new(format!("{} Please wait... (q: quit)", app.spinner_char()))
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
-/// Error状態の表示
 pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -281,7 +303,6 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         ])
         .split(frame.area());
 
-    // Header
     let header_text = if app.is_local_mode() {
         "[LOCAL] Error".to_string()
     } else {
@@ -294,18 +315,15 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Error message
     let error = Paragraph::new(format!("Error: {}", error_msg))
         .style(Style::default().fg(Color::Red))
         .block(Block::default().borders(Borders::ALL).title("Error"));
     frame.render_widget(error, chunks[1]);
 
-    // Footer
     let footer = Paragraph::new("r: retry | q: quit").block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
-/// ファイル一覧のリストアイテムを構築する（side_by_side でも再利用）
 pub(crate) fn build_file_list_items<'a>(
     files: &'a [ChangedFile],
     selected_file: usize,
@@ -317,7 +335,6 @@ pub(crate) fn build_file_list_items<'a>(
         .collect()
 }
 
-/// フィルタ済みファイル一覧のリストアイテムを構築する
 fn build_file_list_items_ref<'a>(files: &[&'a ChangedFile], selected: usize) -> Vec<ListItem<'a>> {
     files
         .iter()
@@ -367,4 +384,87 @@ fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListIte
     ]);
 
     ListItem::new(line)
+}
+
+pub(crate) fn build_tree_row_item<'a>(
+    files: &'a [ChangedFile],
+    row: &TreeRow,
+    is_selected: bool,
+) -> ListItem<'a> {
+    match row {
+        TreeRow::Dir { ref path, depth, expanded } => {
+            let indent = "  ".repeat(*depth);
+            let icon = if *expanded { "▼" } else { "▶" };
+            let dir_name = path
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(path);
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(format!("{} {}/", icon, dir_name), style),
+            ]);
+            ListItem::new(line)
+        }
+        TreeRow::File { index, depth } => {
+            let Some(file) = files.get(*index) else {
+                return ListItem::new(Line::from(""));
+            };
+            let indent = "  ".repeat(*depth);
+            let filename = file
+                .filename
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(&file.filename);
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let status_color = match file.status.as_str() {
+                "added" => Color::Green,
+                "removed" => Color::Red,
+                "modified" => Color::Yellow,
+                "copied" => Color::Cyan,
+                _ => Color::White,
+            };
+
+            let status_char = match file.status.as_str() {
+                "added" => 'A',
+                "removed" => 'D',
+                "modified" => 'M',
+                "renamed" => 'R',
+                "copied" => 'C',
+                _ => '?',
+            };
+
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(
+                    format!("[{}] ", status_char),
+                    Style::default().fg(status_color),
+                ),
+                if file.viewed {
+                    Span::styled("✓ ", Style::default().fg(Color::Green))
+                } else {
+                    Span::raw("  ")
+                },
+                Span::styled(filename, style),
+                Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
+            ]);
+            ListItem::new(line)
+        }
+    }
 }

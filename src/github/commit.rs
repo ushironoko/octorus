@@ -78,11 +78,13 @@ pub async fn fetch_pr_commits(
 
     let has_more = responses.len() > per_page as usize;
 
-    let commits: Vec<PrCommit> = responses
+    let mut commits: Vec<PrCommit> = responses
         .into_iter()
         .take(per_page as usize)
         .map(commit_response_to_pr_commit)
         .collect();
+    // GitHub API は oldest-first → newest-first に変換
+    commits.reverse();
 
     Ok(CommitListPage {
         items: commits,
@@ -163,12 +165,9 @@ pub async fn fetch_local_commits(
 
     let has_more = (offset + limit) < total as u32;
 
-    // Phase 2: 必要なページ分のみ取得
-    // git log は newest-first で出力するため、oldest-first の offset/limit を
-    // newest-first の --skip/--max-count に変換してから Rust 側で reverse する。
-    let remaining = total.saturating_sub(offset as usize);
-    let max_count = (limit as usize).min(remaining);
-    let skip = total.saturating_sub(offset as usize + max_count);
+    // Phase 2: 必要なページ分のみ取得（newest-first のまま返す）
+    let skip = offset as usize;
+    let max_count = (limit as usize).min(total.saturating_sub(skip));
 
     let mut cmd = tokio::process::Command::new("git");
     cmd.args([
@@ -203,13 +202,11 @@ pub async fn fetch_local_commits(
             let stderr = String::from_utf8_lossy(&output2.stderr);
             anyhow::bail!("git log fallback failed: {}", stderr.trim());
         }
-        let mut items = parse_git_log_output(&output2.stdout);
-        items.reverse();
+        let items = parse_git_log_output(&output2.stdout);
         return Ok(CommitListPage { items, has_more });
     }
 
-    let mut items = parse_git_log_output(&output.stdout);
-    items.reverse(); // newest-first → oldest-first
+    let items = parse_git_log_output(&output.stdout);
     Ok(CommitListPage { items, has_more })
 }
 

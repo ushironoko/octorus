@@ -12,7 +12,6 @@ use super::common::{render_rally_status_bar, wrap_text};
 use crate::app::{App, CommentTab};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // Handle detail mode separately
     if app.discussion_comment_detail_mode {
         render_discussion_detail(frame, app);
         return;
@@ -21,16 +20,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
     let constraints = if has_rally {
         vec![
-            Constraint::Length(3), // Header with tabs
-            Constraint::Min(0),    // Comment list
-            Constraint::Length(1), // Rally status bar
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(3),
         ]
     } else {
         vec![
-            Constraint::Length(3), // Header with tabs
-            Constraint::Min(0),    // Comment list
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
         ]
     };
 
@@ -39,21 +38,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(frame.area());
 
-    // Header with tabs
     render_tab_header(frame, app, chunks[0]);
 
-    // Content based on active tab
     match app.comment_tab {
         CommentTab::Review => render_review_comments(frame, app, chunks[1]),
         CommentTab::Discussion => render_discussion_comments(frame, app, chunks[1]),
     }
 
-    // Rally status bar (if background rally exists)
     if has_rally {
         render_rally_status_bar(frame, chunks[2], app);
     }
 
-    // Footer
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let footer_text = match app.comment_tab {
         CommentTab::Review => "j/k/↑↓: move | Enter: jump to file | [/]: switch tab | q: back",
@@ -86,7 +81,6 @@ fn render_comment_list_generic<T, F>(
 ) where
     F: Fn(&T, usize, bool, usize) -> ListItem<'static>,
 {
-    // Loading state
     if loading && comments.is_none() {
         let loading_msg = Paragraph::new(format!("Loading {}...", label))
             .style(Style::default().fg(Color::Yellow))
@@ -95,7 +89,6 @@ fn render_comment_list_generic<T, F>(
         return;
     }
 
-    // No data state
     let Some(items_data) = comments else {
         let empty = Paragraph::new(format!("No {}", label))
             .style(Style::default().fg(Color::DarkGray))
@@ -104,7 +97,6 @@ fn render_comment_list_generic<T, F>(
         return;
     };
 
-    // Empty state
     if items_data.is_empty() {
         let empty = Paragraph::new(format!("No {} found", label))
             .style(Style::default().fg(Color::DarkGray))
@@ -125,7 +117,6 @@ fn render_comment_list_generic<T, F>(
         })
         .collect();
 
-    // Use ListState for stateful rendering with automatic scroll management
     let mut list_state = ListState::default()
         .with_offset(*scroll_offset)
         .with_selected(Some(selected_index));
@@ -140,10 +131,8 @@ fn render_comment_list_generic<T, F>(
     );
     frame.render_stateful_widget(list, area, &mut list_state);
 
-    // Update scroll offset from ListState for next frame
     *scroll_offset = list_state.offset();
 
-    // Render scrollbar if there are more items than visible
     if total_items > 1 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
@@ -276,7 +265,6 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
         |comment: &DiscussionComment, _i: usize, is_selected: bool, body_width: usize| {
             let prefix = if is_selected { "> " } else { "  " };
 
-            // Format created_at to a shorter form (just the date part)
             let date = comment
                 .created_at
                 .split('T')
@@ -293,7 +281,6 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
                 Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
             ]);
 
-            // Truncate body for list view (max 3 lines)
             let mut lines = vec![header_line];
             let mut line_count = 0;
             let max_preview_lines = 3;
@@ -329,16 +316,16 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
     let has_rally = app.has_background_rally();
     let constraints = if has_rally {
         vec![
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Rally status bar
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(3),
         ]
     } else {
         vec![
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Content
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
         ]
     };
 
@@ -347,7 +334,6 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(frame.area());
 
-    // Header
     let date = comment
         .created_at
         .split('T')
@@ -368,7 +354,6 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
     );
     frame.render_widget(header, chunks[0]);
 
-    // Content with scroll
     let content_height = chunks[1].height.saturating_sub(2) as usize;
     let body_lines: Vec<Line> = comment
         .body
@@ -398,12 +383,10 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
         .wrap(Wrap { trim: false });
     frame.render_widget(content, chunks[1]);
 
-    // Rally status bar (if background rally exists)
     if has_rally {
         render_rally_status_bar(frame, chunks[2], app);
     }
 
-    // Footer
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let footer = Paragraph::new("j/k/↑↓: scroll | Ctrl+d/u: page | Enter/Esc: back to list")
         .block(Block::default().borders(Borders::ALL));

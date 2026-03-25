@@ -289,34 +289,83 @@ impl KeyBinding {
     }
 }
 
-/// Key sequence (one or more keys)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct KeySequence(pub Vec<KeyBinding>);
+/// Key sequence with optional alternatives (e.g., j | Down)
+///
+/// `keys` is the primary sequence. `alt` holds alternative sequences
+/// that also trigger the same action. `matches_single_key` and
+/// `try_match_sequence` check both primary and alternatives.
+#[derive(Debug, Clone, Default)]
+pub struct KeySequence {
+    /// Primary key sequence (e.g., [j] or [g, g])
+    pub keys: Vec<KeyBinding>,
+    /// Alternative key sequences (e.g., [[Down]] for arrow key fallback)
+    pub alt: Vec<Vec<KeyBinding>>,
+}
+
+impl PartialEq for KeySequence {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys == other.keys
+    }
+}
+impl Eq for KeySequence {}
+
+impl std::hash::Hash for KeySequence {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.keys.hash(state);
+    }
+}
 
 impl KeySequence {
     /// Create a single-key sequence
     pub fn single(key: KeyBinding) -> Self {
-        Self(vec![key])
+        Self {
+            keys: vec![key],
+            alt: Vec::new(),
+        }
     }
 
     /// Create a two-key sequence
     pub fn double(first: KeyBinding, second: KeyBinding) -> Self {
-        Self(vec![first, second])
+        Self {
+            keys: vec![first, second],
+            alt: Vec::new(),
+        }
     }
 
-    /// Check if this is a single-key sequence
+    /// Add an alternative key sequence
+    pub fn with_alt(mut self, alt_keys: Vec<KeyBinding>) -> Self {
+        self.alt.push(alt_keys);
+        self
+    }
+
+    /// Check if this is a single-key sequence (primary only)
     pub fn is_single(&self) -> bool {
-        self.0.len() == 1
+        self.keys.len() == 1
     }
 
-    /// Get the first key (for prefix matching)
+    /// Get the first key of primary sequence (for prefix matching)
     pub fn first(&self) -> Option<&KeyBinding> {
-        self.0.first()
+        self.keys.first()
     }
 
-    /// Display string for help screen
+    /// All sequences (primary + alternatives) for iteration
+    pub fn all_sequences(&self) -> impl Iterator<Item = &[KeyBinding]> {
+        std::iter::once(self.keys.as_slice()).chain(self.alt.iter().map(|v| v.as_slice()))
+    }
+
+    /// Display string for help screen (shows primary | alt)
     pub fn display(&self) -> String {
-        self.0.iter().map(|k| k.display()).collect::<String>()
+        let primary: String = self.keys.iter().map(|k| k.display()).collect();
+        if self.alt.is_empty() {
+            primary
+        } else {
+            let alts: Vec<String> = self
+                .alt
+                .iter()
+                .map(|seq| seq.iter().map(|k| k.display()).collect::<String>())
+                .collect();
+            format!("{}/{}", primary, alts.join("/"))
+        }
     }
 }
 
@@ -417,8 +466,22 @@ impl<'de> Visitor<'de> for KeySequenceVisitor {
     where
         E: de::Error,
     {
-        let key = parse_key_string(v).map_err(de::Error::custom)?;
-        Ok(KeySequence::single(key))
+        // Support alternatives separated by "/"
+        // e.g., "j/Down" → primary: j, alt: [Down]
+        // e.g., "q/Esc" → primary: q, alt: [Esc]
+        let parts: Vec<&str> = v.split('/').map(|s| s.trim()).collect();
+        if parts.len() == 1 {
+            let key = parse_key_string(v).map_err(de::Error::custom)?;
+            Ok(KeySequence::single(key))
+        } else {
+            let primary = parse_key_string(parts[0]).map_err(de::Error::custom)?;
+            let mut seq = KeySequence::single(primary);
+            for part in &parts[1..] {
+                let alt_key = parse_key_string(part).map_err(de::Error::custom)?;
+                seq.alt.push(vec![alt_key]);
+            }
+            Ok(seq)
+        }
     }
 
     fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
@@ -445,7 +508,7 @@ impl<'de> Visitor<'de> for KeySequenceVisitor {
                 "key sequences longer than 2 keys are not supported",
             ));
         }
-        Ok(KeySequence(keys))
+        Ok(KeySequence { keys, alt: Vec::new() })
     }
 }
 
@@ -569,7 +632,7 @@ impl SequenceState {
         }
 
         let pending_len = self.pending_keys.len();
-        let seq_len = sequence.0.len();
+        let seq_len = sequence.keys.len();
 
         if pending_len > seq_len {
             return SequenceMatch::None;
@@ -577,7 +640,7 @@ impl SequenceState {
 
         // Check if pending keys match the prefix of the sequence
         for (i, pending) in self.pending_keys.iter().enumerate() {
-            if *pending != sequence.0[i] {
+            if *pending != sequence.keys[i] {
                 return SequenceMatch::None;
             }
         }
@@ -794,7 +857,7 @@ mod tests {
             key: KeySequence,
         }
         let test: Test = toml::from_str(toml_str).unwrap();
-        assert_eq!(test.key.0.len(), 2);
+        assert_eq!(test.key.keys.len(), 2);
     }
 
     #[test]

@@ -4,8 +4,8 @@ mod comment_list;
 mod common;
 pub mod diff_view;
 mod file_list;
-mod footer;
-mod git_log;
+pub(super) mod footer;
+mod git_ops;
 mod help;
 mod issue_comment_list;
 mod issue_detail;
@@ -78,9 +78,7 @@ pub fn cleanup_keyboard_enhancement() {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // PR一覧画面・ヘルプ画面・PR description画面・CI Checks画面はデータ状態に依存しないためスキップ
     if !app.state.is_data_state_independent() {
-        // Loading状態の場合は専用画面を表示
         if matches!(app.data_state, DataState::Loading) {
             file_list::render_loading(frame, app);
             return;
@@ -102,33 +100,28 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::SplitViewFileList | AppState::SplitViewDiff => split_view::render(frame, app),
         AppState::PrDescription => pr_description::render(frame, app),
         AppState::ChecksList => checks_list::render(frame, app),
-        AppState::GitLogSplitCommitList | AppState::GitLogSplitDiff => {
-            git_log::render_split(frame, app)
-        }
-        AppState::GitLogDiffView => git_log::render_diff_view(frame, app),
-        AppState::IssueList => issue_list::render(frame, app),
+AppState::IssueList => issue_list::render(frame, app),
         AppState::IssueDetail => issue_detail::render(frame, app),
         AppState::IssueCommentList => issue_comment_list::render(frame, app),
+        AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff => {
+            git_ops::render(frame, app)
+        }
     }
 
-    // シンボル選択ポップアップ（最前面に描画）
     if let Some(ref popup) = app.symbol_popup {
         render_symbol_popup(frame, popup);
     }
 }
 
-/// 中央配置のフローティングポップアップ領域を計算
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
-/// シンボル選択ポップアップを描画
 fn render_symbol_popup(frame: &mut Frame, popup: &crate::app::SymbolPopupState) {
     let area = frame.area();
 
-    // ポップアップサイズ計算
     let max_width = popup
         .symbols
         .iter()
@@ -141,10 +134,8 @@ fn render_symbol_popup(frame: &mut Frame, popup: &crate::app::SymbolPopupState) 
 
     let popup_area = centered_rect(width, height, area);
 
-    // 背景クリア
     frame.render_widget(Clear, popup_area);
 
-    // リストアイテム作成
     let items: Vec<ListItem> = popup
         .symbols
         .iter()

@@ -25,14 +25,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Comment list
-            Constraint::Length(1), // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
         .split(frame.area());
 
-    // Header
     let comment_count = state.issue_comments.as_ref().map(|c| c.len()).unwrap_or(0);
     let issue_number = state.issue_detail.as_ref().map(|d| d.number).unwrap_or(0);
     let header = Paragraph::new(Line::from(vec![
@@ -50,10 +45,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    // Comment list
     render_list(frame, app, chunks[1]);
 
-    // Footer
     let footer_line = if app.is_issue_comment_submitting() {
         Line::from(Span::styled(
             " Submitting...",
@@ -132,10 +125,8 @@ fn render_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         );
     frame.render_stateful_widget(list, area, &mut list_state);
 
-    // Update scroll offset from ListState
     state.issue_comment_list_scroll_offset = list_state.offset();
 
-    // Scrollbar
     if total_items > 1 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("\u{25b2}"))
@@ -222,14 +213,9 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
         .split(frame.area());
 
-    // Header
     let date = comment
         .created_at
         .split('T')

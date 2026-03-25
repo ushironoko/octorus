@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -76,18 +76,27 @@ impl App {
                     }
                     AppState::PrDescription => self.handle_pr_description_input(key, terminal)?,
                     AppState::ChecksList => self.handle_checks_list_input(key)?,
-                    AppState::GitLogSplitCommitList => {
-                        self.handle_git_log_split_commit_list_input(key, terminal)?
-                    }
-                    AppState::GitLogSplitDiff => {
-                        self.handle_git_log_split_diff_input(key, terminal)?
-                    }
-                    AppState::GitLogDiffView => {
-                        self.handle_git_log_diff_view_input(key, terminal)?
-                    }
-                    AppState::IssueList => self.handle_issue_list_input(key).await?,
+AppState::IssueList => self.handle_issue_list_input(key).await?,
                     AppState::IssueDetail => self.handle_issue_detail_input(key, terminal)?,
                     AppState::IssueCommentList => self.handle_issue_comment_list_input(key)?,
+                    AppState::GitOpsSplitTree => {
+                        let focus = self
+                            .git_ops_state
+                            .as_ref()
+                            .map(|ops| ops.left_focus)
+                            .unwrap_or(LeftPaneFocus::Tree);
+                        match focus {
+                            LeftPaneFocus::Tree => {
+                                self.handle_git_ops_tree_input(key, terminal);
+                            }
+                            LeftPaneFocus::Commits => {
+                                self.handle_git_ops_commits_input(key);
+                            }
+                        }
+                    }
+                    AppState::GitOpsSplitDiff => {
+                        self.handle_git_ops_diff_input(key);
+                    }
                 }
             }
         }
@@ -114,21 +123,42 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        // フィルタ入力中はフィルタ処理を優先
         if self.handle_filter_input(&key, "file") {
             return Ok(());
         }
 
         // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
-        if !self.is_filter_selection_empty("file") && self.handle_mark_viewed_key(key) {
-            return Ok(());
+        // ツリーモードで Dir 行にいる場合、v (mark_viewed) を無効化
+        if !self.is_filter_selection_empty("file") {
+            if self.is_file_tree_active() && self.is_file_tree_on_dir_row() {
+                // Dir 行: V (mark_viewed_dir) はツリーパスベースで処理
+                let kb = &self.config.keybindings;
+                if !self.local_mode && self.matches_single_key(&key, &kb.mark_viewed_dir) {
+                    self.start_mark_tree_directory_as_viewed();
+                    return Ok(());
+                }
+                // Dir 行: v (mark_viewed) は無効
+                if self.matches_single_key(&key, &kb.mark_viewed) {
+                    return Ok(());
+                }
+            } else if self.handle_mark_viewed_key(key) {
+                return Ok(());
+            }
         }
 
         let kb = self.config.keybindings.clone();
         let has_filter = self.file_list_filter.is_some();
+        let tree_active = self.is_file_tree_active();
 
-        // Quit or back to PR list
+        if self.matches_single_key(&key, &kb.tree_toggle) && !has_filter {
+            self.toggle_file_tree();
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.quit) {
+            if self.handle_filter_esc("file") {
+                return Ok(());
+            }
             if self.started_from_pr_list {
                 self.back_to_pr_list();
             } else {
@@ -137,15 +167,11 @@ impl App {
             return Ok(());
         }
 
-        // Esc: フィルタ適用中なら解除
-        if key.code == KeyCode::Esc && self.handle_filter_esc("file") {
-            return Ok(());
-        }
-
-        // Move down (j or Down arrow - arrows always work)
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("file", true);
+            } else if tree_active {
+                self.file_tree_move_down();
             } else if !self.files().is_empty() {
                 self.selected_file =
                     (self.selected_file + 1).min(self.files().len().saturating_sub(1));
@@ -153,45 +179,55 @@ impl App {
             return Ok(());
         }
 
-        // Move up (k or Up arrow)
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("file", false);
+            } else if tree_active {
+                self.file_tree_move_up();
             } else {
                 self.selected_file = self.selected_file.saturating_sub(1);
             }
             return Ok(());
         }
 
-        // Page down (Ctrl-d by default, also J)
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
-            if !self.files().is_empty() && !has_filter {
+            if !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
                 let step = page_step.max(1);
-                self.selected_file =
-                    (self.selected_file + step).min(self.files().len().saturating_sub(1));
+                if tree_active {
+                    self.file_tree_page_down(step);
+                } else if !self.files().is_empty() {
+                    self.selected_file =
+                        (self.selected_file + step).min(self.files().len().saturating_sub(1));
+                }
             }
             return Ok(());
         }
 
-        // Page up (Ctrl-u by default, also K)
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             if !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
                 let step = page_step.max(1);
-                self.selected_file = self.selected_file.saturating_sub(step);
+                if tree_active {
+                    self.file_tree_page_up(step);
+                } else {
+                    self.selected_file = self.selected_file.saturating_sub(step);
+                }
             }
             return Ok(());
         }
 
-        // Space+/ / gl シーケンス処理（ファイル一覧でのフィルタ起動 / Git Log）
+        if self.matches_single_key(&key, &kb.git_ops) {
+            self.open_git_ops();
+            return Ok(());
+        }
+
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
             if !self.pending_keys.is_empty() {
                 self.push_pending_key(kb_event);
 
-                // Space+/: フィルタ起動
                 if self.try_match_sequence(&kb.filter) == SequenceMatch::Full {
                     self.clear_pending_keys();
                     if let Some(ref mut filter) = self.file_list_filter {
@@ -208,42 +244,56 @@ impl App {
                     return Ok(());
                 }
 
-                // gl: Git Log 画面
-                if self.try_match_sequence(&kb.git_log) == SequenceMatch::Full {
+                // gg: Jump to first (tree/flat 共通)
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    self.open_git_log();
+                    if tree_active {
+                        self.file_tree_jump_to_first();
+                    } else {
+                        self.selected_file = 0;
+                    }
                     return Ok(());
                 }
 
-                // マッチしなければペンディングをクリア
                 self.clear_pending_keys();
             } else {
-                // シーケンス開始チェック
                 let could_start_filter = self.key_could_match_sequence(&key, &kb.filter);
-                let could_start_gl = self.key_could_match_sequence(&key, &kb.git_log);
-                if could_start_filter || could_start_gl {
+                let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
+                if could_start_filter || could_start_gg {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }
             }
         }
 
+        // G: Jump to last (tree/flat 共通)
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if tree_active {
+                self.file_tree_jump_to_last();
+            } else if !self.files().is_empty() {
+                self.selected_file = self.files().len().saturating_sub(1);
+            }
+            return Ok(());
+        }
+
         // Open split view (Enter, Right arrow, or l)
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
-            || key.code == KeyCode::Right
-        {
+                   {
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
+            // ツリーモード: Dir 行なら展開トグル、File 行なら diff 遷移
+            if tree_active && self.file_tree_enter() {
+                return Ok(());
+            }
             if !self.files().is_empty() {
-                self.state = AppState::SplitViewDiff;
+                self.enter_diff_from_file_list();
                 self.sync_diff_to_selected_file();
             }
             return Ok(());
         }
 
-        // Actions (disabled in local mode - no PR to submit reviews to)
         if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(());
@@ -255,27 +305,23 @@ impl App {
             return Ok(());
         }
 
-        // Note: In FileList, 'comment' key triggers review comment (not inline comment)
         // Using separate check for review comment in FileList context
         if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal).await?;
             return Ok(());
         }
 
-        // Comment list
         if self.matches_single_key(&key, &kb.comment_list) {
             self.previous_state = AppState::FileList;
             self.open_comment_list();
             return Ok(());
         }
 
-        // Refresh
         if self.matches_single_key(&key, &kb.refresh) {
             self.refresh_all();
             return Ok(());
         }
 
-        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
         // ローカルモードではコメント投稿等のAPI呼び出しはオーケストレーター側でスキップされる。
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
@@ -290,13 +336,11 @@ impl App {
             return Ok(());
         }
 
-        // Toggle local mode
         if self.matches_single_key(&key, &kb.toggle_local_mode) {
             self.toggle_local_mode();
             return Ok(());
         }
 
-        // Toggle auto-focus (local mode only)
         if self.matches_single_key(&key, &kb.toggle_auto_focus) {
             if self.local_mode {
                 self.toggle_auto_focus();
@@ -304,13 +348,16 @@ impl App {
             return Ok(());
         }
 
-        // PR description (disabled in local mode)
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
+            return Ok(());
+        }
+
         if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
             self.open_pr_description();
             return Ok(());
         }
 
-        // CI Checks (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.ci_checks) {
             if let Some(pr_number) = self.pr_number {
                 self.open_checks_list(pr_number);
@@ -318,7 +365,6 @@ impl App {
             return Ok(());
         }
 
-        // Help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
             self.state = AppState::Help;
@@ -341,7 +387,6 @@ impl App {
 
         let kb = &self.config.keybindings;
 
-        // Review actions (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(true);
@@ -363,7 +408,6 @@ impl App {
             return Ok(true);
         }
 
-        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(true);
@@ -376,13 +420,11 @@ impl App {
             return Ok(true);
         }
 
-        // PR description (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.pr_description) {
             self.open_pr_description();
             return Ok(true);
         }
 
-        // CI Checks (disabled in local mode)
         if !self.local_mode && self.matches_single_key(&key, &kb.ci_checks) {
             if let Some(pr_number) = self.pr_number {
                 self.open_checks_list(pr_number);
@@ -390,17 +432,20 @@ impl App {
             return Ok(true);
         }
 
-        // Toggle local mode
         if self.matches_single_key(&key, &kb.toggle_local_mode) {
             self.toggle_local_mode();
             return Ok(true);
         }
 
-        // Toggle auto-focus (local mode only)
         if self.matches_single_key(&key, &kb.toggle_auto_focus) {
             if self.local_mode {
                 self.toggle_auto_focus();
             }
+            return Ok(true);
+        }
+
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
             return Ok(true);
         }
 
@@ -411,16 +456,11 @@ impl App {
             return false;
         }
 
-        let is_mark_file = key.code == KeyCode::Char('v')
-            && !key.modifiers.contains(KeyModifiers::SHIFT)
-            && !key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
-        let is_mark_directory = key.code == KeyCode::Char('V')
-            || (key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::SHIFT));
-        let has_unexpected_modifiers = key.modifiers.contains(KeyModifiers::CONTROL)
-            || key.modifiers.contains(KeyModifiers::ALT);
+        let kb = &self.config.keybindings;
+        let is_mark_file = self.matches_single_key(&key, &kb.mark_viewed);
+        let is_mark_directory = self.matches_single_key(&key, &kb.mark_viewed_dir);
 
-        if has_unexpected_modifiers || (!is_mark_file && !is_mark_directory) {
+        if !is_mark_file && !is_mark_directory {
             return false;
         }
 
@@ -551,15 +591,12 @@ impl App {
             .collect()
     }
     pub(crate) fn refresh_all(&mut self) {
-        // インメモリキャッシュを全削除
         self.session_cache.invalidate_all();
-        // コメントデータをクリア
         self.review_comments = None;
         self.discussion_comments = None;
         self.comments_loading = false;
         self.discussion_comments_loading = false;
         self.file_list_filter = None;
-        // 強制的に Loading 状態にしてから再取得
         self.data_state = DataState::Loading;
         self.retry_load();
     }
@@ -599,27 +636,23 @@ impl App {
         let kb = self.config.keybindings.clone();
         let check_count = self.checks.as_ref().map(|c| c.len()).unwrap_or(0);
 
-        // Quit / back
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = self.checks_return_state;
             return Ok(());
         }
 
-        // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if check_count > 0 {
                 self.selected_check = (self.selected_check + 1).min(check_count.saturating_sub(1));
             }
             return Ok(());
         }
 
-        // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             self.selected_check = self.selected_check.saturating_sub(1);
             return Ok(());
         }
 
-        // Jump to first (gg)
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -637,7 +670,6 @@ impl App {
             }
         }
 
-        // Jump to last (G)
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if check_count > 0 {
                 self.selected_check = check_count.saturating_sub(1);
@@ -645,7 +677,6 @@ impl App {
             return Ok(());
         }
 
-        // Enter: open in browser
         if self.matches_single_key(&key, &kb.open_panel) {
             if let Some(ref checks) = self.checks {
                 if let Some(check) = checks.get(self.selected_check) {
@@ -657,7 +688,6 @@ impl App {
             return Ok(());
         }
 
-        // R: refresh
         if self.matches_single_key(&key, &kb.refresh) {
             if let Some(pr_number) = self.checks_target_pr {
                 self.open_checks_list(pr_number);
@@ -665,7 +695,6 @@ impl App {
             return Ok(());
         }
 
-        // O: open PR in browser
         if self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.checks_target_pr {
                 self.open_pr_in_browser(pr_number);
@@ -698,5 +727,220 @@ impl App {
                 .output()
                 .await;
         });
+    }
+
+    // ============================================================
+    // FileTree integration methods
+    // ============================================================
+
+    /// ファイル一覧のツリー表示をトグル。
+    /// ON: FileTreeState を生成（初回）または再利用し、rebuild + カーソル復元。
+    /// OFF: tree_mode_active を false にするが file_tree_state は保持（展開状態を失わない）。
+    pub(crate) fn toggle_file_tree(&mut self) {
+        if self.tree_mode_active {
+            // OFF にする
+            self.tree_mode_active = false;
+            return;
+        }
+
+        // ON にする
+        // self.files() を先に借りてパスを収集し、借用を解放してから tree を操作
+        let paths: Vec<(usize, String)> = self
+            .files()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (i, f.filename.clone()))
+            .collect();
+
+        if paths.is_empty() {
+            return;
+        }
+
+        self.tree_mode_active = true;
+        let selected = self.selected_file;
+
+        if let Some(ref mut tree) = self.file_tree_state {
+            // 既存の tree_state を再利用（展開状態維持）
+            tree.rebuild_owned(paths);
+            if let Some(row) = tree.find_row_for_file(selected) {
+                tree.selected_row = row;
+            }
+        } else {
+            let mut tree = super::file_tree::FileTreeState::new();
+            tree.rebuild_owned(paths);
+            if let Some(row) = tree.find_row_for_file(selected) {
+                tree.selected_row = row;
+            }
+            self.file_tree_state = Some(tree);
+        }
+    }
+
+    /// ツリーモードで下に移動。File 行に着地したら selected_file を更新。
+    pub(crate) fn file_tree_move_down(&mut self) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            tree.move_down();
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
+    /// ツリーモードで上に移動。File 行に着地したら selected_file を更新。
+    pub(crate) fn file_tree_move_up(&mut self) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            tree.move_up();
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
+    /// ツリーモードでページダウン。
+    pub(crate) fn file_tree_page_down(&mut self, step: usize) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            tree.page_down(step);
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
+    /// ツリーモードでページアップ。
+    pub(crate) fn file_tree_page_up(&mut self, step: usize) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            tree.page_up(step);
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
+    /// ツリーモードで先頭にジャンプ。
+    pub(crate) fn file_tree_jump_to_first(&mut self) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            tree.jump_to_first();
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
+    /// ツリーモードで末尾にジャンプ。
+    pub(crate) fn file_tree_jump_to_last(&mut self) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            tree.jump_to_last();
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
+    /// ツリーモードで Enter:
+    /// - Dir 行: 展開/折畳トグル → true を返す
+    /// - File 行: 何もしない → false を返す（呼び出し元が diff 遷移を行う）
+    pub(crate) fn file_tree_enter(&mut self) -> bool {
+        if let Some(ref mut tree) = self.file_tree_state {
+            if tree.selected_dir_path().is_some() {
+                tree.toggle_expand();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// ツリーモードで現在 Dir 行にいるかどうか。
+    pub(crate) fn is_file_tree_on_dir_row(&self) -> bool {
+        if let Some(ref tree) = self.file_tree_state {
+            tree.selected_dir_path().is_some()
+        } else {
+            false
+        }
+    }
+
+    /// ツリーモードがアクティブなら、現在のファイル一覧でツリーを再構築する。
+    /// データリロード後やフィルタ解除後に呼び出す。
+    pub(crate) fn rebuild_file_tree_if_active(&mut self) {
+        if !self.tree_mode_active || self.file_tree_state.is_none() {
+            return;
+        }
+        // フィルタ中はスキップ（フラット表示を維持）
+        if self.file_list_filter.is_some() {
+            return;
+        }
+
+        // self.files() を先に借りてパスを収集し、借用を解放してから tree を操作
+        let paths: Vec<(usize, String)> = self
+            .files()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (i, f.filename.clone()))
+            .collect();
+
+        if paths.is_empty() {
+            return;
+        }
+
+        let tree = self.file_tree_state.as_mut().unwrap();
+
+        // 選択復元用に現在の情報を保存
+        let prev_file_idx = tree.selected_file_index();
+        let prev_dir_path = tree.selected_dir_path().map(|s| s.to_string());
+
+        tree.rebuild_owned(paths);
+
+        // 選択復元
+        if let Some(idx) = prev_file_idx {
+            if let Some(row) = tree.find_row_for_file(idx) {
+                tree.selected_row = row;
+                return;
+            }
+        }
+        if let Some(ref dir_path) = prev_dir_path {
+            if let Some(row) = tree.find_row_for_dir(dir_path) {
+                tree.selected_row = row;
+                return;
+            }
+        }
+        // フォールバック: 先頭
+        tree.selected_row = 0;
+    }
+
+    /// ツリーモードで Dir 行の V: 配下全ファイルを mark viewed。
+    pub(crate) fn start_mark_tree_directory_as_viewed(&mut self) {
+        let dir_path = self
+            .file_tree_state
+            .as_ref()
+            .and_then(|tree| tree.selected_dir_path())
+            .map(|s| s.to_string());
+
+        let Some(dir_path) = dir_path else {
+            return;
+        };
+
+        let target_paths = Self::collect_unviewed_paths_under_dir(self.files(), &dir_path);
+
+        if target_paths.is_empty() {
+            self.submission_result = Some((true, "No unviewed files in directory".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        }
+
+        self.start_mark_paths_as_viewed(target_paths, true);
+    }
+
+    /// ツリーモード用の mark_viewed_dir: ディレクトリパスプレフィックスで未読ファイルを収集。
+    pub(crate) fn collect_unviewed_paths_under_dir(
+        files: &[ChangedFile],
+        dir_path: &str,
+    ) -> Vec<String> {
+        if dir_path.is_empty() {
+            return Vec::new();
+        }
+        let prefix = format!("{}/", dir_path);
+        files
+            .iter()
+            .filter(|file| file.filename.starts_with(&prefix) && !file.viewed)
+            .map(|file| file.filename.clone())
+            .collect()
     }
 }

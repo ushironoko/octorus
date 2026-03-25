@@ -88,7 +88,6 @@ impl App {
         state.linked_prs = None;
         state.linked_prs_loading = true;
 
-        // Fetch issue detail
         let (detail_tx, detail_rx) = mpsc::channel(1);
         state.issue_detail_receiver = Some((issue_number, detail_rx));
         let repo = self.repo.clone();
@@ -97,7 +96,6 @@ impl App {
             let _ = detail_tx.send(result.map_err(|e| e.to_string())).await;
         });
 
-        // Fetch linked PRs
         let (prs_tx, prs_rx) = mpsc::channel(1);
         state.linked_prs_receiver = Some((issue_number, prs_rx));
         let repo = self.repo.clone();
@@ -127,13 +125,11 @@ impl App {
     pub(crate) async fn handle_issue_list_input(&mut self, key: event::KeyEvent) -> Result<()> {
         let kb = self.config.keybindings.clone();
 
-        // フィルタ入力中はフィルタ処理を優先
         if self.handle_filter_input(&key, "issue") {
             return Ok(());
         }
 
-        // Quit / back
-        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+        if self.matches_single_key(&key, &kb.quit) {
             if self.handle_filter_esc("issue") {
                 return Ok(());
             }
@@ -152,7 +148,6 @@ impl App {
             return Ok(());
         };
 
-        // ローディング中は操作を受け付けない
         if state.issue_list_loading && state.issues.is_none() {
             return Ok(());
         }
@@ -160,8 +155,7 @@ impl App {
         let issue_count = state.issues.as_ref().map(|l| l.len()).unwrap_or(0);
         let has_filter = state.issue_list_filter.is_some();
 
-        // Move down
-        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+        if self.matches_single_key(&key, &kb.move_down) {
             if has_filter {
                 self.handle_filter_navigation("issue", true);
             } else if issue_count > 0 {
@@ -180,8 +174,7 @@ impl App {
             return Ok(());
         }
 
-        // Move up
-        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+        if self.matches_single_key(&key, &kb.move_up) {
             if has_filter {
                 self.handle_filter_navigation("issue", false);
             } else {
@@ -191,7 +184,6 @@ impl App {
             return Ok(());
         }
 
-        // Page down
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if issue_count > 0 && !has_filter {
                 let needs_load_more = {
@@ -209,7 +201,6 @@ impl App {
             return Ok(());
         }
 
-        // Page up
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             if !has_filter {
                 let state = self.issue_state.as_mut().unwrap();
@@ -218,7 +209,6 @@ impl App {
             return Ok(());
         }
 
-        // gg/G/Space+/ シーケンス処理
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -262,7 +252,6 @@ impl App {
             }
         }
 
-        // G: 末尾へ
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if issue_count > 0 && !has_filter {
                 let state = self.issue_state.as_mut().unwrap();
@@ -271,7 +260,6 @@ impl App {
             return Ok(());
         }
 
-        // Enter: Issue選択
         if self.matches_single_key(&key, &kb.open_panel) {
             if self.is_filter_selection_empty("issue") {
                 return Ok(());
@@ -290,7 +278,6 @@ impl App {
             return Ok(());
         }
 
-        // ブラウザで開く
         if self.matches_single_key(&key, &kb.open_in_browser) {
             if self.is_filter_selection_empty("issue") {
                 return Ok(());
@@ -304,7 +291,6 @@ impl App {
             return Ok(());
         }
 
-        // o: open のみ
         if key.code == KeyCode::Char('o') {
             let needs_reload = {
                 let state = self.issue_state.as_mut().unwrap();
@@ -321,7 +307,6 @@ impl App {
             return Ok(());
         }
 
-        // c: closed のみ
         if key.code == KeyCode::Char('c') {
             let needs_reload = {
                 let state = self.issue_state.as_mut().unwrap();
@@ -338,7 +323,6 @@ impl App {
             return Ok(());
         }
 
-        // a: all
         if key.code == KeyCode::Char('a') {
             let needs_reload = {
                 let state = self.issue_state.as_mut().unwrap();
@@ -355,13 +339,16 @@ impl App {
             return Ok(());
         }
 
-        // r: リフレッシュ
         if self.matches_single_key(&key, &kb.refresh) {
             self.reload_issue_list();
             return Ok(());
         }
 
-        // ?: ヘルプ
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::IssueList;
             self.state = AppState::Help;

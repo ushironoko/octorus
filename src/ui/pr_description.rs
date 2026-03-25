@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
@@ -14,19 +14,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Body
-            Constraint::Length(1), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
-    // Header
     render_header(frame, app, chunks[0]);
 
-    // Body
     render_body(frame, app, chunks[1]);
 
-    // Footer
     render_footer(frame, app, chunks[2]);
 }
 
@@ -50,7 +47,6 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let content_height = area.height.saturating_sub(2) as usize;
 
     let Some(ref cache) = app.pr_description_cache else {
-        // No description
         let no_desc = Paragraph::new(Line::from(Span::styled(
             "  No description provided.",
             Style::default().fg(Color::DarkGray),
@@ -60,16 +56,29 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         return;
     };
 
-    // Header行(hunk header)をスキップして本文行のみ収集
-    let body_line_indices: Vec<usize> = cache
+    let lines: Vec<Line<'_>> = cache
         .lines
         .iter()
-        .enumerate()
-        .filter(|(_, cached)| cached.line_type != LineType::Header)
-        .map(|(i, _)| i)
+        .filter(|cached| cached.line_type != LineType::Header)
+        .map(|cached| {
+            let spans: Vec<Span<'_>> = cached
+                .spans
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let text = cache.resolve(s.content);
+                    if i == 0 && text.starts_with(' ') {
+                        Span::styled(text[1..].to_string(), s.style)
+                    } else {
+                        Span::styled(text.to_string(), s.style)
+                    }
+                })
+                .collect();
+            Line::from(spans)
+        })
         .collect();
 
-    let total_lines = body_line_indices.len();
+    let total_lines = lines.len();
     let max_scroll = total_lines.saturating_sub(content_height);
     if app.pr_description_scroll_offset > max_scroll {
         app.pr_description_scroll_offset = max_scroll;
@@ -85,40 +94,16 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         String::new()
     };
 
-    let start = app.pr_description_scroll_offset;
-    let end = (start + content_height).min(total_lines);
-
-    // render_cached_lines を使うが、context行の先頭スペース(diff marker)を除去する
-    let lines: Vec<Line<'_>> = body_line_indices[start..end]
-        .iter()
-        .map(|&idx| &cache.lines[idx])
-        .map(|cached| {
-            let spans: Vec<Span<'_>> = cached
-                .spans
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let text = cache.resolve(s.content);
-                    // 最初のspanの先頭1文字がdiff marker(スペース)なので除去
-                    if i == 0 && text.starts_with(' ') {
-                        Span::styled(text[1..].to_string(), s.style)
-                    } else {
-                        Span::styled(text.to_string(), s.style)
-                    }
-                })
-                .collect();
-            Line::from(spans)
-        })
-        .collect();
-
-    let body = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Description{}", scroll_info)),
-    );
+    let body = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Description{}", scroll_info)),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((app.pr_description_scroll_offset as u16, 0));
     frame.render_widget(body, area);
 
-    // Scrollbar
     if total_lines > content_height {
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll + 1).position(app.pr_description_scroll_offset);

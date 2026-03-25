@@ -10,8 +10,8 @@ impl App {
     pub(crate) fn push_jump_location(&mut self) {
         let loc = JumpLocation {
             file_index: self.selected_file,
-            line_index: self.selected_line,
-            scroll_offset: self.scroll_offset,
+            line_index: self.diff_scroll.selected_line,
+            scroll_offset: self.diff_scroll.scroll_offset,
         };
         self.jump_stack.push(loc);
         // 上限 100 件
@@ -28,8 +28,8 @@ impl App {
 
         let file_changed = self.selected_file != loc.file_index;
         self.selected_file = loc.file_index;
-        self.selected_line = loc.line_index;
-        self.scroll_offset = loc.scroll_offset;
+        self.diff_scroll.selected_line = loc.line_index;
+        self.diff_scroll.scroll_offset = loc.scroll_offset;
 
         if file_changed {
             self.update_diff_line_count();
@@ -51,7 +51,7 @@ impl App {
             Some(p) => p,
             None => return Ok(()),
         };
-        let info = match crate::diff::get_line_info(patch, self.selected_line) {
+        let info = match crate::diff::get_line_info(patch, self.diff_scroll.selected_line) {
             Some(i) => i,
             None => return Ok(()),
         };
@@ -122,8 +122,8 @@ impl App {
             self.push_jump_location();
             let file_changed = self.selected_file != file_idx;
             self.selected_file = file_idx;
-            self.selected_line = line_idx;
-            self.scroll_offset = line_idx;
+            self.diff_scroll.selected_line = line_idx;
+            self.diff_scroll.scroll_offset = line_idx;
 
             if file_changed {
                 self.update_diff_line_count();
@@ -200,7 +200,7 @@ impl App {
 
         // 行番号: new_line_number があれば使用、なければ 1
         let line_number = file.patch.as_ref().and_then(|patch| {
-            crate::diff::get_line_info(patch, self.selected_line)
+            crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
                 .and_then(|info| info.new_line_number)
         });
 
@@ -250,16 +250,13 @@ impl App {
 
         let kb = &self.config.keybindings;
 
-        // Close
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.help)
-            || key.code == KeyCode::Esc
-        {
+                   {
             self.state = self.previous_state;
             return Ok(());
         }
 
-        // Open in browser
         if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
@@ -267,11 +264,9 @@ impl App {
             return Ok(());
         }
 
-        // Toggle markdown rich display
         // IMPORTANT: ここでは toggle_markdown_rich() を呼ばず、フラグ反転と PR description
         // キャッシュの再構築のみ行う。toggle_markdown_rich() は prefetch_receiver の破棄や
         // highlighted_cache_store のmarkdownエントリ削除など DiffView 向けの副作用を持つため、
-        // PR description view から呼ぶとファイル diff のプリフェッチ済みキャッシュが失われる。
         // ファイル diff に戻った際は ensure_diff_cache() が markdown_rich の不整合を検出し、
         // markdownファイルのみ自動再構築する。
         if self.matches_single_key(&key, &kb.toggle_markdown_rich) {
@@ -281,19 +276,15 @@ impl App {
             return Ok(());
         }
 
-        // Scroll
         if Self::is_shift_char_shortcut(&key, 'j') {
-            // Page down (J / Shift+j)
             self.pr_description_scroll_offset = self
                 .pr_description_scroll_offset
                 .saturating_add(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'k') {
-            // Page up (K / Shift+k)
             self.pr_description_scroll_offset = self
                 .pr_description_scroll_offset
                 .saturating_sub(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'g') {
-            // Jump to bottom (G / Shift+g)
             self.pr_description_scroll_offset = usize::MAX;
         } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
             self.pr_description_scroll_offset = self.pr_description_scroll_offset.saturating_add(1);
@@ -306,7 +297,6 @@ impl App {
             self.pr_description_scroll_offset =
                 self.pr_description_scroll_offset.saturating_sub(half_page);
         } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
-            // Jump to top (g without modifiers)
             self.pr_description_scroll_offset = 0;
         }
 
@@ -327,7 +317,6 @@ impl App {
     pub(crate) const HELP_VIEWPORT_OVERHEAD: u16 = 6;
 
     pub(crate) fn apply_help_scroll(&mut self, key: event::KeyEvent, terminal_height: u16) {
-        // Tab switching ([ / ])
         if matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']')) {
             self.help_tab = match self.help_tab {
                 HelpTab::Keybindings => HelpTab::Config,
@@ -348,18 +337,14 @@ impl App {
         let kb = &self.config.keybindings;
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.help)
-            || key.code == KeyCode::Esc
-        {
+                   {
             self.state = self.previous_state;
             return;
         } else if Self::is_shift_char_shortcut(&key, 'j') {
-            // Page down (J / Shift+j)
             offset = offset.saturating_add(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'k') {
-            // Page up (K / Shift+k)
             offset = offset.saturating_sub(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'g') {
-            // Jump to bottom (G / Shift+g)
             offset = usize::MAX;
         } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
             offset = offset.saturating_add(1);
@@ -370,7 +355,6 @@ impl App {
         } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
             offset = offset.saturating_sub(half_page);
         } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
-            // Jump to top (g without modifiers)
             offset = 0;
         }
 

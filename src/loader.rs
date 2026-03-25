@@ -68,7 +68,6 @@ pub async fn fetch_local_diff(
 ) {
     let current_workdir = working_dir.as_deref();
 
-    // 1. name-status（ファイル名 + ステータス）— 高速
     let name_status_output = match run_git_name_status(current_workdir).await {
         Ok(output) => output,
         Err(e) => {
@@ -78,17 +77,13 @@ pub async fn fetch_local_diff(
     };
     let file_statuses = parse_name_status_output(&name_status_output);
 
-    // 2. numstat（additions/deletions）— 高速
     let numstat_output = run_git_numstat(current_workdir).await.ok();
     let file_changes = parse_numstat_output(numstat_output.as_deref());
 
-    // 3. ChangedFile を patch: None で構築
     let mut files = build_changed_files_lazy(&file_statuses, &file_changes);
 
-    // 4. untracked ファイルもリストのみ取得（patch: None）
     merge_untracked_files_lazy(current_workdir, &mut files).await;
 
-    // 5. PR情報を構築して即座に送信
     let pr = PullRequest {
         number: 0,
         node_id: None,

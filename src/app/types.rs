@@ -1,7 +1,6 @@
 use lasso::{Rodeo, Spur};
 use ratatui::style::Style;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -10,10 +9,11 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::diff::LineType;
-use crate::github::comment::{DiscussionComment, ReviewComment};
+use crate::loader::SingleFileDiffResult;
+use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
-    ChangedFile, IssueComment, IssueDetail, IssueListPage, IssueStateFilter, IssueSummary,
-    LinkedPr, PrCommit, PullRequest,
+    ChangedFile, CommitListPage, IssueComment, IssueDetail, IssueListPage, IssueStateFilter,
+    IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
 
 /// コメントのdiff内位置を表す構造体
@@ -156,12 +156,11 @@ pub enum AppState {
     SplitViewDiff,
     PrDescription,
     ChecksList,
-    GitLogSplitCommitList,
-    GitLogSplitDiff,
-    GitLogDiffView,
-    IssueList,
+IssueList,
     IssueDetail,
     IssueCommentList,
+    GitOpsSplitTree,
+    GitOpsSplitDiff,
 }
 
 impl AppState {
@@ -177,6 +176,8 @@ impl AppState {
                 | Self::IssueDetail
                 | Self::IssueCommentList
                 | Self::TextInput
+                | Self::GitOpsSplitTree
+                | Self::GitOpsSplitDiff
         )
     }
 
@@ -360,25 +361,6 @@ pub struct WatcherHandle {
     pub(crate) _thread: std::thread::JoinHandle<()>,
 }
 
-/// モード切替時のビュー状態スナップショット
-///
-/// データは `SessionCache` で管理するため、ここには UI 状態のみ保持。
-/// 全フィールドを `std::mem::replace` / `take()` で移動（Clone 不使用）。
-pub struct ViewSnapshot {
-    pub pr_number: Option<u32>,
-    pub selected_file: usize,
-    pub file_list_scroll_offset: usize,
-    pub selected_line: usize,
-    pub scroll_offset: usize,
-    pub diff_cache: Option<DiffCache>,
-    pub highlighted_cache_store: HashMap<usize, DiffCache>,
-    pub review_comments: Option<Vec<ReviewComment>>,
-    pub discussion_comments: Option<Vec<DiscussionComment>>,
-    pub local_file_signatures: HashMap<String, u64>,
-    /// patch 内容を含む完全シグネチャ（バッチ diff 完了後に更新）
-    pub local_file_patch_signatures: HashMap<String, u64>,
-}
-
 /// PRデータの読み込み状態。
 ///
 /// `Loaded` のフィールドは `Arc` ではなく `Box`/`Vec` で保持する。
@@ -394,74 +376,338 @@ pub enum DataState {
     Error(String),
 }
 
-/// Git Log 画面の全状態（receiver も含めて集約）
-///
-/// `App.git_log_state: Option<GitLogState>` として保持。
-/// 画面クローズ時に `None` で全破棄。
-pub struct GitLogState {
-    pub commits: Vec<PrCommit>,
-    pub selected_commit: usize,
-    pub commit_list_scroll_offset: usize,
-    /// 現在選択中コミットの raw unified diff
-    pub commit_diff: Option<String>,
-    /// plain diff cache（シンタックスハイライトなし）
-    pub diff_cache: Option<DiffCache>,
-    pub selected_line: usize,
-    pub scroll_offset: usize,
-    pub diff_loading: bool,
-    pub commits_loading: bool,
-    /// 追加コミットが存在するか（無限スクロール用）
-    pub commits_has_more: bool,
-    /// 現在のページ番号（GitHub API: 1-indexed, ローカル: offset計算用）
-    pub commits_page: u32,
-    /// コミット一覧取得エラー
-    pub commits_error: Option<String>,
-    /// コミット diff 取得エラー
-    pub diff_error: Option<String>,
-    /// 非同期レスポンス競合防止: 現在取得中のコミット SHA
-    pub pending_diff_sha: Option<String>,
-    /// コミット一覧レシーバー
-    pub(crate) commit_list_receiver:
-        Option<mpsc::Receiver<Result<crate::github::CommitListPage, String>>>,
-    /// コミット diff レシーバー（(sha, diff_text) タプル）
-    pub(crate) commit_diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
-    /// ハイライト済み diff キャッシュ レシーバー（(sha, DiffCache) タプル）
-    pub(crate) highlight_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
-    /// プリフェッチ diff レシーバー（複数コミットの並列ハイライト済みキャッシュ）
-    pub(crate) prefetch_diff_receiver: Option<mpsc::Receiver<(String, DiffCache)>>,
-    /// コミット diff キャッシュ（sha -> DiffCache, 上限は config.git_log.max_diff_cache）
-    pub diff_cache_map: HashMap<String, DiffCache>,
+/// Git status のファイルステータス
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileStatus {
+    Unmodified,
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    Untracked,
+    Ignored,
+    Unmerged,
 }
 
-impl Default for GitLogState {
+impl FileStatus {
+    pub fn from_char(c: char) -> Self {
+        match c {
+            ' ' | '.' => Self::Unmodified,
+            'M' => Self::Modified,
+            'A' => Self::Added,
+            'D' => Self::Deleted,
+            'R' => Self::Renamed,
+            'C' => Self::Copied,
+            '?' => Self::Untracked,
+            '!' => Self::Ignored,
+            'U' => Self::Unmerged,
+            _ => Self::Unmodified,
+        }
+    }
+
+    pub fn as_char(self) -> char {
+        match self {
+            Self::Unmodified => ' ',
+            Self::Modified => 'M',
+            Self::Added => 'A',
+            Self::Deleted => 'D',
+            Self::Renamed => 'R',
+            Self::Copied => 'C',
+            Self::Untracked => '?',
+            Self::Ignored => '!',
+            Self::Unmerged => 'U',
+        }
+    }
+}
+
+/// git status --porcelain=v1 の1エントリ
+#[derive(Debug, Clone)]
+pub struct GitStatusEntry {
+    pub path: String,
+    pub index_status: FileStatus,
+    pub worktree_status: FileStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    pub staged_additions: u32,
+    pub staged_deletions: u32,
+    pub orig_path: Option<String>,
+    pub unmerged: bool,
+}
+
+impl GitStatusEntry {
+    /// staged 状態か（index が Unmodified/Untracked/Ignored 以外）
+    pub fn is_staged(&self) -> bool {
+        !matches!(
+            self.index_status,
+            FileStatus::Unmodified | FileStatus::Untracked | FileStatus::Ignored
+        )
+    }
+
+    /// worktree 変更があるか
+    pub fn has_worktree_changes(&self) -> bool {
+        !matches!(
+            self.worktree_status,
+            FileStatus::Unmodified | FileStatus::Ignored
+        )
+    }
+
+    pub fn describe_discard_command(&self) -> String {
+        if self.worktree_status == FileStatus::Untracked
+            && self.index_status == FileStatus::Untracked
+        {
+            format!("git clean -f -- {}", self.path)
+        } else if self.is_staged() && !self.has_worktree_changes() {
+            format!("git restore --staged --source=HEAD -- {}", self.path)
+        } else {
+            format!("git restore -- {}", self.path)
+        }
+    }
+
+    /// 変更種別ラベル: ファイルの性質を固定幅2文字で返す
+    ///
+    /// stage/unstage で変化しない。色だけが変わる。
+    /// 判定ロジック: index/worktree の両方を見て「このファイルは何の変更か」を決定。
+    /// optimistic_stage/unstage で index/worktree が入れ替わっても結果が同じになるよう、
+    /// 両方の非trivialな状態から種別を判定する。
+    pub fn change_type_label(&self) -> &'static str {
+        // untracked/added は同じ「新規ファイル」
+        if self.index_status == FileStatus::Untracked
+            || self.worktree_status == FileStatus::Untracked
+            || (self.index_status == FileStatus::Added
+                && self.worktree_status == FileStatus::Unmodified)
+        {
+            return "??";
+        }
+
+        // index 側が非trivial ならそれを使う（staged 状態）
+        let kind = if self.index_status != FileStatus::Unmodified {
+            self.index_status
+        } else {
+            self.worktree_status
+        };
+
+        match kind {
+            FileStatus::Modified => "M ",
+            FileStatus::Added => "A ",
+            FileStatus::Deleted => "D ",
+            FileStatus::Renamed => "R ",
+            FileStatus::Copied => "C ",
+            FileStatus::Unmerged => "U ",
+            _ => "  ",
+        }
+    }
+}
+
+/// git update-index --cacheinfo で使用するインデックスエントリ
+#[derive(Debug, Clone)]
+pub struct IndexEntry {
+    pub mode: String,
+    pub hash: String,
+    pub path: String,
+}
+
+/// Undo スタックのアクション
+pub enum UndoAction {
+    /// commit を取り消す（git reset --soft HEAD~1）
+    Commit,
+    /// stage を取り消す（インデックスを前の状態に精密復元）
+    ///
+    /// `previous_index_entries` に操作前のインデックスエントリを保持。
+    /// MM ファイルの部分ステージを安全に復元するため、
+    /// `git restore --staged` ではなく `git update-index --cacheinfo` を使用。
+    Stage {
+        paths: Vec<String>,
+        previous_index_entries: Vec<IndexEntry>,
+    },
+    /// unstage を取り消す（git add -- <paths>）
+    Unstage { paths: Vec<String> },
+    /// stage all を取り消す（インデックスツリーを前の状態に復元）
+    ///
+    /// `tree_hash` に `git write-tree` で保存したツリーハッシュを保持。
+    /// undo 時に `git read-tree` で完全復元。
+    StageAll { tree_hash: Option<String> },
+}
+
+impl UndoAction {
+    pub fn describe_command(&self) -> String {
+        match self {
+            UndoAction::Commit => "git reset --soft HEAD~1".to_string(),
+            UndoAction::Stage { paths, .. } => {
+                format!("git update-index (restore {} file(s))", paths.len())
+            }
+            UndoAction::Unstage { paths } => {
+                if paths.len() == 1 {
+                    format!("git add -- {}", paths[0])
+                } else {
+                    format!("git add -- ({} files)", paths.len())
+                }
+            }
+            UndoAction::StageAll { tree_hash } => {
+                if let Some(hash) = tree_hash {
+                    format!("git read-tree {}", &hash[..hash.len().min(7)])
+                } else {
+                    "git reset".to_string()
+                }
+            }
+        }
+    }
+}
+
+/// GitOps の破壊的操作の確認待ち状態
+#[derive(Debug, Clone)]
+pub enum PendingGitOpsConfirm {
+    Discard { path: String, command: String },
+    Undo { command: String },
+}
+
+/// GitOps 左ペインのサブフォーカス
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LeftPaneFocus {
+    #[default]
+    Tree,
+    Commits,
+}
+
+/// コミット履歴関連の全状態（GitOpsState のサブ構造体）
+pub struct CommitLogState {
+    pub commits: Vec<PrCommit>,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub diff_store: DiffCacheStore<String>,
+    pub diff_scroll: DiffScrollState,
+    pub diff_loading: bool,
+    pub loading: bool,
+    pub has_more: bool,
+    pub page: u32,
+    pub error: Option<String>,
+    pub diff_error: Option<String>,
+    pub pending_diff_sha: Option<String>,
+    pub(crate) list_receiver: Option<mpsc::Receiver<Result<CommitListPage, String>>>,
+    pub(crate) diff_receiver: Option<mpsc::Receiver<Result<(String, String), String>>>,
+    pub initialized: bool,
+}
+
+impl Default for CommitLogState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GitLogState {
+impl CommitLogState {
     pub fn new() -> Self {
         Self {
             commits: Vec::new(),
-            selected_commit: 0,
-            commit_list_scroll_offset: 0,
-            commit_diff: None,
-            diff_cache: None,
-            selected_line: 0,
+            selected: 0,
             scroll_offset: 0,
+            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
+            diff_scroll: DiffScrollState::new(ScrollMode::Edge),
             diff_loading: false,
-            commits_loading: true,
-            commits_has_more: false,
-            commits_page: 1,
-            commits_error: None,
+            loading: false,
+            has_more: false,
+            page: 0,
+            error: None,
             diff_error: None,
             pending_diff_sha: None,
-            commit_list_receiver: None,
-            commit_diff_receiver: None,
-            highlight_receiver: None,
-            prefetch_diff_receiver: None,
-            diff_cache_map: HashMap::new(),
+            list_receiver: None,
+            diff_receiver: None,
+            initialized: false,
         }
+    }
+}
+
+/// GitOps 画面の全状態
+pub struct GitOpsState {
+    pub entries: Vec<GitStatusEntry>,
+    /// ツリービュー状態（FileTreeState に委譲）
+    pub tree: crate::app::file_tree::FileTreeState,
+    pub diff_store: DiffCacheStore<String>,
+    pub diff_scroll: DiffScrollState,
+    /// 呼び出し元の AppState（close 時に復帰）
+    pub return_state: AppState,
+    /// 非同期 git status 受信
+    pub(crate) status_receiver: Option<mpsc::Receiver<Result<Vec<GitStatusEntry>, String>>>,
+    /// 非同期 git diff patch 受信（ファイルパスごとの on-demand diff）
+    pub(crate) diff_patch_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
+    /// 非同期 git 操作結果受信（stage/unstage/discard/commit undo etc.）
+    pub(crate) op_receiver: Option<mpsc::Receiver<Result<String, String>>>,
+    /// 操作結果メッセージ（タイマー付き自動消去）
+    pub op_message: Option<(String, std::time::Instant)>,
+    /// Undo スタック
+    pub undo_stack: Vec<UndoAction>,
+    /// 破壊的操作の確認待ち
+    pub pending_confirm: Option<PendingGitOpsConfirm>,
+    /// status 更新フラグ（prefetch トリガー用）
+    pub(crate) status_updated: bool,
+    /// Push 実行中フラグ
+    pub pushing: bool,
+    /// ローカルがリモートより先行しているコミット数
+    pub ahead_count: u32,
+    /// ahead_count 非同期受信
+    pub(crate) ahead_receiver: Option<mpsc::Receiver<u32>>,
+    /// 左ペインのサブフォーカス（Tree / Commits）
+    pub left_focus: LeftPaneFocus,
+    /// Diff から戻る先の左サブペイン
+    pub left_return_focus: LeftPaneFocus,
+    /// コミット履歴（サブ構造体）
+    pub commit_log: CommitLogState,
+}
+
+/// ツリー表示の1行
+#[derive(Debug, Clone)]
+pub enum TreeRow {
+    /// ディレクトリ行
+    Dir {
+        path: String,
+        depth: usize,
+        expanded: bool,
+    },
+    /// ファイル行
+    File {
+        index: usize,
+        depth: usize,
+    },
+}
+
+impl GitOpsState {
+    pub fn new(entries: Vec<GitStatusEntry>) -> Self {
+        Self {
+            entries,
+            tree: crate::app::file_tree::FileTreeState::new(),
+            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
+            diff_scroll: DiffScrollState::new(ScrollMode::Margin),
+            return_state: AppState::FileList,
+            status_receiver: None,
+            diff_patch_receiver: None,
+            op_receiver: None,
+            op_message: None,
+            undo_stack: Vec::new(),
+            pending_confirm: None,
+            pushing: false,
+            ahead_count: 0,
+            ahead_receiver: None,
+            status_updated: false,
+            left_focus: LeftPaneFocus::Tree,
+            left_return_focus: LeftPaneFocus::Tree,
+            commit_log: CommitLogState::new(),
+        }
+    }
+
+    /// staged ファイルが存在するか
+    pub fn has_staged_files(&self) -> bool {
+        self.entries.iter().any(|e| e.is_staged())
+    }
+
+    /// unmerged ファイルが存在するか
+    pub fn has_unmerged_files(&self) -> bool {
+        self.entries.iter().any(|e| e.unmerged)
+    }
+
+    /// 現在選択中のエントリのパスを返す
+    pub fn selected_path(&self) -> Option<&str> {
+        self.tree
+            .selected_file_index()
+            .and_then(|idx| self.entries.get(idx).map(|e| e.path.as_str()))
     }
 }
 
@@ -498,7 +744,6 @@ pub struct IssueState {
     pub issue_detail_cache: Option<DiffCache>,
     pub selected_linked_pr: usize,
     pub detail_focus: IssueDetailFocus,
-    // Comment list
     pub issue_comments: Option<Vec<IssueComment>>,
     pub selected_issue_comment: usize,
     pub issue_comment_list_scroll_offset: usize,
