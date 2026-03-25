@@ -89,7 +89,6 @@ pub struct App {
     local_mode: bool,
     /// `--auto-focus` オプション（ローカル差分時）
     local_auto_focus: bool,
-    /// FileList から直接 DiffView(フルスクリーン) に遷移するモード
     pub(crate) zen_mode: bool,
     /// 直近のローカルファイル署名（差分変更を検出、base: patch 除外）
     local_file_signatures: HashMap<String, u64>,

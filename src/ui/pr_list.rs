@@ -118,7 +118,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 format!("Pull Requests ({})", total_prs)
             };
 
-            // ボーダー(2) + スクロールバー(1) を除いた内側幅
             let inner_width = chunks[1].width.saturating_sub(3) as usize;
             let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width);
 
@@ -240,9 +239,7 @@ fn build_pr_list_items_ref(
             };
             let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
-            // Draft + Title: 利用可能な幅から固定要素を引いてタイトル幅を動的に決定
-            // 固定要素: "#NNNNN" (6) + "  " (2) + "  " (2) + "by @author" (4+author)
-            let author_width = 4 + pr.author.login.chars().count(); // "by @" + login
+            let author_width = 4 + pr.author.login.chars().count();
             let fixed_width = 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);

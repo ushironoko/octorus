@@ -221,8 +221,6 @@ fn build_issue_list_items(
             };
             let number_span = Span::styled(format!("#{:<5}", issue.number), number_style);
 
-            // Title: 利用可能な幅から固定要素を引いて動的にタイトル幅を決定
-            // 固定要素: "● " (2) + "#NNNNN" (6) + "  " (2) + "  " (2) + "by @author" (4+author)
             let author_width = 4 + issue.author.login.chars().count();
             let fixed_width = 2 + 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);

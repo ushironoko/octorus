@@ -651,8 +651,6 @@ impl App {
 
         Ok(())
     }
-    /// Fullscreen DiffView の quit 処理。
-    /// zen_mode が有効な場合は PR list に直帰せず diff_view_return_state に遷移する。
     pub(crate) fn handle_fullscreen_diff_quit(&mut self) {
         if self.started_from_pr_list
             && self.diff_view_return_state == AppState::FileList
