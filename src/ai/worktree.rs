@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use tracing::warn;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -36,10 +36,15 @@ pub async fn setup_rally_worktree(
     pr_number: u32,
     head_sha: &str,
 ) -> Result<WorktreeSetup> {
-    if Path::new(target_dir).exists() {
-        validate_existing_worktree(target_dir, repo_root).await?;
+    // Absolutize target_dir once up front so creation, validation, and agent
+    // execution all use the same path regardless of process CWD.
+    let abs_target = absolutize_path(target_dir);
+    let abs_target_str = abs_target.to_string_lossy();
+
+    if abs_target.exists() {
+        validate_existing_worktree(&abs_target_str, repo_root).await?;
         return Ok(WorktreeSetup::ExistingReused {
-            path: target_dir.to_string(),
+            path: abs_target_str.into_owned(),
         });
     }
 
@@ -75,7 +80,7 @@ pub async fn setup_rally_worktree(
     if branch_exists {
         // Branch already exists: create worktree with existing branch, then reset to head_sha
         let output = Command::new("git")
-            .args(["worktree", "add", target_dir, &branch])
+            .args(["worktree", "add", abs_target_str.as_ref(), &branch])
             .current_dir(repo_root)
             .output()
             .await
@@ -88,7 +93,7 @@ pub async fn setup_rally_worktree(
 
         let reset_output = Command::new("git")
             .args(["reset", "--hard", head_sha])
-            .current_dir(target_dir)
+            .current_dir(abs_target_str.as_ref())
             .output()
             .await
             .context("Failed to run git reset")?;
@@ -100,7 +105,7 @@ pub async fn setup_rally_worktree(
     } else {
         // New branch: create worktree with new branch from head_sha
         let output = Command::new("git")
-            .args(["worktree", "add", "-b", &branch, target_dir, head_sha])
+            .args(["worktree", "add", "-b", &branch, abs_target_str.as_ref(), head_sha])
             .current_dir(repo_root)
             .output()
             .await
@@ -113,13 +118,13 @@ pub async fn setup_rally_worktree(
     }
 
     Ok(WorktreeSetup::Created {
-        path: target_dir.to_string(),
+        path: abs_target_str.into_owned(),
         branch,
     })
 }
 
 pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Result<()> {
-    // Check if target_dir is a git repository
+    // Check if target_dir is a git repository and get its worktree root
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(target_dir)
@@ -131,6 +136,22 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
         bail!(
             "Directory '{}' exists but is not a git repository",
             target_dir
+        );
+    }
+
+    // Reject subdirectories: target_dir must be the worktree/repo root itself
+    let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let toplevel_canonical =
+        std::fs::canonicalize(&toplevel).unwrap_or_else(|_| PathBuf::from(&toplevel));
+    let target_canonical =
+        std::fs::canonicalize(target_dir).unwrap_or_else(|_| absolutize_path(target_dir));
+
+    if toplevel_canonical != target_canonical {
+        bail!(
+            "Directory '{}' is a subdirectory of repository '{}', not a worktree root. \
+             --working-dir must point to a repository or worktree root.",
+            target_dir,
+            toplevel
         );
     }
 
@@ -166,12 +187,12 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
             repo_path.into()
         };
 
-        let target_canonical =
+        let target_common_canonical =
             std::fs::canonicalize(&target_resolved).unwrap_or(target_resolved);
-        let repo_canonical =
+        let repo_common_canonical =
             std::fs::canonicalize(&repo_resolved).unwrap_or(repo_resolved);
 
-        if target_canonical != repo_canonical {
+        if target_common_canonical != repo_common_canonical {
             bail!(
                 "Directory '{}' belongs to a different repository",
                 target_dir
@@ -198,6 +219,18 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
     }
 
     Ok(())
+}
+
+/// Resolve a potentially relative path to absolute using the current working directory.
+fn absolutize_path(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(p)
+    }
 }
 
 async fn check_branch_exists(repo_root: &str, branch: &str) -> bool {
