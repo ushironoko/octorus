@@ -184,11 +184,12 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     } else {
         "Space /: filter | "
     };
-    let footer_text = format!(
+    let help_text = format!(
         "j/k/↑↓: move | Enter: view | {}O: browser | o: open | c: closed | a: all | r: refresh | q: back | ?: help",
         filter_hint
     );
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let line = super::footer::build_footer_line(app, &help_text);
+    let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
