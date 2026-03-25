@@ -6635,10 +6635,23 @@ fn test_zen_mode_started_from_pr_list_quit_returns_to_file_list() {
     app.state = AppState::DiffView;
     app.diff_view_return_state = AppState::FileList;
 
-    // zen_mode + started_from_pr_list: q should go to FileList, not PR list
-    // The condition `!self.zen_mode` prevents back_to_pr_list() from firing
-    // So state should be set to diff_view_return_state = FileList
-    assert!(app.zen_mode);
-    assert!(app.started_from_pr_list);
-    assert_eq!(app.diff_view_return_state, AppState::FileList);
+    // Invoke the actual fullscreen diff quit handler
+    app.handle_fullscreen_diff_quit();
+
+    // zen_mode prevents back_to_pr_list(), so state should be FileList
+    assert_eq!(app.state, AppState::FileList);
+}
+
+#[test]
+fn test_no_zen_mode_started_from_pr_list_quit_returns_to_pr_list() {
+    let mut app = App::new_for_test();
+    app.started_from_pr_list = true;
+    app.zen_mode = false;
+    app.state = AppState::DiffView;
+    app.diff_view_return_state = AppState::FileList;
+
+    app.handle_fullscreen_diff_quit();
+
+    // Without zen_mode, back_to_pr_list() fires → PullRequestList
+    assert_eq!(app.state, AppState::PullRequestList);
 }

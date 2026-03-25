@@ -531,16 +531,7 @@ impl App {
             DiffViewVariant::Fullscreen => {
                 // Quit/back
                 if self.matches_single_key(&key, &kb.quit) {
-                    // If started from PR list and we're at the file list level, go back to PR list
-                    // (zen_mode では FileList→DiffView が通常の階層なので直帰しない)
-                    if self.started_from_pr_list
-                        && self.diff_view_return_state == AppState::FileList
-                        && !self.zen_mode
-                    {
-                        self.back_to_pr_list();
-                    } else {
-                        self.state = self.diff_view_return_state;
-                    }
+                    self.handle_fullscreen_diff_quit();
                     return Ok(());
                 }
 
@@ -660,6 +651,19 @@ impl App {
 
         Ok(())
     }
+    /// Fullscreen DiffView の quit 処理。
+    /// zen_mode が有効な場合は PR list に直帰せず diff_view_return_state に遷移する。
+    pub(crate) fn handle_fullscreen_diff_quit(&mut self) {
+        if self.started_from_pr_list
+            && self.diff_view_return_state == AppState::FileList
+            && !self.zen_mode
+        {
+            self.back_to_pr_list();
+        } else {
+            self.state = self.diff_view_return_state;
+        }
+    }
+
     pub(crate) async fn handle_split_view_diff_input(
         &mut self,
         key: event::KeyEvent,
