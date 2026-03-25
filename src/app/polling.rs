@@ -258,7 +258,7 @@ impl App {
         let (tx, rx) = mpsc::channel(total_batches);
         self.batch_diff_receiver = Some(rx);
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         tokio::spawn(async move {
             crate::loader::fetch_local_diffs_batched(
                 working_dir,
@@ -382,7 +382,7 @@ impl App {
         self.lazy_diff_receiver = Some(rx);
         self.lazy_diff_pending_file = Some(filename.clone());
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         tokio::spawn(async move {
             crate::loader::fetch_single_file_diff(working_dir, filename, is_untracked, tx).await;
         });

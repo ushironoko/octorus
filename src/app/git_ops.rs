@@ -75,7 +75,7 @@ impl App {
         let per_page = Self::COMMITS_PER_PAGE;
 
         if self.local_mode || self.pr_number.is_none() {
-            let working_dir = self.working_dir.clone();
+            let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
             let offset = (page - 1) * per_page;
             tokio::spawn(async move {
                 let result =
@@ -139,7 +139,7 @@ impl App {
         cl.diff_receiver = Some(rx);
 
         if self.local_mode || self.pr_number.is_none() {
-            let working_dir = self.working_dir.clone();
+            let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
             tokio::spawn(async move {
                 let result = github::fetch_local_commit_diff(working_dir.as_deref(), &sha)
                     .await
@@ -194,7 +194,7 @@ impl App {
 
         let use_local = self.local_mode || self.pr_number.is_none();
         let repo = self.repo.clone();
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let theme = self.config.diff.theme.clone();
         let tab_width = self.config.diff.tab_width;
 
@@ -236,7 +236,7 @@ impl App {
         let (tx, rx) = mpsc::channel(1);
         ops.status_receiver = Some(rx);
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         tokio::spawn(async move {
             let result = fetch_git_status(working_dir.as_deref()).await;
             let _ = tx.send(result).await;
@@ -245,7 +245,7 @@ impl App {
 
     /// リモートに対するローカルの先行コミット数を非同期で更新
     fn refresh_ahead_count(&mut self) {
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let Some(ref mut ops) = self.git_ops_state else {
             return;
         };
@@ -419,7 +419,7 @@ impl App {
         if status_updated {
             self.update_git_ops_diff();
 
-            let working_dir = self.working_dir.clone();
+            let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
             let theme = self.config.diff.theme.clone();
             let markdown_rich = self.markdown_rich;
             let tab_width = self.config.diff.tab_width;
@@ -588,7 +588,7 @@ impl App {
                 && e.worktree_status == FileStatus::Untracked
                 && e.index_status == FileStatus::Untracked
         });
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
 
         tokio::spawn(async move {
             loader::fetch_single_file_diff(working_dir, path, is_untracked, tx).await;
@@ -648,7 +648,7 @@ impl App {
         };
         let count = paths.len();
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
 
@@ -686,9 +686,9 @@ impl App {
 
         // undo 用にインデックスエントリを事前キャプチャ
         let previous_index_entries =
-            capture_index_entries(self.working_dir.as_deref(), &paths);
+            capture_index_entries(self.working_dir_mode.as_ref().map(|m| m.path()), &paths);
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
 
@@ -740,9 +740,9 @@ impl App {
         }
 
         // undo 用にインデックスツリーハッシュを事前キャプチャ
-        let tree_hash = capture_tree_hash(self.working_dir.as_deref());
+        let tree_hash = capture_tree_hash(self.working_dir_mode.as_ref().map(|m| m.path()));
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
 
@@ -777,7 +777,7 @@ impl App {
         let entry = ops.entries.iter().find(|e| e.path == path).cloned();
         let Some(entry) = entry else { return };
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let (tx, rx) = mpsc::channel(1);
         if let Some(ref mut ops) = self.git_ops_state {
             ops.op_receiver = Some(rx);
@@ -837,7 +837,7 @@ impl App {
 
         crate::ui::restore_terminal(terminal)?;
 
-        let working_dir = self.working_dir.as_deref().unwrap_or(".");
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path()).unwrap_or(".");
         let status = std::process::Command::new("git")
             .arg("commit")
             .current_dir(working_dir)
@@ -956,7 +956,7 @@ impl App {
             return;
         };
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
 
@@ -1007,7 +1007,7 @@ impl App {
             return;
         };
 
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let (tx, rx) = mpsc::channel(1);
         ops.op_receiver = Some(rx);
 
@@ -1026,7 +1026,7 @@ impl App {
 
     /// P: git push origin <current-branch>
     fn git_ops_push(&mut self) {
-        let working_dir = self.working_dir.clone();
+        let working_dir = self.working_dir_mode.as_ref().map(|m| m.path().to_string());
         let Some(ref mut ops) = self.git_ops_state else {
             return;
         };

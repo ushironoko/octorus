@@ -518,11 +518,16 @@ impl App {
             .join("\n");
 
         let base_branch = if self.local_mode {
-            Self::detect_local_base_branch(self.working_dir.as_deref())
+            Self::detect_local_base_branch(self.working_dir_path())
                 .unwrap_or_else(|| "main".to_string())
         } else {
             pr.base.ref_name.clone()
         };
+
+        let working_dir_mode = self
+            .working_dir_mode
+            .clone()
+            .unwrap_or_else(|| crate::ai::WorkingDirMode::Inherited(".".to_string()));
 
         let context = Context {
             repo: self.repo.clone(),
@@ -530,7 +535,7 @@ impl App {
             pr_title: pr.title.clone(),
             pr_body: pr.body.clone(),
             diff,
-            working_dir: self.working_dir.clone(),
+            working_dir_mode,
             head_sha: pr.head.sha.clone(),
             base_branch,
             external_comments: Vec::new(),

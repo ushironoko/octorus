@@ -134,7 +134,7 @@ impl App {
         }
 
         // Phase 2: ローカルリポジトリ全体を非同期検索
-        let repo_root = match &self.working_dir {
+        let repo_root = match &self.working_dir_mode.as_ref().map(|m| m.path().to_string()) {
             Some(dir) => {
                 let output = tokio::process::Command::new("git")
                     .args(["rev-parse", "--show-toplevel"])
@@ -205,7 +205,7 @@ impl App {
         });
 
         // リポジトリルート取得 → フルパス構築
-        let full_path = match &self.working_dir {
+        let full_path = match &self.working_dir_mode.as_ref().map(|m| m.path().to_string()) {
             Some(dir) => {
                 let output = tokio::process::Command::new("git")
                     .args(["rev-parse", "--show-toplevel"])

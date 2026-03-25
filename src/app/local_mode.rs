@@ -216,11 +216,15 @@ impl App {
             .get_or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone();
 
-        let watch_dir = self.working_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        });
+        let watch_dir = self
+            .working_dir_mode
+            .as_ref()
+            .map(|m| m.path().to_string())
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            });
 
         let active = Arc::new(AtomicBool::new(true));
         let active_clone = active.clone();

@@ -481,7 +481,7 @@ impl AgentAdapter for CodexAdapter {
                 prompt,
                 REVIEWER_SCHEMA,
                 false, // read-only sandbox for reviewer
-                context.working_dir.as_deref(),
+                Some(context.working_dir_mode.path()),
                 None,
             )
             .await?;
@@ -505,7 +505,7 @@ impl AgentAdapter for CodexAdapter {
                 &effective_prompt,
                 REVIEWEE_SCHEMA,
                 true, // full-auto sandbox for reviewee
-                context.working_dir.as_deref(),
+                Some(context.working_dir_mode.path()),
                 None,
             )
             .await?;

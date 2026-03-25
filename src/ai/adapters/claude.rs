@@ -362,7 +362,7 @@ impl AgentAdapter for ClaudeAdapter {
                 prompt,
                 REVIEWER_SCHEMA,
                 Some(&self.reviewer_allowed_tools),
-                context.working_dir.as_deref(),
+                Some(context.working_dir_mode.path()),
                 None,
             )
             .await?;
@@ -401,7 +401,7 @@ impl AgentAdapter for ClaudeAdapter {
                 prompt,
                 REVIEWEE_SCHEMA,
                 Some(&self.reviewee_allowed_tools),
-                context.working_dir.as_deref(),
+                Some(context.working_dir_mode.path()),
                 None,
             )
             .await?;

@@ -10,6 +10,7 @@ use tokio::task::AbortHandle;
 use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
 use crate::ai::prompt_loader::PromptLoader;
 use crate::ai::Context as AiContext;
+use crate::ai::WorkingDirMode;
 use crate::cache::SessionCache;
 use crate::config::Config;
 use crate::filter::ListFilter;
@@ -148,7 +149,7 @@ pub struct App {
     pub comment_tab: CommentTab,
     // AI Rally state
     pub ai_rally_state: Option<AiRallyState>,
-    pub working_dir: Option<String>,
+    pub working_dir_mode: Option<WorkingDirMode>,
     // Receivers
     // PR-specific receivers carry the originating PR number to avoid
     // cross-PR cache contamination when the user switches PRs mid-flight.
@@ -300,7 +301,7 @@ impl App {
             config_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
-            working_dir: None,
+            working_dir_mode: None,
             data_receiver: Some((pr_number, rx)),
             retry_sender: None,
             comment_receiver: None,
@@ -402,7 +403,7 @@ impl App {
             config_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
-            working_dir: None,
+            working_dir_mode: None,
             data_receiver: None,
             retry_sender: None,
             comment_receiver: None,
@@ -547,8 +548,12 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
-    pub fn set_working_dir(&mut self, dir: Option<String>) {
-        self.working_dir = dir;
+    pub fn set_working_dir_mode(&mut self, mode: Option<WorkingDirMode>) {
+        self.working_dir_mode = mode;
+    }
+
+    pub fn working_dir_path(&self) -> Option<&str> {
+        self.working_dir_mode.as_ref().map(|m| m.path())
     }
 
     pub fn set_local_mode(&mut self, local: bool) {
@@ -654,7 +659,7 @@ impl App {
             config_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
-            working_dir: None,
+            working_dir_mode: None,
             data_receiver: None,
             retry_sender: None,
             comment_receiver: None,

@@ -204,12 +204,12 @@ async fn main() -> Result<()> {
     // Headless mode: --ai-rally with --pr or --local bypasses TUI entirely
     if args.ai_rally && args.pr.is_some() {
         let pr = args.pr.unwrap();
-        let working_dir = resolve_working_dir(&args);
+        let working_dir_mode = resolve_working_dir_mode(&args);
         match headless::run_headless_rally(
             &repo,
             pr,
             &config,
-            working_dir.as_deref(),
+            working_dir_mode,
             args.accept_local_overrides,
             args.output.as_deref(),
         )
@@ -224,11 +224,11 @@ async fn main() -> Result<()> {
         }
     }
     if args.local && args.ai_rally {
-        let working_dir = resolve_working_dir(&args);
+        let working_dir_mode = resolve_working_dir_mode(&args);
         match headless::run_headless_rally_local(
             &repo,
             &config,
-            working_dir.as_deref(),
+            working_dir_mode,
             args.accept_local_overrides,
             args.output.as_deref(),
         )
@@ -570,29 +570,28 @@ fn start_update_check(app: &mut app::App) {
     });
 }
 
-/// Resolve working directory for headless mode
-fn resolve_working_dir(args: &Args) -> Option<String> {
-    if let Some(dir) = args.working_dir.clone() {
-        Some(dir)
+fn resolve_working_dir_mode(args: &Args) -> octorus::ai::WorkingDirMode {
+    use octorus::ai::WorkingDirMode;
+    if let Some(ref dir) = args.working_dir {
+        WorkingDirMode::Explicit(dir.clone())
     } else {
-        std::env::current_dir()
-            .ok()
+        let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        WorkingDirMode::Inherited(cwd)
     }
 }
 
-/// Set up working directory for AI agents
 fn setup_working_dir(app: &mut app::App, args: &Args) {
-    if let Some(dir) = args.working_dir.clone() {
-        app.set_working_dir(Some(dir));
+    use octorus::ai::WorkingDirMode;
+    if let Some(ref dir) = args.working_dir {
+        app.set_working_dir_mode(Some(WorkingDirMode::Explicit(dir.clone())));
     } else {
-        // Use current directory as default.
-        // Note: current_dir() can fail in edge cases (e.g., if the current directory
-        // has been deleted, or on some restricted environments). When --ai-rally is
-        // used without --working-dir, we need a valid directory for the AI agents.
         match std::env::current_dir() {
             Ok(cwd) => {
-                app.set_working_dir(Some(cwd.to_string_lossy().to_string()));
+                app.set_working_dir_mode(Some(WorkingDirMode::Inherited(
+                    cwd.to_string_lossy().to_string(),
+                )));
             }
             Err(e) => {
                 if args.ai_rally {
@@ -601,7 +600,6 @@ fn setup_working_dir(app: &mut app::App, args: &Args) {
                         e
                     );
                 }
-                // Continue without setting working_dir; it's optional for non-AI-Rally usage
             }
         }
     }

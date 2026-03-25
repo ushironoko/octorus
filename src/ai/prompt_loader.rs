@@ -411,7 +411,7 @@ mod tests {
             pr_title: "Add feature".to_string(),
             pr_body: Some("This adds a new feature".to_string()),
             diff: "+added line\n-removed line".to_string(),
-            working_dir: None,
+            working_dir_mode: crate::ai::WorkingDirMode::Inherited(".".to_string()),
             head_sha: "abc123".to_string(),
             base_branch: "main".to_string(),
             external_comments: Vec::new(),

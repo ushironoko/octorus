@@ -5,6 +5,27 @@ use tokio::sync::mpsc;
 
 use super::orchestrator::RallyEvent;
 
+/// How the working directory was resolved
+#[derive(Debug, Clone)]
+pub enum WorkingDirMode {
+    /// --working-dir not specified; using cwd as-is (existing behavior)
+    Inherited(String),
+    /// --working-dir explicitly specified; worktree isolation target
+    Explicit(String),
+}
+
+impl WorkingDirMode {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Inherited(p) | Self::Explicit(p) => p,
+        }
+    }
+
+    pub fn is_explicit(&self) -> bool {
+        matches!(self, Self::Explicit(_))
+    }
+}
+
 /// Context information passed to agents
 #[derive(Debug, Clone)]
 pub struct Context {
@@ -13,7 +34,7 @@ pub struct Context {
     pub pr_title: String,
     pub pr_body: Option<String>,
     pub diff: String,
-    pub working_dir: Option<String>,
+    pub working_dir_mode: WorkingDirMode,
     /// HEAD SHA for inline comment posting
     pub head_sha: String,
     /// Base branch name (e.g., "main", "master") for local diff comparison

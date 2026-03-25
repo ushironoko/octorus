@@ -6,6 +6,7 @@ use std::borrow::Cow;
 
 use crate::ai::adapter::{
     CommentSeverity, Context, ReviewAction, RevieweeOutput, RevieweeStatus, ReviewerOutput,
+    WorkingDirMode,
 };
 use crate::ai::orchestrator::{Orchestrator, OrchestratorCommand, RallyEvent, RallyState};
 use crate::ai::prompt_loader::{PromptLoader, PromptSource};
@@ -23,7 +24,7 @@ pub async fn run_headless_rally(
     repo: &str,
     pr_number: u32,
     config: &Config,
-    working_dir: Option<&str>,
+    working_dir_mode: WorkingDirMode,
     accept_local_overrides: bool,
     output_path: Option<&str>,
 ) -> Result<bool> {
@@ -57,13 +58,45 @@ pub async fn run_headless_rally(
         .collect::<Vec<_>>()
         .join("\n");
 
+    // Set up worktree if explicitly specified and path doesn't exist
+    let working_dir_mode = if working_dir_mode.is_explicit()
+        && !std::path::Path::new(working_dir_mode.path()).exists()
+    {
+        let repo_root = get_repo_root(None).await?;
+        let setup = crate::ai::worktree::setup_rally_worktree(
+            &repo_root,
+            working_dir_mode.path(),
+            pr_number,
+            &pr.head.sha,
+        )
+        .await?;
+        match setup {
+            crate::ai::worktree::WorktreeSetup::Created { ref path, ref branch } => {
+                eprintln!("[Headless] Created rally worktree at {} on branch {}", path, branch);
+            }
+            crate::ai::worktree::WorktreeSetup::ExistingReused { ref path } => {
+                eprintln!("[Headless] Using existing directory at {}", path);
+            }
+        }
+        working_dir_mode
+    } else if working_dir_mode.is_explicit()
+        && std::path::Path::new(working_dir_mode.path()).exists()
+    {
+        let repo_root = get_repo_root(None).await?;
+        crate::ai::worktree::validate_existing_worktree(working_dir_mode.path(), &repo_root)
+            .await?;
+        working_dir_mode
+    } else {
+        working_dir_mode
+    };
+
     let context = Context {
         repo: repo.to_string(),
         pr_number,
         pr_title: pr.title.clone(),
         pr_body: pr.body.clone(),
         diff,
-        working_dir: working_dir.map(|s| s.to_string()),
+        working_dir_mode,
         head_sha: pr.head.sha.clone(),
         base_branch: pr.base.ref_name.clone(),
         external_comments: Vec::new(),
@@ -90,19 +123,13 @@ pub async fn run_headless_rally(
 pub async fn run_headless_rally_local(
     repo: &str,
     config: &Config,
-    working_dir: Option<&str>,
+    working_dir_mode: WorkingDirMode,
     accept_local_overrides: bool,
     output_path: Option<&str>,
 ) -> Result<bool> {
     eprintln!("[Headless] Running local diff rally...");
 
-    let wd = working_dir.map(|s| s.to_string()).or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
-    });
-
-    let dir = wd.as_deref().unwrap_or(".");
+    let dir = working_dir_mode.path();
     let base_branch = detect_local_base_branch(Some(dir)).unwrap_or_else(|| "main".to_string());
 
     // Use `git diff HEAD` to capture working tree changes (staged + unstaged)
@@ -176,7 +203,7 @@ pub async fn run_headless_rally_local(
         pr_title: "Local diff".to_string(),
         pr_body: None,
         diff,
-        working_dir: wd,
+        working_dir_mode,
         head_sha,
         base_branch,
         external_comments: Vec::new(),
@@ -193,6 +220,19 @@ pub async fn run_headless_rally_local(
         output_path,
     )
     .await
+}
+
+async fn get_repo_root(working_dir: Option<&str>) -> Result<String> {
+    let dir = working_dir.unwrap_or(".");
+    let output = tokio::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .await?;
+    if !output.status.success() {
+        anyhow::bail!("Not in a git repository");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Collect sensitive local overrides from config and local prompt files.

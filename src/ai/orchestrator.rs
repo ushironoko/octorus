@@ -1278,9 +1278,10 @@ impl Orchestrator {
         // Timeout for git operations (30 seconds)
         const GIT_TIMEOUT_SECS: u64 = 30;
 
-        // Try local git diff first if we have working_dir and base_branch
+        // Try local git diff first
         if let Some(ref ctx) = self.context {
-            if let Some(ref working_dir) = ctx.working_dir {
+            {
+                let working_dir = ctx.working_dir_mode.path();
                 let base_branch = &ctx.base_branch;
 
                 // Fetch latest base branch reference to ensure accurate diff
@@ -1363,7 +1364,7 @@ impl Orchestrator {
     async fn fetch_local_working_diff(&self, ctx: &super::adapter::Context) -> Result<String> {
         const GIT_TIMEOUT_SECS: u64 = 30;
 
-        let working_dir = ctx.working_dir.as_deref().unwrap_or(".");
+        let working_dir = ctx.working_dir_mode.path();
         let base_branch = &ctx.base_branch;
 
         // 1. git diff HEAD（working tree + staged の最新変更を優先）
