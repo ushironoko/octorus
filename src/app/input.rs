@@ -367,7 +367,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // Toggle zen mode (file-list-only; not available from DiffView/SplitViewDiff)
+        // Toggle zen mode
         if self.matches_single_key(&key, &kb.toggle_zen_mode) {
             self.toggle_zen_mode();
             return Ok(());
@@ -473,7 +473,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(true);
         }
 
-        // Toggle zen mode (file-list-only; not available from DiffView/SplitViewDiff)
+        // Toggle zen mode
         if self.matches_single_key(&key, &kb.toggle_zen_mode) {
             self.toggle_zen_mode();
             return Ok(true);

@@ -212,6 +212,12 @@ impl App {
             return Ok(());
         }
 
+        // Toggle zen mode
+        if self.matches_single_key(&key, &kb.toggle_zen_mode) {
+            self.toggle_zen_mode();
+            return Ok(());
+        }
+
         // CI Checks
         if self.matches_single_key(&key, &kb.ci_checks) {
             if self.is_filter_selection_empty("pr") {
