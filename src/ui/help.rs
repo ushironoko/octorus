@@ -534,18 +534,22 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.go_to_file.display(), key_width)
         )),
         Line::from(format!(
-            "{}/{}  Jump to first/last line",
-            fmt_key(&kb.jump_to_first.display(), 10),
-            kb.jump_to_last.display()
+            "{}  Jump to first/last line",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Jump back",
             fmt_key(&kb.jump_back.display(), key_width)
         )),
         Line::from(format!(
-            "{}/{}  Next/prev comment",
-            fmt_key(&kb.next_comment.display(), 10),
-            kb.prev_comment.display()
+            "{}  Next/prev comment",
+            fmt_key(
+                &format!("{}/{}", kb.next_comment.display(), kb.prev_comment.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open comment panel",
@@ -590,9 +594,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.go_to_file.display(), key_width)
         )),
         Line::from(format!(
-            "{}/{}  Jump to first/last line",
-            fmt_key(&kb.jump_to_first.display(), 10),
-            kb.jump_to_last.display()
+            "{}  Jump to first/last line",
+            fmt_key(
+                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Jump back",
@@ -638,9 +644,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(format!(
-            "{}/{}  Extend selection",
-            fmt_key(&kb.move_down.display(), 10),
-            kb.move_up.display()
+            "{}  Extend selection",
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Comment on selection",
@@ -664,9 +672,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(format!(
-            "{}/{}  Scroll panel",
-            fmt_key(&kb.move_down.display(), 10),
-            kb.move_up.display()
+            "{}  Scroll panel",
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Add comment",
@@ -682,9 +692,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from("  Tab/Shift-Tab   Select reply target (multiple)"),
         Line::from(format!(
-            "{}/{}  Jump to next/prev comment",
-            fmt_key(&kb.next_comment.display(), 10),
-            kb.prev_comment.display()
+            "{}  Jump to next/prev comment",
+            fmt_key(
+                &format!("{}/{}", kb.next_comment.display(), kb.prev_comment.display()),
+                key_width
+            )
         )),
         Line::from(format!("  Esc/{}        Close panel", kb.quit.display())),
         Line::from(""),
