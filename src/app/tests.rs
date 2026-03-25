@@ -1681,6 +1681,7 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
         last_visible_log_height: 0,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
 
     let pr = Box::new(make_local_pr());
@@ -2600,6 +2601,7 @@ fn test_ai_rally_state_push_log_auto_follow() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     };
 
     // No selection = tail, should auto-follow
@@ -2633,6 +2635,7 @@ fn test_ai_rally_state_push_log_no_auto_follow() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     };
 
     // User is NOT at tail, should not auto-follow
@@ -2662,6 +2665,7 @@ fn test_ai_rally_state_is_selection_at_tail() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     };
 
     // At tail: selected_log_index == logs.len() - 1
@@ -3605,6 +3609,7 @@ fn test_cleanup_rally_state() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     let (cmd_tx, _cmd_rx) = mpsc::channel(10);
     app.rally_command_sender = Some(cmd_tx);
@@ -3638,6 +3643,7 @@ fn test_is_rally_running_in_background_not_in_rally() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(app.is_rally_running_in_background());
 }
@@ -3662,6 +3668,7 @@ fn test_is_rally_running_in_background_in_rally() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(!app.is_rally_running_in_background());
 }
@@ -3694,6 +3701,7 @@ fn test_is_rally_running_in_background_finished() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(!app.is_rally_running_in_background());
 }
@@ -3718,6 +3726,7 @@ fn test_has_background_rally_true() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(app.has_background_rally());
 }
@@ -3742,6 +3751,7 @@ fn test_has_background_rally_false_in_rally() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(!app.has_background_rally());
 }
@@ -3774,6 +3784,7 @@ fn test_is_background_rally_finished_completed() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(app.is_background_rally_finished());
 }
@@ -3798,6 +3809,7 @@ fn test_is_background_rally_finished_running() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
     assert!(!app.is_background_rally_finished());
 }
@@ -3823,6 +3835,7 @@ fn test_adjust_log_scroll_selection_above() {
         last_visible_log_height: 5,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
 
     app.adjust_log_scroll_to_selection();
@@ -3852,6 +3865,7 @@ fn test_adjust_log_scroll_selection_below() {
         last_visible_log_height: 5,
         pending_config_warning: None,
         pause_state: PauseState::Running,
+        working_dir: None,
     });
 
     app.adjust_log_scroll_to_selection();
@@ -3890,6 +3904,7 @@ fn test_pause_state_reset_on_approve_state_change() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
+        working_dir: None,
     });
 
     // Simulate: reviewer approved → StateChanged(Completed) arrives
@@ -3935,6 +3950,7 @@ fn test_pause_state_reset_on_waiting_for_clarification() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
+        working_dir: None,
     });
 
     // Simulate: reviewee needs clarification
@@ -3980,6 +3996,7 @@ fn test_pause_state_reset_on_waiting_for_permission() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
+        working_dir: None,
     });
 
     event_tx
@@ -4023,6 +4040,7 @@ fn test_pause_state_reset_on_waiting_for_post_confirmation() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
+        working_dir: None,
     });
 
     event_tx
@@ -4068,6 +4086,7 @@ fn test_pause_state_preserved_on_active_state_change() {
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
+        working_dir: None,
     });
 
     event_tx

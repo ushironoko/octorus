@@ -528,6 +528,7 @@ impl App {
             .working_dir_mode
             .clone()
             .unwrap_or_else(|| crate::ai::WorkingDirMode::Inherited(".".to_string()));
+        let working_dir_display = working_dir_mode.path().to_string();
 
         let context = Context {
             repo: self.repo.clone(),
@@ -585,6 +586,7 @@ impl App {
                 Some(warnings)
             },
             pause_state: PauseState::Running,
+            working_dir: Some(working_dir_display),
         });
 
         self.state = AppState::AiRally;
@@ -623,9 +625,12 @@ impl App {
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
 
+        let enable_worktree = self.config.ai.enable_worktree;
+
         let handle = tokio::spawn(async move {
             // Set up or validate worktree for explicit --working-dir before running orchestrator
-            if context.working_dir_mode.is_explicit() {
+            // In TUI mode, only when enable_worktree config is true
+            if context.working_dir_mode.is_explicit() && enable_worktree {
                 let target_path = context.working_dir_mode.path().to_string();
                 let setup_result: Result<(), anyhow::Error> = async {
                     if !std::path::Path::new(&target_path).exists() {

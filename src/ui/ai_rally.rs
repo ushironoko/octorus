@@ -21,12 +21,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     };
 
+    let has_working_dir = rally_state.working_dir.is_some();
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // Header (PR info + status)
-            Constraint::Min(10),   // Main content
-            Constraint::Length(3), // Status bar
+            Constraint::Length(if has_working_dir { 5 } else { 4 }), // Header
+            Constraint::Min(10),              // Main content
+            Constraint::Length(3),            // Status bar
         ])
         .split(frame.area());
 
@@ -41,6 +43,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &str) {
+    let working_dir_line = state
+        .working_dir
+        .as_deref()
+        .map(|d| Line::from(vec![
+            Span::styled("Dir: ", Style::default().fg(Color::Gray)),
+            Span::styled(d, Style::default().fg(Color::DarkGray)),
+        ]));
+
     let base_state_text = match state.state {
         RallyState::Initializing => "Initializing...",
         RallyState::ReviewerReviewing => "Reviewer reviewing...",
@@ -80,7 +90,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         state.iteration, state.max_iterations
     );
 
-    let header = Paragraph::new(vec![
+    let mut header_lines = vec![
         Line::from(Span::styled(pr_info, Style::default().fg(Color::White))),
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
@@ -91,7 +101,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-    ])
+    ];
+    if let Some(wd_line) = working_dir_line {
+        header_lines.push(wd_line);
+    }
+
+    let header = Paragraph::new(header_lines)
     .block(
         Block::default()
             .borders(Borders::ALL)

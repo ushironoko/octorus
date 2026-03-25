@@ -63,6 +63,9 @@ pub struct AiConfig {
     /// Default is false (confirmation prompt before posting).
     #[serde(default)]
     pub auto_post: bool,
+    /// CLI headless mode always respects --working-dir regardless of this setting.
+    #[serde(default)]
+    pub enable_worktree: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +208,7 @@ impl Default for AiConfig {
             reviewer_additional_tools: Vec::new(),
             reviewee_additional_tools: Vec::new(),
             auto_post: false,
+            enable_worktree: false,
         }
     }
 }
@@ -834,7 +838,8 @@ mod tests {
           "prompt_dir": null,
           "reviewer_additional_tools": [],
           "reviewee_additional_tools": [],
-          "auto_post": false
+          "auto_post": false,
+          "enable_worktree": false
         }
         "#);
     }
@@ -858,7 +863,8 @@ mod tests {
           "prompt_dir": null,
           "reviewer_additional_tools": [],
           "reviewee_additional_tools": [],
-          "auto_post": false
+          "auto_post": false,
+          "enable_worktree": false
         }
         "#);
     }
@@ -885,7 +891,8 @@ mod tests {
           "reviewee_additional_tools": [
             "Bash(git push:*)"
           ],
-          "auto_post": false
+          "auto_post": false,
+          "enable_worktree": false
         }
         "#);
     }

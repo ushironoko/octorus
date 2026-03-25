@@ -7,7 +7,6 @@ use tokio::time::timeout;
 
 const GIT_TIMEOUT_SECS: u64 = 30;
 
-/// Resolve the git repository root from a given directory (or CWD if None).
 pub async fn get_repo_root(working_dir: Option<&str>) -> Result<String> {
     let dir = working_dir.unwrap_or(".");
     let output = Command::new("git")
@@ -36,8 +35,8 @@ pub async fn setup_rally_worktree(
     pr_number: u32,
     head_sha: &str,
 ) -> Result<WorktreeSetup> {
-    // Absolutize target_dir once up front so creation, validation, and agent
-    // execution all use the same path regardless of process CWD.
+    // So creation, validation, and agent execution all use the same path
+    // regardless of process CWD.
     let abs_target = absolutize_path(target_dir);
     let abs_target_str = abs_target.to_string_lossy();
 
@@ -48,7 +47,6 @@ pub async fn setup_rally_worktree(
         });
     }
 
-    // Fetch latest refs from origin
     let fetch_result = timeout(
         Duration::from_secs(GIT_TIMEOUT_SECS),
         Command::new("git")
@@ -78,7 +76,6 @@ pub async fn setup_rally_worktree(
     let branch_exists = check_branch_exists(repo_root, &branch).await;
 
     if branch_exists {
-        // Branch already exists: create worktree with existing branch, then reset to head_sha
         let output = Command::new("git")
             .args(["worktree", "add", abs_target_str.as_ref(), &branch])
             .current_dir(repo_root)
@@ -103,7 +100,6 @@ pub async fn setup_rally_worktree(
             warn!("git reset --hard {} failed: {}", head_sha, stderr.trim());
         }
     } else {
-        // New branch: create worktree with new branch from head_sha
         let output = Command::new("git")
             .args(["worktree", "add", "-b", &branch, abs_target_str.as_ref(), head_sha])
             .current_dir(repo_root)
@@ -124,7 +120,6 @@ pub async fn setup_rally_worktree(
 }
 
 pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Result<()> {
-    // Check if target_dir is a git repository and get its worktree root
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(target_dir)
@@ -155,7 +150,6 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
         );
     }
 
-    // Verify it belongs to the same repository by comparing the shared .git object dir
     let target_objects = Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(target_dir)
@@ -175,7 +169,7 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
             .trim()
             .to_string();
 
-        // Resolve relative paths against the directory where each git command ran
+        // --git-common-dir returns relative paths against CWD, not the repo root
         let target_resolved = if Path::new(&target_path).is_relative() {
             Path::new(target_dir).join(&target_path)
         } else {
@@ -200,7 +194,6 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
         }
     }
 
-    // Check for dirty state
     let status_output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(target_dir)
@@ -221,7 +214,6 @@ pub async fn validate_existing_worktree(target_dir: &str, repo_root: &str) -> Re
     Ok(())
 }
 
-/// Resolve a potentially relative path to absolute using the current working directory.
 fn absolutize_path(path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {

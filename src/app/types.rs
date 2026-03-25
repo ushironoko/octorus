@@ -278,6 +278,8 @@ pub struct AiRallyState {
     pub pending_config_warning: Option<Vec<(String, String)>>,
     /// Current pause state
     pub pause_state: PauseState,
+    /// Working directory path for display in UI header
+    pub working_dir: Option<String>,
 }
 
 impl AiRallyState {

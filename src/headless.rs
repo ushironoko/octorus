@@ -58,11 +58,9 @@ pub async fn run_headless_rally(
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Set up worktree if explicitly specified and path doesn't exist
     let working_dir_mode = if working_dir_mode.is_explicit()
         && !std::path::Path::new(working_dir_mode.path()).exists()
     {
-        // Path doesn't exist yet — resolve source repo root from CWD to create worktree from
         let repo_root = crate::ai::worktree::get_repo_root(None).await?;
         let setup = crate::ai::worktree::setup_rally_worktree(
             &repo_root,
@@ -83,7 +81,6 @@ pub async fn run_headless_rally(
     } else if working_dir_mode.is_explicit()
         && std::path::Path::new(working_dir_mode.path()).exists()
     {
-        // Path exists — resolve repo root from CWD (source repo) for cross-repo validation
         let repo_root = crate::ai::worktree::get_repo_root(None).await?;
         crate::ai::worktree::validate_existing_worktree(working_dir_mode.path(), &repo_root)
             .await?;

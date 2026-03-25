@@ -5,12 +5,9 @@ use tokio::sync::mpsc;
 
 use super::orchestrator::RallyEvent;
 
-/// How the working directory was resolved
 #[derive(Debug, Clone)]
 pub enum WorkingDirMode {
-    /// --working-dir not specified; using cwd as-is (existing behavior)
     Inherited(String),
-    /// --working-dir explicitly specified; worktree isolation target
     Explicit(String),
 }
 
