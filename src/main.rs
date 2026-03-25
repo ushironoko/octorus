@@ -35,6 +35,10 @@ struct Args {
     #[arg(short, long)]
     repo: Option<String>,
 
+    /// Pull request number (positional shorthand for -p).
+    #[arg(value_name = "PR_NUMBER", conflicts_with_all = ["pr", "local"])]
+    pr_positional: Option<u32>,
+
     /// Pull request number. Shows PR list if omitted.
     #[arg(short, long, conflicts_with = "local")]
     pr: Option<u32>,
@@ -142,6 +146,7 @@ async fn main() -> Result<()> {
     }
 
     let args = Args::parse();
+    let pr = args.pr.or(args.pr_positional);
 
     // Handle subcommands
     if let Some(command) = args.command {
@@ -194,8 +199,8 @@ async fn main() -> Result<()> {
     };
 
     // Headless mode: --ai-rally with --pr or --local bypasses TUI entirely
-    if args.ai_rally && args.pr.is_some() {
-        let pr = args.pr.unwrap();
+    if args.ai_rally && pr.is_some() {
+        let pr = pr.unwrap();
         let working_dir = resolve_working_dir(&args);
         match headless::run_headless_rally(
             &repo,
@@ -237,7 +242,7 @@ async fn main() -> Result<()> {
 
     if args.local {
         run_with_local_diff(&repo, &config, &args).await
-    } else if let Some(pr) = args.pr {
+    } else if let Some(pr) = pr {
         run_with_pr(&repo, pr, &config, &args).await
     } else {
         run_with_pr_list(&repo, config, &args, args.issue).await
