@@ -11,7 +11,7 @@
 
 View and review GitHub PR diffs and local diffs exceeding 6,000 files and 300,000 lines — right in your terminal. Two AI agents automatically review and iterate on corrections until approval.
 
->Octorus is currently undergoing significant refactoring and feature additions for v6.0.0. Some features that have not yet been released are already reflected in the README. We will deliver them to you soon, so please wait a little longer.
+>Octorus is currently undergoing significant refactoring and feature additions for v0.6.0. Some features that have not yet been released are already reflected in the README. We will deliver them to you soon, so please wait a little longer.
 
 ## Features
 
