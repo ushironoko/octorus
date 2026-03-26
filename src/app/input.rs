@@ -46,10 +46,10 @@ impl App {
                         return Ok(());
                     }
 
-                    if self.pending_approve_body.is_some() {
+                    if self.cmt.pending_approve_body.is_some() {
                         match self.handle_pending_approve_choice(&key) {
                             PendingApproveChoice::Submit => {
-                                let body = self.pending_approve_body.take().unwrap_or_default();
+                                let body = self.cmt.pending_approve_body.take().unwrap_or_default();
                                 self.submit_review_with_body(ReviewAction::Approve, &body)
                                     .await?;
                             }
@@ -465,8 +465,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.mark_viewed_receiver.is_some() {
-            self.submission_result = Some((false, "Mark viewed already in progress".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some((false, "Mark viewed already in progress".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
             return true;
         }
 
@@ -492,8 +492,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let target_paths = Self::collect_unviewed_directory_paths(self.files(), self.selected_file);
 
         if target_paths.is_empty() {
-            self.submission_result = Some((true, "No unviewed files in directory".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some((true, "No unviewed files in directory".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
             return;
         }
 
@@ -507,18 +507,18 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         let Some(pr_number) = self.pr_number else {
-            self.submission_result = Some((false, "PR number not set".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some((false, "PR number not set".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
             return;
         };
         let Some(pr) = self.pr() else {
-            self.submission_result = Some((false, "PR metadata not loaded".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some((false, "PR metadata not loaded".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
             return;
         };
         let Some(pr_node_id) = pr.node_id.clone() else {
-            self.submission_result = Some((false, "PR node ID is unavailable".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some((false, "PR node ID is unavailable".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
             return;
         };
 
@@ -526,11 +526,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let (tx, rx) = mpsc::channel(1);
         self.mark_viewed_receiver = Some((pr_number, rx));
         let action_label = if set_viewed { "viewed" } else { "unviewed" };
-        self.submission_result = Some((
+        self.cmt.submission_result = Some((
             true,
             format!("Marking {} file(s) as {}...", total_targets, action_label),
         ));
-        self.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result_time = Some(Instant::now());
 
         tokio::spawn(async move {
             let mut marked_paths = Vec::with_capacity(total_targets);
@@ -592,10 +592,10 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
     }
     pub(crate) fn refresh_all(&mut self) {
         self.session_cache.invalidate_all();
-        self.review_comments = None;
-        self.discussion_comments = None;
-        self.comments_loading = false;
-        self.discussion_comments_loading = false;
+        self.cmt.review_comments = None;
+        self.cmt.discussion_comments = None;
+        self.cmt.comments_loading = false;
+        self.cmt.discussion_comments_loading = false;
         self.file_list_filter = None;
         self.data_state = DataState::Loading;
         self.retry_load();
@@ -612,17 +612,17 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
 
     pub(crate) fn open_checks_list(&mut self, pr_number: u32) {
         if self.state != AppState::ChecksList {
-            self.checks_return_state = self.state;
+            self.chk.checks_return_state = self.state;
         }
         self.state = AppState::ChecksList;
-        self.selected_check = 0;
-        self.checks_scroll_offset = 0;
-        self.checks_loading = true;
-        self.checks = None;
-        self.checks_target_pr = Some(pr_number);
+        self.chk.selected_check = 0;
+        self.chk.checks_scroll_offset = 0;
+        self.chk.checks_loading = true;
+        self.chk.checks = None;
+        self.chk.checks_target_pr = Some(pr_number);
 
         let (tx, rx) = mpsc::channel(1);
-        self.checks_receiver = Some((pr_number, rx));
+        self.chk.checks_receiver = Some((pr_number, rx));
         let repo = self.repo.clone();
         tokio::spawn(async move {
             let result = github::fetch_pr_checks(&repo, pr_number)
@@ -634,22 +634,22 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
 
     pub(crate) fn handle_checks_list_input(&mut self, key: event::KeyEvent) -> Result<()> {
         let kb = self.config.keybindings.clone();
-        let check_count = self.checks.as_ref().map(|c| c.len()).unwrap_or(0);
+        let check_count = self.chk.checks.as_ref().map(|c| c.len()).unwrap_or(0);
 
         if self.matches_single_key(&key, &kb.quit) {
-            self.state = self.checks_return_state;
+            self.state = self.chk.checks_return_state;
             return Ok(());
         }
 
         if self.matches_single_key(&key, &kb.move_down) {
             if check_count > 0 {
-                self.selected_check = (self.selected_check + 1).min(check_count.saturating_sub(1));
+                self.chk.selected_check = (self.chk.selected_check + 1).min(check_count.saturating_sub(1));
             }
             return Ok(());
         }
 
         if self.matches_single_key(&key, &kb.move_up) {
-            self.selected_check = self.selected_check.saturating_sub(1);
+            self.chk.selected_check = self.chk.selected_check.saturating_sub(1);
             return Ok(());
         }
 
@@ -660,7 +660,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                 self.push_pending_key(kb_event);
                 if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    self.selected_check = 0;
+                    self.chk.selected_check = 0;
                     return Ok(());
                 }
                 self.clear_pending_keys();
@@ -672,14 +672,14 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
 
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if check_count > 0 {
-                self.selected_check = check_count.saturating_sub(1);
+                self.chk.selected_check = check_count.saturating_sub(1);
             }
             return Ok(());
         }
 
         if self.matches_single_key(&key, &kb.open_panel) {
-            if let Some(ref checks) = self.checks {
-                if let Some(check) = checks.get(self.selected_check) {
+            if let Some(ref checks) = self.chk.checks {
+                if let Some(check) = checks.get(self.chk.selected_check) {
                     if let Some(ref url) = check.link {
                         Self::open_url_in_browser(url);
                     }
@@ -689,14 +689,14 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.matches_single_key(&key, &kb.refresh) {
-            if let Some(pr_number) = self.checks_target_pr {
+            if let Some(pr_number) = self.chk.checks_target_pr {
                 self.open_checks_list(pr_number);
             }
             return Ok(());
         }
 
         if self.matches_single_key(&key, &kb.open_in_browser) {
-            if let Some(pr_number) = self.checks_target_pr {
+            if let Some(pr_number) = self.chk.checks_target_pr {
                 self.open_pr_in_browser(pr_number);
             }
             return Ok(());
@@ -920,8 +920,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let target_paths = Self::collect_unviewed_paths_under_dir(self.files(), &dir_path);
 
         if target_paths.is_empty() {
-            self.submission_result = Some((true, "No unviewed files in directory".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some((true, "No unviewed files in directory".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
             return;
         }
 

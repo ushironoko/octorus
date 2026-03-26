@@ -339,7 +339,7 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
         Color::DarkGray
     };
 
-    let has_inline_comment = is_focused && app.comment_panel_open;
+    let has_inline_comment = is_focused && app.cmt.comment_panel_open;
 
     if has_inline_comment {
         render_diff_pane_with_comments(frame, app, area, border_color);
@@ -422,7 +422,7 @@ fn render_diff_pane_with_comments(
             "No comments. c: comment, s: suggestion",
             Style::default().fg(Color::DarkGray),
         )));
-    } else if let Some(ref comments) = app.review_comments {
+    } else if let Some(ref comments) = app.cmt.review_comments {
         for (i, &idx) in indices.iter().enumerate() {
             let Some(comment) = comments.get(idx) else {
                 continue;
@@ -464,7 +464,7 @@ fn render_diff_pane_with_comments(
                 .title(title),
         )
         .wrap(Wrap { trim: true })
-        .scroll((app.comment_panel_scroll, 0));
+        .scroll((app.cmt.comment_panel_scroll, 0));
     frame.render_widget(paragraph, chunks[2]);
 
     if total_lines > 1 {
@@ -474,7 +474,7 @@ fn render_diff_pane_with_comments(
 
         let max_scroll = total_lines.saturating_sub(1);
         let mut scrollbar_state =
-            ScrollbarState::new(max_scroll).position(app.comment_panel_scroll as usize);
+            ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
 
         frame.render_stateful_widget(
             scrollbar,
@@ -537,7 +537,7 @@ fn render_diff_body(
             cache,
             start..end,
             app.diff_scroll.selected_line,
-            &app.file_comment_lines,
+            &app.cmt.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
         );

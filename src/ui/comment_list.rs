@@ -12,7 +12,7 @@ use super::common::{render_rally_status_bar, wrap_text};
 use crate::app::{App, CommentTab};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    if app.discussion_comment_detail_mode {
+    if app.cmt.discussion_comment_detail_mode {
         render_discussion_detail(frame, app);
         return;
     }
@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_tab_header(frame, app, chunks[0]);
 
-    match app.comment_tab {
+    match app.cmt.comment_tab {
         CommentTab::Review => render_review_comments(frame, app, chunks[1]),
         CommentTab::Discussion => render_discussion_comments(frame, app, chunks[1]),
     }
@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
-    let footer_text = match app.comment_tab {
+    let footer_text = match app.cmt.comment_tab {
         CommentTab::Review => "j/k/↑↓: move | Enter: jump to file | [/]: switch tab | q: back",
         CommentTab::Discussion => "j/k/↑↓: move | Enter: view detail | [/]: switch tab | q: back",
     };
@@ -153,14 +153,14 @@ fn render_comment_list_generic<T, F>(
 }
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let review_count = app.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
+    let review_count = app.cmt.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
     let discussion_count = app
-        .discussion_comments
+        .cmt.discussion_comments
         .as_ref()
         .map(|c| c.len())
         .unwrap_or(0);
 
-    let review_style = if app.comment_tab == CommentTab::Review {
+    let review_style = if app.cmt.comment_tab == CommentTab::Review {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
@@ -168,7 +168,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         Style::default().fg(Color::DarkGray)
     };
 
-    let discussion_style = if app.comment_tab == CommentTab::Discussion {
+    let discussion_style = if app.cmt.comment_tab == CommentTab::Discussion {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
@@ -190,7 +190,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             format!(
                 "[Review Comments ({})]{}",
                 review_count,
-                loading_indicator(app.comments_loading)
+                loading_indicator(app.cmt.comments_loading)
             ),
             review_style,
         ),
@@ -199,7 +199,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             format!(
                 "[Discussion ({})]{}",
                 discussion_count,
-                loading_indicator(app.discussion_comments_loading)
+                loading_indicator(app.cmt.discussion_comments_loading)
             ),
             discussion_style,
         ),
@@ -216,10 +216,10 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     render_comment_list_generic(
         frame,
         area,
-        app.review_comments.as_deref(),
-        app.comments_loading,
-        app.selected_comment,
-        &mut app.comment_list_scroll_offset,
+        app.cmt.review_comments.as_deref(),
+        app.cmt.comments_loading,
+        app.cmt.selected_comment,
+        &mut app.cmt.comment_list_scroll_offset,
         "review comments",
         |comment: &ReviewComment, _i: usize, is_selected: bool, body_width: usize| {
             let prefix = if is_selected { "> " } else { "  " };
@@ -257,10 +257,10 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
     render_comment_list_generic(
         frame,
         area,
-        app.discussion_comments.as_deref(),
-        app.discussion_comments_loading,
-        app.selected_discussion_comment,
-        &mut app.discussion_comment_list_scroll_offset,
+        app.cmt.discussion_comments.as_deref(),
+        app.cmt.discussion_comments_loading,
+        app.cmt.selected_discussion_comment,
+        &mut app.cmt.discussion_comment_list_scroll_offset,
         "discussion comments",
         |comment: &DiscussionComment, _i: usize, is_selected: bool, body_width: usize| {
             let prefix = if is_selected { "> " } else { "  " };
@@ -306,10 +306,10 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
 }
 
 fn render_discussion_detail(frame: &mut Frame, app: &App) {
-    let Some(ref comments) = app.discussion_comments else {
+    let Some(ref comments) = app.cmt.discussion_comments else {
         return;
     };
-    let Some(comment) = comments.get(app.selected_discussion_comment) else {
+    let Some(comment) = comments.get(app.cmt.selected_discussion_comment) else {
         return;
     };
 
@@ -358,7 +358,7 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
     let body_lines: Vec<Line> = comment
         .body
         .lines()
-        .skip(app.discussion_comment_detail_scroll)
+        .skip(app.cmt.discussion_comment_detail_scroll)
         .take(content_height)
         .map(|line| Line::from(line.to_string()))
         .collect();
@@ -367,7 +367,7 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
     let scroll_info = if total_lines > content_height {
         format!(
             " ({}/{})",
-            app.discussion_comment_detail_scroll + 1,
+            app.cmt.discussion_comment_detail_scroll + 1,
             total_lines.saturating_sub(content_height) + 1
         )
     } else {
@@ -391,4 +391,227 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
     let footer = Paragraph::new("j/k/↑↓: scroll | Ctrl+d/u: page | Enter/Esc: back to list")
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::github::comment::{DiscussionComment, ReviewComment};
+    use crate::github::User;
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_full(app: &mut App) -> String {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..24u16 {
+            let mut line = String::new();
+            for x in 0..100u16 {
+                let cell = &buf[(x, y)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn test_no_review_comments() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = None;
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Comments (0)]  [Discussion (0)]                                                          │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │No review comments                                                                                │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: jump to file | [/]: switch tab | q: back                                    │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_empty_review_comments() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![]);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Comments (0)]  [Discussion (0)]                                                          │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │No review comments found                                                                          │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: jump to file | [/]: switch tab | q: back                                    │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_with_review_comments() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 1,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                body: "This looks good.".to_string(),
+                user: User { login: "reviewer1".to_string() },
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+        ]);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Comments (1)]  [Discussion (0)]                                                          │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │> @reviewer1 on src/main.rs:10                                                                    │
+        │    This looks good.                                                                              │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: jump to file | [/]: switch tab | q: back                                    │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_no_discussion_comments() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Discussion;
+        app.cmt.discussion_comments = None;
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Comments (0)]  [Discussion (0)]                                                          │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │No discussion comments                                                                            │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: view detail | [/]: switch tab | q: back                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_with_discussion_comments() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Discussion;
+        app.cmt.discussion_comments = Some(vec![
+            DiscussionComment {
+                id: 100,
+                body: "Thanks for the fix!".to_string(),
+                user: User { login: "commenter".to_string() },
+                created_at: "2025-03-01T12:00:00Z".to_string(),
+            },
+        ]);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Comments (0)]  [Discussion (1)]                                                          │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │> @commenter  2025-03-01                                                                          │
+        │    Thanks for the fix!                                                                           │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: view detail | [/]: switch tab | q: back                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
 }

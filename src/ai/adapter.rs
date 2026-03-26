@@ -117,6 +117,7 @@ pub trait AgentAdapter: Send + Sync {
     ///
     /// Currently unused but kept for future extensibility (e.g., logging which agent
     /// is running, multi-agent coordination, or user-facing agent identification).
+    // Required by trait for multi-agent coordination
     #[allow(dead_code)]
     fn name(&self) -> &str;
 

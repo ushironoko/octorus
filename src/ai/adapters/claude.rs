@@ -534,11 +534,11 @@ struct ClaudeResponse {
     session_id: String,
     #[serde(default)]
     result: Option<serde_json::Value>,
-    // For monitoring and cost analysis (future feature)
+    // Deserialized from Claude API responses; reserved for performance monitoring
     #[serde(default)]
     #[allow(dead_code)]
     cost_usd: Option<f64>,
-    // For performance monitoring (future feature)
+    // Deserialized from Claude API responses; reserved for performance monitoring
     #[serde(default)]
     #[allow(dead_code)]
     duration_ms: Option<u64>,

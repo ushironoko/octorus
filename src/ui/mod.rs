@@ -1,7 +1,7 @@
 mod ai_rally;
 mod checks_list;
 mod comment_list;
-mod common;
+pub(crate) mod common;
 pub mod diff_view;
 mod file_list;
 pub(super) mod footer;

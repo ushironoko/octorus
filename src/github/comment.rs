@@ -147,3 +147,163 @@ pub async fn create_reply_comment(
     let json = gh_api_post(&endpoint, &[("body", FieldValue::String(body))]).await?;
     serde_json::from_value(json).context("Failed to parse reply comment response")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insta::assert_snapshot;
+
+    #[test]
+    fn test_review_comment_deserialize() {
+        let json = serde_json::json!({
+            "id": 12345,
+            "path": "src/main.rs",
+            "line": 42,
+            "body": "Consider using a match expression here.",
+            "user": { "login": "reviewer1" },
+            "created_at": "2025-01-15T10:30:00Z"
+        });
+        let comment: ReviewComment = serde_json::from_value(json).unwrap();
+        assert_eq!(comment.id, 12345);
+        assert_eq!(comment.path, "src/main.rs");
+        assert_eq!(comment.line, Some(42));
+        assert_eq!(comment.body, "Consider using a match expression here.");
+        assert_eq!(comment.user.login, "reviewer1");
+        assert_eq!(comment.created_at, "2025-01-15T10:30:00Z");
+    }
+
+    #[test]
+    fn test_review_comment_optional_line_null() {
+        let json = serde_json::json!({
+            "id": 99,
+            "path": "README.md",
+            "line": null,
+            "body": "Top-level comment",
+            "user": { "login": "user1" },
+            "created_at": "2025-02-01T00:00:00Z"
+        });
+        let comment: ReviewComment = serde_json::from_value(json).unwrap();
+        assert_eq!(comment.line, None);
+        assert_eq!(comment.path, "README.md");
+    }
+
+    #[test]
+    fn test_review_comment_roundtrip() {
+        let original = ReviewComment {
+            id: 1,
+            path: "lib.rs".to_string(),
+            line: Some(10),
+            body: "LGTM".to_string(),
+            user: User { login: "dev".to_string() },
+            created_at: "2025-03-01T12:00:00Z".to_string(),
+        };
+        let serialized = serde_json::to_string(&original).unwrap();
+        let deserialized: ReviewComment = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.id, original.id);
+        assert_eq!(deserialized.path, original.path);
+        assert_eq!(deserialized.line, original.line);
+        assert_eq!(deserialized.body, original.body);
+    }
+
+    #[test]
+    fn test_discussion_comment_deserialize() {
+        let json = serde_json::json!({
+            "id": 5678,
+            "body": "Thanks for the fix!",
+            "user": { "login": "commenter" },
+            "created_at": "2025-01-20T08:00:00Z"
+        });
+        let comment: DiscussionComment = serde_json::from_value(json).unwrap();
+        assert_eq!(comment.id, 5678);
+        assert_eq!(comment.body, "Thanks for the fix!");
+        assert_eq!(comment.user.login, "commenter");
+    }
+
+    #[test]
+    fn test_discussion_comment_empty_body() {
+        let json = serde_json::json!({
+            "id": 100,
+            "body": "",
+            "user": { "login": "bot" },
+            "created_at": "2025-01-01T00:00:00Z"
+        });
+        let comment: DiscussionComment = serde_json::from_value(json).unwrap();
+        assert_eq!(comment.body, "");
+    }
+
+    #[test]
+    fn test_discussion_comment_roundtrip() {
+        let original = DiscussionComment {
+            id: 42,
+            body: "Multi\nline\nbody".to_string(),
+            user: User { login: "author".to_string() },
+            created_at: "2025-06-01T00:00:00Z".to_string(),
+        };
+        let serialized = serde_json::to_string(&original).unwrap();
+        let deserialized: DiscussionComment = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.id, original.id);
+        assert_eq!(deserialized.body, original.body);
+    }
+
+    #[test]
+    fn test_review_deserialize() {
+        let json = serde_json::json!({
+            "id": 9999,
+            "body": "Approved with minor suggestions.",
+            "state": "APPROVED",
+            "user": { "login": "lead" },
+            "submitted_at": "2025-03-10T14:00:00Z"
+        });
+        let review: Review = serde_json::from_value(json).unwrap();
+        assert_eq!(review.id, 9999);
+        assert_eq!(review.body, Some("Approved with minor suggestions.".to_string()));
+        assert_eq!(review.state, "APPROVED");
+        assert_eq!(review.user.login, "lead");
+        assert_eq!(review.submitted_at, Some("2025-03-10T14:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn test_review_optional_fields_null() {
+        let json = serde_json::json!({
+            "id": 1,
+            "body": null,
+            "state": "COMMENTED",
+            "user": { "login": "reviewer" },
+            "submitted_at": null
+        });
+        let review: Review = serde_json::from_value(json).unwrap();
+        assert_eq!(review.body, None);
+        assert_eq!(review.submitted_at, None);
+    }
+
+    #[test]
+    fn test_review_roundtrip() {
+        let original = Review {
+            id: 7,
+            body: Some("Changes requested".to_string()),
+            state: "CHANGES_REQUESTED".to_string(),
+            user: User { login: "reviewer".to_string() },
+            submitted_at: Some("2025-04-01T09:00:00Z".to_string()),
+        };
+        let serialized = serde_json::to_string(&original).unwrap();
+        let deserialized: Review = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.id, original.id);
+        assert_eq!(deserialized.body, original.body);
+        assert_eq!(deserialized.state, original.state);
+        assert_eq!(deserialized.submitted_at, original.submitted_at);
+    }
+
+    #[test]
+    fn test_review_comment_snapshot() {
+        let json = serde_json::json!({
+            "id": 555,
+            "path": "src/app.rs",
+            "line": 100,
+            "body": "Snapshot test body",
+            "user": { "login": "snapshot_user" },
+            "created_at": "2025-01-01T00:00:00Z"
+        });
+        let comment: ReviewComment = serde_json::from_value(json).unwrap();
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z" }"#);
+    }
+}

@@ -135,3 +135,65 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     )));
     frame.render_widget(footer, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_full(app: &mut App) -> String {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..24u16 {
+            let mut line = String::new();
+            for x in 0..100u16 {
+                let cell = &buf[(x, y)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn test_empty_no_description_cache() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::PrDescription;
+        assert_snapshot!(render_full(&mut app), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │PR Description - PR #1                                                                            │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Description───────────────────────────────────────────────────────────────────────────────────────┐
+        │  No description provided.                                                                        │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+         q/Esc/Esc: close | j/k: scroll | J/K: page | g/G: top/bottom | O: open in browser | M: toggle rich
+        ");
+    }
+}

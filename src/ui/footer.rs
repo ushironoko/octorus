@@ -22,7 +22,7 @@ pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
             format!("{} Submitting...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
         ))
-    } else if let Some((success, message)) = &app.submission_result {
+    } else if let Some((success, message)) = &app.cmt.submission_result {
         let (icon, color) = if *success {
             ("\u{2713}", Color::Green)
         } else {
@@ -34,7 +34,7 @@ pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
         ))
     } else {
         let mut spans = vec![Span::raw(help_text)];
-        if app.comments_loading {
+        if app.cmt.comments_loading {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 format!("{} Loading comments...", app.spinner_char()),
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn test_comments_loading_appends_indicator() {
         let mut app = App::new_for_test();
-        app.comments_loading = true;
+        app.cmt.comments_loading = true;
         let line = build_footer_line(&app, HELP);
         let text = line_to_string(&line);
         assert!(text.starts_with(HELP));
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn test_success_result_shows_checkmark_only() {
         let mut app = App::new_for_test();
-        app.submission_result = Some((true, "Submitted".to_string()));
+        app.cmt.submission_result = Some((true, "Submitted".to_string()));
         let line = build_footer_line(&app, HELP);
         let text = line_to_string(&line);
         assert!(text.contains("\u{2713}"));
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn test_error_result_shows_cross_only() {
         let mut app = App::new_for_test();
-        app.submission_result = Some((false, "Failed: network error".to_string()));
+        app.cmt.submission_result = Some((false, "Failed: network error".to_string()));
         let line = build_footer_line(&app, HELP);
         let text = line_to_string(&line);
         assert!(text.contains("\u{2717}"));

@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 
+use super::common::truncate_with_width;
 use crate::app::App;
 use crate::github::CheckItem;
 
@@ -23,7 +24,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     let pr_label = app
-        .checks_target_pr
+        .chk.checks_target_pr
         .map(|n| format!("PR #{}", n))
         .unwrap_or_else(|| "PR".to_string());
     let header_text = format!("CI Checks: {}", pr_label);
@@ -31,11 +32,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    if app.checks_loading {
+    if app.chk.checks_loading {
         let loading = Paragraph::new(format!("{} Loading checks...", app.spinner_char()))
             .block(Block::default().borders(Borders::ALL).title("CI Checks"));
         frame.render_widget(loading, chunks[1]);
-    } else if let Some(ref checks) = app.checks {
+    } else if let Some(ref checks) = app.chk.checks {
         if checks.is_empty() {
             let empty = Paragraph::new("No CI checks found").block(
                 Block::default()
@@ -45,11 +46,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame.render_widget(empty, chunks[1]);
         } else {
             let total = checks.len();
-            let items = build_check_list_items(checks, app.selected_check);
+            let items = build_check_list_items(checks, app.chk.selected_check);
 
             let mut list_state = ListState::default()
-                .with_offset(app.checks_scroll_offset)
-                .with_selected(Some(app.selected_check));
+                .with_offset(app.chk.checks_scroll_offset)
+                .with_selected(Some(app.chk.selected_check));
 
             let list = List::new(items)
                 .block(
@@ -60,7 +61,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .highlight_style(Style::default().bg(Color::DarkGray));
 
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
-            app.checks_scroll_offset = list_state.offset();
+            app.chk.checks_scroll_offset = list_state.offset();
 
             if total > 1 {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -68,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     .end_symbol(Some("▼"));
 
                 let mut scrollbar_state =
-                    ScrollbarState::new(total.saturating_sub(1)).position(app.selected_check);
+                    ScrollbarState::new(total.saturating_sub(1)).position(app.chk.selected_check);
 
                 frame.render_stateful_widget(
                     scrollbar,
@@ -163,8 +164,8 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
 
             let name_width = 30;
             let workflow_width = 15;
-            let name_display = truncate_str(&check.name, name_width);
-            let workflow_display = truncate_str(workflow, workflow_width);
+            let name_display = truncate_with_width(&check.name, name_width);
+            let workflow_display = truncate_with_width(workflow, workflow_width);
 
             let line = Line::from(vec![
                 Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
@@ -185,15 +186,6 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
             ListItem::new(line)
         })
         .collect()
-}
-
-fn truncate_str(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
-        format!("{}...", truncated)
-    }
 }
 
 #[cfg(test)]
@@ -258,15 +250,14 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_str_short() {
-        assert_eq!(truncate_str("hello", 10), "hello");
+    fn test_truncate_with_width_short() {
+        assert_eq!(truncate_with_width("hello", 10).as_ref(), "hello");
     }
 
     #[test]
-    fn test_truncate_str_long() {
-        assert_eq!(
-            truncate_str("a very long string that needs truncation", 15),
-            "a very long ..."
-        );
+    fn test_truncate_with_width_long() {
+        let result = truncate_with_width("a very long string that needs truncation", 15);
+        assert!(result.ends_with('…'));
+        assert!(result.len() <= 20);
     }
 }

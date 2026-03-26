@@ -29,10 +29,6 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_data_available(&self) -> bool {
-        matches!(self.data_state, DataState::Loaded { .. })
-    }
     pub(crate) fn update_diff_line_count(&mut self) {
         let count = Self::calc_diff_line_count(self.files(), self.selected_file);
         self.diff_scroll.set_line_count(count);
@@ -42,12 +38,12 @@ impl App {
     pub(crate) fn sync_diff_to_selected_file(&mut self) {
         self.diff_scroll.reset();
         self.multiline_selection = None;
-        self.comment_panel_open = false;
-        self.comment_panel_scroll = 0;
+        self.cmt.comment_panel_open = false;
+        self.cmt.comment_panel_scroll = 0;
         self.clear_pending_keys();
         self.symbol_popup = None;
         self.update_diff_line_count();
-        if !self.local_mode && self.review_comments.is_none() {
+        if !self.local_mode && self.cmt.review_comments.is_none() {
             self.load_review_comments();
         }
         self.update_file_comment_positions();

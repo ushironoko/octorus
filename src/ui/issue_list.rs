@@ -9,6 +9,9 @@ use ratatui::{
     Frame,
 };
 
+use unicode_width::UnicodeWidthStr;
+
+use super::common::truncate_with_width;
 use crate::app::App;
 use crate::github::IssueSummary;
 
@@ -42,11 +45,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    if state.issue_list_loading && state.issues.is_none() {
+    if matches!(state.issues, crate::app::LoadState::Loading) {
         let loading = Paragraph::new(format!("{} Loading issues...", app.spinner_char()))
             .block(Block::default().borders(Borders::ALL).title("Issues"));
         frame.render_widget(loading, chunks[1]);
-    } else if let Some(ref issues) = state.issues {
+    } else if let Some(issues) = state.issues.as_loaded() {
         if issues.is_empty() {
             let empty = Paragraph::new("No issues found")
                 .block(Block::default().borders(Borders::ALL).title("Issues"));
@@ -88,7 +91,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let total_issues = issues.len();
             let title = if let Some(ref filter) = state.issue_list_filter {
                 format!("Issues ({}/{})", filter.matched_indices.len(), total_issues)
-            } else if state.issue_list_loading {
+            } else if state.issues.is_loading() {
                 format!("Issues ({}) {}", total_issues, app.spinner_char())
             } else if state.issue_list_has_more {
                 format!("Issues ({}+)", total_issues)
@@ -213,10 +216,10 @@ fn build_issue_list_items(
             };
             let number_span = Span::styled(format!("#{:<5}", issue.number), number_style);
 
-            let author_width = 4 + issue.author.login.chars().count();
+            let author_width = 4 + issue.author.login.width();
             let fixed_width = 2 + 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
-            let title = truncate_string(&issue.title, title_width);
+            let title = truncate_with_width(&issue.title, title_width);
             let title_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -277,11 +280,172 @@ fn build_issue_list_items(
         .collect()
 }
 
-fn truncate_string(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
-        format!("{}...", truncated)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, AppState, IssueState};
+    use crate::github::{IssueSummary, Label, User};
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_full(app: &mut App) -> String {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..24u16 {
+            let mut line = String::new();
+            for x in 0..100u16 {
+                let cell = &buf[(x, y)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    fn make_issue(number: u32, title: &str, state: &str, author: &str) -> IssueSummary {
+        IssueSummary {
+            number,
+            title: title.to_string(),
+            state: state.to_string(),
+            author: User { login: author.to_string() },
+            labels: vec![],
+            updated_at: "2025-01-01T00:00:00Z".to_string(),
+            comments: vec![],
+        }
+    }
+
+    #[test]
+    fn test_empty_issue_list() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        let mut issue_state = IssueState::new();
+        issue_state.issues = crate::app::LoadState::Loaded(vec![]);
+        app.issue_state = Some(issue_state);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │Issue List: test/repo (open)                                                                      │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Issues────────────────────────────────────────────────────────────────────────────────────────────┐
+        │No issues found                                                                                   │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: view | Space /: filter | O: browser | o: open | c: closed | a: all | r: refr│
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_issue_list_with_items() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        let mut issue_state = IssueState::new();
+        issue_state.issues = crate::app::LoadState::Loaded(vec![
+            make_issue(10, "Fix login bug", "open", "alice"),
+            make_issue(9, "Add dark mode", "closed", "bob"),
+        ]);
+        app.issue_state = Some(issue_state);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │Issue List: test/repo (open)                                                                      │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Issues (2)────────────────────────────────────────────────────────────────────────────────────────┐
+        │● #10     Fix login bug                                                                 by @alice ▲
+        │● #9      Add dark mode                                                                   by @bob █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  ▼
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: view | Space /: filter | O: browser | o: open | c: closed | a: all | r: refr│
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_issue_list_with_labels() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        let mut issue_state = IssueState::new();
+        let mut issue = make_issue(5, "Bug report", "open", "carol");
+        issue.labels = vec![
+            Label { name: "bug".to_string() },
+            Label { name: "priority".to_string() },
+        ];
+        issue_state.issues = crate::app::LoadState::Loaded(vec![issue]);
+        app.issue_state = Some(issue_state);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │Issue List: test/repo (open)                                                                      │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Issues (1)────────────────────────────────────────────────────────────────────────────────────────┐
+        │● #5      Bug report                                                                    by @carol │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │j/k/↑↓: move | Enter: view | Space /: filter | O: browser | o: open | c: closed | a: all | r: refr│
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_issue_list_no_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        app.issue_state = None;
+
+        let output = render_full(&mut app);
+        assert!(!output.contains("Issues"), "no issue panel when state is None");
     }
 }
+

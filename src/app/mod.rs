@@ -1,7 +1,6 @@
 use anyhow::Result;
 use smallvec::SmallVec;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -13,10 +12,9 @@ use crate::ai::Context as AiContext;
 use crate::cache::SessionCache;
 use crate::config::Config;
 use crate::filter::ListFilter;
-use crate::github::comment::{DiscussionComment, ReviewComment};
-use crate::github::{self, CheckItem, CiStatus, PrStateFilter, PullRequestSummary};
+use crate::github;
 use crate::keybinding::KeyBinding;
-use crate::loader::{CommentSubmitResult, DataLoadResult, SingleFileDiffResult};
+use crate::loader::{DataLoadResult, SingleFileDiffResult};
 use crate::ui;
 use crate::ui::text_area::TextArea;
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
@@ -25,12 +23,13 @@ use std::time::Instant;
 mod types;
 pub use types::{
     hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab,
-    CommitLogState, DataState, DiffCache, FileStatus, GitOpsState, GitStatusEntry, HelpTab,
+    ChecksState, CommentState, CommitLogState, DataState, DiffCache, FileStatus, GitOpsState,
+    GitStatusEntry, HelpTab,
     IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
-    LeftPaneFocus, LineInputContext, LogEntry, LogEventType, MultilineSelection, PauseState,
-    PendingGitOpsConfirm, PermissionInfo, RefreshRequest, RepoSymbolSearchResult, ReviewAction,
-    SymbolPopupState,
-    SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction, WatcherHandle,
+    LeftPaneFocus, LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection,
+    PauseState, PendingGitOpsConfirm, PermissionInfo, PrListState, RefreshRequest,
+    RepoSymbolSearchResult, ReviewAction, SymbolPopupState,
+    SpanVec, SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -57,7 +56,7 @@ mod tests;
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// PR番号と紐づいたレシーバー（発信元PRを追跡してクロスPRキャッシュ汚染を防止）
-type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
+pub(crate) type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
 
 /// サジェスチョン入力のシンタックスハイライトキャッシュ
 ///
@@ -77,12 +76,7 @@ pub struct App {
     pub data_state: DataState,
     pub state: AppState,
     // PR list state
-    pub pr_list: Option<Vec<PullRequestSummary>>,
-    pub selected_pr: usize,
-    pub pr_list_scroll_offset: usize,
-    pub pr_list_loading: bool,
-    pub pr_list_has_more: bool,
-    pub pr_list_state_filter: PrStateFilter,
+    pub prs: PrListState,
     /// PR一覧から開始したかどうか（戻り先判定用）
     pub started_from_pr_list: bool,
     /// ローカル差分監視モードかどうか
@@ -100,7 +94,6 @@ pub struct App {
     watcher_handle: Option<WatcherHandle>,
     /// ウォッチャー用 debounce フラグ（watcher スレッドと共有）
     refresh_pending: Option<Arc<AtomicBool>>,
-    pr_list_receiver: Option<mpsc::Receiver<Result<github::PrListPage, String>>>,
     /// DiffView で q/Esc を押した時の戻り先
     pub diff_view_return_state: AppState,
     /// CommentPreview/SuggestionPreview の戻り先
@@ -118,44 +111,19 @@ pub struct App {
     pub input_text_area: TextArea,
     pub config: Config,
     pub should_quit: bool,
-    // Review comments (inline comments + reviews)
-    pub review_comments: Option<Vec<ReviewComment>>,
-    pub selected_comment: usize,
-    pub comment_list_scroll_offset: usize,
-    pub comments_loading: bool,
-    // Comment positions in current diff view
-    pub file_comment_positions: Vec<CommentPosition>,
-    // Set of diff line indices with comments (for fast lookup in render)
-    pub file_comment_lines: HashSet<usize>,
-    /// インラインコメントパネルが開いているか（= フォーカス中）
-    pub comment_panel_open: bool,
-    /// インラインコメントパネルのスクロールオフセット（行単位）
-    pub comment_panel_scroll: u16,
+    pub cmt: CommentState,
     pub diff_store: DiffCacheStore<usize>,
-    // Discussion comments (PR conversation)
-    pub discussion_comments: Option<Vec<DiscussionComment>>,
-    pub selected_discussion_comment: usize,
-    pub discussion_comment_list_scroll_offset: usize,
-    pub discussion_comments_loading: bool,
-    pub discussion_comment_detail_mode: bool,
-    pub discussion_comment_detail_scroll: usize,
     /// ヘルプ画面のスクロールオフセット（行単位）
     pub help_scroll_offset: usize,
     /// ヘルプ画面の現在のタブ
     pub help_tab: HelpTab,
     /// Config タブのスクロールオフセット（行単位）
     pub config_scroll_offset: usize,
-    // Comment tab state
-    pub comment_tab: CommentTab,
     pub ai_rally_state: Option<AiRallyState>,
     pub working_dir: Option<String>,
     // Receivers
-    // PR-specific receivers carry the originating PR number to avoid
-    // cross-PR cache contamination when the user switches PRs mid-flight.
     data_receiver: PrReceiver<DataLoadResult>,
     retry_sender: Option<mpsc::Sender<RefreshRequest>>,
-    comment_receiver: PrReceiver<Result<Vec<ReviewComment>, String>>,
-    discussion_comment_receiver: PrReceiver<Result<Vec<DiscussionComment>, String>>,
     rally_event_receiver: Option<mpsc::Receiver<RallyEvent>>,
     // Handle for aborting the rally orchestrator task
     rally_abort_handle: Option<AbortHandle>,
@@ -169,21 +137,10 @@ pub struct App {
     start_ai_rally_on_load: bool,
     // Pending AI Rally flag (set when --ai-rally is passed with PR list mode)
     pending_ai_rally: bool,
-    // Comment submission state
-    comment_submit_receiver: PrReceiver<CommentSubmitResult>,
     // File viewed-state mutation results
     mark_viewed_receiver: PrReceiver<MarkViewedResult>,
-    comment_submitting: bool,
-    /// Last submission result: (success, message)
-    pub submission_result: Option<(bool, String)>,
-    /// Timestamp when result was set (for auto-hide)
-    submission_result_time: Option<Instant>,
-    /// Approve confirmation: holds the review body (empty string = no comment, Some(text) = with comment).
-    pending_approve_body: Option<String>,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
-    /// インラインコメントパネル内の選択インデックス
-    pub selected_inline_comment: usize,
     /// ジャンプ履歴スタック（Go to Definition / Jump Back 用）
     pub jump_stack: Vec<JumpLocation>,
     /// Pending keys for multi-key sequences (e.g., "gg", "gd")
@@ -204,8 +161,6 @@ pub struct App {
     pub pr_description_scroll_offset: usize,
     /// PR description 用の DiffCache（マークダウンリッチ表示）
     pub pr_description_cache: Option<DiffCache>,
-    /// PR一覧のキーワードフィルタ
-    pub pr_list_filter: Option<ListFilter>,
     /// ファイル一覧のキーワードフィルタ
     pub file_list_filter: Option<ListFilter>,
     /// BG バッチ diff ロード結果の受信チャネル（Phase 2）
@@ -214,15 +169,7 @@ pub struct App {
     lazy_diff_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
     /// 現在オンデマンドロード要求中のファイル名（重複リクエスト防止）
     lazy_diff_pending_file: Option<String>,
-    pub checks: Option<Vec<CheckItem>>,
-    pub selected_check: usize,
-    pub checks_scroll_offset: usize,
-    pub checks_loading: bool,
-    pub checks_target_pr: Option<u32>,
-    pub checks_return_state: AppState,
-    pub ci_status: Option<CiStatus>,
-    checks_receiver: PrReceiver<Result<Vec<CheckItem>, String>>,
-    ci_status_receiver: Option<mpsc::Receiver<CiStatus>>,
+    pub chk: ChecksState,
     /// Git Log 画面の全状態（None = 非表示）
     /// GitOps 画面の全状態（None = 非表示）
     pub git_ops_state: Option<GitOpsState>,
@@ -253,12 +200,7 @@ impl App {
             pr_number: Some(pr_number),
             data_state: DataState::Loading,
             state: AppState::FileList,
-            pr_list: None,
-            selected_pr: 0,
-            pr_list_scroll_offset: 0,
-            pr_list_loading: false,
-            pr_list_has_more: false,
-            pr_list_state_filter: PrStateFilter::default(),
+            prs: PrListState::default(),
             started_from_pr_list: false,
             local_mode: false,
             local_auto_focus: false,
@@ -268,7 +210,6 @@ impl App {
             original_pr_number: Some(pr_number),
             watcher_handle: None,
             refresh_pending: None,
-            pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
             previous_state: AppState::FileList,
@@ -280,31 +221,15 @@ impl App {
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
             should_quit: false,
-            review_comments: None,
-            selected_comment: 0,
-            comment_list_scroll_offset: 0,
-            comments_loading: false,
-            file_comment_positions: vec![],
-            file_comment_lines: HashSet::new(),
-            comment_panel_open: false,
-            comment_panel_scroll: 0,
+            cmt: CommentState::default(),
             diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
-            discussion_comments: None,
-            selected_discussion_comment: 0,
-            discussion_comment_list_scroll_offset: 0,
-            discussion_comments_loading: false,
-            discussion_comment_detail_mode: false,
-            discussion_comment_detail_scroll: 0,
             help_scroll_offset: 0,
             help_tab: HelpTab::default(),
             config_scroll_offset: 0,
-            comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
             data_receiver: Some((pr_number, rx)),
             retry_sender: None,
-            comment_receiver: None,
-            discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
             rally_command_sender: None,
@@ -312,14 +237,8 @@ impl App {
             pending_rally_prompt_loader: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
-            comment_submit_receiver: None,
             mark_viewed_receiver: None,
-            comment_submitting: false,
-            submission_result: None,
-            submission_result_time: None,
-            pending_approve_body: None,
             spinner_frame: 0,
-            selected_inline_comment: 0,
             jump_stack: Vec::new(),
             pending_keys: SmallVec::new(),
             pending_since: None,
@@ -330,20 +249,11 @@ impl App {
             suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
             pr_description_cache: None,
-            pr_list_filter: None,
             file_list_filter: None,
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
-            checks: None,
-            selected_check: 0,
-            checks_scroll_offset: 0,
-            checks_loading: false,
-            checks_target_pr: None,
-            checks_return_state: AppState::FileList,
-            ci_status: None,
-            checks_receiver: None,
-            ci_status_receiver: None,
+            chk: ChecksState::default(),
             git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
@@ -364,14 +274,11 @@ impl App {
             pr_number: None,
             data_state: DataState::Loading,
             state: AppState::PullRequestList,
-            pr_list: None,
-            selected_pr: 0,
-            pr_list_scroll_offset: 0,
-            pr_list_loading: true,
-            pr_list_has_more: false,
-            pr_list_state_filter: PrStateFilter::default(),
+            prs: PrListState {
+                pr_list_loading: true,
+                ..PrListState::default()
+            },
             started_from_pr_list: true,
-            pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
             previous_state: AppState::PullRequestList,
@@ -383,31 +290,15 @@ impl App {
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
             should_quit: false,
-            review_comments: None,
-            selected_comment: 0,
-            comment_list_scroll_offset: 0,
-            comments_loading: false,
-            file_comment_positions: vec![],
-            file_comment_lines: HashSet::new(),
-            comment_panel_open: false,
-            comment_panel_scroll: 0,
+            cmt: CommentState::default(),
             diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
-            discussion_comments: None,
-            selected_discussion_comment: 0,
-            discussion_comment_list_scroll_offset: 0,
-            discussion_comments_loading: false,
-            discussion_comment_detail_mode: false,
-            discussion_comment_detail_scroll: 0,
             help_scroll_offset: 0,
             help_tab: HelpTab::default(),
             config_scroll_offset: 0,
-            comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
             data_receiver: None,
             retry_sender: None,
-            comment_receiver: None,
-            discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
             rally_command_sender: None,
@@ -415,14 +306,8 @@ impl App {
             pending_rally_prompt_loader: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
-            comment_submit_receiver: None,
             mark_viewed_receiver: None,
-            comment_submitting: false,
-            submission_result: None,
-            submission_result_time: None,
-            pending_approve_body: None,
             spinner_frame: 0,
-            selected_inline_comment: 0,
             jump_stack: Vec::new(),
             pending_keys: SmallVec::new(),
             pending_since: None,
@@ -441,20 +326,11 @@ impl App {
             suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
             pr_description_cache: None,
-            pr_list_filter: None,
             file_list_filter: None,
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
-            checks: None,
-            selected_check: 0,
-            checks_scroll_offset: 0,
-            checks_loading: false,
-            checks_target_pr: None,
-            checks_return_state: AppState::FileList,
-            ci_status: None,
-            checks_receiver: None,
-            ci_status_receiver: None,
+            chk: ChecksState::default(),
             git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
@@ -467,7 +343,7 @@ impl App {
 
     /// PR一覧受信チャンネルを設定
     pub fn set_pr_list_receiver(&mut self, rx: mpsc::Receiver<Result<github::PrListPage, String>>) {
-        self.pr_list_receiver = Some(rx);
+        self.prs.pr_list_receiver = Some(rx);
     }
 
     /// データ受信チャンネルを設定
@@ -580,8 +456,8 @@ impl App {
         } else {
             "Zen mode: OFF"
         };
-        self.submission_result = Some((true, msg.to_string()));
-        self.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some((true, msg.to_string()));
+        self.cmt.submission_result_time = Some(Instant::now());
     }
 
     pub(crate) fn enter_diff_from_file_list(&mut self) {
@@ -615,12 +491,12 @@ impl App {
 
     /// コメント送信中かどうか
     pub fn is_submitting_comment(&self) -> bool {
-        self.comment_submitting
+        self.cmt.comment_submitting
     }
 
     /// Approve confirmation prompt is active.
     pub fn is_pending_approve_confirmation(&self) -> bool {
-        self.pending_approve_body.is_some()
+        self.cmt.pending_approve_body.is_some()
     }
 
     /// Build dynamic footer text for approve confirmation prompt.
@@ -640,14 +516,8 @@ impl App {
             pr_number: Some(1),
             data_state: DataState::Loading,
             state: AppState::FileList,
-            pr_list: None,
-            selected_pr: 0,
-            pr_list_scroll_offset: 0,
-            pr_list_loading: false,
-            pr_list_has_more: false,
-            pr_list_state_filter: PrStateFilter::default(),
+            prs: PrListState::default(),
             started_from_pr_list: false,
-            pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
             previous_state: AppState::FileList,
@@ -659,31 +529,15 @@ impl App {
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
             should_quit: false,
-            review_comments: None,
-            selected_comment: 0,
-            comment_list_scroll_offset: 0,
-            comments_loading: false,
-            file_comment_positions: vec![],
-            file_comment_lines: HashSet::new(),
-            comment_panel_open: false,
-            comment_panel_scroll: 0,
+            cmt: CommentState::default(),
             diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
-            discussion_comments: None,
-            selected_discussion_comment: 0,
-            discussion_comment_list_scroll_offset: 0,
-            discussion_comments_loading: false,
-            discussion_comment_detail_mode: false,
-            discussion_comment_detail_scroll: 0,
             help_scroll_offset: 0,
             help_tab: HelpTab::default(),
             config_scroll_offset: 0,
-            comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
             data_receiver: None,
             retry_sender: None,
-            comment_receiver: None,
-            discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
             rally_command_sender: None,
@@ -691,14 +545,8 @@ impl App {
             pending_rally_prompt_loader: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
-            comment_submit_receiver: None,
             mark_viewed_receiver: None,
-            comment_submitting: false,
-            submission_result: None,
-            submission_result_time: None,
-            pending_approve_body: None,
             spinner_frame: 0,
-            selected_inline_comment: 0,
             jump_stack: Vec::new(),
             pending_keys: SmallVec::new(),
             pending_since: None,
@@ -717,20 +565,11 @@ impl App {
             suggestion_highlight_cache: None,
             pr_description_scroll_offset: 0,
             pr_description_cache: None,
-            pr_list_filter: None,
             file_list_filter: None,
             batch_diff_receiver: None,
             lazy_diff_receiver: None,
             lazy_diff_pending_file: None,
-            checks: None,
-            selected_check: 0,
-            checks_scroll_offset: 0,
-            checks_loading: false,
-            checks_target_pr: None,
-            checks_return_state: AppState::FileList,
-            ci_status: None,
-            checks_receiver: None,
-            ci_status_receiver: None,
+            chk: ChecksState::default(),
             git_ops_state: None,
             issue_state: None,
             issue_detail_return: false,
@@ -749,11 +588,11 @@ impl App {
     /// Set the comment_submitting flag for testing.
     #[cfg(test)]
     pub fn set_submitting_for_test(&mut self, submitting: bool) {
-        self.comment_submitting = submitting;
+        self.cmt.comment_submitting = submitting;
     }
 
     #[cfg(test)]
     pub fn set_pending_approve_body_for_test(&mut self, body: Option<String>) {
-        self.pending_approve_body = body;
+        self.cmt.pending_approve_body = body;
     }
 }

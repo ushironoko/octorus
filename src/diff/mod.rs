@@ -41,6 +41,111 @@ pub struct DiffLineInfo {
     pub diff_position: Option<u32>,
 }
 
+/// Zero-copy index over a patch string for O(1) line lookups.
+///
+/// `PatchIndex::build(patch)` parses once; `index.get(i)` is O(1).
+/// Replaces repeated `get_line_info(patch, i)` calls which are each O(N).
+pub struct PatchIndex<'a> {
+    lines: Vec<PatchLineInfo<'a>>,
+}
+
+/// Information about a single line in a patch, borrowing content from the source.
+#[derive(Debug, Clone)]
+pub struct PatchLineInfo<'a> {
+    pub content: &'a str,
+    pub line_type: LineType,
+    /// Line number in the new file (None for removed lines and headers)
+    pub new_line_number: Option<u32>,
+    /// Position within the patch (1-based, GitHub API compatible)
+    pub diff_position: Option<u32>,
+}
+
+impl<'a> PatchIndex<'a> {
+    pub fn build(patch: &'a str) -> Self {
+        if patch.is_empty() {
+            return Self { lines: Vec::new() };
+        }
+
+        let line_iter: Vec<&'a str> = patch.lines().collect();
+        let mut lines = Vec::with_capacity(line_iter.len());
+
+        let mut new_line_number: Option<u32> = None;
+        let mut position_counter: Option<u32> = None;
+
+        for line in &line_iter {
+            let line_clean = line.strip_suffix('\r').unwrap_or(line);
+            let (line_type, content) = classify_line(line_clean);
+
+            match line_type {
+                LineType::Meta => {}
+                LineType::Header => {
+                    new_line_number = parse_hunk_header(line_clean);
+                    position_counter = Some(position_counter.map_or(0, |p| p + 1));
+                }
+                LineType::Added | LineType::Context => {
+                    position_counter = position_counter.map(|p| p + 1);
+                }
+                LineType::Removed => {
+                    position_counter = position_counter.map(|p| p + 1);
+                }
+            }
+
+            let current_new_line = match line_type {
+                LineType::Removed | LineType::Header | LineType::Meta => None,
+                _ => new_line_number,
+            };
+
+            let current_position = match line_type {
+                LineType::Meta => None,
+                LineType::Header if position_counter == Some(0) => None,
+                _ => position_counter,
+            };
+
+            lines.push(PatchLineInfo {
+                content,
+                line_type,
+                new_line_number: current_new_line,
+                diff_position: current_position,
+            });
+
+            match line_type {
+                LineType::Added | LineType::Context => {
+                    if let Some(n) = new_line_number {
+                        new_line_number = Some(n + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Self { lines }
+    }
+
+    pub fn get(&self, line_index: usize) -> Option<&PatchLineInfo<'a>> {
+        self.lines.get(line_index)
+    }
+
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+impl PatchLineInfo<'_> {
+    /// Backward compatibility with DiffLineInfo.
+    pub fn to_diff_line_info(&self) -> DiffLineInfo {
+        DiffLineInfo {
+            line_content: self.content.to_string(),
+            line_type: self.line_type,
+            new_line_number: self.new_line_number,
+            diff_position: self.diff_position,
+        }
+    }
+}
+
 /// Parse a hunk header to extract the starting line number for new file
 /// Format: @@ -old_start,old_count +new_start,new_count @@
 fn parse_hunk_header(line: &str) -> Option<u32> {
@@ -155,15 +260,6 @@ pub fn classify_line(line: &str) -> (LineType, &str) {
     }
 }
 
-/// Check if a line at the given index can have a suggestion
-/// Only Added and Context lines can have suggestions
-#[allow(dead_code)]
-pub fn can_suggest_at_line(patch: &str, line_index: usize) -> bool {
-    get_line_info(patch, line_index)
-        .map(|info| matches!(info.line_type, LineType::Added | LineType::Context))
-        .unwrap_or(false)
-}
-
 /// Validate that all lines in `start..=end` are contiguous new-side lines within a single hunk.
 ///
 /// Returns `true` when every line in the range is `Added` or `Context` and no `Header` line
@@ -235,9 +331,8 @@ pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
 /// A HashMap mapping normalized filenames to their patch content
 pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    let lines: Vec<&str> = unified_diff.lines().collect();
 
-    if lines.is_empty() {
+    if unified_diff.is_empty() {
         return result;
     }
 
@@ -245,24 +340,27 @@ pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
     let mut current_patch_start: Option<usize> = None;
     let mut pending_minus_filename: Option<String> = None;
 
-    for (i, line) in lines.iter().enumerate() {
+    let mut byte_offset: usize = 0;
+
+    for raw_line in unified_diff.split('\n') {
+        let line_start = byte_offset;
+        byte_offset += raw_line.len() + 1; // +1 for the '\n' delimiter
+
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+
         if line.starts_with("diff --git ") {
-            // Save previous file's patch if any
             if let (Some(filename), Some(start)) = (&current_filename, current_patch_start) {
-                let patch = lines[start..i].join("\n");
-                if !patch.is_empty() {
+                let end = trim_trailing_newline(unified_diff, line_start);
+                if end > start {
+                    let patch = normalize_line_endings(&unified_diff[start..end]);
                     result.insert(filename.clone(), patch);
                 }
             }
 
-            // Extract filename for new file
             current_filename = extract_filename(line);
-            current_patch_start = Some(i);
+            current_patch_start = Some(line_start);
             pending_minus_filename = None;
         } else if current_filename.is_none() && current_patch_start.is_some() {
-            // diff --git line was ambiguous; fall back to +++ / --- lines.
-            // Prefer +++ (new filename) over --- (old filename).
-            // --- is only used as fallback for deleted files where +++ is /dev/null.
             if let Some(rest) = line.strip_prefix("+++ ") {
                 if rest != "/dev/null" {
                     current_filename = strip_diff_prefix(rest);
@@ -280,13 +378,35 @@ pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
 
     // Save last file's patch
     if let (Some(filename), Some(start)) = (current_filename, current_patch_start) {
-        let patch = lines[start..].join("\n");
-        if !patch.is_empty() {
+        let end = trim_trailing_newline(unified_diff, unified_diff.len());
+        if end > start {
+            let patch = normalize_line_endings(&unified_diff[start..end]);
             result.insert(filename, patch);
         }
     }
 
     result
+}
+
+/// Trim trailing \n and \r\n from slice boundary.
+fn trim_trailing_newline(s: &str, pos: usize) -> usize {
+    let mut end = pos;
+    if end > 0 && s.as_bytes()[end - 1] == b'\n' {
+        end -= 1;
+    }
+    if end > 0 && s.as_bytes()[end - 1] == b'\r' {
+        end -= 1;
+    }
+    end
+}
+
+/// Normalize CRLF to LF only if needed.
+fn normalize_line_endings(s: &str) -> String {
+    if s.contains('\r') {
+        s.replace("\r\n", "\n")
+    } else {
+        s.to_string()
+    }
 }
 
 /// Strip the single-char diff prefix (a/, b/, w/, etc.) from a --- or +++ path.
@@ -518,18 +638,6 @@ Binary files /dev/null and b/image.png differ
         assert_eq!(info.line_type, LineType::Added);
         assert_eq!(info.line_content, "new line 2");
         assert_eq!(info.new_line_number, Some(2));
-    }
-
-    #[test]
-    fn test_can_suggest_at_line() {
-        // Header - no
-        assert!(!can_suggest_at_line(SAMPLE_PATCH, 0));
-        // Context - yes
-        assert!(can_suggest_at_line(SAMPLE_PATCH, 1));
-        // Removed - no
-        assert!(!can_suggest_at_line(SAMPLE_PATCH, 2));
-        // Added - yes
-        assert!(can_suggest_at_line(SAMPLE_PATCH, 3));
     }
 
     #[test]
@@ -1093,5 +1201,174 @@ index 1234567..abcdefg 100644
         assert!(!validate_multiline_range(patch, 0, 5));
         // Valid range within the hunk (indices 5..=7)
         assert!(validate_multiline_range(patch, 5, 7));
+    }
+
+    // ============================================
+    // PatchIndex tests (TDD-first)
+    // ============================================
+
+    #[test]
+    fn test_patch_index_basic_equivalence() {
+        // PatchIndex::build must return the same info as get_line_info for all lines
+        let idx = PatchIndex::build(SAMPLE_PATCH);
+        for i in 0..6 {
+            let expected = get_line_info(SAMPLE_PATCH, i);
+            let actual = idx.get(i);
+            match (expected, actual) {
+                (Some(e), Some(a)) => {
+                    assert_eq!(a.content, e.line_content, "line {i} content mismatch");
+                    assert_eq!(a.line_type, e.line_type, "line {i} type mismatch");
+                    assert_eq!(
+                        a.new_line_number, e.new_line_number,
+                        "line {i} new_line_number mismatch"
+                    );
+                    assert_eq!(
+                        a.diff_position, e.diff_position,
+                        "line {i} diff_position mismatch"
+                    );
+                }
+                (None, None) => {}
+                _ => panic!("line {i}: one is Some, the other is None"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_patch_index_multi_hunk() {
+        let patch = "@@ -1,3 +1,3 @@\n-old1\n+new1\n ctx\n@@ -10,3 +10,3 @@\n-old2\n+new2\n ctx2";
+        let idx = PatchIndex::build(patch);
+        for i in 0..8 {
+            let expected = get_line_info(patch, i);
+            let actual = idx.get(i);
+            match (expected, actual) {
+                (Some(e), Some(a)) => {
+                    assert_eq!(a.content, e.line_content, "line {i} content");
+                    assert_eq!(a.line_type, e.line_type, "line {i} type");
+                    assert_eq!(a.new_line_number, e.new_line_number, "line {i} new_ln");
+                    assert_eq!(a.diff_position, e.diff_position, "line {i} pos");
+                }
+                (None, None) => {}
+                _ => panic!("line {i}: mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_patch_index_with_meta_lines() {
+        let patch = "diff --git a/foo.rs b/foo.rs\nindex 123..456 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }";
+        let idx = PatchIndex::build(patch);
+        for i in 0..8 {
+            let expected = get_line_info(patch, i);
+            let actual = idx.get(i);
+            match (expected, actual) {
+                (Some(e), Some(a)) => {
+                    assert_eq!(a.content, e.line_content, "line {i} content");
+                    assert_eq!(a.line_type, e.line_type, "line {i} type");
+                    assert_eq!(a.new_line_number, e.new_line_number, "line {i} new_ln");
+                    assert_eq!(a.diff_position, e.diff_position, "line {i} pos");
+                }
+                (None, None) => {}
+                _ => panic!("line {i}: mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_patch_index_empty_patch() {
+        let idx = PatchIndex::build("");
+        assert!(idx.get(0).is_none());
+        assert_eq!(idx.len(), 0);
+    }
+
+    #[test]
+    fn test_patch_index_crlf() {
+        // \r\n line endings must be handled correctly
+        let patch = "@@ -1,2 +1,3 @@\r\n fn main() {\r\n+    hello\r\n }";
+        let idx = PatchIndex::build(patch);
+        assert_eq!(idx.get(0).unwrap().line_type, LineType::Header);
+        let line1 = idx.get(1).unwrap();
+        assert_eq!(line1.line_type, LineType::Context);
+        assert_eq!(line1.content, "fn main() {");
+        assert_eq!(line1.new_line_number, Some(1));
+
+        let line2 = idx.get(2).unwrap();
+        assert_eq!(line2.line_type, LineType::Added);
+        assert_eq!(line2.content, "    hello");
+    }
+
+    #[test]
+    fn test_patch_index_cjk_content() {
+        // CJK characters in both filenames and content
+        let patch = "@@ -1,2 +1,3 @@\n 日本語のコンテキスト\n+追加された行\n-削除された行";
+        let idx = PatchIndex::build(patch);
+        let line1 = idx.get(1).unwrap();
+        assert_eq!(line1.content, "日本語のコンテキスト");
+        assert_eq!(line1.line_type, LineType::Context);
+        let line2 = idx.get(2).unwrap();
+        assert_eq!(line2.content, "追加された行");
+        assert_eq!(line2.line_type, LineType::Added);
+        let line3 = idx.get(3).unwrap();
+        assert_eq!(line3.content, "削除された行");
+        assert_eq!(line3.line_type, LineType::Removed);
+    }
+
+    #[test]
+    fn test_patch_index_large_patch() {
+        // 5000+ line patch must work correctly
+        let mut lines = vec!["@@ -1,5000 +1,5000 @@".to_string()];
+        for i in 0..5000 {
+            match i % 3 {
+                0 => lines.push(format!("+added line {}", i)),
+                1 => lines.push(format!("-removed line {}", i)),
+                _ => lines.push(format!(" context line {}", i)),
+            }
+        }
+        let patch = lines.join("\n");
+        let idx = PatchIndex::build(&patch);
+        assert_eq!(idx.len(), 5001);
+
+        // Verify equivalence with get_line_info for sampled lines
+        for i in [0, 1, 100, 500, 2500, 4999, 5000] {
+            let expected = get_line_info(&patch, i);
+            let actual = idx.get(i);
+            match (expected, actual) {
+                (Some(e), Some(a)) => {
+                    assert_eq!(a.content, e.line_content, "line {i}");
+                    assert_eq!(a.line_type, e.line_type, "line {i}");
+                    assert_eq!(a.new_line_number, e.new_line_number, "line {i}");
+                    assert_eq!(a.diff_position, e.diff_position, "line {i}");
+                }
+                (None, None) => {}
+                _ => panic!("line {i}: mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_patch_index_out_of_bounds() {
+        let idx = PatchIndex::build(SAMPLE_PATCH);
+        assert!(idx.get(999).is_none());
+    }
+
+    // ============================================
+    // Streaming parse_unified_diff tests (TDD-first)
+    // ============================================
+
+    #[test]
+    fn test_parse_unified_diff_crlf() {
+        let diff = "diff --git a/file.rs b/file.rs\r\nindex 123..456 100644\r\n--- a/file.rs\r\n+++ b/file.rs\r\n@@ -1,2 +1,3 @@\r\n fn main() {\r\n+    hello\r\n }";
+        let result = parse_unified_diff(diff);
+        assert!(result.contains_key("file.rs"), "keys: {:?}", result.keys());
+    }
+
+    #[test]
+    fn test_parse_unified_diff_cjk_filename() {
+        let diff = "diff --git a/日本語ファイル.rs b/日本語ファイル.rs\nindex 123..456 100644\n--- a/日本語ファイル.rs\n+++ b/日本語ファイル.rs\n@@ -1,1 +1,2 @@\n 既存の行\n+新しい行";
+        let result = parse_unified_diff(diff);
+        assert!(
+            result.contains_key("日本語ファイル.rs"),
+            "keys: {:?}",
+            result.keys()
+        );
     }
 }

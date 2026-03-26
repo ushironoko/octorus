@@ -15,7 +15,7 @@ use super::{App, DataState};
 
 impl App {
     pub(crate) fn poll_pr_list_updates(&mut self) {
-        let Some(ref mut rx) = self.pr_list_receiver else {
+        let Some(ref mut rx) = self.prs.pr_list_receiver else {
             return;
         };
 
@@ -23,40 +23,40 @@ impl App {
             Ok(Ok(page)) => {
                 // pr_list_scroll_offset が 0 ならリフレッシュ/フィルタ変更なので置き換え
                 // そうでなければ追加ロード
-                if self.pr_list_scroll_offset == 0 && self.selected_pr == 0 {
+                if self.prs.pr_list_scroll_offset == 0 && self.prs.selected_pr == 0 {
                     // フィルタ変更やリフレッシュ: リストを置き換え
-                    self.pr_list = Some(page.items);
-                } else if let Some(ref mut existing) = self.pr_list {
+                    self.prs.pr_list = Some(page.items);
+                } else if let Some(ref mut existing) = self.prs.pr_list {
                     // 追加ロード: 既存リストに追加
                     existing.extend(page.items);
                 } else {
                     // 初回ロード
-                    self.pr_list = Some(page.items);
+                    self.prs.pr_list = Some(page.items);
                 }
-                self.pr_list_has_more = page.has_more;
-                self.pr_list_loading = false;
-                self.pr_list_receiver = None;
+                self.prs.pr_list_has_more = page.has_more;
+                self.prs.pr_list_loading = false;
+                self.prs.pr_list_receiver = None;
 
                 // フィルタが有効な場合、新データに対してフィルタを再適用
-                if self.pr_list_filter.as_ref().is_some_and(|f| f.has_query()) {
+                if self.prs.pr_list_filter.as_ref().is_some_and(|f| f.has_query()) {
                     self.reapply_filter("pr");
                 }
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch PR list: {}", e);
-                if self.pr_list.is_none() {
-                    self.pr_list = Some(vec![]);
+                if self.prs.pr_list.is_none() {
+                    self.prs.pr_list = Some(vec![]);
                 }
-                self.pr_list_loading = false;
-                self.pr_list_receiver = None;
+                self.prs.pr_list_loading = false;
+                self.prs.pr_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                if self.pr_list.is_none() {
-                    self.pr_list = Some(vec![]);
+                if self.prs.pr_list.is_none() {
+                    self.prs.pr_list = Some(vec![]);
                 }
-                self.pr_list_loading = false;
-                self.pr_list_receiver = None;
+                self.prs.pr_list_loading = false;
+                self.prs.pr_list_receiver = None;
             }
         }
     }
@@ -106,7 +106,7 @@ impl App {
 
     /// コメント取得のポーリング
     pub(crate) fn poll_comment_updates(&mut self) {
-        let Some((origin_pr, rx)) = self.comment_receiver.as_mut() else {
+        let Some((origin_pr, rx)) = self.cmt.comment_receiver.as_mut() else {
             return;
         };
         let origin_pr = *origin_pr;
@@ -122,10 +122,10 @@ impl App {
                     .put_review_comments(cache_key, comments.clone());
                 // PR が切り替わっていなければ UI 状態にも反映
                 if self.pr_number == Some(origin_pr) {
-                    self.review_comments = Some(comments);
-                    self.selected_comment = 0;
-                    self.comment_list_scroll_offset = 0;
-                    self.comments_loading = false;
+                    self.cmt.review_comments = Some(comments);
+                    self.cmt.selected_comment = 0;
+                    self.cmt.comment_list_scroll_offset = 0;
+                    self.cmt.comments_loading = false;
                     // Update comment positions if in diff view or side-by-side
                     if matches!(
                         self.state,
@@ -135,29 +135,29 @@ impl App {
                         self.ensure_diff_cache();
                     }
                 }
-                self.comment_receiver = None;
+                self.cmt.comment_receiver = None;
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch comments: {}", e);
                 // Keep existing comments if any, or show empty
                 if self.pr_number == Some(origin_pr) {
-                    if self.review_comments.is_none() {
-                        self.review_comments = Some(vec![]);
+                    if self.cmt.review_comments.is_none() {
+                        self.cmt.review_comments = Some(vec![]);
                     }
-                    self.comments_loading = false;
+                    self.cmt.comments_loading = false;
                 }
-                self.comment_receiver = None;
+                self.cmt.comment_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // Keep existing comments if any, or show empty
                 if self.pr_number == Some(origin_pr) {
-                    if self.review_comments.is_none() {
-                        self.review_comments = Some(vec![]);
+                    if self.cmt.review_comments.is_none() {
+                        self.cmt.review_comments = Some(vec![]);
                     }
-                    self.comments_loading = false;
+                    self.cmt.comments_loading = false;
                 }
-                self.comment_receiver = None;
+                self.cmt.comment_receiver = None;
             }
         }
     }
@@ -443,7 +443,7 @@ impl App {
 
     /// Discussion コメント取得のポーリング
     pub(crate) fn poll_discussion_comment_updates(&mut self) {
-        let Some((origin_pr, rx)) = self.discussion_comment_receiver.as_mut() else {
+        let Some((origin_pr, rx)) = self.cmt.discussion_comment_receiver.as_mut() else {
             return;
         };
         let origin_pr = *origin_pr;
@@ -459,31 +459,31 @@ impl App {
                     .put_discussion_comments(cache_key, comments.clone());
                 // PR が切り替わっていなければ UI 状態にも反映
                 if self.pr_number == Some(origin_pr) {
-                    self.discussion_comments = Some(comments);
-                    self.selected_discussion_comment = 0;
-                    self.discussion_comments_loading = false;
+                    self.cmt.discussion_comments = Some(comments);
+                    self.cmt.selected_discussion_comment = 0;
+                    self.cmt.discussion_comments_loading = false;
                 }
-                self.discussion_comment_receiver = None;
+                self.cmt.discussion_comment_receiver = None;
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch discussion comments: {}", e);
                 if self.pr_number == Some(origin_pr) {
-                    if self.discussion_comments.is_none() {
-                        self.discussion_comments = Some(vec![]);
+                    if self.cmt.discussion_comments.is_none() {
+                        self.cmt.discussion_comments = Some(vec![]);
                     }
-                    self.discussion_comments_loading = false;
+                    self.cmt.discussion_comments_loading = false;
                 }
-                self.discussion_comment_receiver = None;
+                self.cmt.discussion_comment_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 if self.pr_number == Some(origin_pr) {
-                    if self.discussion_comments.is_none() {
-                        self.discussion_comments = Some(vec![]);
+                    if self.cmt.discussion_comments.is_none() {
+                        self.cmt.discussion_comments = Some(vec![]);
                     }
-                    self.discussion_comments_loading = false;
+                    self.cmt.discussion_comments_loading = false;
                 }
-                self.discussion_comment_receiver = None;
+                self.cmt.discussion_comment_receiver = None;
             }
         }
     }
@@ -491,24 +491,24 @@ impl App {
     /// コメント送信結果のポーリング
     pub(crate) fn poll_comment_submit_updates(&mut self) {
         // Clear old submission result after 3 seconds
-        if let Some(time) = self.submission_result_time {
+        if let Some(time) = self.cmt.submission_result_time {
             if time.elapsed().as_secs() >= 3 {
-                self.submission_result = None;
-                self.submission_result_time = None;
+                self.cmt.submission_result = None;
+                self.cmt.submission_result_time = None;
             }
         }
 
-        let Some((origin_pr, rx)) = self.comment_submit_receiver.as_mut() else {
+        let Some((origin_pr, rx)) = self.cmt.comment_submit_receiver.as_mut() else {
             return;
         };
         let origin_pr = *origin_pr;
 
         match rx.try_recv() {
             Ok(CommentSubmitResult::Success) => {
-                self.comment_submitting = false;
-                self.comment_submit_receiver = None;
-                self.submission_result = Some((true, "Submitted".to_string()));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.comment_submitting = false;
+                self.cmt.comment_submit_receiver = None;
+                self.cmt.submission_result = Some((true, "Submitted".to_string()));
+                self.cmt.submission_result_time = Some(Instant::now());
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
                     pr_number: origin_pr,
@@ -516,21 +516,21 @@ impl App {
                 self.session_cache.remove_review_comments(&cache_key);
                 // PR が切り替わっていなければコメントを再取得
                 if self.pr_number == Some(origin_pr) {
-                    self.review_comments = None;
+                    self.cmt.review_comments = None;
                     self.load_review_comments();
                     self.update_file_comment_positions();
                 }
             }
             Ok(CommentSubmitResult::Error(e)) => {
-                self.comment_submitting = false;
-                self.comment_submit_receiver = None;
-                self.submission_result = Some((false, format!("Failed: {}", e)));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.comment_submitting = false;
+                self.cmt.comment_submit_receiver = None;
+                self.cmt.submission_result = Some((false, format!("Failed: {}", e)));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.comment_submitting = false;
-                self.comment_submit_receiver = None;
+                self.cmt.comment_submitting = false;
+                self.cmt.comment_submit_receiver = None;
             }
         }
     }
@@ -557,10 +557,10 @@ impl App {
                 match error {
                     Some(err) => {
                         if marked_paths.is_empty() {
-                            self.submission_result =
+                            self.cmt.submission_result =
                                 Some((false, format!("Mark {} failed: {}", action_label, err)));
                         } else {
-                            self.submission_result = Some((
+                            self.cmt.submission_result = Some((
                                 false,
                                 format!(
                                     "Marked {}/{} files as {}, then failed: {}",
@@ -573,13 +573,13 @@ impl App {
                         }
                     }
                     None => {
-                        self.submission_result = Some((
+                        self.cmt.submission_result = Some((
                             true,
                             format!("Marked {} file(s) as {}", marked_paths.len(), action_label),
                         ));
                     }
                 }
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -820,8 +820,8 @@ impl App {
                 if next_selected != old_selected {
                     self.diff_store.clear_current();
                     self.diff_scroll.reset();
-                    self.comment_panel_open = false;
-                    self.comment_panel_scroll = 0;
+                    self.cmt.comment_panel_open = false;
+                    self.cmt.comment_panel_scroll = 0;
                 }
 
                 self.selected_file = next_selected;
@@ -903,10 +903,10 @@ impl App {
                     self.start_prefetch_all_files();
                 }
                 // CLI 直接指定時: ci_status をバックグラウンドで取得
-                if !self.local_mode && self.ci_status.is_none() && self.ci_status_receiver.is_none()
+                if !self.local_mode && self.chk.ci_status.is_none() && self.chk.ci_status_receiver.is_none()
                 {
                     let (tx, rx) = mpsc::channel(1);
-                    self.ci_status_receiver = Some(rx);
+                    self.chk.ci_status_receiver = Some(rx);
                     let repo = self.repo.clone();
                     tokio::spawn(async move {
                         let status = match crate::github::fetch_pr_checks(&repo, origin_pr).await {
@@ -1095,8 +1095,8 @@ impl App {
                 self.file_list_scroll_offset = self.file_list_scroll_offset.min(idx);
                 self.diff_store.clear_current();
                 self.diff_scroll.reset();
-                self.comment_panel_open = false;
-                self.comment_panel_scroll = 0;
+                self.cmt.comment_panel_open = false;
+                self.cmt.comment_panel_scroll = 0;
                 if matches!(self.state, AppState::FileList | AppState::SplitViewFileList) {
                     self.enter_diff_from_file_list();
                 }
@@ -1106,50 +1106,50 @@ impl App {
     }
 
     pub(crate) fn poll_checks_updates(&mut self) {
-        let Some((origin_pr, ref mut rx)) = self.checks_receiver else {
+        let Some((origin_pr, ref mut rx)) = self.chk.checks_receiver else {
             return;
         };
 
         match rx.try_recv() {
             Ok(Ok(items)) => {
                 // クロスPR汚染防止
-                if self.checks_target_pr == Some(origin_pr) {
-                    self.checks = Some(items);
-                    self.checks_loading = false;
+                if self.chk.checks_target_pr == Some(origin_pr) {
+                    self.chk.checks = Some(items);
+                    self.chk.checks_loading = false;
                 }
-                self.checks_receiver = None;
+                self.chk.checks_receiver = None;
             }
             Ok(Err(e)) => {
                 tracing::warn!("Failed to fetch PR checks: {}", e);
-                if self.checks_target_pr == Some(origin_pr) {
-                    self.checks = Some(vec![]);
-                    self.checks_loading = false;
+                if self.chk.checks_target_pr == Some(origin_pr) {
+                    self.chk.checks = Some(vec![]);
+                    self.chk.checks_loading = false;
                 }
-                self.checks_receiver = None;
+                self.chk.checks_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                if self.checks_target_pr == Some(origin_pr) {
-                    self.checks_loading = false;
+                if self.chk.checks_target_pr == Some(origin_pr) {
+                    self.chk.checks_loading = false;
                 }
-                self.checks_receiver = None;
+                self.chk.checks_receiver = None;
             }
         }
     }
 
     pub(crate) fn poll_ci_status_updates(&mut self) {
-        let Some(ref mut rx) = self.ci_status_receiver else {
+        let Some(ref mut rx) = self.chk.ci_status_receiver else {
             return;
         };
 
         match rx.try_recv() {
             Ok(status) => {
-                self.ci_status = Some(status);
-                self.ci_status_receiver = None;
+                self.chk.ci_status = Some(status);
+                self.chk.ci_status_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.ci_status_receiver = None;
+                self.chk.ci_status_receiver = None;
             }
         }
     }
@@ -1182,18 +1182,16 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(page)) => {
-                if state.issue_list_appending {
-                    if let Some(ref mut existing) = state.issues {
+                match std::mem::take(&mut state.issues) {
+                    LoadState::LoadingMore(mut existing) => {
                         existing.extend(page.items);
-                    } else {
-                        state.issues = Some(page.items);
+                        state.issues = LoadState::Loaded(existing);
                     }
-                } else {
-                    state.issues = Some(page.items);
+                    _ => {
+                        state.issues = LoadState::Loaded(page.items);
+                    }
                 }
                 state.issue_list_has_more = page.has_more;
-                state.issue_list_loading = false;
-                state.issue_list_appending = false;
                 state.issue_list_receiver = None;
 
                 if state
@@ -1206,19 +1204,17 @@ impl App {
             }
             Ok(Err(_e)) => {
                 let state = self.issue_state.as_mut().unwrap();
-                if state.issues.is_none() {
-                    state.issues = Some(vec![]);
+                if !state.issues.is_loaded() {
+                    state.issues = LoadState::Loaded(vec![]);
                 }
-                state.issue_list_loading = false;
                 state.issue_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 let state = self.issue_state.as_mut().unwrap();
-                if state.issues.is_none() {
-                    state.issues = Some(vec![]);
+                if !state.issues.is_loaded() {
+                    state.issues = LoadState::Loaded(vec![]);
                 }
-                state.issue_list_loading = false;
                 state.issue_list_receiver = None;
             }
         }
@@ -1239,23 +1235,22 @@ impl App {
                     // stale response check
                     if state
                         .issue_detail
-                        .as_ref()
+                        .as_loaded()
                         .is_none_or(|d| d.number == origin_issue)
                     {
-                        state.issue_detail = Some(detail);
-                        state.issue_detail_loading = false;
+                        state.issue_detail = LoadState::Loaded(detail);
                     }
                     state.issue_detail_receiver = None;
                     true
                 }
-                Ok(Err(_e)) => {
-                    state.issue_detail_loading = false;
+                Ok(Err(e)) => {
+                    state.issue_detail = LoadState::Error(e.to_string());
                     state.issue_detail_receiver = None;
                     false
                 }
                 Err(mpsc::error::TryRecvError::Empty) => false,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    state.issue_detail_loading = false;
+                    state.issue_detail = LoadState::Error("disconnected".into());
                     state.issue_detail_receiver = None;
                     false
                 }
@@ -1279,22 +1274,19 @@ impl App {
         match rx.try_recv() {
             Ok(Ok(prs)) => {
                 // stale response check: only update if we're still on the same issue
-                let current_issue = state.issue_detail.as_ref().map(|d| d.number);
+                let current_issue = state.issue_detail.as_loaded().map(|d| d.number);
                 if current_issue.is_none() || current_issue == Some(origin_issue) {
-                    state.linked_prs = Some(prs);
-                    state.linked_prs_loading = false;
+                    state.linked_prs = LoadState::Loaded(prs);
                 }
                 state.linked_prs_receiver = None;
             }
             Ok(Err(_e)) => {
-                state.linked_prs = Some(vec![]);
-                state.linked_prs_loading = false;
+                state.linked_prs = LoadState::Loaded(vec![]);
                 state.linked_prs_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                state.linked_prs = Some(vec![]);
-                state.linked_prs_loading = false;
+                state.linked_prs = LoadState::Loaded(vec![]);
                 state.linked_prs_receiver = None;
             }
         }
@@ -1315,10 +1307,10 @@ impl App {
                 state.issue_comment_submit_receiver = None;
                 // Always show toast so users get feedback even if issue_detail
                 // is temporarily None during navigation/loading.
-                self.submission_result = Some((true, "Submitted".to_string()));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((true, "Submitted".to_string()));
+                self.cmt.submission_result_time = Some(Instant::now());
                 // Update local caches only when issue_detail is loaded and matches
-                if let Some(ref mut detail) = state.issue_detail {
+                if let Some(detail) = state.issue_detail.as_loaded_mut() {
                     if detail.number == origin {
                         if let Ok(raw) = serde_json::to_value(&comment) {
                             detail.comments.push(raw);
@@ -1332,7 +1324,7 @@ impl App {
                     .issue_detail_receiver
                     .as_ref()
                     .map(|(n, _)| *n)
-                    .or_else(|| state.issue_detail.as_ref().map(|d| d.number));
+                    .or_else(|| state.issue_detail.as_loaded().map(|d| d.number));
                 if selected_issue == Some(origin) {
                     if let Some(ref mut comments) = state.issue_comments {
                         comments.push(comment);
@@ -1345,8 +1337,8 @@ impl App {
             Ok(Err(e)) => {
                 state.issue_comment_submitting = false;
                 state.issue_comment_submit_receiver = None;
-                self.submission_result = Some((false, format!("Failed: {}", e)));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, format!("Failed: {}", e)));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1376,13 +1368,13 @@ impl App {
             }
             Ok(SymbolSearchUpdate::NotFound) => {
                 self.symbol_search = SymbolSearchState::Idle;
-                self.submission_result = Some((false, "Definition not found".to_string()));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, "Definition not found".to_string()));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             Ok(SymbolSearchUpdate::Failed(msg)) => {
                 self.symbol_search = SymbolSearchState::Idle;
-                self.submission_result = Some((false, format!("Search failed: {}", msg)));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, format!("Search failed: {}", msg)));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {

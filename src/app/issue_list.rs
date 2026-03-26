@@ -6,13 +6,13 @@ use crate::filter::ListFilter;
 use crate::github::{self, IssueStateFilter};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
-use super::types::IssueState;
+use super::types::{IssueState, LoadState};
 use super::{App, AppState};
 
 impl App {
     pub fn open_issue_list(&mut self) {
         let mut state = IssueState::new();
-        state.issue_list_loading = true;
+        state.issues = LoadState::Loading;
         self.issue_state = Some(state);
         self.state = AppState::IssueList;
         self.reload_issue_list();
@@ -24,10 +24,9 @@ impl App {
         };
         state.selected_issue = 0;
         state.issue_list_scroll_offset = 0;
-        state.issue_list_loading = true;
+        state.issues = LoadState::Loading;
         state.issue_list_has_more = false;
         state.issue_list_filter = None;
-        state.issue_list_appending = false;
 
         let (tx, rx) = mpsc::channel(2);
         state.issue_list_receiver = Some(rx);
@@ -45,13 +44,13 @@ impl App {
         let Some(ref mut state) = self.issue_state else {
             return;
         };
-        if state.issue_list_loading {
+        if state.issues.is_loading() {
             return;
         }
 
-        let offset = state.issues.as_ref().map(|l| l.len()).unwrap_or(0) as u32;
-        state.issue_list_loading = true;
-        state.issue_list_appending = true;
+        let offset = state.issues.as_loaded().map(|l| l.len()).unwrap_or(0) as u32;
+        let existing = state.issues.as_loaded().cloned().unwrap_or_default();
+        state.issues = LoadState::LoadingMore(existing);
 
         let (tx, rx) = mpsc::channel(2);
         state.issue_list_receiver = Some(rx);
@@ -70,8 +69,7 @@ impl App {
             return;
         };
 
-        state.issue_detail = None;
-        state.issue_detail_loading = true;
+        state.issue_detail = LoadState::Loading;
         state.issue_detail_scroll_offset = 0;
         state.issue_detail_cache = None;
         state.issue_comments = None;
@@ -85,8 +83,7 @@ impl App {
         // to apply the result to the correct issue.
         state.selected_linked_pr = 0;
         state.detail_focus = Default::default();
-        state.linked_prs = None;
-        state.linked_prs_loading = true;
+        state.linked_prs = LoadState::Loading;
 
         let (detail_tx, detail_rx) = mpsc::channel(1);
         state.issue_detail_receiver = Some((issue_number, detail_rx));
@@ -148,11 +145,11 @@ impl App {
             return Ok(());
         };
 
-        if state.issue_list_loading && state.issues.is_none() {
+        if matches!(state.issues, LoadState::Loading) {
             return Ok(());
         }
 
-        let issue_count = state.issues.as_ref().map(|l| l.len()).unwrap_or(0);
+        let issue_count = state.issues.as_loaded().map(|l| l.len()).unwrap_or(0);
         let has_filter = state.issue_list_filter.is_some();
 
         if self.matches_single_key(&key, &kb.move_down) {
@@ -164,7 +161,7 @@ impl App {
                     state.selected_issue =
                         (state.selected_issue + 1).min(issue_count.saturating_sub(1));
                     state.issue_list_has_more
-                        && !state.issue_list_loading
+                        && !state.issues.is_loading()
                         && state.selected_issue + 5 >= issue_count
                 };
                 if needs_load_more {
@@ -191,7 +188,7 @@ impl App {
                     state.selected_issue =
                         (state.selected_issue + 20).min(issue_count.saturating_sub(1));
                     state.issue_list_has_more
-                        && !state.issue_list_loading
+                        && !state.issues.is_loading()
                         && state.selected_issue + 5 >= issue_count
                 };
                 if needs_load_more {
@@ -232,7 +229,7 @@ impl App {
                         filter.input_active = true;
                     } else {
                         let mut filter = ListFilter::new();
-                        if let Some(issues) = state.issues.as_ref() {
+                        if let Some(issues) = state.issues.as_loaded() {
                             filter.apply(issues, |_issue, _q| true);
                             if let Some(idx) = filter.sync_selection() {
                                 state.selected_issue = idx;
@@ -268,7 +265,7 @@ impl App {
                 let state = self.issue_state.as_ref().unwrap();
                 state
                     .issues
-                    .as_ref()
+                    .as_loaded()
                     .and_then(|issues| issues.get(state.selected_issue))
                     .map(|i| i.number)
             };
@@ -283,7 +280,7 @@ impl App {
                 return Ok(());
             }
             let state = self.issue_state.as_ref().unwrap();
-            if let Some(issues) = state.issues.as_ref() {
+            if let Some(issues) = state.issues.as_loaded() {
                 if let Some(issue) = issues.get(state.selected_issue) {
                     self.open_issue_in_browser(issue.number);
                 }
@@ -373,20 +370,19 @@ mod tests {
         assert_eq!(app.state, AppState::IssueList);
         assert!(app.issue_state.is_some());
         let state = app.issue_state.as_ref().unwrap();
-        assert!(state.issues.is_none());
-        assert!(state.issue_list_loading);
+        assert!(state.issues.is_loading());
     }
 
     #[test]
     fn test_issue_state_new_defaults() {
         let state = IssueState::new();
-        assert!(state.issues.is_none());
+        assert!(!state.issues.is_loaded());
         assert_eq!(state.selected_issue, 0);
-        assert!(!state.issue_list_loading);
-        assert!(state.linked_prs.is_none());
-        assert!(!state.linked_prs_loading);
-        assert!(state.issue_detail.is_none());
-        assert!(!state.issue_detail_loading);
+        assert!(!state.issues.is_loading());
+        assert!(!state.linked_prs.is_loaded());
+        assert!(!state.linked_prs.is_loading());
+        assert!(!state.issue_detail.is_loaded());
+        assert!(!state.issue_detail.is_loading());
     }
 
     #[tokio::test]
@@ -407,16 +403,16 @@ mod tests {
         // Receivers should now track issue B, not A
         assert_eq!(state.issue_detail_receiver.as_ref().unwrap().0, 200);
         assert_eq!(state.linked_prs_receiver.as_ref().unwrap().0, 200);
-        // Previous detail should be cleared
-        assert!(state.issue_detail.is_none());
-        assert!(state.linked_prs.is_none());
+        // Previous detail should be cleared (now Loading)
+        assert!(state.issue_detail.is_loading());
+        assert!(state.linked_prs.is_loading());
     }
 
     #[tokio::test]
     async fn test_quit_blocked_while_issue_comment_submitting() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issues = Some(vec![]);
+        state.issues = LoadState::Loaded(vec![]);
         state.issue_comment_submitting = true;
         app.issue_state = Some(state);
         app.state = AppState::IssueList;
@@ -437,7 +433,7 @@ mod tests {
     async fn test_quit_allowed_when_not_submitting() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issues = Some(vec![]);
+        state.issues = LoadState::Loaded(vec![]);
         state.issue_comment_submitting = false;
         app.issue_state = Some(state);
         app.state = AppState::IssueList;

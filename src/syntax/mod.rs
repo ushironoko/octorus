@@ -53,7 +53,9 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use xdg::BaseDirectories;
 
-use crate::app::InternedSpan;
+use smallvec::smallvec;
+
+use crate::app::{InternedSpan, SpanVec};
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
@@ -182,7 +184,7 @@ pub fn highlight_code_line(
     code: &str,
     highlighter: &mut HighlightLines<'_>,
     interner: &mut Rodeo,
-) -> Vec<InternedSpan> {
+) -> SpanVec {
     match highlighter.highlight_line(code, syntax_set()) {
         Ok(ranges) => ranges
             .into_iter()
@@ -197,7 +199,7 @@ pub fn highlight_code_line(
         Err(_e) => {
             #[cfg(debug_assertions)]
             eprintln!("Highlight error: {_e:?}");
-            vec![InternedSpan {
+            smallvec![InternedSpan {
                 content: interner.get_or_intern(code),
                 style: Style::default(),
             }]

@@ -85,6 +85,7 @@ const REVIEWEE_SCHEMA: &str = r#"{
 }"#;
 
 /// Codex-specific errors
+// Error variants for completeness; not all are currently triggered
 #[derive(Debug, Error)]
 pub enum CodexError {
     #[error("Codex CLI not found. Install it with: npm install -g @openai/codex")]
@@ -126,19 +127,6 @@ impl CodexAdapter {
             reviewee_session_id: None,
             event_sender: None,
             local_mode: false,
-        }
-    }
-
-    /// Check if Codex CLI is available
-    #[allow(dead_code)]
-    pub fn check_availability() -> Result<(), CodexError> {
-        let output = std::process::Command::new("codex")
-            .arg("--version")
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => Ok(()),
-            _ => Err(CodexError::CliNotFound),
         }
     }
 
@@ -564,6 +552,7 @@ pub enum CodexEvent {
     TurnStarted,
     #[serde(rename = "turn.completed")]
     TurnCompleted {
+        // Deserialized from Codex API responses but not currently read
         #[serde(default)]
         #[allow(dead_code)]
         usage: Option<serde_json::Value>,
@@ -595,6 +584,7 @@ pub struct CodexErrorInfo {
 /// Codex item structure (not tagged enum, uses "type" field)
 #[derive(Debug, Deserialize)]
 pub struct CodexItem {
+    // Deserialized from Codex API responses but not currently read
     #[serde(default)]
     #[allow(dead_code)]
     pub id: Option<String>,
