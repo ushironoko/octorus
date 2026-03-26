@@ -190,7 +190,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if has_filter_bar {
         if let Some(ref filter) = app.file_list_filter {
-            render_filter_bar(frame, chunks[next_chunk], filter);
+            super::common::render_filter_bar(frame, chunks[next_chunk], filter);
         }
         next_chunk += 1;
     }
@@ -231,24 +231,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(footer, chunks[next_chunk]);
 }
 
-fn render_filter_bar(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    filter: &crate::filter::ListFilter,
-) {
-    let cursor_display = format!("/{}", filter.query);
-    let filter_bar = Paragraph::new(Line::from(vec![
-        Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
-        Span::styled(cursor_display, Style::default().fg(Color::White)),
-        Span::styled("│", Style::default().fg(Color::DarkGray)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
-    frame.render_widget(filter_bar, area);
-}
 
 pub fn render_loading(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()

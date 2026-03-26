@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
                         let mut next_chunk = 2;
                         if has_filter_bar {
-                            render_filter_bar(frame, chunks[next_chunk], filter);
+                            super::common::render_filter_bar(frame, chunks[next_chunk], filter);
                             next_chunk += 1;
                         }
                         render_footer(frame, chunks[next_chunk], app);
@@ -143,7 +143,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if has_filter_bar {
         if let Some(ref state) = app.issue_state {
             if let Some(ref filter) = state.issue_list_filter {
-                render_filter_bar(frame, chunks[next_chunk], filter);
+                super::common::render_filter_bar(frame, chunks[next_chunk], filter);
             }
         }
         next_chunk += 1;
@@ -152,24 +152,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, chunks[next_chunk], app);
 }
 
-fn render_filter_bar(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    filter: &crate::filter::ListFilter,
-) {
-    let cursor_display = format!("/{}", filter.query);
-    let filter_bar = Paragraph::new(Line::from(vec![
-        Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
-        Span::styled(cursor_display, Style::default().fg(Color::White)),
-        Span::styled("│", Style::default().fg(Color::DarkGray)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
-    frame.render_widget(filter_bar, area);
-}
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let filter_hint = if app

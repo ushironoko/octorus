@@ -56,45 +56,26 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
         .map(|line| {
             let (line_type, content) = classify_line(line);
 
-            let spans: SpanVec = match line_type {
-                LineType::Header => smallvec![InternedSpan {
+            let fg_style = match line_type.fg_color() {
+                Some(c) => Style::default().fg(c),
+                None => Style::default(),
+            };
+            let spans: SpanVec = if let Some(marker) = line_type.marker() {
+                smallvec![
+                    InternedSpan {
+                        content: interner.get_or_intern(marker),
+                        style: fg_style,
+                    },
+                    InternedSpan {
+                        content: interner.get_or_intern(content),
+                        style: fg_style,
+                    },
+                ]
+            } else {
+                smallvec![InternedSpan {
                     content: interner.get_or_intern(line),
-                    style: Style::default().fg(Color::Cyan),
-                }],
-                LineType::Meta => smallvec![InternedSpan {
-                    content: interner.get_or_intern(line),
-                    style: Style::default().fg(Color::Yellow),
-                }],
-                LineType::Added => smallvec![
-                    InternedSpan {
-                        content: interner.get_or_intern("+"),
-                        style: Style::default().fg(Color::Green),
-                    },
-                    InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default().fg(Color::Green),
-                    },
-                ],
-                LineType::Removed => smallvec![
-                    InternedSpan {
-                        content: interner.get_or_intern("-"),
-                        style: Style::default().fg(Color::Red),
-                    },
-                    InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default().fg(Color::Red),
-                    },
-                ],
-                LineType::Context => smallvec![
-                    InternedSpan {
-                        content: interner.get_or_intern(" "),
-                        style: Style::default(),
-                    },
-                    InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default(),
-                    },
-                ],
+                    style: fg_style,
+                }]
             };
 
             CachedDiffLine { spans, line_type }
@@ -1144,10 +1125,10 @@ pub fn render_cached_lines<'a>(
             } else if is_selected {
                 line.style(Style::default().add_modifier(Modifier::REVERSED))
             } else if bg_color {
-                match cached.line_type {
-                    LineType::Added => line.style(Style::default().bg(Color::Rgb(0, 60, 0))),
-                    LineType::Removed => line.style(Style::default().bg(Color::Rgb(60, 0, 0))),
-                    _ => line,
+                if let Some(bg) = cached.line_type.bg_color() {
+                    line.style(Style::default().bg(bg))
+                } else {
+                    line
                 }
             } else {
                 line
@@ -1402,49 +1383,25 @@ fn build_line_spans(
     highlighter: &mut Option<HighlightLines<'_>>,
     interner: &mut Rodeo,
 ) -> SpanVec {
-    match line_type {
-        LineType::Header => {
-            smallvec![InternedSpan {
-                content: interner.get_or_intern(original_line),
-                style: Style::default().fg(Color::Cyan),
-            }]
-        }
-        LineType::Meta => {
-            smallvec![InternedSpan {
-                content: interner.get_or_intern(original_line),
-                style: Style::default().fg(Color::Yellow),
-            }]
-        }
-        LineType::Added => {
-            let marker = InternedSpan {
-                content: interner.get_or_intern("+"),
-                style: Style::default().fg(Color::Green),
-            };
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Green, interner);
-            let mut spans: SpanVec = smallvec![marker];
-            spans.extend(code_spans);
-            spans
-        }
-        LineType::Removed => {
-            let marker = InternedSpan {
-                content: interner.get_or_intern("-"),
-                style: Style::default().fg(Color::Red),
-            };
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Red, interner);
-            let mut spans: SpanVec = smallvec![marker];
-            spans.extend(code_spans);
-            spans
-        }
-        LineType::Context => {
-            let marker = InternedSpan {
-                content: interner.get_or_intern(" "),
-                style: Style::default(),
-            };
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Reset, interner);
-            let mut spans: SpanVec = smallvec![marker];
-            spans.extend(code_spans);
-            spans
-        }
+    let fg_style = match line_type.fg_color() {
+        Some(c) => Style::default().fg(c),
+        None => Style::default(),
+    };
+    if let Some(marker_str) = line_type.marker() {
+        let marker = InternedSpan {
+            content: interner.get_or_intern(marker_str),
+            style: fg_style,
+        };
+        let fallback_color = line_type.fg_color().unwrap_or(Color::Reset);
+        let code_spans = highlight_or_fallback(content, highlighter, fallback_color, interner);
+        let mut spans: SpanVec = smallvec![marker];
+        spans.extend(code_spans);
+        spans
+    } else {
+        smallvec![InternedSpan {
+            content: interner.get_or_intern(original_line),
+            style: fg_style,
+        }]
     }
 }
 

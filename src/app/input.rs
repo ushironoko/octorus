@@ -537,11 +537,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             let mut error = None;
 
             for path in paths {
-                let result = if set_viewed {
-                    github::mark_file_as_viewed(&repo, &pr_node_id, &path).await
-                } else {
-                    github::unmark_file_as_viewed(&repo, &pr_node_id, &path).await
-                };
+                let result =
+                    github::set_file_viewed(&repo, &pr_node_id, &path, set_viewed).await;
                 match result {
                     Ok(()) => marked_paths.push(path),
                     Err(e) => {
@@ -775,64 +772,37 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
     }
 
-    /// ツリーモードで下に移動。File 行に着地したら selected_file を更新。
+    fn with_file_tree(&mut self, f: impl FnOnce(&mut super::file_tree::FileTreeState)) {
+        if let Some(ref mut tree) = self.file_tree_state {
+            f(tree);
+            if let Some(idx) = tree.selected_file_index() {
+                self.selected_file = idx;
+            }
+        }
+    }
+
     pub(crate) fn file_tree_move_down(&mut self) {
-        if let Some(ref mut tree) = self.file_tree_state {
-            tree.move_down();
-            if let Some(idx) = tree.selected_file_index() {
-                self.selected_file = idx;
-            }
-        }
+        self.with_file_tree(|t| t.move_down());
     }
 
-    /// ツリーモードで上に移動。File 行に着地したら selected_file を更新。
     pub(crate) fn file_tree_move_up(&mut self) {
-        if let Some(ref mut tree) = self.file_tree_state {
-            tree.move_up();
-            if let Some(idx) = tree.selected_file_index() {
-                self.selected_file = idx;
-            }
-        }
+        self.with_file_tree(|t| t.move_up());
     }
 
-    /// ツリーモードでページダウン。
     pub(crate) fn file_tree_page_down(&mut self, step: usize) {
-        if let Some(ref mut tree) = self.file_tree_state {
-            tree.page_down(step);
-            if let Some(idx) = tree.selected_file_index() {
-                self.selected_file = idx;
-            }
-        }
+        self.with_file_tree(|t| t.page_down(step));
     }
 
-    /// ツリーモードでページアップ。
     pub(crate) fn file_tree_page_up(&mut self, step: usize) {
-        if let Some(ref mut tree) = self.file_tree_state {
-            tree.page_up(step);
-            if let Some(idx) = tree.selected_file_index() {
-                self.selected_file = idx;
-            }
-        }
+        self.with_file_tree(|t| t.page_up(step));
     }
 
-    /// ツリーモードで先頭にジャンプ。
     pub(crate) fn file_tree_jump_to_first(&mut self) {
-        if let Some(ref mut tree) = self.file_tree_state {
-            tree.jump_to_first();
-            if let Some(idx) = tree.selected_file_index() {
-                self.selected_file = idx;
-            }
-        }
+        self.with_file_tree(|t| t.jump_to_first());
     }
 
-    /// ツリーモードで末尾にジャンプ。
     pub(crate) fn file_tree_jump_to_last(&mut self) {
-        if let Some(ref mut tree) = self.file_tree_state {
-            tree.jump_to_last();
-            if let Some(idx) = tree.selected_file_index() {
-                self.selected_file = idx;
-            }
-        }
+        self.with_file_tree(|t| t.jump_to_last());
     }
 
     /// ツリーモードで Enter:

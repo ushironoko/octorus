@@ -867,10 +867,9 @@ pub struct CommentState {
 
 #[derive(Default)]
 pub struct PrListState {
-    pub pr_list: Option<Vec<crate::github::PullRequestSummary>>,
+    pub pr_list: LoadState<Vec<crate::github::PullRequestSummary>>,
     pub selected_pr: usize,
     pub pr_list_scroll_offset: usize,
-    pub pr_list_loading: bool,
     pub pr_list_has_more: bool,
     pub pr_list_state_filter: crate::github::PrStateFilter,
     pub pr_list_filter: Option<crate::filter::ListFilter>,

@@ -179,7 +179,7 @@ impl App {
                     Some(f) => f,
                     None => return,
                 };
-                if let Some(prs) = self.prs.pr_list.as_ref() {
+                if let Some(prs) = self.prs.pr_list.as_loaded() {
                     filter.apply(prs, |pr, q| {
                         pr.title.to_lowercase().contains(q)
                             || pr.number.to_string().contains(q)

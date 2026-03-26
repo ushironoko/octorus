@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
-    widgets::Paragraph,
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -144,6 +144,25 @@ pub fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+pub fn render_filter_bar(
+    frame: &mut Frame,
+    area: Rect,
+    filter: &crate::filter::ListFilter,
+) {
+    let cursor_display = format!("/{}", filter.query);
+    let filter_bar = Paragraph::new(Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
+        Span::styled(cursor_display, Style::default().fg(Color::White)),
+        Span::styled("│", Style::default().fg(Color::DarkGray)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(filter_bar, area);
 }
 
 #[cfg(test)]

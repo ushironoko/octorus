@@ -1,6 +1,45 @@
 mod client;
 pub mod comment;
 mod commit;
+
+macro_rules! define_state_filter {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+        pub enum $name {
+            #[default]
+            Open,
+            Closed,
+            All,
+        }
+
+        impl $name {
+            pub fn as_gh_arg(&self) -> &'static str {
+                match self {
+                    Self::Open => "open",
+                    Self::Closed => "closed",
+                    Self::All => "all",
+                }
+            }
+
+            pub fn display_name(&self) -> &'static str {
+                match self {
+                    Self::Open => "open",
+                    Self::Closed => "closed",
+                    Self::All => "all",
+                }
+            }
+
+            pub fn next(&self) -> Self {
+                match self {
+                    Self::Open => Self::Closed,
+                    Self::Closed => Self::All,
+                    Self::All => Self::Open,
+                }
+            }
+        }
+    };
+}
+
 mod issue;
 mod pr;
 
@@ -19,7 +58,7 @@ pub use issue::{
 
 pub use pr::{
     fetch_changed_files, fetch_files_viewed_state, fetch_pr, fetch_pr_checks, fetch_pr_diff,
-    fetch_pr_list, fetch_pr_list_with_offset, mark_file_as_viewed, submit_review,
-    unmark_file_as_viewed, Branch, ChangedFile, CheckItem, CiStatus, Label, PrListPage,
+    fetch_pr_list, fetch_pr_list_with_offset, set_file_viewed, submit_review, Branch,
+    ChangedFile, CheckItem, CiStatus, Label, PrListPage,
     PrStateFilter, PullRequest, PullRequestSummary, StatusCheckRollupItem, User,
 };

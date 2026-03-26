@@ -187,27 +187,21 @@ pub struct App {
 }
 
 impl App {
-    /// Loading状態で開始
-    pub fn new_loading(
-        repo: &str,
-        pr_number: u32,
-        config: Config,
-    ) -> (Self, mpsc::Sender<DataLoadResult>) {
-        let (tx, rx) = mpsc::channel(2);
-
-        let app = Self {
-            repo: repo.to_string(),
-            pr_number: Some(pr_number),
+    fn base_app(repo: String, config: Config) -> Self {
+        let submit_key = config.keybindings.submit.clone();
+        Self {
+            repo,
+            pr_number: Some(1),
             data_state: DataState::Loading,
             state: AppState::FileList,
             prs: PrListState::default(),
             started_from_pr_list: false,
             local_mode: false,
             local_auto_focus: false,
-            zen_mode: config.diff.zen_mode,
+            zen_mode: false,
             local_file_signatures: HashMap::new(),
             local_file_patch_signatures: HashMap::new(),
-            original_pr_number: Some(pr_number),
+            original_pr_number: None,
             watcher_handle: None,
             refresh_pending: None,
             diff_view_return_state: AppState::FileList,
@@ -218,76 +212,7 @@ impl App {
             diff_scroll: DiffScrollState::new(ScrollMode::Margin),
             multiline_selection: None,
             input_mode: None,
-            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
-            config,
-            should_quit: false,
-            cmt: CommentState::default(),
-            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
-            help_scroll_offset: 0,
-            help_tab: HelpTab::default(),
-            config_scroll_offset: 0,
-            ai_rally_state: None,
-            working_dir: None,
-            data_receiver: Some((pr_number, rx)),
-            retry_sender: None,
-            rally_event_receiver: None,
-            rally_abort_handle: None,
-            rally_command_sender: None,
-            pending_rally_context: None,
-            pending_rally_prompt_loader: None,
-            start_ai_rally_on_load: false,
-            pending_ai_rally: false,
-            mark_viewed_receiver: None,
-            spinner_frame: 0,
-            jump_stack: Vec::new(),
-            pending_keys: SmallVec::new(),
-            pending_since: None,
-            symbol_popup: None,
-            symbol_search: SymbolSearchState::Idle,
-            session_cache: SessionCache::new(),
-            markdown_rich: false,
-            suggestion_highlight_cache: None,
-            pr_description_scroll_offset: 0,
-            pr_description_cache: None,
-            file_list_filter: None,
-            batch_diff_receiver: None,
-            lazy_diff_receiver: None,
-            lazy_diff_pending_file: None,
-            chk: ChecksState::default(),
-            git_ops_state: None,
-            issue_state: None,
-            issue_detail_return: false,
-            update_available: None,
-            update_check_receiver: None,
-            tree_mode_active: false,
-            file_tree_state: None,
-        };
-
-        (app, tx)
-    }
-
-    /// PR一覧表示モードで開始（--pr省略時）
-    pub fn new_pr_list(repo: &str, config: Config) -> Self {
-        let zen_mode = config.diff.zen_mode;
-        Self {
-            repo: repo.to_string(),
-            pr_number: None,
-            data_state: DataState::Loading,
-            state: AppState::PullRequestList,
-            prs: PrListState {
-                pr_list_loading: true,
-                ..PrListState::default()
-            },
-            started_from_pr_list: true,
-            diff_view_return_state: AppState::FileList,
-            preview_return_state: AppState::DiffView,
-            previous_state: AppState::PullRequestList,
-            selected_file: 0,
-            file_list_scroll_offset: 0,
-            diff_scroll: DiffScrollState::new(ScrollMode::Margin),
-            multiline_selection: None,
-            input_mode: None,
-            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
+            input_text_area: TextArea::with_submit_key(submit_key),
             config,
             should_quit: false,
             cmt: CommentState::default(),
@@ -313,14 +238,6 @@ impl App {
             pending_since: None,
             symbol_popup: None,
             symbol_search: SymbolSearchState::Idle,
-            local_mode: false,
-            local_auto_focus: false,
-            zen_mode,
-            local_file_signatures: HashMap::new(),
-            local_file_patch_signatures: HashMap::new(),
-            original_pr_number: None,
-            watcher_handle: None,
-            refresh_pending: None,
             session_cache: SessionCache::new(),
             markdown_rich: false,
             suggestion_highlight_cache: None,
@@ -339,6 +256,34 @@ impl App {
             tree_mode_active: false,
             file_tree_state: None,
         }
+    }
+
+    pub fn new_loading(
+        repo: &str,
+        pr_number: u32,
+        config: Config,
+    ) -> (Self, mpsc::Sender<DataLoadResult>) {
+        let (tx, rx) = mpsc::channel(2);
+        let mut app = Self::base_app(repo.to_string(), config);
+        // Overrides from base_app defaults
+        app.pr_number = Some(pr_number);
+        app.original_pr_number = Some(pr_number);
+        app.data_receiver = Some((pr_number, rx));
+        app.zen_mode = app.config.diff.zen_mode;
+        (app, tx)
+    }
+
+    pub fn new_pr_list(repo: &str, config: Config) -> Self {
+        let zen_mode = config.diff.zen_mode;
+        let mut app = Self::base_app(repo.to_string(), config);
+        // Overrides from base_app defaults
+        app.pr_number = None;
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Loading;
+        app.started_from_pr_list = true;
+        app.previous_state = AppState::PullRequestList;
+        app.zen_mode = zen_mode;
+        app
     }
 
     /// PR一覧受信チャンネルを設定
@@ -510,74 +455,7 @@ impl App {
     }
 
     pub fn new_for_test() -> Self {
-        let config = Config::default();
-        Self {
-            repo: "test/repo".to_string(),
-            pr_number: Some(1),
-            data_state: DataState::Loading,
-            state: AppState::FileList,
-            prs: PrListState::default(),
-            started_from_pr_list: false,
-            diff_view_return_state: AppState::FileList,
-            preview_return_state: AppState::DiffView,
-            previous_state: AppState::FileList,
-            selected_file: 0,
-            file_list_scroll_offset: 0,
-            diff_scroll: DiffScrollState::new(ScrollMode::Margin),
-            multiline_selection: None,
-            input_mode: None,
-            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
-            config,
-            should_quit: false,
-            cmt: CommentState::default(),
-            diff_store: DiffCacheStore::new(MAX_STORE_ENTRIES),
-            help_scroll_offset: 0,
-            help_tab: HelpTab::default(),
-            config_scroll_offset: 0,
-            ai_rally_state: None,
-            working_dir: None,
-            data_receiver: None,
-            retry_sender: None,
-            rally_event_receiver: None,
-            rally_abort_handle: None,
-            rally_command_sender: None,
-            pending_rally_context: None,
-            pending_rally_prompt_loader: None,
-            start_ai_rally_on_load: false,
-            pending_ai_rally: false,
-            mark_viewed_receiver: None,
-            spinner_frame: 0,
-            jump_stack: Vec::new(),
-            pending_keys: SmallVec::new(),
-            pending_since: None,
-            symbol_popup: None,
-            symbol_search: SymbolSearchState::Idle,
-            session_cache: SessionCache::new(),
-            local_mode: false,
-            local_auto_focus: false,
-            zen_mode: false,
-            local_file_signatures: HashMap::new(),
-            local_file_patch_signatures: HashMap::new(),
-            original_pr_number: None,
-            watcher_handle: None,
-            refresh_pending: None,
-            markdown_rich: false,
-            suggestion_highlight_cache: None,
-            pr_description_scroll_offset: 0,
-            pr_description_cache: None,
-            file_list_filter: None,
-            batch_diff_receiver: None,
-            lazy_diff_receiver: None,
-            lazy_diff_pending_file: None,
-            chk: ChecksState::default(),
-            git_ops_state: None,
-            issue_state: None,
-            issue_detail_return: false,
-            update_available: None,
-            update_check_receiver: None,
-            tree_mode_active: false,
-            file_tree_state: None,
-        }
+        Self::base_app("test/repo".to_string(), Config::default())
     }
 
     /// ファイルツリーモードが有効で表示すべきかを判定

@@ -2222,9 +2222,8 @@ async fn test_help_from_pr_list_not_blocked_by_loading_guard() {
     let config = Config::default();
     let mut app = App::new_pr_list("owner/repo", config);
     // PR一覧のロードが完了した状態をシミュレート
-    // (pr_list_loading=falseでないとキー入力を受け付けない)
-    app.prs.pr_list_loading = false;
-    app.prs.pr_list = Some(vec![]);
+    // (LoadState::Loaded でないとキー入力を受け付けない)
+    app.prs.pr_list = LoadState::Loaded(vec![]);
     // data_stateはPR未選択のためLoadingのまま
     assert!(matches!(app.data_state, DataState::Loading));
 
@@ -2921,7 +2920,7 @@ fn test_handle_filter_input_returns_false_no_filter() {
 fn test_reapply_filter_pr_list() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
-    app.prs.pr_list = Some(vec![
+    app.prs.pr_list = LoadState::Loaded(vec![
         PullRequestSummary {
             number: 1,
             title: "fix bug".to_string(),
@@ -4504,8 +4503,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
 async fn test_handle_pr_list_input_quit() {
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.prs.pr_list_loading = false;
-    app.prs.pr_list = Some(vec![]);
+    app.prs.pr_list = LoadState::Loaded(vec![]);
 
     app.handle_pr_list_input(make_key(KeyCode::Char('q')))
         .await
@@ -4518,8 +4516,7 @@ async fn test_handle_pr_list_input_loading_blocks() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.prs.pr_list_loading = true;
-    app.prs.pr_list = Some(vec![PullRequestSummary {
+    app.prs.pr_list = LoadState::LoadingMore(vec![PullRequestSummary {
         number: 1,
         title: "PR 1".to_string(),
         state: "open".to_string(),
@@ -4545,8 +4542,7 @@ async fn test_handle_pr_list_input_move_down() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.prs.pr_list_loading = false;
-    app.prs.pr_list = Some(vec![
+    app.prs.pr_list = LoadState::Loaded(vec![
         PullRequestSummary {
             number: 1,
             title: "PR 1".to_string(),
@@ -4585,8 +4581,7 @@ async fn test_handle_pr_list_input_move_up() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.prs.pr_list_loading = false;
-    app.prs.pr_list = Some(vec![
+    app.prs.pr_list = LoadState::Loaded(vec![
         PullRequestSummary {
             number: 1,
             title: "PR 1".to_string(),
@@ -4625,8 +4620,7 @@ async fn test_handle_pr_list_input_jump_to_last() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.prs.pr_list_loading = false;
-    app.prs.pr_list = Some(
+    app.prs.pr_list = LoadState::Loaded(
         (0..10)
             .map(|i| PullRequestSummary {
                 number: i,
@@ -4662,7 +4656,7 @@ async fn test_reload_pr_list_resets_state() {
 
     assert_eq!(app.prs.selected_pr, 0);
     assert_eq!(app.prs.pr_list_scroll_offset, 0);
-    assert!(app.prs.pr_list_loading);
+    assert!(app.prs.pr_list.is_loading());
     assert!(!app.prs.pr_list_has_more);
     assert!(app.prs.pr_list_filter.is_none());
 }
@@ -4670,7 +4664,7 @@ async fn test_reload_pr_list_resets_state() {
 #[test]
 fn test_load_more_prs_skips_when_loading() {
     let mut app = App::new_for_test();
-    app.prs.pr_list_loading = true;
+    app.prs.pr_list = LoadState::Loading;
     let prev_receiver = app.prs.pr_list_receiver.is_some();
 
     app.load_more_prs();

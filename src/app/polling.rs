@@ -21,41 +21,35 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(page)) => {
-                // pr_list_scroll_offset が 0 ならリフレッシュ/フィルタ変更なので置き換え
-                // そうでなければ追加ロード
                 if self.prs.pr_list_scroll_offset == 0 && self.prs.selected_pr == 0 {
-                    // フィルタ変更やリフレッシュ: リストを置き換え
-                    self.prs.pr_list = Some(page.items);
-                } else if let Some(ref mut existing) = self.prs.pr_list {
-                    // 追加ロード: 既存リストに追加
+                    self.prs.pr_list = LoadState::Loaded(page.items);
+                } else if let Some(existing) = self.prs.pr_list.as_loaded_mut() {
                     existing.extend(page.items);
+                    // Transition LoadingMore -> Loaded
+                    let items = std::mem::take(existing);
+                    self.prs.pr_list = LoadState::Loaded(items);
                 } else {
-                    // 初回ロード
-                    self.prs.pr_list = Some(page.items);
+                    self.prs.pr_list = LoadState::Loaded(page.items);
                 }
                 self.prs.pr_list_has_more = page.has_more;
-                self.prs.pr_list_loading = false;
                 self.prs.pr_list_receiver = None;
 
-                // フィルタが有効な場合、新データに対してフィルタを再適用
                 if self.prs.pr_list_filter.as_ref().is_some_and(|f| f.has_query()) {
                     self.reapply_filter("pr");
                 }
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch PR list: {}", e);
-                if self.prs.pr_list.is_none() {
-                    self.prs.pr_list = Some(vec![]);
+                if self.prs.pr_list.as_loaded().is_none() {
+                    self.prs.pr_list = LoadState::Loaded(vec![]);
                 }
-                self.prs.pr_list_loading = false;
                 self.prs.pr_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                if self.prs.pr_list.is_none() {
-                    self.prs.pr_list = Some(vec![]);
+                if self.prs.pr_list.as_loaded().is_none() {
+                    self.prs.pr_list = LoadState::Loaded(vec![]);
                 }
-                self.prs.pr_list_loading = false;
                 self.prs.pr_list_receiver = None;
             }
         }

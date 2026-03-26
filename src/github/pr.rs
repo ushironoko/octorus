@@ -3,44 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::client::{
-    gh_api, gh_api_graphql, gh_api_paginate, gh_command, gh_command_allow_exit_codes, FieldValue,
+    check_graphql_errors, gh_api, gh_api_graphql, gh_api_paginate, gh_command,
+    gh_command_allow_exit_codes, FieldValue,
 };
 use crate::app::ReviewAction;
 
-/// PR状態フィルタ（型安全）
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PrStateFilter {
-    #[default]
-    Open,
-    Closed,
-    All,
-}
-
-impl PrStateFilter {
-    pub fn as_gh_arg(&self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Closed => "closed",
-            Self::All => "all",
-        }
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Closed => "closed",
-            Self::All => "all",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Open => Self::Closed,
-            Self::Closed => Self::All,
-            Self::All => Self::Open,
-        }
-    }
-}
+define_state_filter!(PrStateFilter);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusCheckRollupItem {
@@ -280,9 +248,7 @@ query($pullRequestId: ID!, $after: String) {
 
         let response = gh_api_graphql(query, &fields).await?;
 
-        if let Some(errors) = response.get("errors") {
-            anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
-        }
+        check_graphql_errors(&response)?;
 
         let parsed: GraphqlFilesViewedStateResponse = serde_json::from_value(response)
             .context("Failed to parse files viewed-state GraphQL response")?;
@@ -313,8 +279,7 @@ query($pullRequestId: ID!, $after: String) {
     Ok(viewed_state)
 }
 
-pub async fn mark_file_as_viewed(_repo: &str, pr_node_id: &str, path: &str) -> Result<()> {
-    let query = r#"
+const MARK_VIEWED_QUERY: &str = r#"
 mutation($pullRequestId: ID!, $path: String!) {
   markFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
     clientMutationId
@@ -322,24 +287,7 @@ mutation($pullRequestId: ID!, $path: String!) {
 }
 "#;
 
-    let response = gh_api_graphql(
-        query,
-        &[
-            ("pullRequestId", FieldValue::String(pr_node_id)),
-            ("path", FieldValue::String(path)),
-        ],
-    )
-    .await?;
-
-    if let Some(errors) = response.get("errors") {
-        anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
-    }
-
-    Ok(())
-}
-
-pub async fn unmark_file_as_viewed(_repo: &str, pr_node_id: &str, path: &str) -> Result<()> {
-    let query = r#"
+const UNMARK_VIEWED_QUERY: &str = r#"
 mutation($pullRequestId: ID!, $path: String!) {
   unmarkFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
     clientMutationId
@@ -347,6 +295,18 @@ mutation($pullRequestId: ID!, $path: String!) {
 }
 "#;
 
+pub async fn set_file_viewed(
+    _repo: &str,
+    pr_node_id: &str,
+    path: &str,
+    viewed: bool,
+) -> Result<()> {
+    let query = if viewed {
+        MARK_VIEWED_QUERY
+    } else {
+        UNMARK_VIEWED_QUERY
+    };
+
     let response = gh_api_graphql(
         query,
         &[
@@ -356,9 +316,7 @@ mutation($pullRequestId: ID!, $path: String!) {
     )
     .await?;
 
-    if let Some(errors) = response.get("errors") {
-        anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
-    }
+    check_graphql_errors(&response)?;
 
     Ok(())
 }
@@ -369,28 +327,8 @@ pub struct PrListPage {
     pub has_more: bool,
 }
 
-/// PR一覧取得（limit+1件取得してhas_moreを判定）
 pub async fn fetch_pr_list(repo: &str, state: PrStateFilter, limit: u32) -> Result<PrListPage> {
-    let output = gh_command(&[
-        "pr",
-        "list",
-        "-R",
-        repo,
-        "-s",
-        state.as_gh_arg(),
-        "--json",
-        "number,title,state,author,isDraft,labels,updatedAt,statusCheckRollup",
-        "--limit",
-        &(limit + 1).to_string(),
-    ])
-    .await?;
-
-    let mut items: Vec<PullRequestSummary> =
-        serde_json::from_str(&output).context("Failed to parse PR list response")?;
-    let has_more = items.len() > limit as usize;
-    items.truncate(limit as usize);
-
-    Ok(PrListPage { items, has_more })
+    fetch_pr_list_with_offset(repo, state, 0, limit).await
 }
 
 /// PR一覧取得（オフセット付き、追加ロード用）

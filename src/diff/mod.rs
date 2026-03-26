@@ -24,6 +24,38 @@ pub enum LineType {
     Meta,
 }
 
+impl LineType {
+    #[inline]
+    pub fn marker(&self) -> Option<&'static str> {
+        match self {
+            Self::Added => Some("+"),
+            Self::Removed => Some("-"),
+            Self::Context => Some(" "),
+            Self::Header | Self::Meta => None,
+        }
+    }
+
+    #[inline]
+    pub fn fg_color(&self) -> Option<ratatui::style::Color> {
+        match self {
+            Self::Header => Some(ratatui::style::Color::Cyan),
+            Self::Meta => Some(ratatui::style::Color::Yellow),
+            Self::Added => Some(ratatui::style::Color::Green),
+            Self::Removed => Some(ratatui::style::Color::Red),
+            Self::Context => None,
+        }
+    }
+
+    #[inline]
+    pub fn bg_color(&self) -> Option<ratatui::style::Color> {
+        match self {
+            Self::Added => Some(ratatui::style::Color::Rgb(0, 60, 0)),
+            Self::Removed => Some(ratatui::style::Color::Rgb(60, 0, 0)),
+            _ => None,
+        }
+    }
+}
+
 /// Information extracted from a single line in a diff patch
 #[derive(Debug, Clone)]
 pub struct DiffLineInfo {
