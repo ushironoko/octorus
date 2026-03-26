@@ -40,16 +40,12 @@ impl App {
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch PR list: {}", e);
-                if self.prs.pr_list.as_loaded().is_none() {
-                    self.prs.pr_list = LoadState::Loaded(vec![]);
-                }
+                self.prs.pr_list.recover_or(vec![]);
                 self.prs.pr_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                if self.prs.pr_list.as_loaded().is_none() {
-                    self.prs.pr_list = LoadState::Loaded(vec![]);
-                }
+                self.prs.pr_list.recover_or(vec![]);
                 self.prs.pr_list_receiver = None;
             }
         }
@@ -1198,17 +1194,13 @@ impl App {
             }
             Ok(Err(_e)) => {
                 let state = self.issue_state.as_mut().unwrap();
-                if !state.issues.is_loaded() {
-                    state.issues = LoadState::Loaded(vec![]);
-                }
+                state.issues.recover_or(vec![]);
                 state.issue_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 let state = self.issue_state.as_mut().unwrap();
-                if !state.issues.is_loaded() {
-                    state.issues = LoadState::Loaded(vec![]);
-                }
+                state.issues.recover_or(vec![]);
                 state.issue_list_receiver = None;
             }
         }

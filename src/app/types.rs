@@ -418,6 +418,16 @@ impl<T> LoadState<T> {
             _ => None,
         }
     }
+
+    /// Recover from a failed load-more by transitioning back to Loaded.
+    /// Preserves existing data from LoadingMore/Loaded; uses fallback otherwise.
+    pub fn recover_or(&mut self, fallback: T) {
+        let taken = std::mem::take(self);
+        match taken {
+            Self::LoadingMore(t) | Self::Loaded(t) => *self = Self::Loaded(t),
+            _ => *self = Self::Loaded(fallback),
+        }
+    }
 }
 
 /// Git status のファイルステータス

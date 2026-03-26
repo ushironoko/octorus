@@ -6876,3 +6876,156 @@ fn load_state_into_loaded() {
     let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loading;
     assert_eq!(state.into_loaded(), None);
 }
+
+#[test]
+fn load_state_recover_or_preserves_loading_more() {
+    let mut state = super::types::LoadState::LoadingMore(vec![1, 2, 3]);
+    state.recover_or(vec![]);
+    assert_eq!(state.as_loaded(), Some(&vec![1, 2, 3]));
+    assert!(state.is_loaded());
+}
+
+#[test]
+fn load_state_recover_or_preserves_loaded() {
+    let mut state = super::types::LoadState::Loaded(vec![4, 5]);
+    state.recover_or(vec![]);
+    assert_eq!(state.as_loaded(), Some(&vec![4, 5]));
+}
+
+#[test]
+fn load_state_recover_or_uses_fallback_for_loading() {
+    let mut state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loading;
+    state.recover_or(vec![]);
+    assert_eq!(state.as_loaded(), Some(&vec![]));
+    assert!(state.is_loaded());
+}
+
+#[tokio::test]
+async fn test_poll_pr_list_error_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::PullRequestSummary {
+        number: 1,
+        title: "existing".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        is_draft: false,
+        labels: vec![],
+        updated_at: "".to_string(),
+        status_check_rollup: vec![],
+    }];
+    app.prs.pr_list = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.prs.pr_list_receiver = Some(rx);
+    tx.send(Err("network error".to_string())).await.unwrap();
+
+    app.poll_pr_list_updates();
+
+    assert!(app.prs.pr_list.is_loaded());
+    assert!(!app.prs.pr_list.is_loading());
+    let items = app.prs.pr_list.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 1);
+}
+
+#[tokio::test]
+async fn test_poll_pr_list_disconnect_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::PullRequestSummary {
+        number: 2,
+        title: "existing".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        is_draft: false,
+        labels: vec![],
+        updated_at: "".to_string(),
+        status_check_rollup: vec![],
+    }];
+    app.prs.pr_list = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.prs.pr_list_receiver = Some(rx);
+    drop(tx);
+
+    app.poll_pr_list_updates();
+
+    assert!(app.prs.pr_list.is_loaded());
+    let items = app.prs.pr_list.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 2);
+}
+
+#[tokio::test]
+async fn test_poll_issue_list_error_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::IssueSummary {
+        number: 10,
+        title: "existing issue".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        labels: vec![],
+        updated_at: "".to_string(),
+        comments: vec![],
+    }];
+    let mut state = super::types::IssueState::new();
+    state.issues = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    state.issue_list_receiver = Some(rx);
+    app.issue_state = Some(state);
+    tx.send(Err("network error".to_string())).await.unwrap();
+
+    app.poll_issue_list_updates();
+
+    let issue_state = app.issue_state.as_ref().unwrap();
+    assert!(issue_state.issues.is_loaded());
+    assert!(!issue_state.issues.is_loading());
+    let items = issue_state.issues.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 10);
+}
+
+#[tokio::test]
+async fn test_poll_issue_list_disconnect_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::IssueSummary {
+        number: 20,
+        title: "existing issue".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        labels: vec![],
+        updated_at: "".to_string(),
+        comments: vec![],
+    }];
+    let mut state = super::types::IssueState::new();
+    state.issues = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    state.issue_list_receiver = Some(rx);
+    app.issue_state = Some(state);
+    drop(tx);
+
+    app.poll_issue_list_updates();
+
+    let issue_state = app.issue_state.as_ref().unwrap();
+    assert!(issue_state.issues.is_loaded());
+    let items = issue_state.issues.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 20);
+}
