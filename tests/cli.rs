@@ -42,3 +42,39 @@ fn invalid_repo_exits_with_error() {
         .assert()
         .failure();
 }
+
+#[test]
+fn pr_flag_only_enters_pr_list() {
+    cargo_bin_cmd!("or")
+        .args(["--repo", "invalid/nonexistent-repo-12345", "--pr"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Usage").not());
+}
+
+#[test]
+fn pr_short_flag_only_enters_pr_list() {
+    cargo_bin_cmd!("or")
+        .args(["--repo", "invalid/nonexistent-repo-12345", "-p"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Usage").not());
+}
+
+#[test]
+fn issue_flag_only_enters_issue_list() {
+    cargo_bin_cmd!("or")
+        .args(["--repo", "invalid/nonexistent-repo-12345", "--issue"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Usage").not());
+}
+
+#[test]
+fn issue_short_flag_only_enters_issue_list() {
+    cargo_bin_cmd!("or")
+        .args(["--repo", "invalid/nonexistent-repo-12345", "-i"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Usage").not());
+}

@@ -35,8 +35,8 @@ struct Args {
     #[arg(short, long)]
     repo: Option<String>,
 
-    /// Pull request number. Shows PR list if omitted.
-    #[arg(short, long, conflicts_with = "local")]
+    /// Pull request number. Shows PR list if flag only (no number).
+    #[arg(short, long, conflicts_with = "local", num_args = 0..=1, default_missing_value = "0")]
     pr: Option<u32>,
 
     /// Start AI Rally mode directly
@@ -209,8 +209,8 @@ async fn main() -> Result<()> {
         config::Config::load()?
     };
 
-    // Headless mode: --ai-rally with --pr or --local bypasses TUI entirely
-    if args.ai_rally && args.pr.is_some() {
+    // Headless mode: --ai-rally with --pr <number> or --local bypasses TUI entirely
+    if args.ai_rally && matches!(args.pr, Some(pr) if pr > 0) {
         let pr = args.pr.unwrap();
         let working_dir = resolve_working_dir(&args);
         match headless::run_headless_rally(
@@ -253,7 +253,7 @@ async fn main() -> Result<()> {
 
     if args.local {
         run_with_local_diff(&repo, &config, &args).await
-    } else if let Some(pr) = args.pr {
+    } else if let Some(pr) = args.pr.filter(|&n| n > 0) {
         run_with_pr(&repo, pr, &config, &args).await
     } else {
         run_with_pr_list(&repo, config, &args, args.issue).await
