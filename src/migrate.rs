@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -44,11 +45,13 @@ pub(crate) enum FileRecordStatus {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 enum FileStatus {
     UpToDate,
     MatchesPreviousDefault { version: String },
     Customized,
+    // check_file_status never returns Missing (file-not-found handled before calling it),
+    // but the variant keeps the match exhaustive for safety
+    #[allow(dead_code)]
     Missing,
 }
 
@@ -175,7 +178,6 @@ const HASH_SKILL_REF_CONFIG_0_6_0: &str =
 // Config Migrations (breaking changes registry)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct ConfigMigration {
     from_version: &'static str,
     to_version: &'static str,
@@ -799,15 +801,15 @@ fn display_plan(actions: &[MigrationAction]) {
                 path, description, ..
             } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("  \x1b[32m→\x1b[0m {} — {}", filename, description);
+                println!("  {} {} — {}", "→".green(), filename, description);
             }
             MigrationAction::SkipUpToDate { path, reason } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("  \x1b[32m✓\x1b[0m {} — {}", filename, reason);
+                println!("  {} {} — {}", "✓".green(), filename, reason);
             }
             MigrationAction::SkipCustomized { path, reason } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("  \x1b[33m✗\x1b[0m {} — skip ({})", filename, reason);
+                println!("  {} {} — skip ({})", "✗".yellow(), filename, reason);
             }
             MigrationAction::MigrateConfig { path, migrations } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
@@ -816,7 +818,8 @@ fn display_plan(actions: &[MigrationAction]) {
                     .map(|&i| CONFIG_MIGRATIONS[i].description)
                     .collect();
                 println!(
-                    "  \x1b[34m↑\x1b[0m {} — config migration: {}",
+                    "  {} {} — config migration: {}",
+                    "↑".blue(),
                     filename,
                     descriptions.join(", ")
                 );
@@ -825,7 +828,7 @@ fn display_plan(actions: &[MigrationAction]) {
                 path, description, ..
             } => {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("  \x1b[36m+\x1b[0m {} — {}", filename, description);
+                println!("  {} {} — {}", "+".cyan(), filename, description);
             }
             MigrationAction::WriteManifest { .. } => {
                 // Don't display manifest write in plan output
@@ -905,7 +908,8 @@ fn run_migrate_in(
     // Handle corrupted manifest
     if manifest_path.exists() && manifest.is_none() {
         eprintln!(
-            "\x1b[33mWarning:\x1b[0m .version file is corrupted. Proceeding in bootstrap mode."
+            "{} .version file is corrupted. Proceeding in bootstrap mode.",
+            "Warning:".yellow()
         );
     }
 
@@ -1005,7 +1009,7 @@ fn run_migrate_in(
     let mut working_manifest = manifest.unwrap_or_else(|| bootstrap_manifest(binary_version));
 
     if let Err(e) = execute_plan(&actions, &mut working_manifest, binary_version, is_local) {
-        eprintln!("\x1b[31mError during migration:\x1b[0m {}", e);
+        eprintln!("{} {}", "Error during migration:".red(), e);
         eprintln!();
         eprintln!(
             "A backup of your configuration exists at: {}",

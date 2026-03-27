@@ -4,6 +4,7 @@ use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyEventState, Key
 use lasso::Rodeo;
 
 use crate::cache::{PrCacheKey, PrData};
+use crate::github::comment::ReviewComment;
 use crate::github::{ChangedFile, PrCommit, PullRequest};
 use crate::loader::DataLoadResult;
 
@@ -46,7 +47,7 @@ fn test_find_diff_line_index_multi_hunk() {
 fn test_has_comment_at_current_line() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.file_comment_positions = vec![
+    app.cmt.file_comment_positions = vec![
         CommentPosition {
             diff_line_index: 5,
             comment_index: 0,
@@ -72,7 +73,7 @@ fn test_get_comment_indices_at_current_line() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     // Two comments on line 5, one on line 10
-    app.file_comment_positions = vec![
+    app.cmt.file_comment_positions = vec![
         CommentPosition {
             diff_line_index: 5,
             comment_index: 0,
@@ -104,7 +105,7 @@ fn test_get_comment_indices_at_current_line() {
 fn test_jump_to_next_comment_basic() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.file_comment_positions = vec![
+    app.cmt.file_comment_positions = vec![
         CommentPosition {
             diff_line_index: 5,
             comment_index: 0,
@@ -134,7 +135,7 @@ fn test_jump_to_next_comment_basic() {
 fn test_jump_to_next_comment_no_wrap() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.file_comment_positions = vec![CommentPosition {
+    app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 5,
         comment_index: 0,
     }];
@@ -149,7 +150,7 @@ fn test_jump_to_next_comment_no_wrap() {
 fn test_jump_to_prev_comment_basic() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.file_comment_positions = vec![
+    app.cmt.file_comment_positions = vec![
         CommentPosition {
             diff_line_index: 5,
             comment_index: 0,
@@ -179,7 +180,7 @@ fn test_jump_to_prev_comment_basic() {
 fn test_jump_to_prev_comment_no_wrap() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.file_comment_positions = vec![CommentPosition {
+    app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 5,
         comment_index: 0,
     }];
@@ -194,7 +195,7 @@ fn test_jump_to_prev_comment_no_wrap() {
 fn test_jump_with_empty_positions() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.file_comment_positions = vec![];
+    app.cmt.file_comment_positions = vec![];
 
     app.diff_scroll.selected_line = 10;
     app.jump_to_next_comment();
@@ -260,16 +261,16 @@ fn test_back_to_pr_list_clears_view_receivers() {
 
     // Set up additional receivers to simulate in-flight requests
     let (_comment_tx, comment_rx) = mpsc::channel(1);
-    app.comment_receiver = Some((1, comment_rx));
+    app.cmt.comment_receiver = Some((1, comment_rx));
     let (_disc_tx, disc_rx) = mpsc::channel(1);
-    app.discussion_comment_receiver = Some((1, disc_rx));
+    app.cmt.discussion_comment_receiver = Some((1, disc_rx));
     let (_submit_tx, submit_rx) = mpsc::channel(1);
-    app.comment_submit_receiver = Some((1, submit_rx));
+    app.cmt.comment_submit_receiver = Some((1, submit_rx));
     let (_mark_tx, mark_rx) = mpsc::channel(1);
     app.mark_viewed_receiver = Some((1, mark_rx));
-    app.comment_submitting = true;
-    app.comments_loading = true;
-    app.discussion_comments_loading = true;
+    app.cmt.comment_submitting = true;
+    app.cmt.comments_loading = true;
+    app.cmt.discussion_comments_loading = true;
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(1);
     app.retry_sender = Some(retry_tx);
 
@@ -279,16 +280,16 @@ fn test_back_to_pr_list_clears_view_receivers() {
     assert!(app.data_receiver.is_some());
     assert!(app.retry_sender.is_some());
     // view 系 receivers はクリア
-    assert!(app.comment_receiver.is_none());
-    assert!(app.discussion_comment_receiver.is_none());
-    assert!(app.comment_submit_receiver.is_none());
+    assert!(app.cmt.comment_receiver.is_none());
+    assert!(app.cmt.discussion_comment_receiver.is_none());
+    assert!(app.cmt.comment_submit_receiver.is_none());
     assert!(app.mark_viewed_receiver.is_none());
     assert!(!app.diff_store.has_highlight_rx());
     assert!(!app.diff_store.has_prefetch_rx());
     // Loading flags should be cleared
-    assert!(!app.comment_submitting);
-    assert!(!app.comments_loading);
-    assert!(!app.discussion_comments_loading);
+    assert!(!app.cmt.comment_submitting);
+    assert!(!app.cmt.comments_loading);
+    assert!(!app.cmt.discussion_comments_loading);
     // PR number should be None
     assert!(app.pr_number.is_none());
     assert_eq!(app.state, AppState::PullRequestList);
@@ -449,8 +450,8 @@ async fn test_poll_comment_updates_discards_stale_pr_comments() {
 
     // Set up a comment receiver for PR #1
     let (comment_tx, comment_rx) = mpsc::channel(1);
-    app.comment_receiver = Some((1, comment_rx));
-    app.comments_loading = true;
+    app.cmt.comment_receiver = Some((1, comment_rx));
+    app.cmt.comments_loading = true;
 
     // Simulate switching to PR #2
     app.pr_number = Some(2);
@@ -461,9 +462,9 @@ async fn test_poll_comment_updates_discards_stale_pr_comments() {
     // Poll should NOT panic and should NOT apply PR #1 comments to UI
     app.poll_comment_updates();
 
-    assert!(app.comment_receiver.is_none());
+    assert!(app.cmt.comment_receiver.is_none());
     // comments_loading should NOT have been cleared (different PR)
-    assert!(app.comments_loading);
+    assert!(app.cmt.comments_loading);
     // Session cache should NOT have comments for PR #1 since pr_data was never stored
     // (comments are only cached for keys that have an existing pr_data entry)
     let cache_key = PrCacheKey {
@@ -667,7 +668,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
     app.selected_file = 4;
 
     // Set up review comments for file_4.rs (the old selected file)
-    app.review_comments = Some(vec![ReviewComment {
+    app.cmt.review_comments = Some(vec![ReviewComment {
         id: 1,
         path: "file_4.rs".to_string(),
         line: Some(1),
@@ -679,13 +680,13 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
     }]);
 
     // Pre-populate stale comment positions for the old file
-    app.file_comment_positions = vec![CommentPosition {
+    app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 2,
         comment_index: 0,
     }];
-    app.file_comment_lines.insert(2);
-    app.comment_panel_open = true;
-    app.comment_panel_scroll = 5;
+    app.cmt.file_comment_lines.insert(2);
+    app.cmt.comment_panel_open = true;
+    app.cmt.comment_panel_scroll = 5;
 
     // Refresh with only 2 files (selected_file will be clamped from 4 to 1)
     let fewer_files: Vec<ChangedFile> = (0..2)
@@ -705,21 +706,21 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
 
     // file_comment_positions should be recalculated for file_1.rs (no matching comments)
     assert!(
-        app.file_comment_positions.is_empty(),
+        app.cmt.file_comment_positions.is_empty(),
         "file_comment_positions should be recalculated for new file (no comments for file_1.rs)"
     );
     assert!(
-        app.file_comment_lines.is_empty(),
+        app.cmt.file_comment_lines.is_empty(),
         "file_comment_lines should be recalculated for new file"
     );
 
     // comment_panel should be closed
     assert!(
-        !app.comment_panel_open,
+        !app.cmt.comment_panel_open,
         "comment_panel_open should be reset when selected_file changes"
     );
     assert_eq!(
-        app.comment_panel_scroll, 0,
+        app.cmt.comment_panel_scroll, 0,
         "comment_panel_scroll should be reset when selected_file changes"
     );
 }
@@ -1138,12 +1139,12 @@ fn test_toggle_auto_focus() {
 
     app.toggle_auto_focus();
     assert!(app.local_auto_focus);
-    assert!(app.submission_result.is_some());
-    assert!(app.submission_result.as_ref().unwrap().1.contains("ON"));
+    assert!(app.cmt.submission_result.is_some());
+    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("ON"));
 
     app.toggle_auto_focus();
     assert!(!app.local_auto_focus);
-    assert!(app.submission_result.as_ref().unwrap().1.contains("OFF"));
+    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("OFF"));
 }
 
 #[test]
@@ -1153,7 +1154,7 @@ fn test_toggle_local_mode_blocks_during_ai_rally() {
 
     app.toggle_local_mode();
     assert!(!app.local_mode);
-    assert!(app.submission_result.as_ref().unwrap().1.contains("Cannot"));
+    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("Cannot"));
 }
 
 // ===================================================================
@@ -1162,8 +1163,8 @@ fn test_back_to_pr_list_resets_pr_state() {
     let mut app = App::new_for_test();
     app.started_from_pr_list = true;
     app.pr_number = Some(42);
-    app.review_comments = Some(vec![]);
-    app.discussion_comments = Some(vec![]);
+    app.cmt.review_comments = Some(vec![]);
+    app.cmt.discussion_comments = Some(vec![]);
     app.diff_store.current = Some(crate::ui::diff_view::build_plain_diff_cache(
         "@@ -1 +1 @@\n+x",
         4,
@@ -1177,8 +1178,8 @@ fn test_back_to_pr_list_resets_pr_state() {
     // PR 固有の状態がリセットされること
     assert!(app.pr_number.is_none());
     assert!(matches!(app.data_state, DataState::Loading));
-    assert!(app.review_comments.is_none());
-    assert!(app.discussion_comments.is_none());
+    assert!(app.cmt.review_comments.is_none());
+    assert!(app.cmt.discussion_comments.is_none());
     assert!(app.diff_store.current.is_none());
     assert!(app.diff_store.store.is_empty());
     assert_eq!(app.selected_file, 0);
@@ -1196,16 +1197,16 @@ fn test_back_to_pr_list_clears_all_receivers() {
     // レシーバーを設定
     let (_tx1, rx1) =
         mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
-    app.comment_receiver = Some((1, rx1));
+    app.cmt.comment_receiver = Some((1, rx1));
     let (_tx2, rx2) = mpsc::channel(1);
     app.diff_store.set_highlight_rx(rx2);
     let (_tx3, rx3) = mpsc::channel(1);
     app.diff_store.set_prefetch_rx(rx3);
     let (_tx4, rx4) =
         mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
-    app.discussion_comment_receiver = Some((1, rx4));
+    app.cmt.discussion_comment_receiver = Some((1, rx4));
     let (_tx5, rx5) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
-    app.comment_submit_receiver = Some((1, rx5));
+    app.cmt.comment_submit_receiver = Some((1, rx5));
     let (_tx6, rx6) = mpsc::channel::<MarkViewedResult>(1);
     app.mark_viewed_receiver = Some((1, rx6));
     let (_tx7, rx7) = mpsc::channel::<Vec<crate::loader::SingleFileDiffResult>>(1);
@@ -1213,25 +1214,25 @@ fn test_back_to_pr_list_clears_all_receivers() {
     let (_tx8, rx8) = mpsc::channel::<crate::loader::SingleFileDiffResult>(1);
     app.lazy_diff_receiver = Some(rx8);
     app.lazy_diff_pending_file = Some("file.rs".to_string());
-    app.comment_submitting = true;
-    app.comments_loading = true;
-    app.discussion_comments_loading = true;
+    app.cmt.comment_submitting = true;
+    app.cmt.comments_loading = true;
+    app.cmt.discussion_comments_loading = true;
 
     app.back_to_pr_list();
 
     // 全レシーバーがクリアされること
-    assert!(app.comment_receiver.is_none());
+    assert!(app.cmt.comment_receiver.is_none());
     assert!(!app.diff_store.has_highlight_rx());
     assert!(!app.diff_store.has_prefetch_rx());
-    assert!(app.discussion_comment_receiver.is_none());
-    assert!(app.comment_submit_receiver.is_none());
+    assert!(app.cmt.discussion_comment_receiver.is_none());
+    assert!(app.cmt.comment_submit_receiver.is_none());
     assert!(app.mark_viewed_receiver.is_none());
     assert!(app.batch_diff_receiver.is_none());
     assert!(app.lazy_diff_receiver.is_none());
     assert!(app.lazy_diff_pending_file.is_none());
-    assert!(!app.comment_submitting);
-    assert!(!app.comments_loading);
-    assert!(!app.discussion_comments_loading);
+    assert!(!app.cmt.comment_submitting);
+    assert!(!app.cmt.comments_loading);
+    assert!(!app.cmt.discussion_comments_loading);
 }
 
 /// PR(--pr指定)→Local→PR の往復で pr_number が復元されること
@@ -1250,14 +1251,14 @@ fn test_toggle_local_mode_pr_to_local_and_back() {
     assert!(app.local_mode);
     assert_eq!(app.pr_number, Some(0));
     assert_eq!(app.selected_file, 0); // リセットされる
-    assert!(app.submission_result.as_ref().unwrap().1.contains("Local"));
+    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("Local"));
 
     // Local → PR: original_pr_number で復帰
     app.toggle_local_mode();
     assert!(!app.local_mode);
     assert_eq!(app.pr_number, Some(42));
     assert_eq!(app.state, AppState::FileList);
-    assert!(app.submission_result.as_ref().unwrap().1.contains("PR"));
+    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("PR"));
 }
 
 /// PR→Local→PR の2往復でも pr_number が安定すること
@@ -1364,7 +1365,7 @@ fn test_toggle_local_mode_from_local_startup_with_dummy_repo() {
     app.toggle_local_mode();
     assert!(app.local_mode, "should stay in local mode with dummy repo");
     assert!(
-        app.submission_result.as_ref().unwrap().1.contains("No PR"),
+        app.cmt.submission_result.as_ref().unwrap().1.contains("No PR"),
         "should show error message"
     );
 }
@@ -1592,7 +1593,7 @@ async fn test_poll_mark_viewed_applies_unmark() {
         panic!("Expected DataState::Loaded");
     }
 
-    let (success, msg) = app.submission_result.unwrap();
+    let (success, msg) = app.cmt.submission_result.unwrap();
     assert!(success);
     assert!(msg.contains("unviewed"));
 }
@@ -2221,9 +2222,8 @@ async fn test_help_from_pr_list_not_blocked_by_loading_guard() {
     let config = Config::default();
     let mut app = App::new_pr_list("owner/repo", config);
     // PR一覧のロードが完了した状態をシミュレート
-    // (pr_list_loading=falseでないとキー入力を受け付けない)
-    app.pr_list_loading = false;
-    app.pr_list = Some(vec![]);
+    // (LoadState::Loaded でないとキー入力を受け付けない)
+    app.prs.pr_list = LoadState::Loaded(vec![]);
     // data_stateはPR未選択のためLoadingのまま
     assert!(matches!(app.data_state, DataState::Loading));
 
@@ -2361,53 +2361,53 @@ fn test_key_event_kind_press_only() {
 #[test]
 fn test_pending_approve_choice_q_cancels_and_clears_prompt() {
     let mut app = App::new_for_test();
-    app.pending_approve_body = Some(String::new());
-    app.submission_result = Some((true, "placeholder".to_string()));
-    app.submission_result_time = Some(Instant::now());
+    app.cmt.pending_approve_body = Some(String::new());
+    app.cmt.submission_result = Some((true, "placeholder".to_string()));
+    app.cmt.submission_result_time = Some(Instant::now());
 
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('q')));
 
     assert_eq!(choice, PendingApproveChoice::Cancel);
-    assert!(app.pending_approve_body.is_none());
-    assert!(app.submission_result.is_none());
-    assert!(app.submission_result_time.is_none());
+    assert!(app.cmt.pending_approve_body.is_none());
+    assert!(app.cmt.submission_result.is_none());
+    assert!(app.cmt.submission_result_time.is_none());
 }
 
 #[test]
 fn test_pending_approve_choice_esc_cancels() {
     let mut app = App::new_for_test();
-    app.pending_approve_body = Some("some body".to_string());
+    app.cmt.pending_approve_body = Some("some body".to_string());
 
     // quit キー（デフォルト: q）でキャンセル
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('q')));
 
     assert_eq!(choice, PendingApproveChoice::Cancel);
-    assert!(app.pending_approve_body.is_none());
+    assert!(app.cmt.pending_approve_body.is_none());
 }
 
 #[test]
 fn test_pending_approve_choice_a_submits_empty_body() {
     let mut app = App::new_for_test();
-    app.pending_approve_body = Some(String::new());
+    app.cmt.pending_approve_body = Some(String::new());
 
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('a')));
 
     assert_eq!(choice, PendingApproveChoice::Submit);
     // pending_approve_body is NOT taken by handle_pending_approve_choice;
     // it is taken by the caller (handle_input) before calling submit_review_with_body.
-    assert!(app.pending_approve_body.is_some());
+    assert!(app.cmt.pending_approve_body.is_some());
 }
 
 #[test]
 fn test_pending_approve_choice_a_submits_with_body() {
     let mut app = App::new_for_test();
-    app.pending_approve_body = Some("LGTM!".to_string());
+    app.cmt.pending_approve_body = Some("LGTM!".to_string());
 
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('a')));
 
     assert_eq!(choice, PendingApproveChoice::Submit);
-    assert!(app.pending_approve_body.is_some());
-    assert_eq!(app.pending_approve_body.as_deref(), Some("LGTM!"));
+    assert!(app.cmt.pending_approve_body.is_some());
+    assert_eq!(app.cmt.pending_approve_body.as_deref(), Some("LGTM!"));
 }
 
 // ===================================================================
@@ -2920,7 +2920,7 @@ fn test_handle_filter_input_returns_false_no_filter() {
 fn test_reapply_filter_pr_list() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
-    app.pr_list = Some(vec![
+    app.prs.pr_list = LoadState::Loaded(vec![
         PullRequestSummary {
             number: 1,
             title: "fix bug".to_string(),
@@ -2950,11 +2950,11 @@ fn test_reapply_filter_pr_list() {
     filter.insert_char('b');
     filter.insert_char('u');
     filter.insert_char('g');
-    app.pr_list_filter = Some(filter);
+    app.prs.pr_list_filter = Some(filter);
 
     app.reapply_filter("pr");
 
-    let filter = app.pr_list_filter.as_ref().unwrap();
+    let filter = app.prs.pr_list_filter.as_ref().unwrap();
     assert_eq!(filter.matched_indices, vec![0]); // only "fix bug"
 }
 
@@ -3070,16 +3070,16 @@ fn test_handle_filter_navigation_up() {
 fn test_handle_filter_esc_clears_pr() {
     let mut app = App::new_for_test();
     let filter = crate::filter::ListFilter::new();
-    app.pr_list_filter = Some(filter);
+    app.prs.pr_list_filter = Some(filter);
 
     assert!(app.handle_filter_esc("pr"));
-    assert!(app.pr_list_filter.is_none());
+    assert!(app.prs.pr_list_filter.is_none());
 }
 
 #[test]
 fn test_handle_filter_esc_no_filter() {
     let mut app = App::new_for_test();
-    app.pr_list_filter = None;
+    app.prs.pr_list_filter = None;
 
     assert!(!app.handle_filter_esc("pr"));
 }
@@ -3186,20 +3186,20 @@ fn test_refresh_all_resets_state() {
     let mut app = App::new_for_test();
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
     app.retry_sender = Some(retry_tx);
-    app.review_comments = Some(vec![]);
-    app.discussion_comments = Some(vec![]);
-    app.comments_loading = true;
-    app.discussion_comments_loading = true;
+    app.cmt.review_comments = Some(vec![]);
+    app.cmt.discussion_comments = Some(vec![]);
+    app.cmt.comments_loading = true;
+    app.cmt.discussion_comments_loading = true;
     let filter = crate::filter::ListFilter::new();
     app.file_list_filter = Some(filter);
 
     app.refresh_all();
 
     assert!(matches!(app.data_state, DataState::Loading));
-    assert!(app.review_comments.is_none());
-    assert!(app.discussion_comments.is_none());
-    assert!(!app.comments_loading);
-    assert!(!app.discussion_comments_loading);
+    assert!(app.cmt.review_comments.is_none());
+    assert!(app.cmt.discussion_comments.is_none());
+    assert!(!app.cmt.comments_loading);
+    assert!(!app.cmt.discussion_comments_loading);
     assert!(app.file_list_filter.is_none());
 }
 
@@ -4297,16 +4297,16 @@ async fn test_open_comment_list_sets_previous_state() {
 #[test]
 fn test_update_file_comment_positions_empty_comments() {
     let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
-    app.review_comments = Some(vec![]);
+    app.cmt.review_comments = Some(vec![]);
     app.update_file_comment_positions();
-    assert!(app.file_comment_positions.is_empty());
+    assert!(app.cmt.file_comment_positions.is_empty());
 }
 
 #[test]
 fn test_update_file_comment_positions_with_comments() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+    app.cmt.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 1,
         path: "test.rs".to_string(),
         line: Some(1),
@@ -4317,14 +4317,14 @@ fn test_update_file_comment_positions_with_comments() {
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }]);
     app.update_file_comment_positions();
-    assert_eq!(app.file_comment_positions.len(), 1);
+    assert_eq!(app.cmt.file_comment_positions.len(), 1);
 }
 
 #[test]
 fn test_update_file_comment_positions_stale_comment() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+    app.cmt.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 1,
         path: "other_file.rs".to_string(), // different file
         line: Some(1),
@@ -4335,7 +4335,7 @@ fn test_update_file_comment_positions_stale_comment() {
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }]);
     app.update_file_comment_positions();
-    assert!(app.file_comment_positions.is_empty());
+    assert!(app.cmt.file_comment_positions.is_empty());
 }
 
 #[test]
@@ -4375,8 +4375,8 @@ fn test_comment_panel_inner_width() {
 fn test_max_comment_panel_scroll() {
     let mut app = App::new_for_test();
     app.state = AppState::DiffView;
-    app.file_comment_positions = vec![];
-    app.review_comments = Some(vec![]);
+    app.cmt.file_comment_positions = vec![];
+    app.cmt.review_comments = Some(vec![]);
 
     // No comments at current line -> content = 1 ("No comments..." message)
     let max = app.max_comment_panel_scroll(40, 80);
@@ -4391,7 +4391,7 @@ fn test_enter_reply_input_sets_mode() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);
     app.diff_scroll.selected_line = 1;
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+    app.cmt.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 42,
         path: "test.rs".to_string(),
         line: Some(1),
@@ -4401,7 +4401,7 @@ fn test_enter_reply_input_sets_mode() {
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }]);
-    app.file_comment_positions = vec![CommentPosition {
+    app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 1,
         comment_index: 0,
     }];
@@ -4416,23 +4416,23 @@ fn test_enter_reply_input_sets_mode() {
 #[test]
 fn test_handle_discussion_detail_scroll_j() {
     let mut app = App::new_for_test();
-    app.discussion_comment_detail_mode = true;
-    app.discussion_comment_detail_scroll = 0;
+    app.cmt.discussion_comment_detail_mode = true;
+    app.cmt.discussion_comment_detail_scroll = 0;
 
     let result = app.handle_discussion_detail_input(make_key(KeyCode::Char('j')), 20);
     assert!(result.is_ok());
-    assert_eq!(app.discussion_comment_detail_scroll, 1);
+    assert_eq!(app.cmt.discussion_comment_detail_scroll, 1);
 }
 
 #[test]
 fn test_handle_discussion_detail_scroll_k() {
     let mut app = App::new_for_test();
-    app.discussion_comment_detail_mode = true;
-    app.discussion_comment_detail_scroll = 5;
+    app.cmt.discussion_comment_detail_mode = true;
+    app.cmt.discussion_comment_detail_scroll = 5;
 
     let result = app.handle_discussion_detail_input(make_key(KeyCode::Char('k')), 20);
     assert!(result.is_ok());
-    assert_eq!(app.discussion_comment_detail_scroll, 4);
+    assert_eq!(app.cmt.discussion_comment_detail_scroll, 4);
 }
 
 #[tokio::test]
@@ -4477,7 +4477,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
             },
         ],
     };
-    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+    app.cmt.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 1,
         path: "second.rs".to_string(),
         line: Some(2),
@@ -4487,7 +4487,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }]);
-    app.selected_comment = 0;
+    app.cmt.selected_comment = 0;
 
     app.jump_to_comment();
 
@@ -4503,8 +4503,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
 async fn test_handle_pr_list_input_quit() {
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.pr_list_loading = false;
-    app.pr_list = Some(vec![]);
+    app.prs.pr_list = LoadState::Loaded(vec![]);
 
     app.handle_pr_list_input(make_key(KeyCode::Char('q')))
         .await
@@ -4517,8 +4516,7 @@ async fn test_handle_pr_list_input_loading_blocks() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.pr_list_loading = true;
-    app.pr_list = Some(vec![PullRequestSummary {
+    app.prs.pr_list = LoadState::LoadingMore(vec![PullRequestSummary {
         number: 1,
         title: "PR 1".to_string(),
         state: "open".to_string(),
@@ -4530,13 +4528,13 @@ async fn test_handle_pr_list_input_loading_blocks() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         status_check_rollup: vec![],
     }]);
-    app.selected_pr = 0;
+    app.prs.selected_pr = 0;
 
     // j key should be blocked during loading
     app.handle_pr_list_input(make_key(KeyCode::Char('j')))
         .await
         .unwrap();
-    assert_eq!(app.selected_pr, 0); // unchanged
+    assert_eq!(app.prs.selected_pr, 0); // unchanged
 }
 
 #[tokio::test]
@@ -4544,8 +4542,7 @@ async fn test_handle_pr_list_input_move_down() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.pr_list_loading = false;
-    app.pr_list = Some(vec![
+    app.prs.pr_list = LoadState::Loaded(vec![
         PullRequestSummary {
             number: 1,
             title: "PR 1".to_string(),
@@ -4571,12 +4568,12 @@ async fn test_handle_pr_list_input_move_down() {
             status_check_rollup: vec![],
         },
     ]);
-    app.selected_pr = 0;
+    app.prs.selected_pr = 0;
 
     app.handle_pr_list_input(make_key(KeyCode::Char('j')))
         .await
         .unwrap();
-    assert_eq!(app.selected_pr, 1);
+    assert_eq!(app.prs.selected_pr, 1);
 }
 
 #[tokio::test]
@@ -4584,8 +4581,7 @@ async fn test_handle_pr_list_input_move_up() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.pr_list_loading = false;
-    app.pr_list = Some(vec![
+    app.prs.pr_list = LoadState::Loaded(vec![
         PullRequestSummary {
             number: 1,
             title: "PR 1".to_string(),
@@ -4611,12 +4607,12 @@ async fn test_handle_pr_list_input_move_up() {
             status_check_rollup: vec![],
         },
     ]);
-    app.selected_pr = 1;
+    app.prs.selected_pr = 1;
 
     app.handle_pr_list_input(make_key(KeyCode::Char('k')))
         .await
         .unwrap();
-    assert_eq!(app.selected_pr, 0);
+    assert_eq!(app.prs.selected_pr, 0);
 }
 
 #[tokio::test]
@@ -4624,8 +4620,7 @@ async fn test_handle_pr_list_input_jump_to_last() {
     use crate::github::PullRequestSummary;
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
-    app.pr_list_loading = false;
-    app.pr_list = Some(
+    app.prs.pr_list = LoadState::Loaded(
         (0..10)
             .map(|i| PullRequestSummary {
                 number: i,
@@ -4641,41 +4636,41 @@ async fn test_handle_pr_list_input_jump_to_last() {
             })
             .collect(),
     );
-    app.selected_pr = 0;
+    app.prs.selected_pr = 0;
 
     app.handle_pr_list_input(make_key(KeyCode::Char('G')))
         .await
         .unwrap();
-    assert_eq!(app.selected_pr, 9);
+    assert_eq!(app.prs.selected_pr, 9);
 }
 
 #[tokio::test]
 async fn test_reload_pr_list_resets_state() {
     let mut app = App::new_for_test();
-    app.selected_pr = 5;
-    app.pr_list_scroll_offset = 10;
+    app.prs.selected_pr = 5;
+    app.prs.pr_list_scroll_offset = 10;
     let filter = crate::filter::ListFilter::new();
-    app.pr_list_filter = Some(filter);
+    app.prs.pr_list_filter = Some(filter);
 
     app.reload_pr_list();
 
-    assert_eq!(app.selected_pr, 0);
-    assert_eq!(app.pr_list_scroll_offset, 0);
-    assert!(app.pr_list_loading);
-    assert!(!app.pr_list_has_more);
-    assert!(app.pr_list_filter.is_none());
+    assert_eq!(app.prs.selected_pr, 0);
+    assert_eq!(app.prs.pr_list_scroll_offset, 0);
+    assert!(app.prs.pr_list.is_loading());
+    assert!(!app.prs.pr_list_has_more);
+    assert!(app.prs.pr_list_filter.is_none());
 }
 
 #[test]
 fn test_load_more_prs_skips_when_loading() {
     let mut app = App::new_for_test();
-    app.pr_list_loading = true;
-    let prev_receiver = app.pr_list_receiver.is_some();
+    app.prs.pr_list = LoadState::Loading;
+    let prev_receiver = app.prs.pr_list_receiver.is_some();
 
     app.load_more_prs();
 
     // Should not create a new receiver
-    assert_eq!(app.pr_list_receiver.is_some(), prev_receiver);
+    assert_eq!(app.prs.pr_list_receiver.is_some(), prev_receiver);
 }
 
 #[test]
@@ -4862,17 +4857,17 @@ async fn test_poll_comment_submit_success() {
     use crate::loader::CommentSubmitResult;
     let mut app = App::new_for_test();
     app.pr_number = Some(1);
-    app.comment_submitting = true;
+    app.cmt.comment_submitting = true;
 
     let (tx, rx) = mpsc::channel(1);
-    app.comment_submit_receiver = Some((1, rx));
+    app.cmt.comment_submit_receiver = Some((1, rx));
 
     tx.send(CommentSubmitResult::Success).await.unwrap();
 
     app.poll_comment_submit_updates();
 
-    assert!(!app.comment_submitting);
-    let (success, _) = app.submission_result.unwrap();
+    assert!(!app.cmt.comment_submitting);
+    let (success, _) = app.cmt.submission_result.unwrap();
     assert!(success);
 }
 
@@ -4881,10 +4876,10 @@ async fn test_poll_comment_submit_failure() {
     use crate::loader::CommentSubmitResult;
     let mut app = App::new_for_test();
     app.pr_number = Some(1);
-    app.comment_submitting = true;
+    app.cmt.comment_submitting = true;
 
     let (tx, rx) = mpsc::channel(1);
-    app.comment_submit_receiver = Some((1, rx));
+    app.cmt.comment_submit_receiver = Some((1, rx));
 
     tx.send(CommentSubmitResult::Error("network error".to_string()))
         .await
@@ -4892,8 +4887,8 @@ async fn test_poll_comment_submit_failure() {
 
     app.poll_comment_submit_updates();
 
-    assert!(!app.comment_submitting);
-    let (success, msg) = app.submission_result.unwrap();
+    assert!(!app.cmt.comment_submitting);
+    let (success, msg) = app.cmt.submission_result.unwrap();
     assert!(!success);
     assert!(msg.contains("network error"));
 }
@@ -4931,7 +4926,7 @@ async fn test_poll_mark_viewed_success() {
     if let DataState::Loaded { files, .. } = &app.data_state {
         assert!(files[0].viewed);
     }
-    let (success, _) = app.submission_result.unwrap();
+    let (success, _) = app.cmt.submission_result.unwrap();
     assert!(success);
 }
 
@@ -4965,7 +4960,7 @@ async fn test_poll_mark_viewed_error() {
 
     app.poll_mark_viewed_updates();
 
-    let (success, msg) = app.submission_result.unwrap();
+    let (success, msg) = app.cmt.submission_result.unwrap();
     assert!(!success);
     assert!(msg.contains("API error"));
 }
@@ -4976,16 +4971,16 @@ async fn test_poll_comment_updates_cross_pr_discards() {
     app.pr_number = Some(2); // Current PR is 2
 
     let (tx, rx) = mpsc::channel(1);
-    app.comment_receiver = Some((1, rx)); // Data is for PR 1
-    app.comments_loading = true;
+    app.cmt.comment_receiver = Some((1, rx)); // Data is for PR 1
+    app.cmt.comments_loading = true;
 
     tx.send(Ok(vec![])).await.unwrap();
 
     app.poll_comment_updates();
 
     // Should NOT update UI for wrong PR
-    assert!(app.comments_loading);
-    assert!(app.review_comments.is_none());
+    assert!(app.cmt.comments_loading);
+    assert!(app.cmt.review_comments.is_none());
 }
 
 #[tokio::test]
@@ -4994,16 +4989,16 @@ async fn test_poll_discussion_comment_cross_pr_discards() {
     app.pr_number = Some(2); // Current PR is 2
 
     let (tx, rx) = mpsc::channel(1);
-    app.discussion_comment_receiver = Some((1, rx)); // Data is for PR 1
-    app.discussion_comments_loading = true;
+    app.cmt.discussion_comment_receiver = Some((1, rx)); // Data is for PR 1
+    app.cmt.discussion_comments_loading = true;
 
     tx.send(Ok(vec![])).await.unwrap();
 
     app.poll_discussion_comment_updates();
 
     // Should NOT update UI for wrong PR
-    assert!(app.discussion_comments_loading);
-    assert!(app.discussion_comments.is_none());
+    assert!(app.cmt.discussion_comments_loading);
+    assert!(app.cmt.discussion_comments.is_none());
 }
 
 // --- Help Tab Tests ---
@@ -5654,8 +5649,8 @@ fn test_symbol_search_not_found_resets_to_idle() {
 
     app.poll_symbol_search_updates();
     assert!(matches!(app.symbol_search, SymbolSearchState::Idle));
-    assert!(app.submission_result.is_some());
-    let (success, msg) = app.submission_result.unwrap();
+    assert!(app.cmt.submission_result.is_some());
+    let (success, msg) = app.cmt.submission_result.unwrap();
     assert!(!success);
     assert!(msg.contains("not found"));
 }
@@ -5676,8 +5671,8 @@ fn test_symbol_search_failed_resets_to_idle() {
 
     app.poll_symbol_search_updates();
     assert!(matches!(app.symbol_search, SymbolSearchState::Idle));
-    assert!(app.submission_result.is_some());
-    let (success, msg) = app.submission_result.unwrap();
+    assert!(app.cmt.submission_result.is_some());
+    let (success, msg) = app.cmt.submission_result.unwrap();
     assert!(!success);
     assert!(msg.contains("Search failed"));
 }
@@ -5687,23 +5682,23 @@ fn test_symbol_search_clears_submission_result_on_new_search() {
     let mut app = App::new_for_test();
 
     // Set an old submission_result
-    app.submission_result = Some((true, "old result".to_string()));
-    app.submission_result_time = Some(std::time::Instant::now());
+    app.cmt.submission_result = Some((true, "old result".to_string()));
+    app.cmt.submission_result_time = Some(std::time::Instant::now());
 
     // Simulate starting a new search (same as what jump_to_symbol_definition_async does)
     let (_tx, rx) = tokio::sync::mpsc::channel(1);
-    app.submission_result = None;
-    app.submission_result_time = None;
+    app.cmt.submission_result = None;
+    app.cmt.submission_result_time = None;
     app.symbol_search = SymbolSearchState::Searching {
         receiver: rx,
         origin_file_index: 0,
     };
 
     assert!(
-        app.submission_result.is_none(),
+        app.cmt.submission_result.is_none(),
         "submission_result should be cleared when a new search starts"
     );
-    assert!(app.submission_result_time.is_none());
+    assert!(app.cmt.submission_result_time.is_none());
     assert!(app.symbol_search.is_searching());
 }
 
@@ -5712,8 +5707,8 @@ fn test_symbol_search_is_searching_visible_when_no_submission_result() {
     let mut app = App::new_for_test();
 
     // Old submission_result cleared, new search started
-    app.submission_result = None;
-    app.submission_result_time = None;
+    app.cmt.submission_result = None;
+    app.cmt.submission_result_time = None;
 
     let (_tx, rx) = tokio::sync::mpsc::channel(1);
     app.symbol_search = SymbolSearchState::Searching {
@@ -5722,7 +5717,7 @@ fn test_symbol_search_is_searching_visible_when_no_submission_result() {
     };
 
     // submission_result is None so footer priority won't suppress the search indicator
-    assert!(app.submission_result.is_none());
+    assert!(app.cmt.submission_result.is_none());
     assert!(app.symbol_search.is_searching());
 }
 
@@ -6813,4 +6808,224 @@ async fn test_zen_mode_auto_focus_transitions_to_diff_view() {
     │@@ -1,1 +1,1 @@                                                               │
     │-old                                                                          │
     "#);
+}
+
+// =============================================================================
+// LoadState<T> tests
+// =============================================================================
+
+#[test]
+fn load_state_default_is_not_loaded() {
+    let state: super::types::LoadState<Vec<i32>> = Default::default();
+    assert!(matches!(state, super::types::LoadState::NotLoaded));
+    assert!(!state.is_loading());
+    assert!(!state.is_loaded());
+    assert!(state.as_loaded().is_none());
+}
+
+#[test]
+fn load_state_loading_transitions() {
+    let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loading;
+    assert!(state.is_loading());
+    assert!(!state.is_loaded());
+    assert!(state.as_loaded().is_none());
+}
+
+#[test]
+fn load_state_loaded_accessors() {
+    let state = super::types::LoadState::Loaded(vec![1, 2, 3]);
+    assert!(!state.is_loading());
+    assert!(state.is_loaded());
+    assert_eq!(state.as_loaded(), Some(&vec![1, 2, 3]));
+}
+
+#[test]
+fn load_state_loading_more_preserves_data() {
+    let state = super::types::LoadState::LoadingMore(vec![1, 2]);
+    assert!(state.is_loading());
+    assert!(!state.is_loaded());
+    assert_eq!(state.as_loaded(), Some(&vec![1, 2]));
+}
+
+#[test]
+fn load_state_error_accessors() {
+    let state: super::types::LoadState<Vec<i32>> =
+        super::types::LoadState::Error("fail".to_string());
+    assert!(!state.is_loading());
+    assert!(!state.is_loaded());
+    assert!(state.as_loaded().is_none());
+}
+
+#[test]
+fn load_state_as_loaded_mut() {
+    let mut state = super::types::LoadState::Loaded(vec![1]);
+    if let Some(data) = state.as_loaded_mut() {
+        data.push(2);
+    }
+    assert_eq!(state.as_loaded(), Some(&vec![1, 2]));
+}
+
+#[test]
+fn load_state_into_loaded() {
+    let state = super::types::LoadState::Loaded(vec![42]);
+    assert_eq!(state.into_loaded(), Some(vec![42]));
+
+    let state = super::types::LoadState::LoadingMore(vec![99]);
+    assert_eq!(state.into_loaded(), Some(vec![99]));
+
+    let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loading;
+    assert_eq!(state.into_loaded(), None);
+}
+
+#[test]
+fn load_state_recover_or_preserves_loading_more() {
+    let mut state = super::types::LoadState::LoadingMore(vec![1, 2, 3]);
+    state.recover_or(vec![]);
+    assert_eq!(state.as_loaded(), Some(&vec![1, 2, 3]));
+    assert!(state.is_loaded());
+}
+
+#[test]
+fn load_state_recover_or_preserves_loaded() {
+    let mut state = super::types::LoadState::Loaded(vec![4, 5]);
+    state.recover_or(vec![]);
+    assert_eq!(state.as_loaded(), Some(&vec![4, 5]));
+}
+
+#[test]
+fn load_state_recover_or_uses_fallback_for_loading() {
+    let mut state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loading;
+    state.recover_or(vec![]);
+    assert_eq!(state.as_loaded(), Some(&vec![]));
+    assert!(state.is_loaded());
+}
+
+#[tokio::test]
+async fn test_poll_pr_list_error_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::PullRequestSummary {
+        number: 1,
+        title: "existing".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        is_draft: false,
+        labels: vec![],
+        updated_at: "".to_string(),
+        status_check_rollup: vec![],
+    }];
+    app.prs.pr_list = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.prs.pr_list_receiver = Some(rx);
+    tx.send(Err("network error".to_string())).await.unwrap();
+
+    app.poll_pr_list_updates();
+
+    assert!(app.prs.pr_list.is_loaded());
+    assert!(!app.prs.pr_list.is_loading());
+    let items = app.prs.pr_list.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 1);
+}
+
+#[tokio::test]
+async fn test_poll_pr_list_disconnect_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::PullRequestSummary {
+        number: 2,
+        title: "existing".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        is_draft: false,
+        labels: vec![],
+        updated_at: "".to_string(),
+        status_check_rollup: vec![],
+    }];
+    app.prs.pr_list = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.prs.pr_list_receiver = Some(rx);
+    drop(tx);
+
+    app.poll_pr_list_updates();
+
+    assert!(app.prs.pr_list.is_loaded());
+    let items = app.prs.pr_list.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 2);
+}
+
+#[tokio::test]
+async fn test_poll_issue_list_error_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::IssueSummary {
+        number: 10,
+        title: "existing issue".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        labels: vec![],
+        updated_at: "".to_string(),
+        comments: vec![],
+    }];
+    let mut state = super::types::IssueState::new();
+    state.issues = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    state.issue_list_receiver = Some(rx);
+    app.issue_state = Some(state);
+    tx.send(Err("network error".to_string())).await.unwrap();
+
+    app.poll_issue_list_updates();
+
+    let issue_state = app.issue_state.as_ref().unwrap();
+    assert!(issue_state.issues.is_loaded());
+    assert!(!issue_state.issues.is_loading());
+    let items = issue_state.issues.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 10);
+}
+
+#[tokio::test]
+async fn test_poll_issue_list_disconnect_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![crate::github::IssueSummary {
+        number: 20,
+        title: "existing issue".to_string(),
+        state: "OPEN".to_string(),
+        author: crate::github::User {
+            login: "user".to_string(),
+        },
+        labels: vec![],
+        updated_at: "".to_string(),
+        comments: vec![],
+    }];
+    let mut state = super::types::IssueState::new();
+    state.issues = LoadState::LoadingMore(existing);
+
+    let (tx, rx) = mpsc::channel(1);
+    state.issue_list_receiver = Some(rx);
+    app.issue_state = Some(state);
+    drop(tx);
+
+    app.poll_issue_list_updates();
+
+    let issue_state = app.issue_state.as_ref().unwrap();
+    assert!(issue_state.issues.is_loaded());
+    let items = issue_state.issues.as_loaded().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].number, 20);
 }

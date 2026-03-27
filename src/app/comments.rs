@@ -73,8 +73,8 @@ impl App {
             Ok(body) => body,
             Err(e) => {
                 tracing::debug!(%e, "submit_review: editor failed");
-                self.submission_result = Some((false, format!("Editor failed: {}", e)));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, format!("Editor failed: {}", e)));
+                self.cmt.submission_result_time = Some(Instant::now());
                 return Ok(());
             }
         };
@@ -83,10 +83,10 @@ impl App {
             tracing::debug!("submit_review: body is None");
             if action == ReviewAction::Approve {
                 // Empty comment → show approve confirmation UI
-                self.pending_approve_body = Some(String::new());
+                self.cmt.pending_approve_body = Some(String::new());
             } else {
-                self.submission_result = Some((false, "Review cancelled".to_string()));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, "Review cancelled".to_string()));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             return Ok(());
         };
@@ -109,16 +109,16 @@ impl App {
                     ReviewAction::Comment => "commented",
                 };
                 tracing::debug!(action_str, "submit_review: success");
-                self.submission_result = Some((true, format!("Review submitted ({})", action_str)));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((true, format!("Review submitted ({})", action_str)));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(e) => {
                 tracing::debug!(%e, "submit_review: API failed");
-                self.submission_result = Some((false, format!("Review failed: {}", e)));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, format!("Review failed: {}", e)));
+                self.cmt.submission_result_time = Some(Instant::now());
             }
         }
-        self.pending_approve_body = None;
+        self.cmt.pending_approve_body = None;
         Ok(())
     }
     pub(crate) fn enter_suggestion_input(&mut self) {
@@ -217,9 +217,10 @@ impl App {
         if !crate::diff::validate_multiline_range(patch, start, end) {
             return;
         }
+        let index = crate::diff::PatchIndex::build(patch);
 
         // 終了行の情報を取得（GitHub API の line パラメータ）
-        let Some(end_info) = crate::diff::get_line_info(patch, end) else {
+        let Some(end_info) = index.get(end) else {
             return;
         };
         if !matches!(
@@ -236,7 +237,7 @@ impl App {
         };
 
         // 開始行の情報を取得（GitHub API の start_line パラメータ）
-        let Some(start_info) = crate::diff::get_line_info(patch, start) else {
+        let Some(start_info) = index.get(start) else {
             return;
         };
         let Some(start_line_number) = start_info.new_line_number else {
@@ -284,9 +285,10 @@ impl App {
         if !crate::diff::validate_multiline_range(patch, start, end) {
             return;
         }
+        let index = crate::diff::PatchIndex::build(patch);
 
         // 終了行の情報を取得
-        let Some(end_info) = crate::diff::get_line_info(patch, end) else {
+        let Some(end_info) = index.get(end) else {
             return;
         };
         if !matches!(
@@ -303,22 +305,20 @@ impl App {
         };
 
         // 開始行の情報を取得
-        let Some(start_info) = crate::diff::get_line_info(patch, start) else {
+        let Some(start_info) = index.get(start) else {
             return;
         };
         let Some(start_line_number) = start_info.new_line_number else {
             return;
         };
-
-        // 選択範囲のコードを収集
         let mut original_lines = Vec::new();
         for line_idx in start..=end {
-            if let Some(info) = crate::diff::get_line_info(patch, line_idx) {
+            if let Some(info) = index.get(line_idx) {
                 if matches!(
                     info.line_type,
                     crate::diff::LineType::Added | crate::diff::LineType::Context
                 ) {
-                    original_lines.push(info.line_content.clone());
+                    original_lines.push(info.content);
                 }
             }
         }
@@ -352,8 +352,8 @@ impl App {
             return;
         }
         self.state = AppState::CommentList;
-        self.discussion_comment_detail_mode = false;
-        self.discussion_comment_detail_scroll = 0;
+        self.cmt.discussion_comment_detail_mode = false;
+        self.cmt.discussion_comment_detail_scroll = 0;
 
         // Load review comments
         self.load_review_comments();
@@ -368,17 +368,17 @@ impl App {
         };
 
         if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
-            self.review_comments = Some(comments.to_vec());
-            self.selected_comment = 0;
-            self.comment_list_scroll_offset = 0;
-            self.comments_loading = false;
+            self.cmt.review_comments = Some(comments.to_vec());
+            self.cmt.selected_comment = 0;
+            self.cmt.comment_list_scroll_offset = 0;
+            self.cmt.comments_loading = false;
             return;
         }
 
-        self.comments_loading = true;
+        self.cmt.comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();
-        self.comment_receiver = Some((pr_number, rx));
+        self.cmt.comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
 
@@ -428,16 +428,16 @@ impl App {
         };
 
         if let Some(comments) = self.session_cache.get_discussion_comments(&cache_key) {
-            self.discussion_comments = Some(comments.to_vec());
-            self.selected_discussion_comment = 0;
-            self.discussion_comments_loading = false;
+            self.cmt.discussion_comments = Some(comments.to_vec());
+            self.cmt.selected_discussion_comment = 0;
+            self.cmt.discussion_comments_loading = false;
             return;
         }
 
-        self.discussion_comments_loading = true;
+        self.cmt.discussion_comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();
-        self.discussion_comment_receiver = Some((pr_number, rx));
+        self.cmt.discussion_comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
 
@@ -459,7 +459,7 @@ impl App {
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
-        if self.discussion_comment_detail_mode {
+        if self.cmt.discussion_comment_detail_mode {
             return self.handle_discussion_detail_input(key, visible_lines);
         }
 
@@ -468,61 +468,61 @@ impl App {
                 self.state = self.previous_state;
             }
             KeyCode::Char('[') => {
-                self.comment_tab = match self.comment_tab {
+                self.cmt.comment_tab = match self.cmt.comment_tab {
                     CommentTab::Review => CommentTab::Discussion,
                     CommentTab::Discussion => CommentTab::Review,
                 };
             }
             KeyCode::Char(']') => {
-                self.comment_tab = match self.comment_tab {
+                self.cmt.comment_tab = match self.cmt.comment_tab {
                     CommentTab::Review => CommentTab::Discussion,
                     CommentTab::Discussion => CommentTab::Review,
                 };
             }
-            KeyCode::Char('j') | KeyCode::Down => match self.comment_tab {
+            KeyCode::Char('j') | KeyCode::Down => match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    if let Some(ref comments) = self.review_comments {
+                    if let Some(ref comments) = self.cmt.review_comments {
                         if !comments.is_empty() {
-                            self.selected_comment =
-                                (self.selected_comment + 1).min(comments.len().saturating_sub(1));
+                            self.cmt.selected_comment =
+                                (self.cmt.selected_comment + 1).min(comments.len().saturating_sub(1));
                         }
                     }
                 }
                 CommentTab::Discussion => {
-                    if let Some(ref comments) = self.discussion_comments {
+                    if let Some(ref comments) = self.cmt.discussion_comments {
                         if !comments.is_empty() {
-                            self.selected_discussion_comment = (self.selected_discussion_comment
+                            self.cmt.selected_discussion_comment = (self.cmt.selected_discussion_comment
                                 + 1)
                             .min(comments.len().saturating_sub(1));
                         }
                     }
                 }
             },
-            KeyCode::Char('k') | KeyCode::Up => match self.comment_tab {
+            KeyCode::Char('k') | KeyCode::Up => match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    self.selected_comment = self.selected_comment.saturating_sub(1);
+                    self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(1);
                 }
                 CommentTab::Discussion => {
-                    self.selected_discussion_comment =
-                        self.selected_discussion_comment.saturating_sub(1);
+                    self.cmt.selected_discussion_comment =
+                        self.cmt.selected_discussion_comment.saturating_sub(1);
                 }
             },
             KeyCode::Char('J') => {
                 let step = visible_lines.max(1);
-                match self.comment_tab {
+                match self.cmt.comment_tab {
                     CommentTab::Review => {
-                        if let Some(ref comments) = self.review_comments {
+                        if let Some(ref comments) = self.cmt.review_comments {
                             if !comments.is_empty() {
-                                self.selected_comment =
-                                    (self.selected_comment + step).min(comments.len() - 1);
+                                self.cmt.selected_comment =
+                                    (self.cmt.selected_comment + step).min(comments.len() - 1);
                             }
                         }
                     }
                     CommentTab::Discussion => {
-                        if let Some(ref comments) = self.discussion_comments {
+                        if let Some(ref comments) = self.cmt.discussion_comments {
                             if !comments.is_empty() {
-                                self.selected_discussion_comment =
-                                    (self.selected_discussion_comment + step)
+                                self.cmt.selected_discussion_comment =
+                                    (self.cmt.selected_discussion_comment + step)
                                         .min(comments.len() - 1);
                             }
                         }
@@ -531,29 +531,29 @@ impl App {
             }
             KeyCode::Char('K') => {
                 let step = visible_lines.max(1);
-                match self.comment_tab {
+                match self.cmt.comment_tab {
                     CommentTab::Review => {
-                        self.selected_comment = self.selected_comment.saturating_sub(step);
+                        self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(step);
                     }
                     CommentTab::Discussion => {
-                        self.selected_discussion_comment =
-                            self.selected_discussion_comment.saturating_sub(step);
+                        self.cmt.selected_discussion_comment =
+                            self.cmt.selected_discussion_comment.saturating_sub(step);
                     }
                 }
             }
-            KeyCode::Enter => match self.comment_tab {
+            KeyCode::Enter => match self.cmt.comment_tab {
                 CommentTab::Review => {
                     self.jump_to_comment();
                 }
                 CommentTab::Discussion => {
                     if self
-                        .discussion_comments
+                        .cmt.discussion_comments
                         .as_ref()
                         .map(|c| !c.is_empty())
                         .unwrap_or(false)
                     {
-                        self.discussion_comment_detail_mode = true;
-                        self.discussion_comment_detail_scroll = 0;
+                        self.cmt.discussion_comment_detail_mode = true;
+                        self.cmt.discussion_comment_detail_scroll = 0;
                     }
                 }
             },
@@ -569,35 +569,35 @@ impl App {
     ) -> Result<()> {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => {
-                self.discussion_comment_detail_mode = false;
-                self.discussion_comment_detail_scroll = 0;
+                self.cmt.discussion_comment_detail_mode = false;
+                self.cmt.discussion_comment_detail_scroll = 0;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.discussion_comment_detail_scroll =
-                    self.discussion_comment_detail_scroll.saturating_add(1);
+                self.cmt.discussion_comment_detail_scroll =
+                    self.cmt.discussion_comment_detail_scroll.saturating_add(1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.discussion_comment_detail_scroll =
-                    self.discussion_comment_detail_scroll.saturating_sub(1);
+                self.cmt.discussion_comment_detail_scroll =
+                    self.cmt.discussion_comment_detail_scroll.saturating_sub(1);
             }
             KeyCode::Char('J') => {
-                self.discussion_comment_detail_scroll = self
-                    .discussion_comment_detail_scroll
+                self.cmt.discussion_comment_detail_scroll = self
+                    .cmt.discussion_comment_detail_scroll
                     .saturating_add(visible_lines.max(1));
             }
             KeyCode::Char('K') => {
-                self.discussion_comment_detail_scroll = self
-                    .discussion_comment_detail_scroll
+                self.cmt.discussion_comment_detail_scroll = self
+                    .cmt.discussion_comment_detail_scroll
                     .saturating_sub(visible_lines.max(1));
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.discussion_comment_detail_scroll = self
-                    .discussion_comment_detail_scroll
+                self.cmt.discussion_comment_detail_scroll = self
+                    .cmt.discussion_comment_detail_scroll
                     .saturating_add(visible_lines / 2);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.discussion_comment_detail_scroll = self
-                    .discussion_comment_detail_scroll
+                self.cmt.discussion_comment_detail_scroll = self
+                    .cmt.discussion_comment_detail_scroll
                     .saturating_sub(visible_lines / 2);
             }
             _ => {}
@@ -605,10 +605,10 @@ impl App {
         Ok(())
     }
     pub(crate) fn jump_to_comment(&mut self) {
-        let Some(ref comments) = self.review_comments else {
+        let Some(ref comments) = self.cmt.review_comments else {
             return;
         };
-        let Some(comment) = comments.get(self.selected_comment) else {
+        let Some(comment) = comments.get(self.cmt.selected_comment) else {
             return;
         };
 
@@ -629,9 +629,9 @@ impl App {
 
             // Find diff line index from pre-computed positions
             let diff_line_index = self
-                .file_comment_positions
+                .cmt.file_comment_positions
                 .iter()
-                .find(|pos| pos.comment_index == self.selected_comment)
+                .find(|pos| pos.comment_index == self.cmt.selected_comment)
                 .map(|pos| pos.diff_line_index);
 
             if let Some(line_idx) = diff_line_index {
@@ -643,8 +643,8 @@ impl App {
 
     /// Update file_comment_positions based on current file and review_comments
     pub(crate) fn update_file_comment_positions(&mut self) {
-        self.file_comment_positions.clear();
-        self.file_comment_lines.clear();
+        self.cmt.file_comment_positions.clear();
+        self.cmt.file_comment_lines.clear();
 
         let Some(file) = self.files().get(self.selected_file) else {
             return;
@@ -654,7 +654,7 @@ impl App {
         };
         let filename = file.filename.clone();
 
-        let Some(ref comments) = self.review_comments else {
+        let Some(ref comments) = self.cmt.review_comments else {
             return;
         };
 
@@ -668,14 +668,14 @@ impl App {
                 continue;
             };
             if let Some(diff_index) = Self::find_diff_line_index(&patch, line_num) {
-                self.file_comment_positions.push(CommentPosition {
+                self.cmt.file_comment_positions.push(CommentPosition {
                     diff_line_index: diff_index,
                     comment_index: i,
                 });
-                self.file_comment_lines.insert(diff_index);
+                self.cmt.file_comment_lines.insert(diff_index);
             }
         }
-        self.file_comment_positions
+        self.cmt.file_comment_positions
             .sort_by_key(|pos| pos.diff_line_index);
     }
 
@@ -709,7 +709,7 @@ impl App {
     }
     /// Get comment indices at the current selected line
     pub fn get_comment_indices_at_current_line(&self) -> Vec<usize> {
-        self.file_comment_positions
+        self.cmt.file_comment_positions
             .iter()
             .filter(|pos| pos.diff_line_index == self.diff_scroll.selected_line)
             .map(|pos| pos.comment_index)
@@ -718,7 +718,7 @@ impl App {
 
     /// Check if current line has any comments
     pub fn has_comment_at_current_line(&self) -> bool {
-        self.file_comment_positions
+        self.cmt.file_comment_positions
             .iter()
             .any(|pos| pos.diff_line_index == self.diff_scroll.selected_line)
     }
@@ -749,7 +749,7 @@ impl App {
         if indices.is_empty() {
             return 1; // "No comments..." message
         }
-        let Some(ref comments) = self.review_comments else {
+        let Some(ref comments) = self.cmt.review_comments else {
             return 0;
         };
         let mut count = 0usize;
@@ -770,7 +770,7 @@ impl App {
     /// 指定インラインコメントのパネル内行オフセットを計算（スクロール追従用）
     pub(crate) fn comment_panel_offset_for(&self, target: usize, panel_inner_width: usize) -> u16 {
         let indices = self.get_comment_indices_at_current_line();
-        let Some(ref comments) = self.review_comments else {
+        let Some(ref comments) = self.cmt.review_comments else {
             return 0;
         };
         let mut offset = 0usize;
@@ -816,7 +816,7 @@ impl App {
     }
     pub(crate) fn jump_to_next_comment(&mut self) {
         let next = self
-            .file_comment_positions
+            .cmt.file_comment_positions
             .iter()
             .find(|pos| pos.diff_line_index > self.diff_scroll.selected_line);
 
@@ -829,7 +829,7 @@ impl App {
     /// Jump to previous comment in the diff (no wrap-around, scroll to top)
     pub(crate) fn jump_to_prev_comment(&mut self) {
         let prev = self
-            .file_comment_positions
+            .cmt.file_comment_positions
             .iter()
             .rev()
             .find(|pos| pos.diff_line_index < self.diff_scroll.selected_line);
@@ -846,11 +846,11 @@ impl App {
         }
 
         let local_idx = self
-            .selected_inline_comment
+            .cmt.selected_inline_comment
             .min(indices.len().saturating_sub(1));
         let comment_idx = indices[local_idx];
 
-        let Some(ref comments) = self.review_comments else {
+        let Some(ref comments) = self.cmt.review_comments else {
             return;
         };
         let Some(comment) = comments.get(comment_idx) else {

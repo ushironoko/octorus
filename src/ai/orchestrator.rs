@@ -51,6 +51,7 @@ pub enum RallyState {
 
 impl RallyState {
     /// Rally が実行中（完了・エラー・中断以外）かどうか
+    // Kept for state inspection in tests and future multi-agent coordination
     #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         !matches!(
@@ -60,6 +61,7 @@ impl RallyState {
     }
 
     /// Rally が完了、中断、またはエラーで終了したかどうか
+    // Kept for state inspection in tests and future multi-agent coordination
     #[allow(dead_code)]
     pub fn is_finished(&self) -> bool {
         matches!(
@@ -72,6 +74,7 @@ impl RallyState {
 /// Event emitted during rally for TUI updates
 ///
 /// Variants are used by TUI handlers (ui/ai_rally.rs) via mpsc channel
+// Variants constructed by the orchestrator run loop, fields read only in specific flows
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum RallyEvent {
@@ -100,6 +103,7 @@ pub enum RallyEvent {
 /// Result of the rally process
 ///
 /// Used by app.rs to handle rally completion state
+// Constructed at rally completion, consumed by the caller in headless mode
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum RallyResult {

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use crossterm::style::Stylize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -254,13 +255,14 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
     println!("Project-local prompts: {}", prompts_dir.display());
     println!();
     println!(
-        "\x1b[36mTip:\x1b[0m Commit .octorus/ to share project-specific settings with your team."
+        "{} Commit .octorus/ to share project-specific settings with your team.",
+        "Tip:".cyan()
     );
     println!("     Or add .octorus/ to .gitignore for personal-only configuration.");
     println!();
-    println!("\x1b[33mWarning:\x1b[0m .octorus/config.toml can override \x1b[1mALL\x1b[0m settings including editor,");
+    println!("{} .octorus/config.toml can override {} settings including editor,", "Warning:".yellow(), "ALL".bold());
     println!("         AI tool permissions, and auto_post. If you commit .octorus/ to a");
-    println!("         public repository, cloners will inherit these settings when running \x1b[1mor\x1b[0m.");
+    println!("         public repository, cloners will inherit these settings when running {}.", "or".bold());
     println!("         Review the config carefully before committing.");
 
     Ok(())

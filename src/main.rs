@@ -495,7 +495,7 @@ async fn run_with_pr_list(
     app.set_pr_list_receiver(rx);
 
     let repo_clone = repo.to_string();
-    let state_filter = app.pr_list_state_filter;
+    let state_filter = app.prs.pr_list_state_filter;
 
     tokio::spawn(async move {
         let result = github::fetch_pr_list(&repo_clone, state_filter, 30).await;

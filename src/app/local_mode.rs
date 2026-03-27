@@ -42,9 +42,9 @@ impl App {
     pub(crate) fn toggle_local_mode(&mut self) {
         // フォアグラウンド Rally 中はブロック
         if matches!(self.state, AppState::AiRally) {
-            self.submission_result =
+            self.cmt.submission_result =
                 Some((false, "Cannot toggle mode during AI Rally".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result_time = Some(Instant::now());
             return;
         }
 
@@ -55,8 +55,8 @@ impl App {
 
             if !has_valid_repo && !has_original_pr {
                 // repo がダミー値（"local" 等）で復帰先PRもない → 切替不可
-                self.submission_result = Some((false, "No PR to return to".to_string()));
-                self.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some((false, "No PR to return to".to_string()));
+                self.cmt.submission_result_time = Some(Instant::now());
                 return;
             }
 
@@ -79,7 +79,7 @@ impl App {
                 self.reload_pr_list();
             }
 
-            self.submission_result = Some((true, "Switched to PR mode".to_string()));
+            self.cmt.submission_result = Some((true, "Switched to PR mode".to_string()));
         } else {
             // PR → Local: PR状態を破棄 → Local モードをクリーン起動
             self.reset_view_state();
@@ -108,10 +108,10 @@ impl App {
             self.activate_watcher();
             self.retry_load();
 
-            self.submission_result = Some((true, "Switched to Local mode".to_string()));
+            self.cmt.submission_result = Some((true, "Switched to Local mode".to_string()));
         }
 
-        self.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result_time = Some(Instant::now());
     }
 
     /// ビュー状態を全リセット（モード切替の共通前処理）
@@ -121,18 +121,18 @@ impl App {
         self.diff_scroll.reset();
         self.diff_store.clear();
         self.file_list_filter = None;
-        self.review_comments = None;
-        self.discussion_comments = None;
-        self.comment_receiver = None;
-        self.discussion_comment_receiver = None;
-        self.comment_submit_receiver = None;
+        self.cmt.review_comments = None;
+        self.cmt.discussion_comments = None;
+        self.cmt.comment_receiver = None;
+        self.cmt.discussion_comment_receiver = None;
+        self.cmt.comment_submit_receiver = None;
         self.mark_viewed_receiver = None;
         self.batch_diff_receiver = None;
         self.lazy_diff_receiver = None;
         self.lazy_diff_pending_file = None;
-        self.comment_submitting = false;
-        self.comments_loading = false;
-        self.discussion_comments_loading = false;
+        self.cmt.comment_submitting = false;
+        self.cmt.comments_loading = false;
+        self.cmt.discussion_comments_loading = false;
     }
 
     /// data_receiver の origin_pr を更新（channel 自体は再作成しない）
@@ -283,7 +283,7 @@ impl App {
         } else {
             "Auto-focus: OFF"
         };
-        self.submission_result = Some((true, msg.to_string()));
-        self.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some((true, msg.to_string()));
+        self.cmt.submission_result_time = Some(Instant::now());
     }
 }

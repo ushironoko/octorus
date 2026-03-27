@@ -219,7 +219,7 @@ impl App {
         // When the comment panel is open, the diff body only gets a percentage of
         // the available space (after subtracting fixed-height regions), so we must
         // replicate that proportional split here to keep adjust_scroll() accurate.
-        let visible_lines = if self.comment_panel_open {
+        let visible_lines = if self.cmt.comment_panel_open {
             let has_rally = self.has_background_rally();
             // Fixed-height rows consumed by Header + Footer (+ optional Rally bar)
             let fixed = if has_rally { 7usize } else { 6usize };
@@ -285,16 +285,16 @@ impl App {
             return Ok(());
         }
 
-        if self.comment_panel_open {
+        if self.cmt.comment_panel_open {
             if self.matches_single_key(&key, &kb.move_down) {
                 let max_scroll = self.max_comment_panel_scroll(term_h, term_w);
-                self.comment_panel_scroll =
-                    self.comment_panel_scroll.saturating_add(1).min(max_scroll);
+                self.cmt.comment_panel_scroll =
+                    self.cmt.comment_panel_scroll.saturating_add(1).min(max_scroll);
                 return Ok(());
             }
 
             if self.matches_single_key(&key, &kb.move_up) {
-                self.comment_panel_scroll = self.comment_panel_scroll.saturating_sub(1);
+                self.cmt.comment_panel_scroll = self.cmt.comment_panel_scroll.saturating_sub(1);
                 return Ok(());
             }
 
@@ -302,8 +302,8 @@ impl App {
                 let prev_line = self.diff_scroll.selected_line;
                 self.jump_to_next_comment();
                 if self.diff_scroll.selected_line != prev_line {
-                    self.comment_panel_scroll = 0;
-                    self.selected_inline_comment = 0;
+                    self.cmt.comment_panel_scroll = 0;
+                    self.cmt.selected_inline_comment = 0;
                     self.adjust_scroll(visible_lines);
                 }
                 return Ok(());
@@ -313,8 +313,8 @@ impl App {
                 let prev_line = self.diff_scroll.selected_line;
                 self.jump_to_prev_comment();
                 if self.diff_scroll.selected_line != prev_line {
-                    self.comment_panel_scroll = 0;
-                    self.selected_inline_comment = 0;
+                    self.cmt.comment_panel_scroll = 0;
+                    self.cmt.selected_inline_comment = 0;
                     self.adjust_scroll(visible_lines);
                 }
                 return Ok(());
@@ -340,10 +340,10 @@ impl App {
             if self.matches_single_key(&key, &kb.tab_switch) {
                 if self.has_comment_at_current_line() {
                     let count = self.get_comment_indices_at_current_line().len();
-                    if count > 1 && self.selected_inline_comment + 1 < count {
-                        self.selected_inline_comment += 1;
-                        self.comment_panel_scroll = self.comment_panel_offset_for(
-                            self.selected_inline_comment,
+                    if count > 1 && self.cmt.selected_inline_comment + 1 < count {
+                        self.cmt.selected_inline_comment += 1;
+                        self.cmt.comment_panel_scroll = self.comment_panel_offset_for(
+                            self.cmt.selected_inline_comment,
                             panel_inner_width,
                         );
                     }
@@ -354,10 +354,10 @@ impl App {
             if key.code == KeyCode::BackTab {
                 if self.has_comment_at_current_line() {
                     let count = self.get_comment_indices_at_current_line().len();
-                    if count > 1 && self.selected_inline_comment > 0 {
-                        self.selected_inline_comment -= 1;
-                        self.comment_panel_scroll = self.comment_panel_offset_for(
-                            self.selected_inline_comment,
+                    if count > 1 && self.cmt.selected_inline_comment > 0 {
+                        self.cmt.selected_inline_comment -= 1;
+                        self.cmt.comment_panel_scroll = self.comment_panel_offset_for(
+                            self.cmt.selected_inline_comment,
                             panel_inner_width,
                         );
                     }
@@ -377,8 +377,8 @@ impl App {
                     if self.matches_single_key(&key, &kb.quit)
                         || self.matches_single_key(&key, &kb.move_left)
                                                                   {
-                        self.comment_panel_open = false;
-                        self.comment_panel_scroll = 0;
+                        self.cmt.comment_panel_open = false;
+                        self.cmt.comment_panel_scroll = 0;
                         return Ok(());
                     }
                 }
@@ -389,8 +389,8 @@ impl App {
                     }
 
                     if self.matches_single_key(&key, &kb.quit) {
-                        self.comment_panel_open = false;
-                        self.comment_panel_scroll = 0;
+                        self.cmt.comment_panel_open = false;
+                        self.cmt.comment_panel_scroll = 0;
                         return Ok(());
                     }
                 }
@@ -554,9 +554,9 @@ impl App {
 
         // Open panel (local mode ではコメント対象の PR がないため無効)
         if !self.local_mode && self.matches_single_key(&key, &kb.open_panel) {
-            self.comment_panel_open = true;
-            self.comment_panel_scroll = 0;
-            self.selected_inline_comment = 0;
+            self.cmt.comment_panel_open = true;
+            self.cmt.comment_panel_scroll = 0;
+            self.cmt.selected_inline_comment = 0;
             return Ok(());
         }
 

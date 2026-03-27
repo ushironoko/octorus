@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::github;
 
 use crate::config::SENSITIVE_AI_KEYS;
+use crate::ui::common::truncate_with_width;
 
 /// Run AI Rally in headless mode (no TUI).
 ///
@@ -418,7 +419,7 @@ async fn run_headless_event_loop(
                 eprintln!("  > {}", name);
             }
             RallyEvent::AgentToolResult(name, result) => {
-                let truncated = truncate_str(&result, 200);
+                let truncated = truncate_with_width(&result, 200);
                 eprintln!("  < {}: {}", name, truncated);
             }
             // Suppress AgentThinking, AgentText, and pause events (headless can't pause)
@@ -559,20 +560,6 @@ pub fn format_fix_output(output: &RevieweeOutput) -> String {
     }
 
     lines.join("\n")
-}
-
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        return s.to_string();
-    }
-    // Find byte position at the max_chars-th character boundary
-    let byte_end = s
-        .char_indices()
-        .nth(max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-    format!("{}...", &s[..byte_end])
 }
 
 /// Build JSON output from headless outcome (pure function for testability).
@@ -853,62 +840,52 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_str_short() {
-        assert_eq!(truncate_str("hello", 10), "hello");
+    fn test_truncate_with_width_short() {
+        assert_eq!(truncate_with_width("hello", 10).as_ref(), "hello");
     }
 
     #[test]
-    fn test_truncate_str_long() {
+    fn test_truncate_with_width_long() {
         let long = "a".repeat(300);
-        let result = truncate_str(&long, 200);
-        assert!(result.ends_with("..."));
-        // 200 ASCII chars + "..."
-        assert_eq!(result.chars().count(), 203);
+        let result = truncate_with_width(&long, 200);
+        assert!(result.ends_with('…'));
     }
 
     #[test]
-    fn test_truncate_str_multibyte() {
-        // Each Japanese char is 3 bytes in UTF-8
-        let s = "あいうえおかきくけこ"; // 10 chars, 30 bytes
-        let result = truncate_str(s, 5);
-        assert_eq!(result, "あいうえお...");
-        // Must not panic on multi-byte boundary
+    fn test_truncate_with_width_multibyte() {
+        // Each Japanese char is 2 display-columns wide
+        let s = "あいうえおかきくけこ"; // 10 chars, 20 display columns
+        let result = truncate_with_width(s, 5);
+        // max_width=5: budget 4 for chars + 1 for "…", "あい" = 4 cols
+        assert_eq!(result.as_ref(), "あい…");
     }
 
     #[test]
-    fn test_truncate_str_multibyte_mixed() {
-        // Mixed ASCII and multibyte: "aあbいc" = 5 chars, 9 bytes
+    fn test_truncate_with_width_multibyte_mixed() {
+        // "aあbいc" = 1+2+1+2+1 = 7 display columns
         let s = "aあbいc";
-        assert_eq!(truncate_str(s, 3), "aあb...");
-        assert_eq!(truncate_str(s, 5), "aあbいc");
-        assert_eq!(truncate_str(s, 6), "aあbいc"); // longer than string
+        // max_width=4: budget 3, "aあ" = 3 cols → "aあ…"
+        assert_eq!(truncate_with_width(s, 4).as_ref(), "aあ…");
+        assert_eq!(truncate_with_width(s, 7).as_ref(), "aあbいc");
+        assert_eq!(truncate_with_width(s, 10).as_ref(), "aあbいc");
     }
 
     #[test]
-    fn test_truncate_str_emoji() {
-        // Emoji can be 4 bytes in UTF-8
-        let s = "🎉🎊🎈🎁🎂";
-        let result = truncate_str(s, 3);
-        assert_eq!(result, "🎉🎊🎈...");
-        assert_eq!(truncate_str(s, 5), "🎉🎊🎈🎁🎂");
-    }
-
-    #[test]
-    fn test_truncate_str_exact_boundary() {
+    fn test_truncate_with_width_exact_boundary() {
         let s = "abcde";
-        assert_eq!(truncate_str(s, 5), "abcde");
-        assert_eq!(truncate_str(s, 4), "abcd...");
+        assert_eq!(truncate_with_width(s, 5).as_ref(), "abcde");
+        assert_eq!(truncate_with_width(s, 4).as_ref(), "abc…");
     }
 
     #[test]
-    fn test_truncate_str_empty() {
-        assert_eq!(truncate_str("", 10), "");
-        assert_eq!(truncate_str("", 0), "");
+    fn test_truncate_with_width_empty() {
+        assert_eq!(truncate_with_width("", 10).as_ref(), "");
+        assert_eq!(truncate_with_width("", 0).as_ref(), "");
     }
 
     #[test]
-    fn test_truncate_str_zero_max() {
-        assert_eq!(truncate_str("hello", 0), "...");
+    fn test_truncate_with_width_max_one() {
+        assert_eq!(truncate_with_width("hello", 1).as_ref(), "…");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use super::{App, SuggestionHighlightCache};
 impl App {
     pub(crate) fn handle_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
         // 送信中は入力を無視（各送信種別に対応するInputModeのみブロック）
-        if self.comment_submitting {
+        if self.cmt.comment_submitting {
             return Ok(());
         }
         if self.is_issue_comment_submitting()
@@ -140,8 +140,8 @@ impl App {
         let end_line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
-        self.comment_submit_receiver = Some((pr_number, rx));
-        self.comment_submitting = true;
+        self.cmt.comment_submit_receiver = Some((pr_number, rx));
+        self.cmt.comment_submitting = true;
 
         tokio::spawn(async move {
             let result = if let Some(start) = start_line {
@@ -170,8 +170,8 @@ impl App {
         let pr_number = self.pr_number();
 
         let (tx, rx) = mpsc::channel(1);
-        self.comment_submit_receiver = Some((pr_number, rx));
-        self.comment_submitting = true;
+        self.cmt.comment_submit_receiver = Some((pr_number, rx));
+        self.cmt.comment_submitting = true;
 
         tokio::spawn(async move {
             let result = github::create_reply_comment(&repo, pr_number, comment_id, &body).await;
@@ -207,16 +207,16 @@ impl App {
     }
 
     pub(super) fn handle_pending_approve_choice(&mut self, key: &KeyEvent) -> PendingApproveChoice {
-        if self.pending_approve_body.is_none() {
+        if self.cmt.pending_approve_body.is_none() {
             return PendingApproveChoice::Ignore;
         }
         if self.matches_single_key(key, &self.config.keybindings.approve) {
             PendingApproveChoice::Submit
         } else if self.matches_single_key(key, &self.config.keybindings.quit)
                    {
-            self.pending_approve_body = None;
-            self.submission_result = None;
-            self.submission_result_time = None;
+            self.cmt.pending_approve_body = None;
+            self.cmt.submission_result = None;
+            self.cmt.submission_result_time = None;
             PendingApproveChoice::Cancel
         } else {
             PendingApproveChoice::Ignore

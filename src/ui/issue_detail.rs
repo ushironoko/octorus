@@ -17,14 +17,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let Some(ref state) = app.issue_state else {
             return;
         };
-        if state.issue_detail_loading {
+        if state.issue_detail.is_loading() {
             let spinner = app.spinner_char();
             let loading = Paragraph::new(format!("{} Loading issue...", spinner))
                 .block(Block::default().borders(Borders::ALL).title("Issue Detail"));
             frame.render_widget(loading, frame.area());
             return;
         }
-        if state.issue_detail.is_none() {
+        if state.issue_detail.as_loaded().is_none() {
             let empty = Paragraph::new("No issue data")
                 .block(Block::default().borders(Borders::ALL).title("Issue Detail"));
             frame.render_widget(empty, frame.area());
@@ -43,11 +43,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         selected_linked_pr,
     ) = {
         let state = app.issue_state.as_ref().unwrap();
-        let detail = state.issue_detail.as_ref().unwrap();
-        let lp_count = state.linked_prs.as_ref().map(|p| p.len()).unwrap_or(0);
+        let detail = state.issue_detail.as_loaded().unwrap();
+        let lp_count = state.linked_prs.as_loaded().map(|p| p.len()).unwrap_or(0);
         (
             lp_count,
-            state.linked_prs_loading,
+            state.linked_prs.is_loading(),
             state.detail_focus,
             detail.number,
             detail.title.clone(),
@@ -128,7 +128,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         };
 
         let state = app.issue_state.as_ref().unwrap();
-        if state.linked_prs_loading {
+        if state.linked_prs.is_loading() {
             let spinner = app.spinner_char();
             let loading = Paragraph::new(format!("{} Loading linked PRs...", spinner)).block(
                 Block::default()
@@ -137,7 +137,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     .title("Linked PRs"),
             );
             frame.render_widget(loading, chunks[idx]);
-        } else if let Some(ref prs) = state.linked_prs {
+        } else if let Some(prs) = state.linked_prs.as_loaded() {
             let title = format!("Linked PRs ({})", prs.len());
 
             let items: Vec<ListItem> = prs
@@ -219,7 +219,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             " Submitting...",
             Style::default().fg(Color::Yellow),
         ))
-    } else if let Some((success, ref message)) = app.submission_result {
+    } else if let Some((success, ref message)) = app.cmt.submission_result {
         let (icon, color) = if success {
             ("\u{2713}", Color::Green)
         } else {
@@ -324,7 +324,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
         let body_text = app
             .issue_state
             .as_ref()
-            .and_then(|s| s.issue_detail.as_ref())
+            .and_then(|s| s.issue_detail.as_loaded())
             .and_then(|d| d.body.as_deref())
             .unwrap_or("(no description)")
             .to_string();
@@ -338,5 +338,143 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(body, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, AppState, IssueState};
+    use crate::github::{IssueDetail, User};
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_full(app: &mut App) -> String {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..24u16 {
+            let mut line = String::new();
+            for x in 0..100u16 {
+                let cell = &buf[(x, y)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    fn make_detail(number: u32, title: &str, body: Option<&str>) -> IssueDetail {
+        IssueDetail {
+            number,
+            title: title.to_string(),
+            body: body.map(|s| s.to_string()),
+            state: "open".to_string(),
+            author: User { login: "testuser".to_string() },
+            labels: vec![],
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            updated_at: "2025-01-02T00:00:00Z".to_string(),
+            comments: vec![],
+        }
+    }
+
+    #[test]
+    fn test_no_issue_data() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueDetail;
+        let issue_state = IssueState::new();
+        app.issue_state = Some(issue_state);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌Issue Detail──────────────────────────────────────────────────────────────────────────────────────┐
+        │No issue data                                                                                     │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_with_issue_detail() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueDetail;
+        let mut issue_state = IssueState::new();
+        issue_state.issue_detail = crate::app::LoadState::Loaded(make_detail(42, "Fix the widget", Some("This is the body text.")));
+        app.issue_state = Some(issue_state);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌Issue Detail──────────────────────────────────────────────────────────────────────────────────────┐
+        │● #42 Fix the widget  by @testuser                                                                │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Body──────────────────────────────────────────────────────────────────────────────────────────────┐
+        │This is the body text.                                                                            │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+         q/Esc/Esc: back | j/k: scroll | c: comment | C: comments | O: browser | M: toggle rich
+        ");
+    }
+
+    #[test]
+    fn test_with_issue_detail_no_body() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueDetail;
+        let mut issue_state = IssueState::new();
+        issue_state.issue_detail = crate::app::LoadState::Loaded(make_detail(7, "Empty body issue", None));
+        app.issue_state = Some(issue_state);
+
+        let output = render_full(&mut app);
+        assert!(output.contains("(no description)"), "should show fallback text");
+    }
+
+    #[test]
+    fn test_no_issue_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueDetail;
+        app.issue_state = None;
+
+        let output = render_full(&mut app);
+        assert!(!output.contains("Issue Detail") || output.trim().is_empty());
     }
 }

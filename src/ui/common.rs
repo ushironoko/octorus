@@ -1,11 +1,13 @@
+use std::borrow::Cow;
+
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
-    widgets::Paragraph,
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::ai::RallyState;
 use crate::app::{App, DataState};
@@ -31,7 +33,7 @@ pub fn build_pr_info(app: &App) -> String {
 
 /// Build CI status span with color for header display
 pub fn build_ci_status_span(app: &App) -> Span<'static> {
-    match app.ci_status {
+    match app.chk.ci_status {
         Some(CiStatus::Success) => Span::styled("  ✓ CI passed", Style::default().fg(Color::Green)),
         Some(CiStatus::Failure) => Span::styled("  ✕ CI failed", Style::default().fg(Color::Red)),
         Some(CiStatus::Pending) => {
@@ -83,6 +85,24 @@ pub fn render_update_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(bar, area);
 }
 
+pub fn truncate_with_width(s: &str, max_width: usize) -> Cow<'_, str> {
+    if s.width() <= max_width {
+        Cow::Borrowed(s)
+    } else if max_width <= 1 {
+        Cow::Borrowed("…")
+    } else {
+        let mut width = 0;
+        let truncated: String = s
+            .chars()
+            .take_while(|c| {
+                width += UnicodeWidthChar::width(*c).unwrap_or(1);
+                width < max_width
+            })
+            .collect();
+        Cow::Owned(format!("{}…", truncated))
+    }
+}
+
 /// Wrap text to fit within the specified width, handling multibyte characters.
 ///
 /// Preserves explicit newlines in the input. Each `\n` starts a new line.
@@ -124,6 +144,25 @@ pub fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+pub fn render_filter_bar(
+    frame: &mut Frame,
+    area: Rect,
+    filter: &crate::filter::ListFilter,
+) {
+    let cursor_display = format!("/{}", filter.query);
+    let filter_bar = Paragraph::new(Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
+        Span::styled(cursor_display, Style::default().fg(Color::White)),
+        Span::styled("│", Style::default().fg(Color::DarkGray)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(filter_bar, area);
 }
 
 #[cfg(test)]

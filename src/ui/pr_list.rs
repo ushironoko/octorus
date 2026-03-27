@@ -9,12 +9,14 @@ use ratatui::{
     Frame,
 };
 
-use super::common::render_update_bar;
+use unicode_width::UnicodeWidthStr;
+
+use super::common::{render_update_bar, truncate_with_width};
 use crate::app::App;
 use crate::github::{CiStatus, PullRequestSummary};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let has_filter_bar = app.pr_list_filter.as_ref().is_some_and(|f| f.input_active);
+    let has_filter_bar = app.prs.pr_list_filter.as_ref().is_some_and(|f| f.input_active);
     let has_update = app.update_available.is_some();
 
     let mut constraints = vec![
@@ -34,20 +36,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(frame.area());
 
-    let filter_str = app.pr_list_state_filter.display_name();
+    let filter_str = app.prs.pr_list_state_filter.display_name();
     let header_text = format!("PR List: {} ({})", app.repo, filter_str);
     let header =
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    if app.pr_list_loading && app.pr_list.is_none() {
+    if matches!(app.prs.pr_list, crate::app::LoadState::Loading) {
         let loading = Paragraph::new(format!("{} Loading PRs...", app.spinner_char())).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Pull Requests"),
         );
         frame.render_widget(loading, chunks[1]);
-    } else if let Some(ref prs) = app.pr_list {
+    } else if let Some(prs) = app.prs.pr_list.as_loaded() {
         if prs.is_empty() {
             let empty = Paragraph::new("No pull requests found").block(
                 Block::default()
@@ -57,7 +59,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame.render_widget(empty, chunks[1]);
         } else {
             let (display_prs, display_selected, total_display) =
-                if let Some(ref filter) = app.pr_list_filter {
+                if let Some(ref filter) = app.prs.pr_list_filter {
                     if filter.matched_indices.is_empty() {
                         let empty_msg = format!("No matches for '{}'", filter.query);
                         let empty = Paragraph::new(empty_msg)
@@ -71,7 +73,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
                         let mut next_chunk = 2;
                         if has_filter_bar {
-                            render_filter_bar(frame, chunks[next_chunk], filter);
+                            super::common::render_filter_bar(frame, chunks[next_chunk], filter);
                             next_chunk += 1;
                         }
 
@@ -90,21 +92,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     (filtered, sel, total)
                 } else {
                     let all: Vec<&PullRequestSummary> = prs.iter().collect();
-                    let sel = app.selected_pr;
+                    let sel = app.prs.selected_pr;
                     let total = all.len();
                     (all, sel, total)
                 };
 
             let total_prs = prs.len();
-            let title = if let Some(ref filter) = app.pr_list_filter {
+            let title = if let Some(ref filter) = app.prs.pr_list_filter {
                 format!(
                     "Pull Requests ({}/{})",
                     filter.matched_indices.len(),
                     total_prs
                 )
-            } else if app.pr_list_loading {
+            } else if app.prs.pr_list.is_loading() {
                 format!("Pull Requests ({}) {}", total_prs, app.spinner_char())
-            } else if app.pr_list_has_more {
+            } else if app.prs.pr_list_has_more {
                 format!("Pull Requests ({}+)", total_prs)
             } else {
                 format!("Pull Requests ({})", total_prs)
@@ -114,7 +116,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width);
 
             let mut list_state = ListState::default()
-                .with_offset(app.pr_list_scroll_offset)
+                .with_offset(app.prs.pr_list_scroll_offset)
                 .with_selected(Some(display_selected));
 
             let list = List::new(items)
@@ -122,7 +124,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .highlight_style(Style::default().bg(Color::DarkGray));
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
-            app.pr_list_scroll_offset = list_state.offset();
+            app.prs.pr_list_scroll_offset = list_state.offset();
 
             if total_display > 1 {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -153,8 +155,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let mut next_chunk = 2;
     if has_filter_bar {
-        if let Some(ref filter) = app.pr_list_filter {
-            render_filter_bar(frame, chunks[next_chunk], filter);
+        if let Some(ref filter) = app.prs.pr_list_filter {
+            super::common::render_filter_bar(frame, chunks[next_chunk], filter);
         }
         next_chunk += 1;
     }
@@ -167,27 +169,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, chunks[next_chunk], app);
 }
 
-fn render_filter_bar(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    filter: &crate::filter::ListFilter,
-) {
-    let cursor_display = format!("/{}", filter.query);
-    let filter_bar = Paragraph::new(Line::from(vec![
-        Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
-        Span::styled(cursor_display, Style::default().fg(Color::White)),
-        Span::styled("│", Style::default().fg(Color::DarkGray)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
-    frame.render_widget(filter_bar, area);
-}
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let filter_hint = if app.pr_list_filter.is_some() {
+    let filter_hint = if app.prs.pr_list_filter.is_some() {
         "Esc: clear filter | "
     } else {
         "Space /: filter | "
@@ -222,11 +206,11 @@ fn build_pr_list_items_ref(
             };
             let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
 
-            let author_width = 4 + pr.author.login.chars().count();
+            let author_width = 4 + pr.author.login.width();
             let fixed_width = 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);
-            let title = truncate_string(&full_title, title_width);
+            let title = truncate_with_width(&full_title, title_width);
             let title_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -282,12 +266,3 @@ fn build_pr_list_items_ref(
         .collect()
 }
 
-/// Truncate a string to fit within a given width, respecting char boundaries
-fn truncate_string(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
-        format!("{}...", truncated)
-    }
-}

@@ -407,6 +407,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Open split view",
             fmt_key(&kb.open_panel.display(), key_width)
         )),
+        Line::from(format!(
+            "{}  Toggle tree view",
+            fmt_key(&kb.tree_toggle.display(), key_width)
+        )),
         Line::from("  v               Mark selected file as viewed"),
         Line::from("  V               Mark selected directory as viewed"),
         Line::from(format!(

@@ -110,40 +110,7 @@ pub fn build_reply_template(author_login: &str, body: &str) -> String {
     format!("> @{} wrote:\n> {}{}\n\n", author_login, quote, ellipsis)
 }
 
-/// Issue状態フィルタ（型安全）
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum IssueStateFilter {
-    #[default]
-    Open,
-    Closed,
-    All,
-}
-
-impl IssueStateFilter {
-    pub fn as_gh_arg(&self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Closed => "closed",
-            Self::All => "all",
-        }
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Closed => "closed",
-            Self::All => "all",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Open => Self::Closed,
-            Self::Closed => Self::All,
-            Self::All => Self::Open,
-        }
-    }
-}
+define_state_filter!(IssueStateFilter);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueSummary {
@@ -189,32 +156,12 @@ pub struct IssueListPage {
     pub has_more: bool,
 }
 
-/// Issue一覧取得（limit+1件取得してhas_moreを判定）
 pub async fn fetch_issue_list(
     repo: &str,
     state: IssueStateFilter,
     limit: u32,
 ) -> Result<IssueListPage> {
-    let output = gh_command(&[
-        "issue",
-        "list",
-        "-R",
-        repo,
-        "-s",
-        state.as_gh_arg(),
-        "--json",
-        "number,title,state,author,labels,updatedAt,comments",
-        "--limit",
-        &(limit + 1).to_string(),
-    ])
-    .await?;
-
-    let mut items: Vec<IssueSummary> =
-        serde_json::from_str(&output).context("Failed to parse issue list response")?;
-    let has_more = items.len() > limit as usize;
-    items.truncate(limit as usize);
-
-    Ok(IssueListPage { items, has_more })
+    fetch_issue_list_with_offset(repo, state, 0, limit).await
 }
 
 /// Issue一覧取得（オフセット付き、追加ロード用）

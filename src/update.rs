@@ -6,13 +6,11 @@ use std::process::Command;
 const REPO: &str = "ushironoko/octorus";
 
 /// Result of `run_update()` indicating what happened.
+// Fields are constructed for logging but not read by the caller (main.rs discards Ok variant)
 #[allow(dead_code)]
 pub enum UpdateResult {
-    /// Binary was updated to a new version
     Updated { version: String },
-    /// Already on the latest version
     AlreadyCurrent,
-    /// User must take manual action (e.g., mise)
     ManualActionRequired { message: String },
 }
 

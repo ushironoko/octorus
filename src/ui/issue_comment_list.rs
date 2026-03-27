@@ -8,10 +8,11 @@ use ratatui::{
     },
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
+
+use super::common::{truncate_with_width, wrap_text};
 use crate::app::App;
 use crate::github::IssueComment;
-
-use super::common::wrap_text;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let Some(ref state) = app.issue_state else {
@@ -29,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     let comment_count = state.issue_comments.as_ref().map(|c| c.len()).unwrap_or(0);
-    let issue_number = state.issue_detail.as_ref().map(|d| d.number).unwrap_or(0);
+    let issue_number = state.issue_detail.as_loaded().map(|d| d.number).unwrap_or(0);
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" Issue #{} ", issue_number),
@@ -52,7 +53,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             " Submitting...",
             Style::default().fg(Color::Yellow),
         ))
-    } else if let Some((success, ref message)) = app.submission_result {
+    } else if let Some((success, ref message)) = app.cmt.submission_result {
         let (icon, color) = if success {
             ("\u{2713}", Color::Green)
         } else {
@@ -180,12 +181,10 @@ fn format_comment_item(
 
     let header_line = Line::from(header_spans);
 
-    // Truncate body for list view (char-boundary-safe)
     let body_text: String = comment.body.lines().collect::<Vec<_>>().join(" ");
-    let max_chars = body_width * 2;
-    let truncated = if body_text.chars().count() > max_chars {
-        let s: String = body_text.chars().take(max_chars).collect();
-        format!("{}...", s)
+    let max_display_width = body_width * 2;
+    let truncated = if body_text.width() > max_display_width {
+        truncate_with_width(&body_text, max_display_width).into_owned()
     } else {
         body_text
     };
@@ -299,7 +298,7 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
             " Submitting...",
             Style::default().fg(Color::Yellow),
         ))
-    } else if let Some((success, ref message)) = app.submission_result {
+    } else if let Some((success, ref message)) = app.cmt.submission_result {
         let (icon, color) = if success {
             ("\u{2713}", Color::Green)
         } else {

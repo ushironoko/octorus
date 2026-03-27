@@ -1,5 +1,6 @@
 use lasso::{Rodeo, Spur};
 use ratatui::style::Style;
+use smallvec::SmallVec;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicBool;
@@ -52,11 +53,13 @@ pub struct InternedSpan {
     pub style: Style,
 }
 
+pub type SpanVec = SmallVec<[InternedSpan; 8]>;
+
 /// Diff行のキャッシュ（シンタックスハイライト済み）
 #[derive(Clone)]
 pub struct CachedDiffLine {
     /// 基本の Span（REVERSED なし）
-    pub spans: Vec<InternedSpan>,
+    pub spans: SpanVec,
     /// 行の種類（背景色の決定に使用）
     pub line_type: LineType,
 }
@@ -374,6 +377,57 @@ pub enum DataState {
         files: Vec<ChangedFile>,
     },
     Error(String),
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum LoadState<T> {
+    #[default]
+    NotLoaded,
+    Loading,
+    LoadingMore(T),
+    Loaded(T),
+    Error(String),
+}
+
+impl<T> LoadState<T> {
+    pub fn as_loaded(&self) -> Option<&T> {
+        match self {
+            Self::Loaded(t) | Self::LoadingMore(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn as_loaded_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::Loaded(t) | Self::LoadingMore(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading | Self::LoadingMore(_))
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        matches!(self, Self::Loaded(_))
+    }
+
+    pub fn into_loaded(self) -> Option<T> {
+        match self {
+            Self::Loaded(t) | Self::LoadingMore(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Recover from a failed load-more by transitioning back to Loaded.
+    /// Preserves existing data from LoadingMore/Loaded; uses fallback otherwise.
+    pub fn recover_or(&mut self, fallback: T) {
+        let taken = std::mem::take(self);
+        match taken {
+            Self::LoadingMore(t) | Self::Loaded(t) => *self = Self::Loaded(t),
+            _ => *self = Self::Loaded(fallback),
+        }
+    }
 }
 
 /// Git status のファイルステータス
@@ -728,18 +782,14 @@ pub enum IssueDetailFocus {
 /// 画面クローズ時に `None` で全破棄。
 pub struct IssueState {
     // List
-    pub issues: Option<Vec<IssueSummary>>,
+    pub issues: LoadState<Vec<IssueSummary>>,
     pub selected_issue: usize,
     pub issue_list_scroll_offset: usize,
-    pub issue_list_loading: bool,
     pub issue_list_has_more: bool,
     pub issue_list_state_filter: IssueStateFilter,
     pub issue_list_filter: Option<crate::filter::ListFilter>,
-    /// true = load_more_issues (append), false = reload (replace)
-    pub(crate) issue_list_appending: bool,
     // Detail
-    pub issue_detail: Option<IssueDetail>,
-    pub issue_detail_loading: bool,
+    pub issue_detail: LoadState<IssueDetail>,
     pub issue_detail_scroll_offset: usize,
     pub issue_detail_cache: Option<DiffCache>,
     pub selected_linked_pr: usize,
@@ -754,8 +804,7 @@ pub struct IssueState {
         Option<(u32, mpsc::Receiver<Result<IssueComment, String>>)>,
     pub(crate) issue_comment_submitting: bool,
     // Linked PRs（IssueDetail から分離管理）
-    pub linked_prs: Option<Vec<LinkedPr>>,
-    pub linked_prs_loading: bool,
+    pub linked_prs: LoadState<Vec<LinkedPr>>,
     // Receivers（origin issue_number 追跡で stale 防止）
     pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, String>>>,
     pub(crate) issue_detail_receiver: IssueReceiver<IssueDetail>,
@@ -771,16 +820,13 @@ impl Default for IssueState {
 impl IssueState {
     pub fn new() -> Self {
         Self {
-            issues: None,
+            issues: LoadState::NotLoaded,
             selected_issue: 0,
             issue_list_scroll_offset: 0,
-            issue_list_loading: false,
             issue_list_has_more: false,
             issue_list_state_filter: IssueStateFilter::default(),
             issue_list_filter: None,
-            issue_list_appending: false,
-            issue_detail: None,
-            issue_detail_loading: false,
+            issue_detail: LoadState::NotLoaded,
             issue_detail_scroll_offset: 0,
             issue_detail_cache: None,
             issue_comments: None,
@@ -792,11 +838,80 @@ impl IssueState {
             issue_comment_submitting: false,
             selected_linked_pr: 0,
             detail_focus: IssueDetailFocus::default(),
-            linked_prs: None,
-            linked_prs_loading: false,
+            linked_prs: LoadState::NotLoaded,
             issue_list_receiver: None,
             issue_detail_receiver: None,
             linked_prs_receiver: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CommentState {
+    pub review_comments: Option<Vec<crate::github::comment::ReviewComment>>,
+    pub selected_comment: usize,
+    pub comment_list_scroll_offset: usize,
+    pub comments_loading: bool,
+    pub file_comment_positions: Vec<CommentPosition>,
+    pub file_comment_lines: std::collections::HashSet<usize>,
+    pub comment_panel_open: bool,
+    pub comment_panel_scroll: u16,
+    pub comment_tab: CommentTab,
+    pub discussion_comments: Option<Vec<crate::github::comment::DiscussionComment>>,
+    pub selected_discussion_comment: usize,
+    pub discussion_comment_list_scroll_offset: usize,
+    pub discussion_comments_loading: bool,
+    pub discussion_comment_detail_mode: bool,
+    pub discussion_comment_detail_scroll: usize,
+    pub(crate) comment_receiver:
+        super::PrReceiver<Result<Vec<crate::github::comment::ReviewComment>, String>>,
+    pub(crate) discussion_comment_receiver:
+        super::PrReceiver<Result<Vec<crate::github::comment::DiscussionComment>, String>>,
+    pub(crate) comment_submit_receiver: super::PrReceiver<crate::loader::CommentSubmitResult>,
+    pub comment_submitting: bool,
+    pub submission_result: Option<(bool, String)>,
+    pub(crate) submission_result_time: Option<std::time::Instant>,
+    pub(crate) pending_approve_body: Option<String>,
+    pub selected_inline_comment: usize,
+}
+
+#[derive(Default)]
+pub struct PrListState {
+    pub pr_list: LoadState<Vec<crate::github::PullRequestSummary>>,
+    pub selected_pr: usize,
+    pub pr_list_scroll_offset: usize,
+    pub pr_list_has_more: bool,
+    pub pr_list_state_filter: crate::github::PrStateFilter,
+    pub pr_list_filter: Option<crate::filter::ListFilter>,
+    pub(crate) pr_list_receiver:
+        Option<tokio::sync::mpsc::Receiver<Result<crate::github::PrListPage, String>>>,
+}
+
+pub struct ChecksState {
+    pub checks: Option<Vec<crate::github::CheckItem>>,
+    pub selected_check: usize,
+    pub checks_scroll_offset: usize,
+    pub checks_loading: bool,
+    pub checks_target_pr: Option<u32>,
+    pub checks_return_state: AppState,
+    pub ci_status: Option<crate::github::CiStatus>,
+    pub(crate) checks_receiver:
+        super::PrReceiver<Result<Vec<crate::github::CheckItem>, String>>,
+    pub(crate) ci_status_receiver: Option<tokio::sync::mpsc::Receiver<crate::github::CiStatus>>,
+}
+
+impl Default for ChecksState {
+    fn default() -> Self {
+        Self {
+            checks: None,
+            selected_check: 0,
+            checks_scroll_offset: 0,
+            checks_loading: false,
+            checks_target_pr: None,
+            checks_return_state: AppState::FileList,
+            ci_status: None,
+            checks_receiver: None,
+            ci_status_receiver: None,
         }
     }
 }

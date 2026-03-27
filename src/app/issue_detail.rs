@@ -34,7 +34,7 @@ impl App {
         };
         let body = state
             .issue_detail
-            .as_ref()
+            .as_loaded()
             .and_then(|d| d.body.as_deref())
             .unwrap_or("")
             .to_string();
@@ -86,7 +86,7 @@ impl App {
             return Ok(());
         };
 
-        if state.issue_detail_loading {
+        if state.issue_detail.is_loading() {
             return Ok(());
         }
 
@@ -124,7 +124,7 @@ impl App {
                 }
             }
             IssueDetailFocus::LinkedPrs => {
-                let pr_count = state.linked_prs.as_ref().map(|p| p.len()).unwrap_or(0);
+                let pr_count = state.linked_prs.as_loaded().map(|p| p.len()).unwrap_or(0);
 
                 if self.matches_single_key(&key, &kb.move_down) {
                     if pr_count > 0 {
@@ -143,7 +143,7 @@ impl App {
                 if self.matches_single_key(&key, &kb.open_panel) {
                     let pr_info = state
                         .linked_prs
-                        .as_ref()
+                        .as_loaded()
                         .and_then(|prs| prs.get(state.selected_linked_pr))
                         .map(|pr| (pr.number, pr.repo.clone()));
                     if let Some((number, repo)) = pr_info {
@@ -157,7 +157,7 @@ impl App {
         if self.matches_single_key(&key, &kb.tab_switch) {
             let has_linked_prs = state
                 .linked_prs
-                .as_ref()
+                .as_loaded()
                 .map(|p| !p.is_empty())
                 .unwrap_or(false);
             if has_linked_prs {
@@ -180,7 +180,7 @@ impl App {
             if let Some(detail) = self
                 .issue_state
                 .as_ref()
-                .and_then(|s| s.issue_detail.as_ref())
+                .and_then(|s| s.issue_detail.as_loaded())
             {
                 self.open_issue_in_browser(detail.number);
             }
@@ -216,7 +216,7 @@ impl App {
         if state.issue_comments.is_none() {
             let raw_comments = state
                 .issue_detail
-                .as_ref()
+                .as_loaded()
                 .map(|d| d.comments.as_slice())
                 .unwrap_or(&[]);
             state.issue_comments = Some(parse_issue_comments(raw_comments));
@@ -236,7 +236,7 @@ impl App {
         let Some(ref state) = self.issue_state else {
             return;
         };
-        let Some(ref detail) = state.issue_detail else {
+        let Some(detail) = state.issue_detail.as_loaded() else {
             return;
         };
         let issue_number = detail.number;
@@ -253,7 +253,7 @@ impl App {
         let Some(ref state) = self.issue_state else {
             return;
         };
-        let Some(ref detail) = state.issue_detail else {
+        let Some(detail) = state.issue_detail.as_loaded() else {
             return;
         };
         let Some(ref comments) = state.issue_comments else {
@@ -348,7 +348,7 @@ impl App {
                 .filter(|u| !u.is_empty());
             if let Some(url) = url {
                 Self::open_url_in_browser(&url);
-            } else if let Some(detail) = state.issue_detail.as_ref() {
+            } else if let Some(detail) = state.issue_detail.as_loaded() {
                 self.open_issue_in_browser(detail.number);
             }
             return Ok(());
@@ -455,7 +455,7 @@ mod tests {
     fn test_open_issue_comment_list_transitions_state() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         app.issue_state = Some(state);
         app.state = AppState::IssueDetail;
 
@@ -482,7 +482,7 @@ mod tests {
             }),
         ];
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(comments));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(comments));
         app.issue_state = Some(state);
         app.state = AppState::IssueDetail;
 
@@ -499,7 +499,7 @@ mod tests {
     fn test_issue_comment_list_quit_returns_to_issue_detail() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![]);
         app.issue_state = Some(state);
         app.state = AppState::IssueCommentList;
@@ -514,7 +514,7 @@ mod tests {
     fn test_issue_comment_list_enter_activates_detail_mode() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![crate::github::IssueComment {
             id: "IC_1".to_string(),
             body: "Test".to_string(),
@@ -539,7 +539,7 @@ mod tests {
     fn test_issue_comment_detail_quit_returns_to_list_mode() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![crate::github::IssueComment {
             id: "IC_1".to_string(),
             body: "Test".to_string(),
@@ -566,7 +566,7 @@ mod tests {
     fn test_open_issue_comment_list_with_zero_comments() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         app.issue_state = Some(state);
         app.state = AppState::IssueDetail;
 
@@ -603,7 +603,7 @@ mod tests {
     fn test_enter_issue_comment_input_sets_input_mode() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         app.issue_state = Some(state);
         app.state = AppState::IssueDetail;
 
@@ -621,7 +621,7 @@ mod tests {
     fn test_enter_issue_reply_input_sets_template() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![crate::github::IssueComment {
             id: "IC_1".to_string(),
             body: "Original comment".to_string(),
@@ -647,7 +647,7 @@ mod tests {
     fn test_enter_issue_reply_input_truncates_long_quote() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![crate::github::IssueComment {
             id: "IC_1".to_string(),
             body: "line1\nline2\nline3\nline4\nline5".to_string(),
@@ -736,7 +736,7 @@ mod tests {
     fn test_reply_key_works_in_detail_mode() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![crate::github::IssueComment {
             id: "IC_1".to_string(),
             body: "Original".to_string(),
@@ -772,7 +772,7 @@ mod tests {
     fn test_enter_issue_comment_blocked_during_submit() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comment_submitting = true;
         app.issue_state = Some(state);
         app.state = AppState::IssueDetail;
@@ -788,7 +788,7 @@ mod tests {
     fn test_enter_issue_reply_blocked_during_submit() {
         let mut app = App::new_for_test();
         let mut state = IssueState::new();
-        state.issue_detail = Some(make_issue_detail_with_comments(vec![]));
+        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(vec![]));
         state.issue_comments = Some(vec![crate::github::IssueComment {
             id: "IC_1".to_string(),
             body: "Test".to_string(),

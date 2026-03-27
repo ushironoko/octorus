@@ -18,7 +18,7 @@ fn get_issue_filter(app: &App) -> Option<&crate::filter::ListFilter> {
 impl App {
     pub(crate) fn handle_filter_input(&mut self, key: &KeyEvent, target: &str) -> bool {
         let filter = match target {
-            "pr" => self.pr_list_filter.as_mut(),
+            "pr" => self.prs.pr_list_filter.as_mut(),
             "file" => self.file_list_filter.as_mut(),
             "issue" => get_issue_filter_mut(self),
             _ => return false,
@@ -33,7 +33,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 match target {
-                    "pr" => self.pr_list_filter = None,
+                    "pr" => self.prs.pr_list_filter = None,
                     "file" => {
                         self.file_list_filter = None;
                         self.rebuild_file_tree_if_active();
@@ -49,7 +49,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let filter = match target {
-                    "pr" => self.pr_list_filter.as_mut(),
+                    "pr" => self.prs.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
@@ -57,7 +57,7 @@ impl App {
                 let did_clear_file = if let Some(f) = filter {
                     if f.query.is_empty() {
                         match target {
-                            "pr" => self.pr_list_filter = None,
+                            "pr" => self.prs.pr_list_filter = None,
                             "file" => self.file_list_filter = None,
                             "issue" => {
                                 if let Some(ref mut s) = self.issue_state {
@@ -81,7 +81,7 @@ impl App {
             }
             KeyCode::Backspace => {
                 let filter = match target {
-                    "pr" => self.pr_list_filter.as_mut(),
+                    "pr" => self.prs.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
@@ -94,7 +94,7 @@ impl App {
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let filter = match target {
-                    "pr" => self.pr_list_filter.as_mut(),
+                    "pr" => self.prs.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
@@ -107,7 +107,7 @@ impl App {
             }
             KeyCode::Up => {
                 let filter = match target {
-                    "pr" => self.pr_list_filter.as_mut(),
+                    "pr" => self.prs.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
@@ -115,7 +115,7 @@ impl App {
                 if let Some(f) = filter {
                     if let Some(idx) = f.navigate_up() {
                         match target {
-                            "pr" => self.selected_pr = idx,
+                            "pr" => self.prs.selected_pr = idx,
                             "file" => self.selected_file = idx,
                             "issue" => {
                                 if let Some(ref mut s) = self.issue_state {
@@ -130,7 +130,7 @@ impl App {
             }
             KeyCode::Down => {
                 let filter = match target {
-                    "pr" => self.pr_list_filter.as_mut(),
+                    "pr" => self.prs.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
@@ -138,7 +138,7 @@ impl App {
                 if let Some(f) = filter {
                     if let Some(idx) = f.navigate_down() {
                         match target {
-                            "pr" => self.selected_pr = idx,
+                            "pr" => self.prs.selected_pr = idx,
                             "file" => self.selected_file = idx,
                             "issue" => {
                                 if let Some(ref mut s) = self.issue_state {
@@ -156,7 +156,7 @@ impl App {
                     return false;
                 }
                 let filter = match target {
-                    "pr" => self.pr_list_filter.as_mut(),
+                    "pr" => self.prs.pr_list_filter.as_mut(),
                     "file" => self.file_list_filter.as_mut(),
                     "issue" => get_issue_filter_mut(self),
                     _ => return false,
@@ -175,21 +175,21 @@ impl App {
     pub(crate) fn reapply_filter(&mut self, target: &str) {
         match target {
             "pr" => {
-                let mut filter = match self.pr_list_filter.take() {
+                let mut filter = match self.prs.pr_list_filter.take() {
                     Some(f) => f,
                     None => return,
                 };
-                if let Some(prs) = self.pr_list.as_ref() {
+                if let Some(prs) = self.prs.pr_list.as_loaded() {
                     filter.apply(prs, |pr, q| {
                         pr.title.to_lowercase().contains(q)
                             || pr.number.to_string().contains(q)
                             || pr.author.login.to_lowercase().contains(q)
                     });
                     if let Some(idx) = filter.sync_selection() {
-                        self.selected_pr = idx;
+                        self.prs.selected_pr = idx;
                     }
                 }
-                self.pr_list_filter = Some(filter);
+                self.prs.pr_list_filter = Some(filter);
             }
             "file" => {
                 let mut filter = match self.file_list_filter.take() {
@@ -214,7 +214,7 @@ impl App {
                     Some(f) => f,
                     None => return,
                 };
-                if let Some(issues) = state.issues.as_ref() {
+                if let Some(issues) = state.issues.as_loaded() {
                     filter.apply(issues, |issue, q| {
                         issue.title.to_lowercase().contains(q)
                             || issue.number.to_string().contains(q)
@@ -233,7 +233,7 @@ impl App {
     /// フィルタ適用中のナビゲーション（j/k/↑/↓）。処理した場合は true を返す。
     pub(crate) fn handle_filter_navigation(&mut self, target: &str, is_down: bool) -> bool {
         let filter = match target {
-            "pr" => self.pr_list_filter.as_mut(),
+            "pr" => self.prs.pr_list_filter.as_mut(),
             "file" => self.file_list_filter.as_mut(),
             "issue" => get_issue_filter_mut(self),
             _ => return false,
@@ -252,7 +252,7 @@ impl App {
         };
         if let Some(idx) = idx {
             match target {
-                "pr" => self.selected_pr = idx,
+                "pr" => self.prs.selected_pr = idx,
                 "file" => self.selected_file = idx,
                 "issue" => {
                     if let Some(ref mut s) = self.issue_state {
@@ -268,14 +268,14 @@ impl App {
     /// フィルタ適用中（非入力）の Esc 処理。処理した場合は true を返す。
     pub(crate) fn handle_filter_esc(&mut self, target: &str) -> bool {
         let has_filter = match target {
-            "pr" => self.pr_list_filter.is_some(),
+            "pr" => self.prs.pr_list_filter.is_some(),
             "file" => self.file_list_filter.is_some(),
             "issue" => get_issue_filter(self).is_some(),
             _ => return false,
         };
         if has_filter {
             match target {
-                "pr" => self.pr_list_filter = None,
+                "pr" => self.prs.pr_list_filter = None,
                 "file" => {
                     self.file_list_filter = None;
                     // フィルタ解除時にツリーを復元
@@ -297,7 +297,7 @@ impl App {
     /// フィルタ適用中の Enter 処理。選択が None の場合は Enter を無視する。
     pub(crate) fn is_filter_selection_empty(&self, target: &str) -> bool {
         let filter = match target {
-            "pr" => self.pr_list_filter.as_ref(),
+            "pr" => self.prs.pr_list_filter.as_ref(),
             "file" => self.file_list_filter.as_ref(),
             "issue" => get_issue_filter(self),
             _ => return false,

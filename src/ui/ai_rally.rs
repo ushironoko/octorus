@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::common::build_pr_info;
+use super::common::{build_pr_info, truncate_with_width};
 use crate::ai::{RallyState, ReviewAction, RevieweeStatus};
 use crate::app::{AiRallyState, App, LogEntry, LogEventType, PauseState};
 
@@ -211,7 +211,7 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         }
         RallyState::WaitingForPostConfirmation => {
             if let Some(ref info) = state.pending_review_post {
-                let summary = truncate_string(&info.summary, 120);
+                let summary = truncate_with_width(&info.summary, 120);
                 (
                     " Review Post Confirmation ",
                     format!(
@@ -221,7 +221,7 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                     "Press 'y' to post to PR, 'n' to skip, 'q' to abort",
                 )
             } else if let Some(ref info) = state.pending_fix_post {
-                let summary = truncate_string(&info.summary, 120);
+                let summary = truncate_with_width(&info.summary, 120);
                 let files_display = if info.files_modified.len() <= 5 {
                     info.files_modified.join(", ")
                 } else {
@@ -294,7 +294,7 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                     };
                     (
                         format!("Review: {}", action_text),
-                        truncate_string(&review.summary, 60),
+                        truncate_with_width(&review.summary, 60).into_owned(),
                         color,
                     )
                 }
@@ -314,27 +314,27 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                     };
                     (
                         format!("Fix: {}", status_text),
-                        truncate_string(&fix.summary, 60),
+                        truncate_with_width(&fix.summary, 60).into_owned(),
                         color,
                     )
                 }
                 crate::ai::orchestrator::RallyEvent::ClarificationNeeded(q) => (
                     "Clarification".to_string(),
-                    truncate_string(q, 60),
+                    truncate_with_width(q, 60).into_owned(),
                     Color::Magenta,
                 ),
                 crate::ai::orchestrator::RallyEvent::PermissionNeeded(action, _) => (
                     "Permission".to_string(),
-                    truncate_string(action, 60),
+                    truncate_with_width(action, 60).into_owned(),
                     Color::Magenta,
                 ),
                 crate::ai::orchestrator::RallyEvent::Approved(summary) => (
                     "APPROVED".to_string(),
-                    truncate_string(summary, 60),
+                    truncate_with_width(summary, 60).into_owned(),
                     Color::Green,
                 ),
                 crate::ai::orchestrator::RallyEvent::Error(e) => {
-                    ("ERROR".to_string(), truncate_string(e, 60), Color::Red)
+                    ("ERROR".to_string(), truncate_with_width(e, 60).into_owned(), Color::Red)
                 }
                 _ => return None,
             };
@@ -445,7 +445,7 @@ fn format_log_entry(entry: &LogEntry, is_selected: bool) -> ListItem<'static> {
 
     let selector = if is_selected { ">" } else { " " };
 
-    let display_message = truncate_string(&entry.message, 80);
+    let display_message = truncate_with_width(&entry.message, 80).into_owned();
 
     let mut item = ListItem::new(Line::from(vec![
         Span::styled(
@@ -561,12 +561,145 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
     frame.render_widget(status_bar, area);
 }
 
-fn truncate_string(s: &str, max_chars: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
-        format!("{}...", truncated)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::RallyState;
+    use crate::app::{AiRallyState, App, AppState, LogEntry, LogEventType, PauseState};
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_rally_state() -> AiRallyState {
+        AiRallyState {
+            iteration: 1,
+            max_iterations: 3,
+            state: RallyState::Initializing,
+            history: vec![],
+            logs: vec![],
+            log_scroll_offset: 0,
+            selected_log_index: None,
+            showing_log_detail: false,
+            pending_question: None,
+            pending_permission: None,
+            pending_review_post: None,
+            pending_fix_post: None,
+            last_visible_log_height: 0,
+            pending_config_warning: None,
+            pause_state: PauseState::Running,
+        }
+    }
+
+    fn render_full(app: &mut App) -> String {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..24u16 {
+            let mut line = String::new();
+            for x in 0..100u16 {
+                let cell = &buf[(x, y)];
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn test_initializing_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = Some(make_rally_state());
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌ AI Rally - Iteration 1/3 ────────────────────────────────────────────────────────────────────────┐
+        │PR #1                                                                                             │
+        │Status: Initializing...                                                                           │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌ History ─────────────────────────────────────────────────────────────────────────────────────────┐
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌ Logs (0/0) [j/k/↑↓: select, Enter: detail] ──────────────────────────────────────────────────────┐
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │p: Pause | j/k/↑↓: select | Enter: detail | b: Background | q: Abort                              │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_no_rally_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = None;
+
+        let output = render_full(&mut app);
+        assert!(!output.contains("AI Rally"), "should render empty when no state");
+    }
+
+    #[test]
+    fn test_completed_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state();
+        rally.state = RallyState::Completed;
+        rally.iteration = 3;
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(output.contains("Completed!"), "should show completed status");
+    }
+
+    #[test]
+    fn test_with_logs() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state();
+        rally.logs.push(LogEntry {
+            timestamp: "12:00:00".to_string(),
+            event_type: LogEventType::Info,
+            message: "Rally started".to_string(),
+        });
+        rally.logs.push(LogEntry {
+            timestamp: "12:00:01".to_string(),
+            event_type: LogEventType::Thinking,
+            message: "Analyzing code...".to_string(),
+        });
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(output.contains("Rally started"), "should show log messages");
+        assert!(output.contains("Analyzing code..."), "should show thinking log");
+    }
+
+    #[test]
+    fn test_paused_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state();
+        rally.state = RallyState::ReviewerReviewing;
+        rally.pause_state = PauseState::Paused;
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(output.contains("PAUSED"), "should show paused indicator");
     }
 }

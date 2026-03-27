@@ -12,10 +12,11 @@ use std::collections::HashMap;
 
 use lasso::Rodeo;
 use ratatui::style::Style;
+use smallvec::smallvec;
 use syntect::easy::HighlightLines;
 use tree_sitter::{Query, QueryCursor, StreamingIterator, Tree};
 
-use crate::app::InternedSpan;
+use crate::app::{InternedSpan, SpanVec};
 use crate::language::SupportedLanguage;
 
 use super::parser_pool::ParserPool;
@@ -159,17 +160,17 @@ impl Highlighter {
     ///
     /// For CST, this should be called after parse_source() with the tree.
     /// For Syntect, this can be called directly.
-    pub fn highlight_line(&mut self, line: &str, interner: &mut Rodeo) -> Vec<InternedSpan> {
+    pub fn highlight_line(&mut self, line: &str, interner: &mut Rodeo) -> SpanVec {
         match self {
             Highlighter::Cst { .. } => {
-                vec![InternedSpan {
+                smallvec![InternedSpan {
                     content: interner.get_or_intern(line),
                     style: Style::default(),
                 }]
             }
             Highlighter::Syntect(hl) => highlight_with_syntect(line, hl, interner),
             Highlighter::None => {
-                vec![InternedSpan {
+                smallvec![InternedSpan {
                     content: interner.get_or_intern(line),
                     style: Style::default(),
                 }]
@@ -485,11 +486,11 @@ pub fn apply_line_highlights(
     line: &str,
     captures: Option<&[LineCapture]>,
     interner: &mut Rodeo,
-) -> Vec<InternedSpan> {
+) -> SpanVec {
     let captures = match captures {
         Some(c) if !c.is_empty() => c,
         _ => {
-            return vec![InternedSpan {
+            return smallvec![InternedSpan {
                 content: interner.get_or_intern(line),
                 style: Style::default(),
             }];
@@ -509,7 +510,7 @@ pub fn apply_line_highlights(
     }
 
     if events.is_empty() {
-        return vec![InternedSpan {
+        return smallvec![InternedSpan {
             content: interner.get_or_intern(line),
             style: Style::default(),
         }];
@@ -521,7 +522,7 @@ pub fn apply_line_highlights(
         })
     });
 
-    let mut spans = Vec::new();
+    let mut spans = SpanVec::new();
     let mut active_captures: Vec<usize> = Vec::new();
     let mut last_pos = 0;
 
@@ -578,7 +579,7 @@ fn highlight_with_syntect(
     line: &str,
     hl: &mut HighlightLines<'_>,
     interner: &mut Rodeo,
-) -> Vec<InternedSpan> {
+) -> SpanVec {
     match hl.highlight_line(line, syntax_set()) {
         Ok(ranges) => ranges
             .into_iter()
@@ -586,9 +587,9 @@ fn highlight_with_syntect(
                 content: interner.get_or_intern(text),
                 style: convert_syntect_style(&style),
             })
-            .collect(),
+            .collect::<SpanVec>(),
         Err(_) => {
-            vec![InternedSpan {
+            smallvec![InternedSpan {
                 content: interner.get_or_intern(line),
                 style: Style::default(),
             }]

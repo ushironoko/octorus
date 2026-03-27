@@ -11,9 +11,12 @@ use ratatui::{
 };
 use syntect::easy::HighlightLines;
 
+use smallvec::smallvec;
+
 use super::common::render_rally_status_bar;
 use crate::app::{
     hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext,
+    SpanVec,
 };
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{
@@ -53,45 +56,26 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
         .map(|line| {
             let (line_type, content) = classify_line(line);
 
-            let spans = match line_type {
-                LineType::Header => vec![InternedSpan {
+            let fg_style = match line_type.fg_color() {
+                Some(c) => Style::default().fg(c),
+                None => Style::default(),
+            };
+            let spans: SpanVec = if let Some(marker) = line_type.marker() {
+                smallvec![
+                    InternedSpan {
+                        content: interner.get_or_intern(marker),
+                        style: fg_style,
+                    },
+                    InternedSpan {
+                        content: interner.get_or_intern(content),
+                        style: fg_style,
+                    },
+                ]
+            } else {
+                smallvec![InternedSpan {
                     content: interner.get_or_intern(line),
-                    style: Style::default().fg(Color::Cyan),
-                }],
-                LineType::Meta => vec![InternedSpan {
-                    content: interner.get_or_intern(line),
-                    style: Style::default().fg(Color::Yellow),
-                }],
-                LineType::Added => vec![
-                    InternedSpan {
-                        content: interner.get_or_intern("+"),
-                        style: Style::default().fg(Color::Green),
-                    },
-                    InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default().fg(Color::Green),
-                    },
-                ],
-                LineType::Removed => vec![
-                    InternedSpan {
-                        content: interner.get_or_intern("-"),
-                        style: Style::default().fg(Color::Red),
-                    },
-                    InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default().fg(Color::Red),
-                    },
-                ],
-                LineType::Context => vec![
-                    InternedSpan {
-                        content: interner.get_or_intern(" "),
-                        style: Style::default(),
-                    },
-                    InternedSpan {
-                        content: interner.get_or_intern(content),
-                        style: Style::default(),
-                    },
-                ],
+                    style: fg_style,
+                }]
             };
 
             CachedDiffLine { spans, line_type }
@@ -270,7 +254,7 @@ pub fn build_commit_diff_cache(
         );
         // Re-intern spans from section interner into the combined interner
         for line in &section_cache.lines {
-            let spans = line
+            let spans: SpanVec = line
                 .spans
                 .iter()
                 .map(|span| {
@@ -985,13 +969,13 @@ fn build_lines_with_cst(
 
             let spans = match line_type {
                 LineType::Header => {
-                    vec![InternedSpan {
+                    smallvec![InternedSpan {
                         content: interner.get_or_intern(line),
                         style: Style::default().fg(Color::Cyan),
                     }]
                 }
                 LineType::Meta => {
-                    vec![InternedSpan {
+                    smallvec![InternedSpan {
                         content: interner.get_or_intern(line),
                         style: Style::default().fg(Color::Yellow),
                     }]
@@ -1011,7 +995,7 @@ fn build_lines_with_cst(
                         _ => "",
                     };
 
-                    let mut spans = vec![InternedSpan {
+                    let mut spans: SpanVec = smallvec![InternedSpan {
                         content: interner.get_or_intern(marker),
                         style: marker_style,
                     }];
@@ -1035,7 +1019,9 @@ fn build_lines_with_cst(
                         Color::Red,
                         interner,
                     );
-                    std::iter::once(marker).chain(code_spans).collect()
+                    let mut spans: SpanVec = smallvec![marker];
+                    spans.extend(code_spans);
+                    spans
                 }
             };
 
@@ -1139,10 +1125,10 @@ pub fn render_cached_lines<'a>(
             } else if is_selected {
                 line.style(Style::default().add_modifier(Modifier::REVERSED))
             } else if bg_color {
-                match cached.line_type {
-                    LineType::Added => line.style(Style::default().bg(Color::Rgb(0, 60, 0))),
-                    LineType::Removed => line.style(Style::default().bg(Color::Rgb(60, 0, 0))),
-                    _ => line,
+                if let Some(bg) = cached.line_type.bg_color() {
+                    line.style(Style::default().bg(bg))
+                } else {
+                    line
                 }
             } else {
                 line
@@ -1152,7 +1138,7 @@ pub fn render_cached_lines<'a>(
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
-    if app.comment_panel_open {
+    if app.cmt.comment_panel_open {
         render_with_inline_comment(frame, app);
         return;
     }
@@ -1260,7 +1246,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
             cache,
             start..end,
             app.diff_scroll.selected_line,
-            &app.file_comment_lines,
+            &app.cmt.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
         );
@@ -1277,7 +1263,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
                     app.diff_scroll.selected_line,
                     &f.filename,
                     theme_name,
-                    &app.file_comment_lines,
+                    &app.cmt.file_comment_lines,
                     app.config.diff.tab_width,
                 ),
                 None => {
@@ -1396,44 +1382,26 @@ fn build_line_spans(
     content: &str,
     highlighter: &mut Option<HighlightLines<'_>>,
     interner: &mut Rodeo,
-) -> Vec<InternedSpan> {
-    match line_type {
-        LineType::Header => {
-            vec![InternedSpan {
-                content: interner.get_or_intern(original_line),
-                style: Style::default().fg(Color::Cyan),
-            }]
-        }
-        LineType::Meta => {
-            vec![InternedSpan {
-                content: interner.get_or_intern(original_line),
-                style: Style::default().fg(Color::Yellow),
-            }]
-        }
-        LineType::Added => {
-            let marker = InternedSpan {
-                content: interner.get_or_intern("+"),
-                style: Style::default().fg(Color::Green),
-            };
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Green, interner);
-            std::iter::once(marker).chain(code_spans).collect()
-        }
-        LineType::Removed => {
-            let marker = InternedSpan {
-                content: interner.get_or_intern("-"),
-                style: Style::default().fg(Color::Red),
-            };
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Red, interner);
-            std::iter::once(marker).chain(code_spans).collect()
-        }
-        LineType::Context => {
-            let marker = InternedSpan {
-                content: interner.get_or_intern(" "),
-                style: Style::default(),
-            };
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Reset, interner);
-            std::iter::once(marker).chain(code_spans).collect()
-        }
+) -> SpanVec {
+    let fg_style = match line_type.fg_color() {
+        Some(c) => Style::default().fg(c),
+        None => Style::default(),
+    };
+    if let Some(marker_str) = line_type.marker() {
+        let marker = InternedSpan {
+            content: interner.get_or_intern(marker_str),
+            style: fg_style,
+        };
+        let fallback_color = line_type.fg_color().unwrap_or(Color::Reset);
+        let code_spans = highlight_or_fallback(content, highlighter, fallback_color, interner);
+        let mut spans: SpanVec = smallvec![marker];
+        spans.extend(code_spans);
+        spans
+    } else {
+        smallvec![InternedSpan {
+            content: interner.get_or_intern(original_line),
+            style: fg_style,
+        }]
     }
 }
 
@@ -1442,13 +1410,12 @@ fn highlight_or_fallback(
     highlighter: &mut Option<HighlightLines<'_>>,
     fallback_color: Color,
     interner: &mut Rodeo,
-) -> Vec<InternedSpan> {
+) -> SpanVec {
     match highlighter {
         Some(h) => {
             let spans = highlight_code_line(content, h, interner);
             if spans.is_empty() {
-                // Empty content, return empty span
-                vec![InternedSpan {
+                smallvec![InternedSpan {
                     content: interner.get_or_intern(content),
                     style: Style::default(),
                 }]
@@ -1456,7 +1423,7 @@ fn highlight_or_fallback(
                 spans
             }
         }
-        None => vec![InternedSpan {
+        None => smallvec![InternedSpan {
             content: interner.get_or_intern(content),
             style: Style::default().fg(fallback_color),
         }],
@@ -1466,7 +1433,7 @@ fn highlight_or_fallback(
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = if app.multiline_selection.is_some() {
         "j/k/↑↓: extend selection | c: comment | s: suggest | Esc: cancel".to_string()
-    } else if app.comment_panel_open {
+    } else if app.cmt.comment_panel_open {
         "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close".to_string()
     } else if app.is_local_mode() {
         "j/k/↑↓: move | M: markdown rich | Ctrl-d/u: page | ←/h/q: back".to_string()
@@ -1491,7 +1458,7 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
             "No comments. c: comment, s: suggestion",
             Style::default().fg(Color::DarkGray),
         )));
-    } else if let Some(ref comments) = app.review_comments {
+    } else if let Some(ref comments) = app.cmt.review_comments {
         let has_multiple = indices.len() > 1;
 
         for (i, &idx) in indices.iter().enumerate() {
@@ -1507,7 +1474,7 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
             }
 
             let indicator = if has_multiple {
-                if i == app.selected_inline_comment {
+                if i == app.cmt.selected_inline_comment {
                     Span::styled("> ", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("  ", Style::default())
@@ -1546,7 +1513,7 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: true })
-        .scroll((app.comment_panel_scroll, 0));
+        .scroll((app.cmt.comment_panel_scroll, 0));
 
     frame.render_widget(paragraph, area);
 
@@ -1557,7 +1524,7 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
 
         let max_scroll = total_lines.saturating_sub(1);
         let mut scrollbar_state =
-            ScrollbarState::new(max_scroll).position(app.comment_panel_scroll as usize);
+            ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
 
         frame.render_stateful_widget(
             scrollbar,

@@ -65,6 +65,21 @@ pub async fn detect_repo() -> std::result::Result<String, DetectRepoError> {
     }
 }
 
+fn format_gh_error(stderr: &str, stdout: &str) -> String {
+    tracing::debug!(stderr = %stderr, stdout = %stdout, "gh command failed");
+    if stdout.is_empty() {
+        format!("gh command failed: {}", stderr)
+    } else {
+        let truncated: String = stdout.chars().take(200).collect();
+        let suffix = if stdout.len() > truncated.len() {
+            "..."
+        } else {
+            ""
+        };
+        format!("gh command failed: {} ({}{})", stderr, truncated, suffix)
+    }
+}
+
 /// Execute gh CLI command and return stdout
 /// Uses spawn_blocking to avoid blocking the tokio runtime
 pub async fn gh_command(args: &[&str]) -> Result<String> {
@@ -79,31 +94,7 @@ pub async fn gh_command(args: &[&str]) -> Result<String> {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr_trimmed = stderr.trim();
-            let stdout_trimmed = stdout.trim();
-            // デバッグログには全文出力
-            tracing::debug!(
-                stderr = %stderr_trimmed,
-                stdout = %stdout_trimmed,
-                "gh command failed"
-            );
-            if stdout_trimmed.is_empty() {
-                anyhow::bail!("gh command failed: {}", stderr_trimmed);
-            } else {
-                // TUI 表示用に stdout を char 単位で 200 文字に制限
-                let truncated: String = stdout_trimmed.chars().take(200).collect();
-                let suffix = if stdout_trimmed.len() > truncated.len() {
-                    "..."
-                } else {
-                    ""
-                };
-                anyhow::bail!(
-                    "gh command failed: {} ({}{})",
-                    stderr_trimmed,
-                    truncated,
-                    suffix
-                );
-            }
+            anyhow::bail!("{}", format_gh_error(stderr.trim(), stdout.trim()));
         }
 
         String::from_utf8(output.stdout).context("gh output contains invalid UTF-8")
@@ -130,29 +121,7 @@ pub async fn gh_command_allow_exit_codes(args: &[&str], allowed_codes: &[i32]) -
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr_trimmed = stderr.trim();
-            let stdout_trimmed = stdout.trim();
-            tracing::debug!(
-                stderr = %stderr_trimmed,
-                stdout = %stdout_trimmed,
-                "gh command failed"
-            );
-            if stdout_trimmed.is_empty() {
-                anyhow::bail!("gh command failed: {}", stderr_trimmed);
-            } else {
-                let truncated: String = stdout_trimmed.chars().take(200).collect();
-                let suffix = if stdout_trimmed.len() > truncated.len() {
-                    "..."
-                } else {
-                    ""
-                };
-                anyhow::bail!(
-                    "gh command failed: {} ({}{})",
-                    stderr_trimmed,
-                    truncated,
-                    suffix
-                );
-            }
+            anyhow::bail!("{}", format_gh_error(stderr.trim(), stdout.trim()));
         }
     })
     .await
@@ -211,17 +180,8 @@ pub enum FieldValue<'a> {
     Raw(&'a str),
 }
 
-/// Execute gh api with method and fields
-pub async fn gh_api_post(
-    endpoint: &str,
-    fields: &[(&str, FieldValue<'_>)],
-) -> Result<serde_json::Value> {
-    let mut args = vec![
-        "api".to_string(),
-        "--method".to_string(),
-        "POST".to_string(),
-        endpoint.to_string(),
-    ];
+fn build_field_args(fields: &[(&str, FieldValue<'_>)]) -> Vec<String> {
+    let mut args = Vec::new();
     for (key, value) in fields {
         match value {
             FieldValue::String(v) => {
@@ -234,6 +194,21 @@ pub async fn gh_api_post(
             }
         }
     }
+    args
+}
+
+/// Execute gh api with method and fields
+pub async fn gh_api_post(
+    endpoint: &str,
+    fields: &[(&str, FieldValue<'_>)],
+) -> Result<serde_json::Value> {
+    let mut args = vec![
+        "api".to_string(),
+        "--method".to_string(),
+        "POST".to_string(),
+        endpoint.to_string(),
+    ];
+    args.extend(build_field_args(fields));
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     tracing::debug!(args = ?args_refs, "gh api post");
     let output = gh_command(&args_refs).await?;
@@ -251,24 +226,18 @@ pub async fn gh_api_graphql(
         "-f".to_string(),
         format!("query={}", query),
     ];
-
-    for (key, value) in fields {
-        match value {
-            FieldValue::String(v) => {
-                args.push("-f".to_string());
-                args.push(format!("{}={}", key, v));
-            }
-            FieldValue::Raw(v) => {
-                args.push("-F".to_string());
-                args.push(format!("{}={}", key, v));
-            }
-        }
-    }
-
+    args.extend(build_field_args(fields));
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     tracing::debug!(args = ?args_refs, "gh api graphql");
     let output = gh_command(&args_refs).await?;
     serde_json::from_str(&output).context("Failed to parse gh graphql response as JSON")
+}
+
+pub fn check_graphql_errors(response: &serde_json::Value) -> Result<()> {
+    if let Some(errors) = response.get("errors") {
+        anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
