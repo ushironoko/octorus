@@ -1,13 +1,16 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 
+const HELP_BANNER_LINE: &str =
+    "  ██████╗   ██████╗ ████████╗  ██████╗  ██████╗  ██╗   ██╗ ███████╗";
+
 #[test]
 fn help_exits_successfully() {
     cargo_bin_cmd!("or")
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("octorus"));
+        .stdout(predicate::str::contains(HELP_BANNER_LINE));
 }
 
 #[test]
@@ -32,6 +35,7 @@ fn no_args_shows_help() {
     cargo_bin_cmd!("or")
         .assert()
         .success()
+        .stdout(predicate::str::contains(HELP_BANNER_LINE))
         .stdout(predicate::str::contains("Usage"));
 }
 
