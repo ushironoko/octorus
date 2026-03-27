@@ -28,6 +28,14 @@ fn init_help_exits_successfully() {
 }
 
 #[test]
+fn no_args_shows_help() {
+    cargo_bin_cmd!("or")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage"));
+}
+
+#[test]
 fn invalid_repo_exits_with_error() {
     cargo_bin_cmd!("or")
         .args(["--repo", "invalid/nonexistent-repo-12345", "--pr", "1"])

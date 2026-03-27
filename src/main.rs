@@ -25,7 +25,7 @@ mod update;
 
 #[derive(Parser, Debug)]
 #[command(name = "or")]
-#[command(about = "TUI for GitHub PR review, designed for Helix editor users")]
+#[command(about = "TUI for GitHub PRs, issues, local diffs, and Git Ops. AI-powered automated review cycles.")]
 #[command(version)]
 struct Args {
     #[command(subcommand)]
@@ -167,6 +167,14 @@ async fn main() -> Result<()> {
                 force,
             } => migrate::run_migrate(dry_run, local, force),
         };
+    }
+
+    // No action flags → show help (PR and Issue are treated equally, no implicit default)
+    if args.pr.is_none() && !args.local && args.issue.is_none() && !args.git_ops {
+        use clap::CommandFactory;
+        Args::command().print_help()?;
+        println!();
+        return Ok(());
     }
 
     let repo = match args.repo.clone() {
