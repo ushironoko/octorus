@@ -7,13 +7,13 @@
 [![Crates.io](https://img.shields.io/crates/v/octorus.svg)](https://crates.io/crates/octorus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-High performance reviewing in your Terminal for Github PRs, Issues, Local diffs, CI Status,and GitOps. Integrated AI-powered review cycle.
+High-performance code review in your terminal for GitHub PRs, issues, local diffs, CI status, and Git operations. Includes an integrated AI-powered review cycle.
 
 ## Key Features
-- **Fast and smooth**: Can open 1000000+ diff lines and 6000+ files
-- **Multifunctional**: PR review, Issue view, Local Diff view, CI Status, Git Operation. All of these are integrated into one system: search, filters, comments, suggestions, etc.
-- **Automatic Review and Codefix**: Auto reviewing for agent and auto fix reviewd diff for claude/codex. it is your controllable
-- **Customization**: Can Customization all settings. e.g. Keybindings,Theme, Agent Prompts
+- **Fast and smooth**: Handles 1,000,000+ diff lines and 6,000+ files
+- **Multifunctional**: PR review, issue view, local diff view, CI status, and Git operations are integrated into one system with search, filters, comments, suggestions, and more.
+- **Automatic Review and Code Fix**: Automated review and fix workflows for Claude and Codex, while keeping the process under your control
+- **Customization**: Customize all settings, including keybindings, themes, and agent prompts
 
 ## Requirements
 
@@ -80,7 +80,7 @@ or
 
 ## Reviewing Code in your Terminal
 
-octorus is all in one review tool for tui. Show GitHub PR, Issue, CI Status, Local Diff, Git Ops, and AI-Rally.
+octorus is an all-in-one review tool for the terminal UI. It shows GitHub PRs, issues, CI status, local diffs, Git Ops, and AI-Rally.
 
 ### Pull Requests
 
@@ -151,7 +151,7 @@ or --local --auto-focus
 
 ### Zen mode
 
-Zen mode is always fullscreen all features. Toggle with the `Z` key.
+Zen mode displays the interface in fullscreen. Toggle it with the `Z` key.
 
 This is especially effective on small screens.
 
@@ -259,13 +259,13 @@ reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 
 ### octorus skills
 
-Recommended octorus operation for coding agent. create in `or init` subcommand(create skill file in `~/.claude/skills/octorus`).
+Recommended setup for coding agents. Run the `or init` subcommand to create the skill file in `~/.claude/skills/octorus`.
 
-you can instructions "/octorus ai-rally in local" to agent.
+You can instruct the agent with "/octorus ai-rally in local".
 
 ## Configuration
 
-Customizable all settings for octorus. settings is a Global or Project-Local.
+All octorus settings are configurable. Settings can be global or project-local.
 
 ### Settings Reference
 
@@ -592,7 +592,7 @@ The git ops view provides staging, committing, and commit history browsing in a 
 
 Destructive operations (discard, undo, reset) show a Y/n confirmation prompt with the exact git command that will be executed. The commits pane title shows `↑N` when local commits are ahead of the remote.
 
-Can be opened directly from CLI with `--git-ops` flag.
+This view can be opened directly from the CLI with the `--git-ops` flag.
 
 **Tree Focus:**
 
