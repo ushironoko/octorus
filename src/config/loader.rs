@@ -130,6 +130,9 @@ impl Config {
             deep_merge_toml(&mut base_value, local_value);
         }
 
+        // Backward compat: migrate [diff].zen_mode → [layout].zen_mode
+        migrate_legacy_zen_mode(&mut base_value);
+
         let mut config: Config = base_value
             .try_into()
             .context("Failed to deserialize merged config")?;
@@ -188,7 +191,7 @@ impl Config {
         if table.contains_key("editor") {
             overrides.insert("editor".to_string());
         }
-        for section in ["diff", "ai", "keybindings"] {
+        for section in ["diff", "ai", "keybindings", "layout"] {
             if let Some(toml::Value::Table(sub)) = table.get(section) {
                 for key in sub.keys() {
                     overrides.insert(format!("{}.{}", section, key));
@@ -202,6 +205,38 @@ impl Config {
         BaseDirectories::with_prefix("octorus")
             .map(|dirs| dirs.get_config_home().join("config.toml"))
             .unwrap_or_else(|_| PathBuf::from("config.toml"))
+    }
+}
+
+/// Migrate legacy `[diff].zen_mode` to `[layout].zen_mode`.
+/// If `[diff].zen_mode` is set but `[layout].zen_mode` is not, move the value.
+/// If both are set, `[layout].zen_mode` takes precedence.
+fn migrate_legacy_zen_mode(value: &mut toml::Value) {
+    let toml::Value::Table(ref mut root) = value else {
+        return;
+    };
+
+    let legacy_zen = root
+        .get("diff")
+        .and_then(|d| d.as_table())
+        .and_then(|d| d.get("zen_mode"))
+        .cloned();
+
+    let Some(legacy_val) = legacy_zen else {
+        return;
+    };
+
+    // Only apply legacy value if [layout].zen_mode is not explicitly set
+    let layout_table = root
+        .entry("layout")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if let toml::Value::Table(ref mut lt) = layout_table {
+        lt.entry("zen_mode").or_insert(legacy_val);
+    }
+
+    // Remove legacy key from [diff]
+    if let Some(toml::Value::Table(ref mut diff)) = root.get_mut("diff") {
+        diff.remove("zen_mode");
     }
 }
 

@@ -1108,4 +1108,82 @@ left_panel_width = 0
             Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.layout.left_panel_width, 10);
     }
+
+    #[test]
+    fn test_legacy_diff_zen_mode_migrates_to_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[diff]
+zen_mode = true
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(
+            config.layout.zen_mode,
+            "[diff].zen_mode = true should migrate to layout.zen_mode"
+        );
+    }
+
+    #[test]
+    fn test_layout_zen_mode_takes_precedence_over_legacy_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[diff]
+zen_mode = true
+
+[layout]
+zen_mode = false
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(
+            !config.layout.zen_mode,
+            "[layout].zen_mode should take precedence over legacy [diff].zen_mode"
+        );
+    }
+
+    #[test]
+    fn test_layout_override_keys_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[layout]
+left_panel_width = 50
+zen_mode = true
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(
+            config.local_overrides.contains("layout.left_panel_width"),
+            "layout.left_panel_width should be tracked as local override"
+        );
+        assert!(
+            config.local_overrides.contains("layout.zen_mode"),
+            "layout.zen_mode should be tracked as local override"
+        );
+    }
 }
