@@ -282,6 +282,12 @@ All octorus settings are configurable. Settings can be global or project-local.
 | `theme` | `string` | `"base16-ocean.dark"` | Syntax highlighting theme. Case-insensitive. See [Theme](#theme) |
 | `tab_width` | `u8` | `4` | Tab display width. Minimum `1` (values below are clamped) |
 | `bg_color` | `bool` | `true` | Show background color on added/deleted lines |
+
+#### `[layout]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `left_panel_width` | `u16` | `35` | Left panel width percentage in split view (clamped to `10`–`90`). Right panel fills the rest |
 | `zen_mode` | `bool` | `false` | Zen mode — hides UI chrome for distraction-free diff reading |
 
 #### `[ai]`
@@ -491,7 +497,7 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 
 ### Split View
 
-The split view shows the file list (left, 35%) and a diff preview (right, 65%). The focused pane is highlighted with a yellow border.
+The split view shows the file list (left) and a diff preview (right). The default ratio is 35%/65%, configurable via `layout.left_panel_width`. The focused pane is highlighted with a yellow border.
 
 **File List Focus:**
 
