@@ -279,10 +279,23 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
             "diff.bg_color",
             overrides,
         ),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Layout Settings",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        config_value_line(
+            "Left panel width",
+            &format!("{}%", config.layout.left_panel_width),
+            "layout.left_panel_width",
+            overrides,
+        ),
         config_value_line(
             "Zen mode",
-            &config.diff.zen_mode.to_string(),
-            "diff.zen_mode",
+            &config.layout.zen_mode.to_string(),
+            "layout.zen_mode",
             overrides,
         ),
         Line::from(""),
@@ -1174,6 +1187,7 @@ mod tests {
 
         assert!(joined.contains("Config Files"));
         assert!(joined.contains("Diff Settings"));
+        assert!(joined.contains("Layout Settings"));
         assert!(joined.contains("Editor"));
         assert!(joined.contains("AI Rally Settings"));
         assert!(joined.contains("Prompt Resolution"));
@@ -1187,6 +1201,8 @@ mod tests {
         let joined = text.join("\n");
 
         assert!(joined.contains("base16-ocean.dark"));
+        assert!(joined.contains("35%"));
+        assert!(joined.contains("Layout Settings"));
         assert!(joined.contains("claude"));
         // Prompt resolution should show some source (embedded or global depending on env)
         assert!(

@@ -23,6 +23,12 @@ theme = "base16-ocean.dark"
 # Number of spaces per tab character in diff view (minimum: 1)
 tab_width = 4
 
+[layout]
+# Left panel width percentage in split view (10-90, right panel fills the rest)
+# left_panel_width = 35
+# Hide header/footer for focused editing (default: false)
+# zen_mode = false
+
 [keybindings]
 approve = 'a'
 request_changes = 'r'
@@ -68,6 +74,10 @@ pub(crate) const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configu
 # [diff]
 # theme = "base16-ocean.dark"
 # tab_width = 4
+
+# [layout]
+# left_panel_width = 35
+# zen_mode = false
 
 # [ai]
 # reviewer = "claude"

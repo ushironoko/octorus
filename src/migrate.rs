@@ -158,9 +158,9 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
 // These constants are verified by test_default_hashes_match_embedded_content.
 // If you change a default file, run `cargo test test_default_hashes` to get the new hash.
 const HASH_GLOBAL_CONFIG_0_5_6: &str =
-    "c72fc993956ff633bce2d6841d96c1583f02c1b8d8c262e9b11f53a2f6ffcaea";
+    "432c5a06806123c2a3a944353c826d004ab775759e158728541f87039240560e";
 const HASH_LOCAL_CONFIG_0_5_6: &str =
-    "dd3fbdd57e338f31a079e3c7a383fdfbb7f12db79e7be5430ad089e9a2fb3c60";
+    "db391a2874904add6f193366aaa0d5eb7b35689f5fae04cf4a2d8d740c1c353e";
 const HASH_REVIEWER_0_5_6: &str =
     "d9dfdd90d4041ef424edbab3754ab94bafbdad9d69e7297db195cf6194701e58";
 const HASH_REVIEWEE_0_5_6: &str =

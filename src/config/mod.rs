@@ -4,7 +4,7 @@ mod schema;
 
 pub use keybindings::KeybindingsConfig;
 pub use loader::{find_project_root, find_project_root_in};
-pub use schema::{AiConfig, DiffConfig, GitOpsConfig};
+pub use schema::{AiConfig, DiffConfig, GitOpsConfig, LayoutConfig};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -29,6 +29,8 @@ pub struct Config {
     pub diff: DiffConfig,
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
+    #[serde(default)]
+    pub layout: LayoutConfig,
     #[serde(alias = "git_log")]
     pub git_ops: GitOpsConfig,
     #[serde(skip)]
@@ -945,13 +947,165 @@ timeout_secs = 3600
     #[test]
     fn test_zen_mode_deserialization() {
         let toml = r#"
-[diff]
+[layout]
 zen_mode = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.diff.zen_mode);
+        assert!(config.layout.zen_mode);
 
         let default_config = Config::default();
-        assert!(!default_config.diff.zen_mode);
+        assert!(!default_config.layout.zen_mode);
+    }
+
+    #[test]
+    fn test_layout_left_panel_width_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.layout.left_panel_width, 35);
+    }
+
+    #[test]
+    fn test_layout_left_panel_width_custom() {
+        let toml_str = r#"
+            [layout]
+            left_panel_width = 50
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.layout.left_panel_width, 50);
+    }
+
+    #[test]
+    fn test_layout_left_panel_width_below_min_clamped() {
+        let toml_str = r#"
+            [layout]
+            left_panel_width = 5
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.layout.left_panel_width, 10,
+            "Values below 10 should be clamped to 10"
+        );
+    }
+
+    #[test]
+    fn test_layout_left_panel_width_above_max_clamped() {
+        let toml_str = r#"
+            [layout]
+            left_panel_width = 95
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.layout.left_panel_width, 90,
+            "Values above 90 should be clamped to 90"
+        );
+    }
+
+    #[test]
+    fn test_layout_left_panel_width_boundary() {
+        let config_10: Config = toml::from_str(
+            r#"
+            [layout]
+            left_panel_width = 10
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config_10.layout.left_panel_width, 10);
+
+        let config_90: Config = toml::from_str(
+            r#"
+            [layout]
+            left_panel_width = 90
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config_90.layout.left_panel_width, 90);
+    }
+
+    #[test]
+    fn test_layout_zen_mode_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.layout.zen_mode);
+    }
+
+    #[test]
+    fn test_layout_zen_mode_custom() {
+        let toml_str = r#"
+            [layout]
+            zen_mode = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.layout.zen_mode);
+    }
+
+    #[test]
+    fn test_layout_helper_methods() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.layout.left_panel_percent(), 35);
+        assert_eq!(config.layout.right_panel_percent(), 65);
+
+        let config_50: Config = toml::from_str(
+            r#"
+            [layout]
+            left_panel_width = 50
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config_50.layout.left_panel_percent(), 50);
+        assert_eq!(config_50.layout.right_panel_percent(), 50);
+    }
+
+    #[test]
+    fn test_deep_merge_layout_left_panel_width_local_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[layout]
+left_panel_width = 40
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[layout]
+left_panel_width = 25
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.layout.left_panel_width, 25);
+    }
+
+    #[test]
+    fn test_deep_merge_layout_left_panel_width_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[layout]
+left_panel_width = 35
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[layout]
+left_panel_width = 0
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.layout.left_panel_width, 10);
     }
 }

@@ -269,12 +269,12 @@ impl App {
         app.pr_number = Some(pr_number);
         app.original_pr_number = Some(pr_number);
         app.data_receiver = Some((pr_number, rx));
-        app.zen_mode = app.config.diff.zen_mode;
+        app.zen_mode = app.config.layout.zen_mode;
         (app, tx)
     }
 
     pub fn new_pr_list(repo: &str, config: Config) -> Self {
-        let zen_mode = config.diff.zen_mode;
+        let zen_mode = config.layout.zen_mode;
         let mut app = Self::base_app(repo.to_string(), config);
         // Overrides from base_app defaults
         app.pr_number = None;

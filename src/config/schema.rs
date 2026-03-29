@@ -67,8 +67,6 @@ pub struct DiffConfig {
     /// 追加/削除行に背景色を表示するかどうか
     #[serde(default = "default_true")]
     pub bg_color: bool,
-    #[serde(default)]
-    pub zen_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -90,7 +88,49 @@ impl Default for DiffConfig {
             theme: "base16-ocean.dark".to_owned(),
             tab_width: 4,
             bg_color: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    #[serde(
+        default = "default_left_panel_width",
+        deserialize_with = "deserialize_left_panel_width"
+    )]
+    pub left_panel_width: u16,
+    #[serde(default)]
+    pub zen_mode: bool,
+}
+
+fn default_left_panel_width() -> u16 {
+    35
+}
+
+fn deserialize_left_panel_width<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u16::deserialize(deserializer)?;
+    Ok(value.clamp(10, 90))
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            left_panel_width: default_left_panel_width(),
             zen_mode: false,
         }
+    }
+}
+
+impl LayoutConfig {
+    pub fn left_panel_percent(&self) -> u16 {
+        self.left_panel_width.clamp(10, 90)
+    }
+
+    pub fn right_panel_percent(&self) -> u16 {
+        100u16.saturating_sub(self.left_panel_percent())
     }
 }

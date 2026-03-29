@@ -6758,7 +6758,7 @@ async fn test_zen_mode_auto_focus_transitions_to_diff_view() {
     use insta::assert_snapshot;
 
     let mut config = Config::default();
-    config.diff.zen_mode = true;
+    config.layout.zen_mode = true;
     let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
     app.set_local_mode(true);
     app.set_local_auto_focus(true);
