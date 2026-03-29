@@ -109,6 +109,9 @@ impl Config {
             toml::Value::Table(toml::map::Map::new())
         };
 
+        // Migrate legacy [diff].zen_mode before merge so source precedence is preserved
+        migrate_legacy_zen_mode(&mut base_value);
+
         let mut stripped_local_value: Option<toml::Value> = None;
         if local_path.exists() {
             let local_content = fs::read_to_string(local_path)
@@ -126,12 +129,11 @@ impl Config {
                 }
             }
 
+            migrate_legacy_zen_mode(&mut local_value);
+
             stripped_local_value = Some(local_value.clone());
             deep_merge_toml(&mut base_value, local_value);
         }
-
-        // Backward compat: migrate [diff].zen_mode → [layout].zen_mode
-        migrate_legacy_zen_mode(&mut base_value);
 
         let mut config: Config = base_value
             .try_into()

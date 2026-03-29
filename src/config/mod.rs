@@ -1159,6 +1159,40 @@ zen_mode = false
     }
 
     #[test]
+    fn test_legacy_local_diff_zen_mode_overrides_global_layout_zen_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        // Global uses new [layout].zen_mode = false
+        fs::write(
+            &global,
+            r#"
+[layout]
+zen_mode = false
+"#,
+        )
+        .unwrap();
+
+        // Local still uses legacy [diff].zen_mode = true
+        fs::write(
+            &local,
+            r#"
+[diff]
+zen_mode = true
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(
+            config.layout.zen_mode,
+            "legacy local [diff].zen_mode = true should override global [layout].zen_mode = false"
+        );
+    }
+
+    #[test]
     fn test_layout_override_keys_tracked() {
         let dir = tempfile::tempdir().unwrap();
         let global = dir.path().join("global.toml");

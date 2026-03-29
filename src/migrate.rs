@@ -140,6 +140,43 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         filename: "config.toml",
         sha256: HASH_LOCAL_CONFIG_0_5_8,
     },
+    // 0.5.8 — prompts unchanged from 0.5.6
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "reviewer.md",
+        sha256: HASH_REVIEWER_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "reviewer.md",
+        sha256: HASH_REVIEWER_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "reviewee.md",
+        sha256: HASH_REVIEWEE_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "reviewee.md",
+        sha256: HASH_REVIEWEE_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "rereview.md",
+        sha256: HASH_REREVIEW_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "rereview.md",
+        sha256: HASH_REREVIEW_0_5_6,
+    },
     // SKILL.md
     DefaultFileHash {
         scope: FileScope::Skill,
@@ -1257,13 +1294,13 @@ mod tests {
         .unwrap();
 
         let manifest = Some(VersionManifest {
-            binary_version: "0.5.6".to_string(),
+            binary_version: "0.5.8".to_string(),
             initialized_at: "2024-01-01T00:00:00Z".to_string(),
             last_migrated_at: None,
             files: HashMap::new(),
         });
 
-        let actions = build_migration_plan(&config_dir, None, &manifest, "0.5.6", false, false);
+        let actions = build_migration_plan(&config_dir, None, &manifest, "0.5.8", false, false);
 
         // Should only have skips + WriteManifest
         assert!(
@@ -1519,7 +1556,7 @@ mod tests {
         )
         .unwrap();
 
-        let version = "0.5.6";
+        let version = "0.5.8";
 
         // First migration — should be "all up to date" but write manifest
         let actions = build_migration_plan(&config_dir, None, &None, version, false, false);
@@ -1557,7 +1594,7 @@ mod tests {
         )
         .unwrap();
 
-        let version = "0.5.6";
+        let version = "0.5.8";
         let manifest_path = config_dir.join(".version");
 
         // Run 1
