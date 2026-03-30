@@ -277,7 +277,6 @@ impl App {
             return Ok(());
         }
 
-        // Sequence handling (gg for jump_to_first)
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
             if !self.pending_keys.is_empty() {
@@ -344,7 +343,6 @@ impl App {
             return;
         }
 
-        // Sequence handling (gg for jump_to_first)
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
             if !self.pending_keys.is_empty() {

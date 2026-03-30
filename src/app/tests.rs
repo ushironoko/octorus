@@ -2211,7 +2211,6 @@ fn test_help_scroll_gg_without_modifiers_jumps_to_top() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 50;
-    // gg sequence should jump to top
     app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
     app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
     assert_eq!(app.help_scroll_offset, 0);

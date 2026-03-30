@@ -316,10 +316,10 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         &["toggle_local_mode", "move_right"], // L vs l: different cases
         &["toggle_auto_focus", "go_to_file"], // F vs gf: different sequence lengths
         &["git_ops", "jump_to_last"],         // G: git ops in file list, jump_to_last in diff/other views
-        &["filter_closed", "comment"],        // 'c': list filter vs diff view action
-        &["filter_all", "approve"],           // 'a': list filter vs diff view action
-        &["retry", "reply", "request_changes"], // 'r': error retry vs comment reply vs review action
-        &["confirm_no", "next_comment"],      // 'n': confirm prompt vs diff navigation
+        &["filter_closed", "comment"],
+        &["filter_all", "approve"],
+        &["retry", "reply", "request_changes"],
+        &["confirm_no", "next_comment"],
     ];
 
     // git ops 固有キーは git ops 画面でのみ有効なので、他の全キーと context compatible
