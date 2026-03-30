@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 use tokio::sync::mpsc;
 
 use crate::cache::PrCacheKey;
@@ -152,7 +152,7 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('o') {
+        if self.matches_single_key(&key, &kb.filter_open) {
             if self.prs.pr_list_state_filter != PrStateFilter::Open {
                 self.prs.pr_list_state_filter = PrStateFilter::Open;
                 self.reload_pr_list();
@@ -160,7 +160,7 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('c') {
+        if self.matches_single_key(&key, &kb.filter_closed) {
             if self.prs.pr_list_state_filter != PrStateFilter::Closed {
                 self.prs.pr_list_state_filter = PrStateFilter::Closed;
                 self.reload_pr_list();
@@ -168,7 +168,7 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('a') {
+        if self.matches_single_key(&key, &kb.filter_all) {
             if self.prs.pr_list_state_filter != PrStateFilter::All {
                 self.prs.pr_list_state_filter = PrStateFilter::All;
                 self.reload_pr_list();

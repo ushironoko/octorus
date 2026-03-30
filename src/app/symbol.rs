@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event::{self, KeyCode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 
@@ -82,28 +82,27 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        let popup = match self.symbol_popup.as_mut() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
+        if self.symbol_popup.is_none() {
+            return Ok(());
+        }
 
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                popup.selected = (popup.selected + 1).min(popup.symbols.len().saturating_sub(1));
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                popup.selected = popup.selected.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                let symbol_name = popup.symbols[popup.selected].0.clone();
-                self.symbol_popup = None;
-                self.jump_to_symbol_definition_async(&symbol_name, terminal)
-                    .await?;
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.symbol_popup = None;
-            }
-            _ => {}
+        let kb = self.config.keybindings.clone();
+        if self.matches_single_key(&key, &kb.move_down) {
+            let popup = self.symbol_popup.as_mut().unwrap();
+            popup.selected = (popup.selected + 1).min(popup.symbols.len().saturating_sub(1));
+        } else if self.matches_single_key(&key, &kb.move_up) {
+            let popup = self.symbol_popup.as_mut().unwrap();
+            popup.selected = popup.selected.saturating_sub(1);
+        } else if self.matches_single_key(&key, &kb.open_panel) {
+            let symbol_name = self.symbol_popup.as_ref().unwrap().symbols
+                [self.symbol_popup.as_ref().unwrap().selected]
+                .0
+                .clone();
+            self.symbol_popup = None;
+            self.jump_to_symbol_definition_async(&symbol_name, terminal)
+                .await?;
+        } else if self.matches_single_key(&key, &kb.quit) {
+            self.symbol_popup = None;
         }
         Ok(())
     }
@@ -286,14 +285,14 @@ impl App {
                 .saturating_sub(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'g') {
             self.pr_description_scroll_offset = usize::MAX;
-        } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
+        } else if self.matches_single_key(&key, &kb.move_down) {
             self.pr_description_scroll_offset = self.pr_description_scroll_offset.saturating_add(1);
-        } else if matches!(key.code, KeyCode::Char('k') | KeyCode::Up) {
+        } else if self.matches_single_key(&key, &kb.move_up) {
             self.pr_description_scroll_offset = self.pr_description_scroll_offset.saturating_sub(1);
-        } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        } else if self.matches_single_key(&key, &kb.page_down) {
             self.pr_description_scroll_offset =
                 self.pr_description_scroll_offset.saturating_add(half_page);
-        } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        } else if self.matches_single_key(&key, &kb.page_up) {
             self.pr_description_scroll_offset =
                 self.pr_description_scroll_offset.saturating_sub(half_page);
         } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
@@ -317,7 +316,10 @@ impl App {
     pub(crate) const HELP_VIEWPORT_OVERHEAD: u16 = 6;
 
     pub(crate) fn apply_help_scroll(&mut self, key: event::KeyEvent, terminal_height: u16) {
-        if matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']')) {
+        let kb = &self.config.keybindings;
+        if self.matches_single_key(&key, &kb.tab_prev)
+            || self.matches_single_key(&key, &kb.tab_next)
+        {
             self.help_tab = match self.help_tab {
                 HelpTab::Keybindings => HelpTab::Config,
                 HelpTab::Config => HelpTab::Keybindings,
@@ -328,16 +330,14 @@ impl App {
         let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
         let half_page = (visible_lines / 2).max(1);
 
-        // Read the active tab's scroll offset
         let mut offset = match self.help_tab {
             HelpTab::Keybindings => self.help_scroll_offset,
             HelpTab::Config => self.config_scroll_offset,
         };
 
-        let kb = &self.config.keybindings;
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.help)
-                   {
+        {
             self.state = self.previous_state;
             return;
         } else if Self::is_shift_char_shortcut(&key, 'j') {
@@ -346,19 +346,18 @@ impl App {
             offset = offset.saturating_sub(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'g') {
             offset = usize::MAX;
-        } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
+        } else if self.matches_single_key(&key, &kb.move_down) {
             offset = offset.saturating_add(1);
-        } else if matches!(key.code, KeyCode::Char('k') | KeyCode::Up) {
+        } else if self.matches_single_key(&key, &kb.move_up) {
             offset = offset.saturating_sub(1);
-        } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        } else if self.matches_single_key(&key, &kb.page_down) {
             offset = offset.saturating_add(half_page);
-        } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        } else if self.matches_single_key(&key, &kb.page_up) {
             offset = offset.saturating_sub(half_page);
         } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
             offset = 0;
         }
 
-        // Write back to the active tab's scroll offset
         match self.help_tab {
             HelpTab::Keybindings => self.help_scroll_offset = offset,
             HelpTab::Config => self.config_scroll_offset = offset,

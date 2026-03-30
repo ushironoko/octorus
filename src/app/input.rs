@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -28,19 +28,18 @@ impl App {
                 // PR一覧画面は独自のLoading処理があるためスキップ
                 // Help画面・PrDescription画面はデータ状態に依存しないためスキップ
                 if !self.state.is_data_state_independent() {
-                    // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
-                        match key.code {
-                            KeyCode::Char('q') => self.should_quit = true,
-                            KeyCode::Char('r') => self.retry_load(),
-                            _ => {}
+                        let kb = &self.config.keybindings;
+                        if self.matches_single_key(&key, &kb.quit) {
+                            self.should_quit = true;
+                        } else if self.matches_single_key(&key, &kb.retry) {
+                            self.retry_load();
                         }
                         return Ok(());
                     }
 
-                    // Loading状態ではqのみ受け付け
                     if matches!(self.data_state, DataState::Loading) {
-                        if key.code == KeyCode::Char('q') {
+                        if self.matches_single_key(&key, &self.config.keybindings.quit) {
                             self.should_quit = true;
                         }
                         return Ok(());

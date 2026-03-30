@@ -411,8 +411,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Toggle tree view",
             fmt_key(&kb.tree_toggle.display(), key_width)
         )),
-        Line::from("  v               Mark selected file as viewed"),
-        Line::from("  V               Mark selected directory as viewed"),
+        Line::from(format!(
+            "{}  Mark selected file as viewed",
+            fmt_key(&kb.mark_viewed.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Mark selected directory as viewed",
+            fmt_key(&kb.mark_viewed_dir.display(), key_width)
+        )),
         Line::from(format!(
             "{}  Approve PR",
             fmt_key(&kb.approve.display(), key_width)
@@ -697,7 +703,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Reply to comment",
             fmt_key(&kb.reply.display(), key_width)
         )),
-        Line::from("  Tab/Shift-Tab   Select reply target (multiple)"),
+        Line::from(format!(
+            "{}  Select reply target (multiple)",
+            fmt_key(&format!("{}/Shift-{}", kb.tab_switch.display(), kb.tab_switch.display()), key_width)
+        )),
         Line::from(format!(
             "{}  Jump to next/prev comment",
             fmt_key(
@@ -713,7 +722,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  [, ]            Switch tab (Review/Discussion)"),
+        Line::from(format!(
+            "{}  Switch tab (Review/Discussion)",
+            fmt_key(&format!("{}, {}", kb.tab_prev.display(), kb.tab_next.display()), key_width)
+        )),
         Line::from(format!(
             "{}  Move selection",
             fmt_key(
@@ -756,8 +768,26 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "  (When AI requests permission or clarification)",
             Style::default().fg(Color::DarkGray),
         )]),
-        Line::from("  y               Grant permission / Answer yes"),
-        Line::from("  n               Deny permission / Skip"),
+        Line::from(format!(
+            "{}  Grant permission / Answer yes",
+            fmt_key(&kb.confirm_yes.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Deny permission / Skip",
+            fmt_key(&kb.confirm_no.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Retry on error",
+            fmt_key(&kb.retry.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Send to background",
+            fmt_key(&kb.rally_background.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Pause / Resume",
+            fmt_key(&kb.rally_pause.display(), key_width)
+        )),
         Line::from(format!(
             "{}  Abort rally",
             fmt_key(&kb.quit.display(), key_width)
@@ -790,39 +820,39 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Stage/unstage file or directory",
-            fmt_key("Space", key_width)
+            fmt_key(&kb.git_ops_stage.display(), key_width)
         )),
         Line::from(format!(
             "{}  Stage all files",
-            fmt_key("s", key_width)
+            fmt_key(&kb.git_ops_stage_all.display(), key_width)
         )),
         Line::from(format!(
             "{}  Discard changes",
-            fmt_key("d", key_width)
+            fmt_key(&kb.git_ops_discard.display(), key_width)
         )),
         Line::from(format!(
             "{}  Commit (opens editor)",
-            fmt_key("c", key_width)
+            fmt_key(&kb.git_ops_commit.display(), key_width)
         )),
         Line::from(format!(
             "{}  Undo last operation",
-            fmt_key("u", key_width)
+            fmt_key(&kb.git_ops_undo.display(), key_width)
         )),
         Line::from(format!(
             "{}  Refresh status",
-            fmt_key("R", key_width)
+            fmt_key(&kb.refresh.display(), key_width)
         )),
         Line::from(format!(
             "{}  Push to origin",
-            fmt_key("P", key_width)
+            fmt_key(&kb.git_ops_push.display(), key_width)
         )),
         Line::from(format!(
             "{}  Toggle directory expand/collapse",
-            fmt_key("Enter", key_width)
+            fmt_key(&kb.open_panel.display(), key_width)
         )),
         Line::from(format!(
             "{}  Switch to commits pane",
-            fmt_key("Tab", key_width)
+            fmt_key(&kb.tab_switch.display(), key_width)
         )),
         Line::from(format!(
             "{}  Focus diff pane",
@@ -914,35 +944,35 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Stage/unstage file or directory",
-            fmt_key("Space", key_width)
+            fmt_key(&kb.git_ops_stage.display(), key_width)
         )),
         Line::from(format!(
             "{}  Stage all files",
-            fmt_key("s", key_width)
+            fmt_key(&kb.git_ops_stage_all.display(), key_width)
         )),
         Line::from(format!(
             "{}  Discard changes",
-            fmt_key("d", key_width)
+            fmt_key(&kb.git_ops_discard.display(), key_width)
         )),
         Line::from(format!(
             "{}  Commit (opens editor)",
-            fmt_key("c", key_width)
+            fmt_key(&kb.git_ops_commit.display(), key_width)
         )),
         Line::from(format!(
             "{}  Undo last operation",
-            fmt_key("u", key_width)
+            fmt_key(&kb.git_ops_undo.display(), key_width)
         )),
         Line::from(format!(
             "{}  Refresh status",
-            fmt_key("R", key_width)
+            fmt_key(&kb.refresh.display(), key_width)
         )),
         Line::from(format!(
             "{}  Toggle directory expand/collapse",
-            fmt_key("Enter", key_width)
+            fmt_key(&kb.open_panel.display(), key_width)
         )),
         Line::from(format!(
             "{}  Focus diff pane",
-            fmt_key("Tab, l", key_width)
+            fmt_key(&format!("{}, l", kb.tab_switch.display()), key_width)
         )),
         Line::from(format!(
             "{}  Close git ops",
@@ -1004,7 +1034,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Open issue list",
             fmt_key(&kb.issue_list.display(), key_width)
         )),
-        Line::from("  o/c/a           Filter: open/closed/all"),
+        Line::from(format!(
+            "{}  Filter: open/closed/all",
+            fmt_key(&format!("{}/{}/{}", kb.filter_open.display(), kb.filter_closed.display(), kb.filter_all.display()), key_width)
+        )),
         Line::from(format!(
             "{}  Open in browser",
             fmt_key(&kb.open_in_browser.display(), key_width)
@@ -1040,7 +1073,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  View issue detail",
             fmt_key(&kb.open_panel.display(), key_width)
         )),
-        Line::from("  o/c/a           Filter: open/closed/all"),
+        Line::from(format!(
+            "{}  Filter: open/closed/all",
+            fmt_key(&format!("{}/{}/{}", kb.filter_open.display(), kb.filter_closed.display(), kb.filter_all.display()), key_width)
+        )),
         Line::from(format!(
             "{}  Open in browser",
             fmt_key(&kb.open_in_browser.display(), key_width)
@@ -1075,7 +1111,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
                 key_width
             )
         )),
-        Line::from("  Tab             Switch focus (Body/Linked PRs)"),
+        Line::from(format!(
+            "{}  Switch focus (Body/Linked PRs)",
+            fmt_key(&kb.tab_switch.display(), key_width)
+        )),
         Line::from(format!(
             "{}  Open linked PR",
             fmt_key(&kb.open_panel.display(), key_width)

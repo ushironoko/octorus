@@ -12,6 +12,7 @@ use ratatui::{
 use super::common::{build_pr_info, truncate_with_width};
 use crate::ai::{RallyState, ReviewAction, RevieweeStatus};
 use crate::app::{AiRallyState, App, LogEntry, LogEventType, PauseState};
+use crate::config::KeybindingsConfig;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let pr_info = build_pr_info(app);
@@ -25,9 +26,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(4), Constraint::Min(10), Constraint::Length(3)])
         .split(frame.area());
 
+    let kb = &app.config.keybindings;
     render_header(frame, chunks[0], rally_state, &pr_info);
-    render_main_content(frame, chunks[1], rally_state);
-    render_status_bar(frame, chunks[2], rally_state);
+    render_main_content(frame, chunks[1], rally_state, kb);
+    render_status_bar(frame, chunks[2], rally_state, kb);
 
     if rally_state.showing_log_detail {
         render_log_detail_modal(frame, rally_state);
@@ -96,9 +98,9 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
     frame.render_widget(header, area);
 }
 
-fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
+fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, kb: &KeybindingsConfig) {
     if state.pending_config_warning.is_some() {
-        render_config_warning(frame, area, state);
+        render_config_warning(frame, area, state, kb);
         return;
     }
 
@@ -131,14 +133,14 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState) 
     render_history(frame, chunks[0], state);
 
     if is_waiting {
-        render_waiting_prompt(frame, chunks[1], state);
+        render_waiting_prompt(frame, chunks[1], state, kb);
         render_logs(frame, chunks[2], state);
     } else {
         render_logs(frame, chunks[1], state);
     }
 }
 
-fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
     let warnings = match &state.pending_config_warning {
         Some(w) => w,
         None => return,
@@ -167,8 +169,9 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         Style::default().fg(Color::Yellow),
     )]));
     lines.push(Line::from(""));
+    let help_text = format!("Press '{}' to accept and continue, '{}' to cancel", kb.confirm_yes.display(), kb.confirm_no.display());
     lines.push(Line::from(vec![Span::styled(
-        "Press 'y' to accept and continue, 'n'/'q'/Esc to cancel",
+        help_text,
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
@@ -184,7 +187,10 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState) {
     frame.render_widget(warning, area);
 }
 
-fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+    let yes = kb.confirm_yes.display();
+    let no = kb.confirm_no.display();
+    let quit = kb.quit.display();
     let (title, content, help) = match state.state {
         RallyState::WaitingForClarification => {
             let question = state
@@ -194,7 +200,7 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
             (
                 " Clarification Required ",
                 format!("Question: {}", question),
-                "Press 'y' to open editor and respond, 'n' to skip, 'q' to abort",
+                format!("Press '{}' to open editor and respond, '{}' to skip, '{}' to abort", yes, no, quit),
             )
         }
         RallyState::WaitingForPermission => {
@@ -206,7 +212,7 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
             (
                 " Permission Required ",
                 format!("Action: {}\nReason: {}", action, reason),
-                "Press 'y' to approve, 'n' to deny, 'q' to abort",
+                format!("Press '{}' to approve, '{}' to deny, '{}' to abort", yes, no, quit),
             )
         }
         RallyState::WaitingForPostConfirmation => {
@@ -218,7 +224,7 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                         "Action: {}\nSummary: {}\nComments: {}",
                         info.action, summary, info.comment_count
                     ),
-                    "Press 'y' to post to PR, 'n' to skip, 'q' to abort",
+                    format!("Press '{}' to post to PR, '{}' to skip, '{}' to abort", yes, no, quit),
                 )
             } else if let Some(ref info) = state.pending_fix_post {
                 let summary = truncate_with_width(&info.summary, 120);
@@ -240,7 +246,7 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                 (
                     " Fix Post Confirmation ",
                     format!("Summary: {}\nFiles: {}", summary, files_display),
-                    "Press 'y' to post to PR, 'n' to skip, 'q' to abort",
+                    format!("Press '{}' to post to PR, '{}' to skip, '{}' to abort", yes, no, quit),
                 )
             } else {
                 return;
@@ -519,32 +525,41 @@ fn render_log_detail_modal(frame: &mut Frame, state: &AiRallyState) {
     frame.render_widget(content, modal_area);
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
+fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+    let yes = kb.confirm_yes.display();
+    let no = kb.confirm_no.display();
+    let quit = kb.quit.display();
+    let mv = format!("{}/{}/↑↓", kb.move_down.display(), kb.move_up.display());
+    let enter = kb.open_panel.display();
+    let bg = kb.rally_background.display();
+    let pause = kb.rally_pause.display();
+    let retry = kb.retry.display();
+
     let help_text = if state.pending_config_warning.is_some() {
-        "y: Accept and continue | n/q: Cancel and return"
+        format!("{yes}: Accept and continue | {no}/{quit}: Cancel and return")
     } else if state.showing_log_detail {
-        "Esc/Enter/q: Close detail"
+        format!("{quit}/{enter}: Close detail")
     } else if state.pause_state == PauseState::Paused {
-        "p: Resume | j/k/↑↓: select | Enter: detail | b: Background | q: Abort"
+        format!("{pause}: Resume | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort")
     } else if state.pause_state == PauseState::PauseRequested {
-        "p: Cancel pause | j/k/↑↓: select | Enter: detail | b: Background | q: Abort"
+        format!("{pause}: Cancel pause | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort")
     } else {
         match state.state {
             RallyState::WaitingForClarification => {
-                "y: Open editor | n: Skip | j/k/↑↓: select | Enter: detail | q: Abort"
+                format!("{yes}: Open editor | {no}: Skip | {mv}: select | {enter}: detail | {quit}: Abort")
             }
             RallyState::WaitingForPermission => {
-                "y: Approve | n: Deny | j/k/↑↓: select | Enter: detail | q: Abort"
+                format!("{yes}: Approve | {no}: Deny | {mv}: select | {enter}: detail | {quit}: Abort")
             }
             RallyState::WaitingForPostConfirmation => {
-                "y: Post to PR | n: Skip | j/k/↑↓: select | Enter: detail | q: Abort"
+                format!("{yes}: Post to PR | {no}: Skip | {mv}: select | {enter}: detail | {quit}: Abort")
             }
-            RallyState::Completed => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
-            RallyState::Aborted => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
+            RallyState::Completed => format!("{mv}: select | {enter}: detail | {bg}: Background | {quit}: Close"),
+            RallyState::Aborted => format!("{mv}: select | {enter}: detail | {bg}: Background | {quit}: Close"),
             RallyState::Error => {
-                "r: Retry | j/k/↑↓: select | Enter: detail | b: Background | q: Close"
+                format!("{retry}: Retry | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Close")
             }
-            _ => "p: Pause | j/k/↑↓: select | Enter: detail | b: Background | q: Abort",
+            _ => format!("{pause}: Pause | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort"),
         }
     };
 
@@ -640,7 +655,7 @@ mod tests {
         │                                                                                                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │p: Pause | j/k/↑↓: select | Enter: detail | b: Background | q: Abort                              │
+        │p: Pause | j/Down/k/Up/↑↓: select | Enter: detail | b: Background | q/Esc: Abort                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }

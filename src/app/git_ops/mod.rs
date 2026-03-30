@@ -1,4 +1,4 @@
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -1096,22 +1096,18 @@ impl App {
         let kb = self.config.keybindings.clone();
 
         if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(ref mut ops) = self.git_ops_state {
-                        ops.pending_confirm = None;
-                    }
-                    match confirm {
-                        PendingGitOpsConfirm::Discard { .. } => self.discard_changes(),
-                        PendingGitOpsConfirm::Undo { .. } => self.execute_undo(),
-                    }
+            if self.matches_single_key(&key, &kb.confirm_yes) {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.pending_confirm = None;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    if let Some(ref mut ops) = self.git_ops_state {
-                        ops.pending_confirm = None;
-                    }
+                match confirm {
+                    PendingGitOpsConfirm::Discard { .. } => self.discard_changes(),
+                    PendingGitOpsConfirm::Undo { .. } => self.execute_undo(),
                 }
-                _ => {}
+            } else if self.matches_single_key(&key, &kb.confirm_no) {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.pending_confirm = None;
+                }
             }
             return;
         }
@@ -1227,27 +1223,23 @@ impl App {
 
     /// Commits フォーカスの入力処理
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
+        let kb = self.config.keybindings.clone();
+
         if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(ref mut ops) = self.git_ops_state {
-                        ops.pending_confirm = None;
-                    }
-                    if let PendingGitOpsConfirm::Undo { .. } = confirm {
-                        self.reset_soft_to_selected_commit();
-                    }
+            if self.matches_single_key(&key, &kb.confirm_yes) {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.pending_confirm = None;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    if let Some(ref mut ops) = self.git_ops_state {
-                        ops.pending_confirm = None;
-                    }
+                if let PendingGitOpsConfirm::Undo { .. } = confirm {
+                    self.reset_soft_to_selected_commit();
                 }
-                _ => {}
+            } else if self.matches_single_key(&key, &kb.confirm_no) {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.pending_confirm = None;
+                }
             }
             return;
         }
-
-        let kb = self.config.keybindings.clone();
 
         // gg シーケンス処理（先頭ジャンプ）
         if let Some(kb_event) = crate::keybinding::event_to_keybinding(&key) {
@@ -1794,6 +1786,7 @@ fn start_git_ops_prefetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyCode;
     use insta::assert_snapshot;
 
     /// FileStatus のスペースを · に置換して可視化
@@ -2357,24 +2350,20 @@ mod tests {
             code,
             crossterm::event::KeyModifiers::empty(),
         );
-        // 確認待ち中の分岐を直接テスト
+        let kb = app.config.keybindings.clone();
         if let Some(ref confirm) = app.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(ref mut ops) = app.git_ops_state {
-                        ops.pending_confirm = None;
-                    }
-                    match confirm {
-                        PendingGitOpsConfirm::Discard { .. } => app.discard_changes(),
-                        PendingGitOpsConfirm::Undo { .. } => app.execute_undo(),
-                    }
+            if app.matches_single_key(&key, &kb.confirm_yes) {
+                if let Some(ref mut ops) = app.git_ops_state {
+                    ops.pending_confirm = None;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    if let Some(ref mut ops) = app.git_ops_state {
-                        ops.pending_confirm = None;
-                    }
+                match confirm {
+                    PendingGitOpsConfirm::Discard { .. } => app.discard_changes(),
+                    PendingGitOpsConfirm::Undo { .. } => app.execute_undo(),
                 }
-                _ => {}
+            } else if app.matches_single_key(&key, &kb.confirm_no) {
+                if let Some(ref mut ops) = app.git_ops_state {
+                    ops.pending_confirm = None;
+                }
             }
         }
     }
