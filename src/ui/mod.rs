@@ -118,7 +118,8 @@ AppState::IssueList => issue_list::render(frame, app),
     if let Some(ref shell) = app.shell_state {
         match &shell.phase {
             ShellPhase::Input => {} // Handled by build_footer_line + build_footer_block_with_border
-            ShellPhase::Running => render_shell_running_indicator(frame, app),
+            ShellPhase::Running => render_shell_running_indicator(frame, app, false),
+            ShellPhase::Cancelling => render_shell_running_indicator(frame, app, true),
             ShellPhase::Done(result) => {
                 render_shell_output_popup(frame, result, shell.scroll_offset)
             }
@@ -176,23 +177,33 @@ fn render_symbol_popup(frame: &mut Frame, popup: &crate::app::SymbolPopupState) 
     frame.render_widget(list, popup_area);
 }
 
-fn render_shell_running_indicator(frame: &mut Frame, app: &App) {
+fn render_shell_running_indicator(frame: &mut Frame, app: &App, cancelling: bool) {
     let area = frame.area();
-    let width = 36u16.min(area.width.saturating_sub(4));
+    let width = 40u16.min(area.width.saturating_sub(4));
     let height = 3u16;
     let popup_area = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup_area);
 
-    let text = format!("{} Running... (Ctrl+C: cancel)", app.spinner_char());
+    let (text, color) = if cancelling {
+        (
+            format!("{} Cancelling...", app.spinner_char()),
+            Color::Red,
+        )
+    } else {
+        (
+            format!("{} Running... (Ctrl+C: cancel)", app.spinner_char()),
+            Color::Yellow,
+        )
+    };
     let paragraph = Paragraph::new(Line::from(Span::styled(
         text,
-        Style::default().fg(Color::Yellow),
+        Style::default().fg(color),
     )))
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow))
+            .border_style(Style::default().fg(color))
             .title("Shell"),
     );
     frame.render_widget(paragraph, popup_area);

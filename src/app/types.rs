@@ -972,6 +972,7 @@ pub struct ShellState {
 pub enum ShellPhase {
     Input,
     Running,
+    Cancelling,
     Done(ShellCommandResult),
 }
 

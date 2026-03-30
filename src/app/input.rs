@@ -40,6 +40,9 @@ impl App {
                             }
                             return Ok(());
                         }
+                        ShellPhase::Cancelling => {
+                            return Ok(());
+                        }
                         ShellPhase::Done(_) => {
                             self.handle_shell_output(key);
                             return Ok(());

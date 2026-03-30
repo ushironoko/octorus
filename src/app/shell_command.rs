@@ -232,6 +232,17 @@ impl App {
 
     pub(crate) fn poll_shell_result(&mut self) {
         let Some(ref mut rx) = self.shell_result_receiver else {
+            // Cancelling状態でreceiverが既にdropされている場合のクリーンアップ
+            if self
+                .shell_state
+                .as_ref()
+                .is_some_and(|s| matches!(s.phase, ShellPhase::Cancelling))
+            {
+                self.shell_state = None;
+                self.cmt.submission_result =
+                    Some((false, "Shell command cancelled".to_string()));
+                self.cmt.submission_result_time = Some(std::time::Instant::now());
+            }
             return;
         };
         match rx.try_recv() {
@@ -247,6 +258,17 @@ impl App {
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 self.shell_result_receiver = None;
                 self.shell_abort_handle = None;
+                // abort後のDisconnected → Cancellingならクリーンアップ
+                if self
+                    .shell_state
+                    .as_ref()
+                    .is_some_and(|s| matches!(s.phase, ShellPhase::Cancelling))
+                {
+                    self.shell_state = None;
+                    self.cmt.submission_result =
+                        Some((false, "Shell command cancelled".to_string()));
+                    self.cmt.submission_result_time = Some(std::time::Instant::now());
+                }
             }
         }
     }
@@ -255,10 +277,9 @@ impl App {
         if let Some(handle) = self.shell_abort_handle.take() {
             handle.abort();
         }
-        self.shell_state = None;
-        self.shell_result_receiver = None;
-        self.cmt.submission_result = Some((false, "Shell command cancelled".to_string()));
-        self.cmt.submission_result_time = Some(std::time::Instant::now());
+        if let Some(ref mut shell) = self.shell_state {
+            shell.phase = ShellPhase::Cancelling;
+        }
     }
 }
 
