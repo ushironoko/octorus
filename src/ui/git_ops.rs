@@ -174,14 +174,17 @@ fn render_tree_pane(
         .and_then(|ops| ops.pending_confirm.as_ref());
     let help_text = if let Some(confirm) = pending {
         match confirm {
-            crate::app::PendingGitOpsConfirm::Discard { ref path, ref command } => {
-                let name = path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path);
-                confirm_text = format!("Discard {}? [{}] (Y/n)", name, command);
+            crate::app::PendingGitOpsConfirm::Simple { ref op } => {
+                confirm_text = format!("{} (Y/n)", op.display_command());
                 confirm_text.as_str()
             }
-            crate::app::PendingGitOpsConfirm::Undo { ref command } => {
-                confirm_text = format!("Undo? [{}] (Y/n)", command);
+            crate::app::PendingGitOpsConfirm::Simulating { .. } => {
+                let spinner = app.spinner_char();
+                confirm_text = format!("{} Simulating...", spinner);
                 confirm_text.as_str()
+            }
+            crate::app::PendingGitOpsConfirm::Previewing { .. } => {
+                ""
             }
         }
     } else {
@@ -701,7 +704,7 @@ fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{FileStatus, GitOpsState, GitStatusEntry, PendingGitOpsConfirm};
+    use crate::app::{DestructiveOp, FileStatus, GitOpsState, GitStatusEntry, PendingGitOpsConfirm};
     use crate::config::Config;
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
@@ -780,15 +783,14 @@ mod tests {
         let entries = vec![entry("src/main.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
-            path: "src/main.rs".to_string(),
-            command: "git restore -- src/main.rs".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard { path: "src/main.rs".to_string() },
         });
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Discard main.rs? [git restore -- src/main.rs] (Y/n)                                               │
+        │git restore -- src/main.rs (Y/n)                                                                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -799,15 +801,14 @@ mod tests {
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
-            path: "a.rs".to_string(),
-            command: "git restore -- a.rs".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard { path: "a.rs".to_string() },
         });
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Discard a.rs? [git restore -- a.rs] (Y/n)                                                         │
+        │git restore -- a.rs (Y/n)                                                                         │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -819,14 +820,14 @@ mod tests {
             entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
         ]);
         rebuild_tree(&mut ops);
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
-            command: "git update-index (restore 1 file(s))".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::UndoStage { paths: vec!["a.rs".to_string()] },
         });
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Undo? [git update-index (restore 1 file(s))] (Y/n)                                                │
+        │git reset -- a.rs (Y/n)                                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -838,14 +839,14 @@ mod tests {
             entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
         ]);
         rebuild_tree(&mut ops);
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
-            command: "git reset --soft abc1234".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::ResetSoft { sha: "abc1234".to_string() },
         });
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Undo? [git reset --soft abc1234] (Y/n)                                                            │
+        │git reset --soft abc1234 (Y/n)                                                                    │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -886,8 +887,8 @@ mod tests {
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
-            command: "git reset".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::UndoStageAll { tree_hash: None },
         });
         app.git_ops_state = Some(ops);
 

@@ -393,6 +393,50 @@ impl App {
                     .map(|idx| idx.abs_diff(selected))
                     .unwrap_or(usize::MAX)
             });
+
+            // gitfilm シミュレーション結果のポーリング
+            if let Some((expected_id, ref mut rx)) = ops.simulate_receiver {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        let eid = expected_id;
+                        ops.simulate_receiver = None;
+                        if let Some(PendingGitOpsConfirm::Simulating { op, abort_id }) =
+                            ops.pending_confirm.take()
+                        {
+                            if abort_id == eid {
+                                match result {
+                                    Ok(output) => {
+                                        ops.pending_confirm =
+                                            Some(PendingGitOpsConfirm::Previewing {
+                                                op,
+                                                result: SimulationResult::Success(
+                                                    SimulationPreview {
+                                                        before: output.prev,
+                                                        after: output.next,
+                                                    },
+                                                ),
+                                                scroll_offset: 0,
+                                            });
+                                    }
+                                    Err(_) => {
+                                        ops.pending_confirm =
+                                            Some(PendingGitOpsConfirm::Simple { op });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {}
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        ops.simulate_receiver = None;
+                        if let Some(PendingGitOpsConfirm::Simulating { op, .. }) =
+                            ops.pending_confirm.take()
+                        {
+                            ops.pending_confirm = Some(PendingGitOpsConfirm::Simple { op });
+                        }
+                    }
+                }
+            }
         }
 
         if op_succeeded {
@@ -1095,22 +1139,8 @@ impl App {
     ) {
         let kb = self.config.keybindings.clone();
 
-        if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
-            if self.matches_single_key(&key, &kb.confirm_yes) {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.pending_confirm = None;
-                }
-                match confirm {
-                    PendingGitOpsConfirm::Discard { .. } => self.discard_changes(),
-                    PendingGitOpsConfirm::Undo { .. } => self.execute_undo(),
-                }
-            } else if self.matches_single_key(&key, &kb.confirm_no)
-                || self.matches_single_key(&key, &kb.quit)
-            {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.pending_confirm = None;
-                }
-            }
+        if self.git_ops_state.as_ref().is_some_and(|o| o.pending_confirm.is_some()) {
+            self.handle_tree_confirm_input(&key, &kb);
             return;
         }
 
@@ -1149,13 +1179,9 @@ impl App {
         // Discard → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_discard) {
             if let Some(ref mut ops) = self.git_ops_state {
-                if let Some(entry) = ops.selected_path().and_then(|p| {
-                    ops.entries.iter().find(|e| e.path == p)
-                }) {
-                    let command = entry.describe_discard_command();
-                    let path = entry.path.clone();
-                    ops.pending_confirm =
-                        Some(PendingGitOpsConfirm::Discard { path, command });
+                if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
+                    let op = DestructiveOp::Discard { path };
+                    self.start_confirm_with_simulation(op);
                 }
             }
             return;
@@ -1168,12 +1194,11 @@ impl App {
 
         // Undo → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_undo) {
-            if let Some(ref mut ops) = self.git_ops_state {
+            if let Some(ref ops) = self.git_ops_state {
                 if let Some(action) = ops.undo_stack.last() {
-                    let command = action.describe_command();
-                    ops.pending_confirm =
-                        Some(PendingGitOpsConfirm::Undo { command });
-                } else {
+                    let op = action.to_destructive_op();
+                    self.start_confirm_with_simulation(op);
+                } else if let Some(ref mut ops) = self.git_ops_state {
                     ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
                 }
             }
@@ -1227,21 +1252,8 @@ impl App {
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
         let kb = self.config.keybindings.clone();
 
-        if let Some(ref confirm) = self.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
-            if self.matches_single_key(&key, &kb.confirm_yes) {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.pending_confirm = None;
-                }
-                if let PendingGitOpsConfirm::Undo { .. } = confirm {
-                    self.reset_soft_to_selected_commit();
-                }
-            } else if self.matches_single_key(&key, &kb.confirm_no)
-                || self.matches_single_key(&key, &kb.quit)
-            {
-                if let Some(ref mut ops) = self.git_ops_state {
-                    ops.pending_confirm = None;
-                }
-            }
+        if self.git_ops_state.as_ref().is_some_and(|o| o.pending_confirm.is_some()) {
+            self.handle_commits_confirm_input(&key, &kb);
             return;
         }
 
@@ -1330,18 +1342,16 @@ impl App {
                 }
                 return;
             }
-            if let Some(ref mut ops) = self.git_ops_state {
+            if let Some(ref ops) = self.git_ops_state {
                 let sha = ops
                     .commit_log
                     .commits
                     .get(ops.commit_log.selected)
-                    .map(|c| &c.sha[..c.sha.len().min(7)]);
-                let command = match sha {
-                    Some(s) => format!("git reset --soft {}", s),
-                    None => "git reset --soft".to_string(),
-                };
-                ops.pending_confirm =
-                    Some(PendingGitOpsConfirm::Undo { command });
+                    .map(|c| c.sha.clone());
+                if let Some(sha) = sha {
+                    let op = DestructiveOp::ResetSoft { sha };
+                    self.start_confirm_with_simulation(op);
+                }
             }
             return;
         }
@@ -1385,6 +1395,139 @@ impl App {
             vec!["reset".to_string(), "--soft".to_string(), sha],
             "Reset --soft (changes are staged)".to_string(),
         );
+    }
+
+    /// 破壊的操作の確認を開始（gitfilm 利用可能ならシミュレーション、不可なら Simple）
+    fn start_confirm_with_simulation(&mut self, op: DestructiveOp) {
+        let Some(ref mut ops) = self.git_ops_state else {
+            return;
+        };
+
+        if let Some(ref gitfilm_path) = ops.gitfilm_path {
+            static ABORT_COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let abort_id =
+                ABORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let gitfilm = gitfilm_path.clone();
+            let args = op.to_gitfilm_args();
+            let working_dir = self.working_dir.clone();
+
+            tokio::spawn(async move {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                let result =
+                    crate::gitfilm::simulate(&gitfilm, working_dir.as_deref(), &arg_refs).await;
+                let _ = tx.send(result).await;
+            });
+
+            ops.simulate_receiver = Some((abort_id, rx));
+            ops.pending_confirm = Some(PendingGitOpsConfirm::Simulating { op, abort_id });
+        } else {
+            ops.pending_confirm = Some(PendingGitOpsConfirm::Simple { op });
+        }
+    }
+
+    /// Tree ペインの確認ダイアログ入力処理
+    fn handle_tree_confirm_input(
+        &mut self,
+        key: &event::KeyEvent,
+        kb: &crate::config::KeybindingsConfig,
+    ) {
+        let needs_execute = self.handle_confirm_input_common(key, kb);
+        if let Some(op) = needs_execute {
+            match op {
+                DestructiveOp::Discard { .. } => self.discard_changes(),
+                _ => self.execute_undo(),
+            }
+        }
+    }
+
+    /// Commits ペインの確認ダイアログ入力処理
+    fn handle_commits_confirm_input(
+        &mut self,
+        key: &event::KeyEvent,
+        kb: &crate::config::KeybindingsConfig,
+    ) {
+        let needs_execute = self.handle_confirm_input_common(key, kb);
+        if let Some(op) = needs_execute {
+            match op {
+                DestructiveOp::ResetSoft { .. } => self.reset_soft_to_selected_commit(),
+                _ => self.execute_undo(),
+            }
+        }
+    }
+
+    /// 確認ダイアログの共通入力処理。実行すべき操作があれば返す。
+    fn handle_confirm_input_common(
+        &mut self,
+        key: &event::KeyEvent,
+        kb: &crate::config::KeybindingsConfig,
+    ) -> Option<DestructiveOp> {
+        let confirm = self
+            .git_ops_state
+            .as_ref()
+            .and_then(|o| o.pending_confirm.as_ref());
+
+        let confirm = confirm?;
+
+        match confirm {
+            PendingGitOpsConfirm::Simple { .. } | PendingGitOpsConfirm::Previewing { .. } => {
+                if self.matches_single_key(key, &kb.confirm_yes) {
+                    let op = match self
+                        .git_ops_state
+                        .as_mut()
+                        .and_then(|o| o.pending_confirm.take())
+                    {
+                        Some(PendingGitOpsConfirm::Simple { op }) => op,
+                        Some(PendingGitOpsConfirm::Previewing { op, .. }) => op,
+                        other => {
+                            if let Some(ref mut ops) = self.git_ops_state {
+                                ops.pending_confirm = other;
+                            }
+                            return None;
+                        }
+                    };
+                    return Some(op);
+                }
+                if self.matches_single_key(key, &kb.confirm_no)
+                    || self.matches_single_key(key, &kb.quit)
+                {
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.pending_confirm = None;
+                    }
+                }
+                // j/k scroll for Previewing
+                let scroll_down = self.matches_single_key(key, &kb.move_down);
+                let scroll_up = self.matches_single_key(key, &kb.move_up);
+                if let Some(PendingGitOpsConfirm::Previewing {
+                    ref mut scroll_offset,
+                    ..
+                }) = self
+                    .git_ops_state
+                    .as_mut()
+                    .and_then(|o| o.pending_confirm.as_mut())
+                {
+                    if scroll_down {
+                        *scroll_offset = scroll_offset.saturating_add(1);
+                    } else if scroll_up {
+                        *scroll_offset = scroll_offset.saturating_sub(1);
+                    }
+                }
+            }
+            PendingGitOpsConfirm::Simulating { .. } => {
+                // シミュレーション中はキャンセルのみ
+                if self.matches_single_key(key, &kb.confirm_no)
+                    || self.matches_single_key(key, &kb.quit)
+                {
+                    if let Some(ref mut ops) = self.git_ops_state {
+                        ops.pending_confirm = None;
+                        ops.simulate_receiver = None;
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// left_return_focus に応じてアクティブな diff_scroll を返す
@@ -2355,22 +2498,8 @@ mod tests {
             crossterm::event::KeyModifiers::empty(),
         );
         let kb = app.config.keybindings.clone();
-        if let Some(ref confirm) = app.git_ops_state.as_ref().and_then(|o| o.pending_confirm.clone()) {
-            if app.matches_single_key(&key, &kb.confirm_yes) {
-                if let Some(ref mut ops) = app.git_ops_state {
-                    ops.pending_confirm = None;
-                }
-                match confirm {
-                    PendingGitOpsConfirm::Discard { .. } => app.discard_changes(),
-                    PendingGitOpsConfirm::Undo { .. } => app.execute_undo(),
-                }
-            } else if app.matches_single_key(&key, &kb.confirm_no)
-                || app.matches_single_key(&key, &kb.quit)
-            {
-                if let Some(ref mut ops) = app.git_ops_state {
-                    ops.pending_confirm = None;
-                }
-            }
+        if app.git_ops_state.as_ref().map_or(false, |o| o.pending_confirm.is_some()) {
+            app.handle_tree_confirm_input(&key, &kb);
         }
     }
 
@@ -2392,17 +2521,16 @@ mod tests {
             if let Some(entry) = ops.selected_path().and_then(|p| {
                 ops.entries.iter().find(|e| e.path == p)
             }) {
-                let command = entry.describe_discard_command();
                 let path = entry.path.clone();
                 ops.pending_confirm =
-                    Some(PendingGitOpsConfirm::Discard { path, command });
+                    Some(PendingGitOpsConfirm::Simple { op: DestructiveOp::Discard { path } });
             }
         }
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(matches!(
             ops.pending_confirm,
-            Some(PendingGitOpsConfirm::Discard { ref path, .. }) if path == "a.rs"
+            Some(PendingGitOpsConfirm::Simple { op: DestructiveOp::Discard { ref path } }) if path == "a.rs"
         ));
     }
 
@@ -2410,9 +2538,8 @@ mod tests {
     fn test_confirm_n_cancels_pending() {
         let (mut app, _tx) = make_git_ops_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
-            path: "a.rs".to_string(),
-            command: "git restore -- a.rs".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard { path: "a.rs".to_string() },
         });
         app.git_ops_state = Some(ops);
 
@@ -2424,8 +2551,8 @@ mod tests {
     fn test_confirm_esc_cancels_pending() {
         let (mut app, _tx) = make_git_ops_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
-            command: "git reset".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::UndoStageAll { tree_hash: None },
         });
         app.git_ops_state = Some(ops);
 
@@ -2442,9 +2569,9 @@ mod tests {
         // undo スタックが空の場合、pending_confirm にならず直接メッセージ
         let ops_ref = app.git_ops_state.as_mut().unwrap();
         if let Some(action) = ops_ref.undo_stack.last() {
-            let command = action.describe_command();
+            let op = action.to_destructive_op();
             ops_ref.pending_confirm =
-                Some(PendingGitOpsConfirm::Undo { command });
+                Some(PendingGitOpsConfirm::Simple { op });
         } else {
             ops_ref.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
         }
@@ -2463,9 +2590,8 @@ mod tests {
         ];
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Discard {
-            path: "a.rs".to_string(),
-            command: "git restore -- a.rs".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard { path: "a.rs".to_string() },
         });
         let initial_row = ops.tree.selected_row;
         app.git_ops_state = Some(ops);
@@ -2489,8 +2615,8 @@ mod tests {
             paths: vec!["a.rs".to_string()],
             previous_index_entries: vec![],
         });
-        ops.pending_confirm = Some(PendingGitOpsConfirm::Undo {
-            command: "git update-index (restore 1 file(s))".to_string(),
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::UndoStage { paths: vec!["a.rs".to_string()] },
         });
         app.git_ops_state = Some(ops);
 
