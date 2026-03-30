@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -23,6 +23,31 @@ impl App {
                 // 報告されるため、Press のみ処理して二重実行を防止する。
                 if key.kind != KeyEventKind::Press {
                     return Ok(());
+                }
+
+                // Shell overlay must intercept before data-state guards reject input
+                if let Some(ref shell) = self.shell_state {
+                    match shell.phase {
+                        ShellPhase::Input => {
+                            self.handle_shell_input(key)?;
+                            return Ok(());
+                        }
+                        ShellPhase::Running => {
+                            if key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)
+                            {
+                                self.cancel_shell_command();
+                            }
+                            return Ok(());
+                        }
+                        ShellPhase::Cancelling => {
+                            return Ok(());
+                        }
+                        ShellPhase::Done(_) => {
+                            self.handle_shell_output(key);
+                            return Ok(());
+                        }
+                    }
                 }
 
                 // PR一覧画面は独自のLoading処理があるためスキップ
@@ -55,6 +80,41 @@ impl App {
                             PendingApproveChoice::Cancel | PendingApproveChoice::Ignore => {}
                         }
                         return Ok(());
+                    }
+                }
+
+                {
+                    let filter_input_active = self
+                        .file_list_filter
+                        .as_ref()
+                        .is_some_and(|f| f.input_active)
+                        || self
+                            .prs
+                            .pr_list_filter
+                            .as_ref()
+                            .is_some_and(|f| f.input_active)
+                        || self.issue_state.as_ref().is_some_and(|s| {
+                            s.issue_list_filter
+                                .as_ref()
+                                .is_some_and(|f| f.input_active)
+                        });
+                    let has_modal = self.multiline_selection.is_some()
+                        || self.symbol_popup.is_some()
+                        || self
+                            .git_ops_state
+                            .as_ref()
+                            .is_some_and(|g| g.pending_confirm.is_some());
+
+                    if !matches!(self.state, AppState::TextInput | AppState::AiRally)
+                        && !filter_input_active
+                        && !has_modal
+                        && self.pending_keys.is_empty()
+                    {
+                        let kb = &self.config.keybindings;
+                        if self.matches_single_key(&key, &kb.shell_command) {
+                            self.enter_shell_command_mode();
+                            return Ok(());
+                        }
                     }
                 }
 

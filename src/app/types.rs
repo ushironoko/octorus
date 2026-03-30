@@ -958,3 +958,37 @@ impl SymbolSearchState {
         None
     }
 }
+
+/// Operates as an overlay without changing AppState, so shell commands work in any screen.
+#[derive(Debug, Clone)]
+pub struct ShellState {
+    pub input: String,
+    pub cursor: usize,
+    pub phase: ShellPhase,
+    pub scroll_offset: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum ShellPhase {
+    Input,
+    Running,
+    Cancelling,
+    Done(ShellCommandResult),
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellCommandResult {
+    pub command: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    /// Pre-built at Done transition to avoid re-computing on every render.
+    pub cached_lines: Vec<CachedShellLine>,
+    pub total_lines: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedShellLine {
+    pub text: String,
+    pub is_stderr: bool,
+}

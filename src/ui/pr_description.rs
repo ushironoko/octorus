@@ -122,15 +122,9 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let kb = &app.config.keybindings;
-    let footer_text = format!(
-        " {}/Esc: close | j/k: scroll | J/K: page | g/G: top/bottom | {}: open in browser | {}: toggle rich",
-        kb.quit.display(),
-        kb.open_in_browser.display(),
-        kb.toggle_markdown_rich.display()
-    );
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
     let footer = Paragraph::new(Line::from(Span::styled(
-        footer_text,
+        format!(" {}", help_text),
         Style::default().fg(Color::DarkGray),
     )));
     frame.render_widget(footer, area);
@@ -193,7 +187,7 @@ mod tests {
         │                                                                                                  │
         │                                                                                                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-         q/Esc/Esc: close | j/k: scroll | J/K: page | g/G: top/bottom | O: open in browser | M: toggle rich
+         ? Help | ! Shell | q/Esc Back
         ");
     }
 }

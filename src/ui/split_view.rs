@@ -266,19 +266,18 @@ fn render_file_list_pane(
         next_chunk += 1;
     }
 
+    let help_text_owned;
     let help_text = if is_focused {
-        if app.file_list_filter.is_some() {
-            "j/k/↑↓: move | Esc: clear filter | Enter/→/l: diff | ←/h/q: back"
-        } else {
-            "j/k/↑↓: move | Space /: filter | Enter/→/l: diff | O: browser | ←/h/q: back"
-        }
+        help_text_owned = super::footer::footer_hint_back(&app.config.keybindings);
+        help_text_owned.as_str()
     } else {
         "←/h: focus files"
     };
-    let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         Style::default().fg(border_color),
+        is_focused,
     ));
     frame.render_widget(footer, chunks[next_chunk]);
 }
@@ -370,17 +369,15 @@ fn render_diff_pane_normal(
     render_diff_header(frame, app, chunks[0], border_color);
     render_diff_body(frame, app, chunks[1], border_color);
 
+    let footer_text_owned;
     let footer_text = if is_focused {
-        if app.is_local_mode() {
-            "j/k/↑↓: scroll | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
-        } else {
-            "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
-        }
+        footer_text_owned = super::footer::footer_hint_back(&app.config.keybindings);
+        footer_text_owned.as_str()
     } else {
         "Enter/→: focus diff"
     };
 
-    render_diff_footer(frame, app, chunks[2], footer_text, border_color);
+    render_diff_footer(frame, app, chunks[2], footer_text, border_color, is_focused);
 }
 
 fn render_diff_footer(
@@ -389,11 +386,13 @@ fn render_diff_footer(
     area: ratatui::layout::Rect,
     help_text: &str,
     border_color: Color,
+    is_focused: bool,
 ) {
-    let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         Style::default().fg(border_color),
+        is_focused,
     ));
     frame.render_widget(footer, area);
 }
@@ -490,7 +489,7 @@ fn render_diff_pane_with_comments(
     }
 
     let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
-    render_diff_footer(frame, app, chunks[3], footer_text, border_color);
+    render_diff_footer(frame, app, chunks[3], footer_text, border_color, true);
 }
 
 fn render_diff_header(

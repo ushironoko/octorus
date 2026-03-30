@@ -369,6 +369,20 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
+        "Shell Settings",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(config_value_line(
+        "Timeout (secs)",
+        &config.shell.timeout_secs.to_string(),
+        "shell.timeout_secs",
+        overrides,
+    ));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
         "Prompt Resolution",
         Style::default()
             .fg(Color::Yellow)
@@ -398,6 +412,25 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
     let key_width = 14; // Width for key column
 
     vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Global",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Show this help",
+            fmt_key(&kb.help.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Execute shell command",
+            fmt_key(&kb.shell_command.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Quit / Back",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "File List View",

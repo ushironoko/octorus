@@ -48,33 +48,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_list(frame, app, chunks[1]);
 
-    let footer_line = if app.is_issue_comment_submitting() {
-        Line::from(Span::styled(
-            " Submitting...",
-            Style::default().fg(Color::Yellow),
-        ))
-    } else if let Some((success, ref message)) = app.cmt.submission_result {
-        let (icon, color) = if success {
-            ("\u{2713}", Color::Green)
-        } else {
-            ("\u{2717}", Color::Red)
-        };
-        Line::from(Span::styled(
-            format!(" {} {}", icon, message),
-            Style::default().fg(color),
-        ))
-    } else {
-        let kb = &app.config.keybindings;
-        Line::from(Span::styled(
-            format!(
-                " {}/Esc: back | j/k: move | Enter: detail | {}: comment | {}: browser",
-                kb.quit.display(),
-                kb.comment.display(),
-                kb.open_in_browser.display(),
-            ),
-            Style::default().fg(Color::DarkGray),
-        ))
-    };
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let footer_line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[2]);
 }
@@ -292,33 +267,8 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(content, chunks[1]);
 
-    // Footer — show submitting/result state (same as list view)
-    let footer_line = if app.is_issue_comment_submitting() {
-        Line::from(Span::styled(
-            " Submitting...",
-            Style::default().fg(Color::Yellow),
-        ))
-    } else if let Some((success, ref message)) = app.cmt.submission_result {
-        let (icon, color) = if success {
-            ("\u{2713}", Color::Green)
-        } else {
-            ("\u{2717}", Color::Red)
-        };
-        Line::from(Span::styled(
-            format!(" {} {}", icon, message),
-            Style::default().fg(color),
-        ))
-    } else {
-        let kb = &app.config.keybindings;
-        let footer_text = format!(
-            "j/k: scroll | J/K: page | {}: reply | Enter/Esc: back to list",
-            kb.reply.display(),
-        );
-        Line::from(Span::styled(
-            footer_text,
-            Style::default().fg(Color::DarkGray),
-        ))
-    };
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let footer_line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[2]);
 }
