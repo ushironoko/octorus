@@ -2127,10 +2127,11 @@ fn test_help_scroll_ctrl_d_at_least_1_on_very_small_terminal() {
 }
 
 #[test]
-fn test_help_scroll_g_jumps_to_top() {
+fn test_help_scroll_gg_jumps_to_top() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 50;
+    app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
     app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
     assert_eq!(app.help_scroll_offset, 0);
 }
@@ -2206,11 +2207,12 @@ fn test_help_scroll_shift_g_jumps_to_bottom() {
 }
 
 #[test]
-fn test_help_scroll_g_without_modifiers_jumps_to_top() {
+fn test_help_scroll_gg_without_modifiers_jumps_to_top() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 50;
-    // Plain g (no modifiers) should jump to top
+    // gg sequence should jump to top
+    app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
     app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
     assert_eq!(app.help_scroll_offset, 0);
 }

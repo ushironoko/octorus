@@ -1,7 +1,9 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
+
+use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
 use super::types::*;
 use super::App;
@@ -247,11 +249,11 @@ impl App {
         let visible_lines = terminal_height.saturating_sub(6) as usize;
         let half_page = (visible_lines / 2).max(1);
 
-        let kb = &self.config.keybindings;
+        let kb = self.config.keybindings.clone();
 
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.help)
-                   {
+        {
             self.state = self.previous_state;
             return Ok(());
         }
@@ -275,6 +277,23 @@ impl App {
             return Ok(());
         }
 
+        // Sequence handling (gg for jump_to_first)
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    self.pr_description_scroll_offset = 0;
+                    return Ok(());
+                }
+                self.clear_pending_keys();
+            } else if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+                self.push_pending_key(kb_event);
+                return Ok(());
+            }
+        }
+
         if Self::is_shift_char_shortcut(&key, 'j') {
             self.pr_description_scroll_offset = self
                 .pr_description_scroll_offset
@@ -295,8 +314,6 @@ impl App {
         } else if self.matches_single_key(&key, &kb.page_up) {
             self.pr_description_scroll_offset =
                 self.pr_description_scroll_offset.saturating_sub(half_page);
-        } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
-            self.pr_description_scroll_offset = 0;
         }
 
         Ok(())
@@ -316,7 +333,7 @@ impl App {
     pub(crate) const HELP_VIEWPORT_OVERHEAD: u16 = 6;
 
     pub(crate) fn apply_help_scroll(&mut self, key: event::KeyEvent, terminal_height: u16) {
-        let kb = &self.config.keybindings;
+        let kb = self.config.keybindings.clone();
         if self.matches_single_key(&key, &kb.tab_prev)
             || self.matches_single_key(&key, &kb.tab_next)
         {
@@ -325,6 +342,26 @@ impl App {
                 HelpTab::Config => HelpTab::Keybindings,
             };
             return;
+        }
+
+        // Sequence handling (gg for jump_to_first)
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    match self.help_tab {
+                        HelpTab::Keybindings => self.help_scroll_offset = 0,
+                        HelpTab::Config => self.config_scroll_offset = 0,
+                    };
+                    return;
+                }
+                self.clear_pending_keys();
+            } else if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+                self.push_pending_key(kb_event);
+                return;
+            }
         }
 
         let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
@@ -354,8 +391,6 @@ impl App {
             offset = offset.saturating_add(half_page);
         } else if self.matches_single_key(&key, &kb.page_up) {
             offset = offset.saturating_sub(half_page);
-        } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
-            offset = 0;
         }
 
         match self.help_tab {

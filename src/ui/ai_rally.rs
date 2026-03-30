@@ -169,7 +169,7 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
         Style::default().fg(Color::Yellow),
     )]));
     lines.push(Line::from(""));
-    let help_text = format!("Press '{}' to accept and continue, '{}' to cancel", kb.confirm_yes.display(), kb.confirm_no.display());
+    let help_text = format!("Press '{}' to accept and continue, '{}'/'{}' to cancel", kb.confirm_yes.display(), kb.confirm_no.display(), kb.quit.display());
     lines.push(Line::from(vec![Span::styled(
         help_text,
         Style::default()

@@ -1104,7 +1104,9 @@ impl App {
                     PendingGitOpsConfirm::Discard { .. } => self.discard_changes(),
                     PendingGitOpsConfirm::Undo { .. } => self.execute_undo(),
                 }
-            } else if self.matches_single_key(&key, &kb.confirm_no) {
+            } else if self.matches_single_key(&key, &kb.confirm_no)
+                || self.matches_single_key(&key, &kb.quit)
+            {
                 if let Some(ref mut ops) = self.git_ops_state {
                     ops.pending_confirm = None;
                 }
@@ -1233,7 +1235,9 @@ impl App {
                 if let PendingGitOpsConfirm::Undo { .. } = confirm {
                     self.reset_soft_to_selected_commit();
                 }
-            } else if self.matches_single_key(&key, &kb.confirm_no) {
+            } else if self.matches_single_key(&key, &kb.confirm_no)
+                || self.matches_single_key(&key, &kb.quit)
+            {
                 if let Some(ref mut ops) = self.git_ops_state {
                     ops.pending_confirm = None;
                 }
@@ -2360,7 +2364,9 @@ mod tests {
                     PendingGitOpsConfirm::Discard { .. } => app.discard_changes(),
                     PendingGitOpsConfirm::Undo { .. } => app.execute_undo(),
                 }
-            } else if app.matches_single_key(&key, &kb.confirm_no) {
+            } else if app.matches_single_key(&key, &kb.confirm_no)
+                || app.matches_single_key(&key, &kb.quit)
+            {
                 if let Some(ref mut ops) = app.git_ops_state {
                     ops.pending_confirm = None;
                 }

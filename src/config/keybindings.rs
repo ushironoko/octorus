@@ -150,8 +150,7 @@ impl Default for KeybindingsConfig {
             confirm_yes: KeySequence::single(KeyBinding::char('y'))
                 .with_alt(vec![KeyBinding::char('Y')]),
             confirm_no: KeySequence::single(KeyBinding::char('n'))
-                .with_alt(vec![KeyBinding::char('N')])
-                .with_alt(vec![KeyBinding::named(NamedKey::Esc)]),
+                .with_alt(vec![KeyBinding::char('N')]),
         }
     }
 }
