@@ -103,7 +103,7 @@ pub fn build_footer_block_with_border(app: &App, base_style: Style) -> Block<'st
 }
 
 /// Render the shell command input line with cursor visualization.
-fn render_shell_input_line<'a>(input: &'a str, cursor: usize) -> Line<'a> {
+fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
     let chars: Vec<char> = input.chars().collect();
     let before: String = chars[..cursor.min(chars.len())].iter().collect();
     let cursor_char: String = if cursor < chars.len() {
@@ -262,6 +262,7 @@ mod tests {
             input: "ls -la".to_string(),
             cursor: 3,
             phase: ShellPhase::Input,
+            scroll_offset: 0,
         });
 
         let line = build_footer_line(&app, HELP);
@@ -281,6 +282,7 @@ mod tests {
             input: String::new(),
             cursor: 0,
             phase: ShellPhase::Input,
+            scroll_offset: 0,
         });
 
         // Shell input active should produce Cyan border (not default)

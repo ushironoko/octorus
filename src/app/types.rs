@@ -959,12 +959,13 @@ impl SymbolSearchState {
     }
 }
 
-/// シェルコマンド実行のオーバーレイ状態
+/// app.stateを変更せずオーバーレイとして動作するシェルコマンド状態
 #[derive(Debug, Clone)]
 pub struct ShellState {
     pub input: String,
     pub cursor: usize,
     pub phase: ShellPhase,
+    pub scroll_offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -980,5 +981,13 @@ pub struct ShellCommandResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
-    pub scroll_offset: usize,
+    /// Done遷移時に一度だけ構築するレンダリング済み行キャッシュ
+    pub cached_lines: Vec<CachedShellLine>,
+    pub total_lines: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedShellLine {
+    pub text: String,
+    pub is_stderr: bool,
 }

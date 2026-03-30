@@ -25,7 +25,7 @@ impl App {
                     return Ok(());
                 }
 
-                // ★ 追加A: Shell overlay active → data stateガード前にインターセプト
+                // data stateに依存しないため、loading/error中でもshell操作を可能にする
                 if let Some(ref shell) = self.shell_state {
                     match shell.phase {
                         ShellPhase::Input => {
@@ -80,7 +80,7 @@ impl App {
                     }
                 }
 
-                // ★ 追加B: ! キーでシェル入力モード開始
+                // 全ガード通過後、モーダル・フィルタ非活性時のみシェル起動を許可
                 {
                     let filter_input_active = self
                         .file_list_filter

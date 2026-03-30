@@ -2,10 +2,10 @@ use anyhow::Result;
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use tokio::sync::mpsc;
 
-use super::types::{ShellCommandResult, ShellPhase, ShellState};
+use super::types::{CachedShellLine, ShellCommandResult, ShellPhase, ShellState};
 use super::App;
 
-const MAX_OUTPUT_BYTES: usize = 1024 * 1024; // 1MB
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 impl App {
     pub(crate) fn enter_shell_command_mode(&mut self) {
@@ -13,6 +13,7 @@ impl App {
             input: String::new(),
             cursor: 0,
             phase: ShellPhase::Input,
+            scroll_offset: 0,
         });
     }
 
@@ -46,6 +47,26 @@ impl App {
                 if let Some(ref mut shell) = self.shell_state {
                     if shell.cursor > 0 {
                         shell.cursor -= 1;
+                        let byte_pos = shell
+                            .input
+                            .char_indices()
+                            .nth(shell.cursor)
+                            .map(|(i, _)| i)
+                            .unwrap_or(shell.input.len());
+                        let next_byte = shell
+                            .input
+                            .char_indices()
+                            .nth(shell.cursor + 1)
+                            .map(|(i, _)| i)
+                            .unwrap_or(shell.input.len());
+                        shell.input.replace_range(byte_pos..next_byte, "");
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(ref mut shell) = self.shell_state {
+                    let max = shell.input.chars().count();
+                    if shell.cursor < max {
                         let byte_pos = shell
                             .input
                             .char_indices()
@@ -107,12 +128,12 @@ impl App {
         let (tx, rx) = mpsc::channel(1);
         self.shell_result_receiver = Some(rx);
 
-        tokio::spawn(async move {
-            #[cfg(target_os = "windows")]
-            let (shell_bin, flag) = ("cmd", "/C");
-            #[cfg(not(target_os = "windows"))]
-            let (shell_bin, flag) = ("sh", "-c");
+        #[cfg(target_os = "windows")]
+        let (shell_bin, flag) = ("cmd", "/C");
+        #[cfg(not(target_os = "windows"))]
+        let (shell_bin, flag) = ("sh", "-c");
 
+        let handle = tokio::spawn(async move {
             let result = tokio::process::Command::new(shell_bin)
                 .arg(flag)
                 .arg(&command)
@@ -124,32 +145,38 @@ impl App {
                 Ok(output) => {
                     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                     let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                    if stdout.len() > MAX_OUTPUT_BYTES {
-                        stdout.truncate(MAX_OUTPUT_BYTES);
-                        stdout.push_str("\n... (output truncated)");
-                    }
-                    if stderr.len() > MAX_OUTPUT_BYTES {
-                        stderr.truncate(MAX_OUTPUT_BYTES);
-                        stderr.push_str("\n... (output truncated)");
-                    }
+                    truncate_at_char_boundary(&mut stdout, MAX_OUTPUT_BYTES);
+                    truncate_at_char_boundary(&mut stderr, MAX_OUTPUT_BYTES);
+
+                    let (cached_lines, total_lines) =
+                        build_cached_lines(&stdout, &stderr);
+
                     ShellCommandResult {
                         command,
                         stdout,
                         stderr,
                         exit_code: output.status.code(),
-                        scroll_offset: 0,
+                        cached_lines,
+                        total_lines,
                     }
                 }
-                Err(e) => ShellCommandResult {
-                    command,
-                    stdout: String::new(),
-                    stderr: format!("Failed to execute: {}", e),
-                    exit_code: None,
-                    scroll_offset: 0,
-                },
+                Err(e) => {
+                    let stderr = format!("Failed to execute: {}", e);
+                    let (cached_lines, total_lines) =
+                        build_cached_lines("", &stderr);
+                    ShellCommandResult {
+                        command,
+                        stdout: String::new(),
+                        stderr,
+                        exit_code: None,
+                        cached_lines,
+                        total_lines,
+                    }
+                }
             };
             let _ = tx.send(shell_result).await;
         });
+        self.shell_abort_handle = Some(handle.abort_handle());
     }
 
     pub(crate) fn handle_shell_output(&mut self, key: event::KeyEvent) {
@@ -158,66 +185,48 @@ impl App {
                 self.shell_state = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ShellState {
-                    phase: ShellPhase::Done(ref mut result),
-                    ..
-                }) = self.shell_state
-                {
-                    result.scroll_offset = result.scroll_offset.saturating_add(1);
-                }
+                self.shell_scroll_by(1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(ShellState {
-                    phase: ShellPhase::Done(ref mut result),
-                    ..
-                }) = self.shell_state
-                {
-                    result.scroll_offset = result.scroll_offset.saturating_sub(1);
-                }
+                self.shell_scroll_by(-1);
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(ShellState {
-                    phase: ShellPhase::Done(ref mut result),
-                    ..
-                }) = self.shell_state
-                {
-                    result.scroll_offset = result.scroll_offset.saturating_add(10);
-                }
+                self.shell_scroll_by(10);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(ShellState {
-                    phase: ShellPhase::Done(ref mut result),
-                    ..
-                }) = self.shell_state
-                {
-                    result.scroll_offset = result.scroll_offset.saturating_sub(10);
-                }
+                self.shell_scroll_by(-10);
             }
             KeyCode::Char('g') => {
-                if let Some(ShellState {
-                    phase: ShellPhase::Done(ref mut result),
-                    ..
-                }) = self.shell_state
-                {
-                    result.scroll_offset = 0;
+                if let Some(ref mut shell) = self.shell_state {
+                    shell.scroll_offset = 0;
                 }
             }
             KeyCode::Char('G') => {
-                if let Some(ShellState {
-                    phase: ShellPhase::Done(ref mut result),
-                    ..
-                }) = self.shell_state
-                {
-                    let total_lines = result.stdout.lines().count()
-                        + if result.stderr.is_empty() {
-                            0
-                        } else {
-                            result.stderr.lines().count() + 1
-                        };
-                    result.scroll_offset = total_lines.saturating_sub(1);
+                if let Some(ref mut shell) = self.shell_state {
+                    if let ShellPhase::Done(ref result) = shell.phase {
+                        shell.scroll_offset = result.total_lines.saturating_sub(1);
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    fn shell_scroll_by(&mut self, delta: i32) {
+        let Some(ref mut shell) = self.shell_state else {
+            return;
+        };
+        let ShellPhase::Done(ref result) = shell.phase else {
+            return;
+        };
+        let max = result.total_lines.saturating_sub(1);
+        if delta > 0 {
+            shell.scroll_offset = shell
+                .scroll_offset
+                .saturating_add(delta as usize)
+                .min(max);
+        } else {
+            shell.scroll_offset = shell.scroll_offset.saturating_sub((-delta) as usize);
         }
     }
 
@@ -228,21 +237,71 @@ impl App {
         match rx.try_recv() {
             Ok(result) => {
                 if let Some(ref mut shell) = self.shell_state {
+                    shell.scroll_offset = 0;
                     shell.phase = ShellPhase::Done(result);
                 }
                 self.shell_result_receiver = None;
+                self.shell_abort_handle = None;
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 self.shell_result_receiver = None;
+                self.shell_abort_handle = None;
             }
         }
     }
 
     pub(crate) fn cancel_shell_command(&mut self) {
+        if let Some(handle) = self.shell_abort_handle.take() {
+            handle.abort();
+        }
         self.shell_state = None;
         self.shell_result_receiver = None;
     }
+}
+
+fn truncate_at_char_boundary(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str("\n... (output truncated)");
+}
+
+fn build_cached_lines(stdout: &str, stderr: &str) -> (Vec<CachedShellLine>, usize) {
+    let mut lines = Vec::new();
+    for line in stdout.lines() {
+        lines.push(CachedShellLine {
+            text: line.to_string(),
+            is_stderr: false,
+        });
+    }
+    if !stderr.is_empty() {
+        if !stdout.is_empty() {
+            lines.push(CachedShellLine {
+                text: "--- stderr ---".to_string(),
+                is_stderr: true,
+            });
+        }
+        for line in stderr.lines() {
+            lines.push(CachedShellLine {
+                text: line.to_string(),
+                is_stderr: true,
+            });
+        }
+    }
+    if lines.is_empty() {
+        lines.push(CachedShellLine {
+            text: "(no output)".to_string(),
+            is_stderr: false,
+        });
+    }
+    let total = lines.len();
+    (lines, total)
 }
 
 #[cfg(test)]
@@ -279,7 +338,6 @@ mod tests {
         assert!(shell.input.is_empty());
         assert_eq!(shell.cursor, 0);
         assert!(matches!(shell.phase, ShellPhase::Input));
-        // app.state should not change (overlay pattern)
         assert_eq!(app.state, original_state);
     }
 
@@ -288,8 +346,10 @@ mod tests {
         let mut app = App::new_for_test();
         app.enter_shell_command_mode();
 
-        app.handle_shell_input(make_key(KeyCode::Char('l'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('s'))).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('l')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('s')))
+            .unwrap();
 
         let shell = app.shell_state.as_ref().unwrap();
         assert_eq!(shell.input, "ls");
@@ -301,10 +361,14 @@ mod tests {
         let mut app = App::new_for_test();
         app.enter_shell_command_mode();
 
-        app.handle_shell_input(make_key(KeyCode::Char('a'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('b'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('c'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Backspace)).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('a')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('b')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('c')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Backspace))
+            .unwrap();
 
         let shell = app.shell_state.as_ref().unwrap();
         assert_eq!(shell.input, "ab");
@@ -312,27 +376,45 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_input_delete() {
+        let mut app = App::new_for_test();
+        app.enter_shell_command_mode();
+
+        app.handle_shell_input(make_key(KeyCode::Char('a')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('b')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('c')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Home)).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Delete)).unwrap();
+
+        let shell = app.shell_state.as_ref().unwrap();
+        assert_eq!(shell.input, "bc");
+        assert_eq!(shell.cursor, 0);
+    }
+
+    #[test]
     fn test_shell_input_cursor_movement() {
         let mut app = App::new_for_test();
         app.enter_shell_command_mode();
 
-        app.handle_shell_input(make_key(KeyCode::Char('a'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('b'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('c'))).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('a')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('b')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('c')))
+            .unwrap();
 
-        // Left
         app.handle_shell_input(make_key(KeyCode::Left)).unwrap();
         assert_eq!(app.shell_state.as_ref().unwrap().cursor, 2);
 
-        // Home
         app.handle_shell_input(make_key(KeyCode::Home)).unwrap();
         assert_eq!(app.shell_state.as_ref().unwrap().cursor, 0);
 
-        // Right
         app.handle_shell_input(make_key(KeyCode::Right)).unwrap();
         assert_eq!(app.shell_state.as_ref().unwrap().cursor, 1);
 
-        // End
         app.handle_shell_input(make_key(KeyCode::End)).unwrap();
         assert_eq!(app.shell_state.as_ref().unwrap().cursor, 3);
     }
@@ -342,9 +424,12 @@ mod tests {
         let mut app = App::new_for_test();
         app.enter_shell_command_mode();
 
-        app.handle_shell_input(make_key(KeyCode::Char('a'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('b'))).unwrap();
-        app.handle_shell_input(make_ctrl_key(KeyCode::Char('u'))).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('a')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('b')))
+            .unwrap();
+        app.handle_shell_input(make_ctrl_key(KeyCode::Char('u')))
+            .unwrap();
 
         let shell = app.shell_state.as_ref().unwrap();
         assert!(shell.input.is_empty());
@@ -356,7 +441,8 @@ mod tests {
         let mut app = App::new_for_test();
         app.enter_shell_command_mode();
 
-        app.handle_shell_input(make_key(KeyCode::Char('x'))).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('x')))
+            .unwrap();
         app.handle_shell_input(make_key(KeyCode::Esc)).unwrap();
 
         assert!(app.shell_state.is_none());
@@ -377,16 +463,92 @@ mod tests {
         let mut app = App::new_for_test();
         app.enter_shell_command_mode();
 
-        app.handle_shell_input(make_key(KeyCode::Char('日'))).unwrap();
-        app.handle_shell_input(make_key(KeyCode::Char('本'))).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('日')))
+            .unwrap();
+        app.handle_shell_input(make_key(KeyCode::Char('本')))
+            .unwrap();
 
         let shell = app.shell_state.as_ref().unwrap();
         assert_eq!(shell.input, "日本");
         assert_eq!(shell.cursor, 2);
 
-        app.handle_shell_input(make_key(KeyCode::Backspace)).unwrap();
+        app.handle_shell_input(make_key(KeyCode::Backspace))
+            .unwrap();
         let shell = app.shell_state.as_ref().unwrap();
         assert_eq!(shell.input, "日");
         assert_eq!(shell.cursor, 1);
+    }
+
+    #[test]
+    fn test_truncate_at_char_boundary_ascii() {
+        let mut s = "hello world".to_string();
+        truncate_at_char_boundary(&mut s, 5);
+        assert_eq!(s, "hello\n... (output truncated)");
+    }
+
+    #[test]
+    fn test_truncate_at_char_boundary_multibyte() {
+        let mut s = "あいうえお".to_string(); // 15 bytes (3 bytes per char)
+        truncate_at_char_boundary(&mut s, 7); // mid-char boundary
+        assert_eq!(s, "あい\n... (output truncated)"); // backs up to byte 6
+    }
+
+    #[test]
+    fn test_truncate_at_char_boundary_no_truncation() {
+        let mut s = "short".to_string();
+        truncate_at_char_boundary(&mut s, 100);
+        assert_eq!(s, "short");
+    }
+
+    #[test]
+    fn test_build_cached_lines_stdout_only() {
+        let (lines, total) = build_cached_lines("line1\nline2", "");
+        assert_eq!(total, 2);
+        assert!(!lines[0].is_stderr);
+        assert_eq!(lines[0].text, "line1");
+    }
+
+    #[test]
+    fn test_build_cached_lines_both() {
+        let (lines, total) = build_cached_lines("out", "err");
+        assert_eq!(total, 3); // out + separator + err
+        assert!(!lines[0].is_stderr);
+        assert!(lines[1].is_stderr); // separator
+        assert!(lines[2].is_stderr);
+    }
+
+    #[test]
+    fn test_build_cached_lines_empty() {
+        let (lines, total) = build_cached_lines("", "");
+        assert_eq!(total, 1);
+        assert_eq!(lines[0].text, "(no output)");
+    }
+
+    #[test]
+    fn test_shell_scroll_clamped() {
+        let mut app = App::new_for_test();
+        app.enter_shell_command_mode();
+
+        let result = ShellCommandResult {
+            command: "test".to_string(),
+            stdout: "a\nb\nc".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            cached_lines: vec![
+                CachedShellLine { text: "a".into(), is_stderr: false },
+                CachedShellLine { text: "b".into(), is_stderr: false },
+                CachedShellLine { text: "c".into(), is_stderr: false },
+            ],
+            total_lines: 3,
+        };
+        if let Some(ref mut shell) = app.shell_state {
+            shell.phase = ShellPhase::Done(result);
+        }
+
+        // Scroll past end should clamp to max (total_lines - 1 = 2)
+        for _ in 0..10 {
+            app.handle_shell_output(make_key(KeyCode::Char('j')));
+        }
+        assert_eq!(app.shell_state.as_ref().unwrap().scroll_offset, 2);
     }
 }

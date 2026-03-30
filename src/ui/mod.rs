@@ -117,7 +117,9 @@ AppState::IssueList => issue_list::render(frame, app),
         match &shell.phase {
             ShellPhase::Input => {} // Handled by build_footer_line + build_footer_block_with_border
             ShellPhase::Running => render_shell_running_indicator(frame, app),
-            ShellPhase::Done(result) => render_shell_output_popup(frame, result),
+            ShellPhase::Done(result) => {
+                render_shell_output_popup(frame, result, shell.scroll_offset)
+            }
         }
     }
 }
@@ -194,7 +196,11 @@ fn render_shell_running_indicator(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, popup_area);
 }
 
-fn render_shell_output_popup(frame: &mut Frame, result: &ShellCommandResult) {
+fn render_shell_output_popup(
+    frame: &mut Frame,
+    result: &ShellCommandResult,
+    scroll_offset: usize,
+) {
     let area = frame.area();
     let width = (area.width * 80 / 100).max(40).min(area.width);
     let height = (area.height * 70 / 100).max(10).min(area.height);
@@ -213,35 +219,31 @@ fn render_shell_output_popup(frame: &mut Frame, result: &ShellCommandResult) {
         .exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "?".to_string());
-    let title = format!(
-        " {} $ {} (exit: {}) ",
-        icon, result.command, exit_str
-    );
+    let title = format!(" {} $ {} (exit: {}) ", icon, result.command, exit_str);
 
-    let mut lines: Vec<Line> = Vec::new();
-    for line in result.stdout.lines() {
-        lines.push(Line::from(Span::raw(line.to_string())));
-    }
-    if !result.stderr.is_empty() {
-        if !result.stdout.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "--- stderr ---",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )));
-        }
-        for line in result.stderr.lines() {
-            lines.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(Color::Red),
-            )));
-        }
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "(no output)",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
+    let lines: Vec<Line> = result
+        .cached_lines
+        .iter()
+        .map(|cl| {
+            if cl.is_stderr {
+                Line::from(Span::styled(
+                    cl.text.clone(),
+                    Style::default().fg(Color::Red),
+                ))
+            } else if cl.text == "(no output)" {
+                Line::from(Span::styled(
+                    cl.text.clone(),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            } else {
+                Line::from(Span::raw(cl.text.clone()))
+            }
+        })
+        .collect();
+
+    let content_height = popup_area.height.saturating_sub(2) as usize;
+    let max_scroll = result.total_lines.saturating_sub(content_height);
+    let clamped_scroll = scroll_offset.min(max_scroll);
 
     let footer_text = " q/Esc: close | j/k: scroll | Ctrl-d/u: page | g/G: top/bottom ";
     let block = Block::default()
@@ -255,7 +257,7 @@ fn render_shell_output_popup(frame: &mut Frame, result: &ShellCommandResult) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((result.scroll_offset as u16, 0))
+        .scroll((clamped_scroll as u16, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, popup_area);

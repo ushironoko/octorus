@@ -28,9 +28,9 @@ pub use types::{
     IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
     LeftPaneFocus, LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection,
     PauseState, PendingGitOpsConfirm, PermissionInfo, PrListState, RefreshRequest,
-    RepoSymbolSearchResult, ReviewAction, ShellCommandResult, ShellPhase, ShellState,
-    SymbolPopupState, SpanVec, SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction,
-    WatcherHandle,
+    RepoSymbolSearchResult, ReviewAction, CachedShellLine, ShellCommandResult, ShellPhase,
+    ShellState, SymbolPopupState, SpanVec, SymbolSearchState, SymbolSearchUpdate, TreeRow,
+    UndoAction, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -188,8 +188,8 @@ pub struct App {
     pub file_tree_state: Option<file_tree::FileTreeState>,
     /// シェルコマンド実行オーバーレイ状態
     pub shell_state: Option<ShellState>,
-    /// シェルコマンド結果の非同期受信チャネル
     shell_result_receiver: Option<mpsc::Receiver<ShellCommandResult>>,
+    shell_abort_handle: Option<AbortHandle>,
 }
 
 impl App {
@@ -263,6 +263,7 @@ impl App {
             file_tree_state: None,
             shell_state: None,
             shell_result_receiver: None,
+            shell_abort_handle: None,
         }
     }
 
