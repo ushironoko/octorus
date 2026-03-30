@@ -109,9 +109,6 @@ impl Config {
             toml::Value::Table(toml::map::Map::new())
         };
 
-        // Migrate legacy [diff].zen_mode before merge so source precedence is preserved
-        migrate_legacy_zen_mode(&mut base_value);
-
         let mut stripped_local_value: Option<toml::Value> = None;
         if local_path.exists() {
             let local_content = fs::read_to_string(local_path)
@@ -128,8 +125,6 @@ impl Config {
                     );
                 }
             }
-
-            migrate_legacy_zen_mode(&mut local_value);
 
             stripped_local_value = Some(local_value.clone());
             deep_merge_toml(&mut base_value, local_value);
@@ -207,38 +202,6 @@ impl Config {
         BaseDirectories::with_prefix("octorus")
             .map(|dirs| dirs.get_config_home().join("config.toml"))
             .unwrap_or_else(|_| PathBuf::from("config.toml"))
-    }
-}
-
-/// Migrate legacy `[diff].zen_mode` to `[layout].zen_mode`.
-/// If `[diff].zen_mode` is set but `[layout].zen_mode` is not, move the value.
-/// If both are set, `[layout].zen_mode` takes precedence.
-fn migrate_legacy_zen_mode(value: &mut toml::Value) {
-    let toml::Value::Table(ref mut root) = value else {
-        return;
-    };
-
-    let legacy_zen = root
-        .get("diff")
-        .and_then(|d| d.as_table())
-        .and_then(|d| d.get("zen_mode"))
-        .cloned();
-
-    let Some(legacy_val) = legacy_zen else {
-        return;
-    };
-
-    // Only apply legacy value if [layout].zen_mode is not explicitly set
-    let layout_table = root
-        .entry("layout")
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if let toml::Value::Table(ref mut lt) = layout_table {
-        lt.entry("zen_mode").or_insert(legacy_val);
-    }
-
-    // Remove legacy key from [diff]
-    if let Some(toml::Value::Table(ref mut diff)) = root.get_mut("diff") {
-        diff.remove("zen_mode");
     }
 }
 
