@@ -400,6 +400,25 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
     vec![
         Line::from(""),
         Line::from(vec![Span::styled(
+            "Global",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}  Show this help",
+            fmt_key(&kb.help.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Execute shell command",
+            fmt_key(&kb.shell_command.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Quit / Back",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
             "File List View",
             Style::default()
                 .fg(Color::Yellow)

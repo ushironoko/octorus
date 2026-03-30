@@ -154,19 +154,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let filter_hint = if app
-        .issue_state
-        .as_ref()
-        .is_some_and(|s| s.issue_list_filter.is_some())
-    {
-        "Esc: clear filter | "
-    } else {
-        "Space /: filter | "
-    };
-    let help_text = format!(
-        "j/k/↑↓: move | Enter: view | {}O: browser | o: open | c: closed | a: all | r: refresh | q: back | ?: help",
-        filter_hint
-    );
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
     let line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
@@ -335,7 +323,7 @@ mod tests {
         │                                                                                                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │j/k/↑↓: move | Enter: view | Space /: filter | O: browser | o: open | c: closed | a: all | r: refr│
+        │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -374,7 +362,7 @@ mod tests {
         │                                                                                                  ▼
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │j/k/↑↓: move | Enter: view | Space /: filter | O: browser | o: open | c: closed | a: all | r: refr│
+        │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -415,7 +403,7 @@ mod tests {
         │                                                                                                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │j/k/↑↓: move | Enter: view | Space /: filter | O: browser | o: open | c: closed | a: all | r: refr│
+        │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }

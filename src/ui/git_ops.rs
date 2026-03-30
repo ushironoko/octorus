@@ -195,7 +195,8 @@ fn render_tree_pane(
         } else if let Some((ref msg, _)) = ops.op_message {
             msg.as_str()
         } else if is_focused {
-            "j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab: commits"
+            confirm_text = super::footer::footer_hint_back(&app.config.keybindings);
+            confirm_text.as_str()
         } else {
             "Tab/h: focus tree"
         }
@@ -270,8 +271,10 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
         render_diff_body(frame, ops, chunks[1], border_color, bg_color);
     }
 
+    let footer_text_owned;
     let footer_text = if is_focused {
-        "j/k: scroll | J/K: page | gg/G: top/bottom | Ctrl-d/u: page | Tab: tree | h/Esc: back"
+        footer_text_owned = super::footer::footer_hint_back(&app.config.keybindings);
+        footer_text_owned.as_str()
     } else {
         "Enter/l: focus diff"
     };
@@ -854,7 +857,7 @@ mod tests {
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │j/k: move | Space: stage | s: all | d: discard | c: commit | u: undo | R: refresh | P: push | Tab:│
+        │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }

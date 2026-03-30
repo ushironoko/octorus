@@ -65,6 +65,7 @@ pub struct KeybindingsConfig {
     pub mark_viewed_dir: KeySequence,
 
     pub tree_toggle: KeySequence,
+    pub shell_command: KeySequence,
 
     pub filter_open: KeySequence,
     pub filter_closed: KeySequence,
@@ -138,6 +139,7 @@ impl Default for KeybindingsConfig {
             mark_viewed: KeySequence::single(KeyBinding::char('v')),
             mark_viewed_dir: KeySequence::single(KeyBinding::char('V')),
             tree_toggle: KeySequence::single(KeyBinding::char('t')),
+            shell_command: KeySequence::single(KeyBinding::char('!')),
 
             filter_open: KeySequence::single(KeyBinding::char('o')),
             filter_closed: KeySequence::single(KeyBinding::char('c')),
@@ -213,6 +215,7 @@ impl KeybindingsConfig {
             ("mark_viewed", &self.mark_viewed),
             ("mark_viewed_dir", &self.mark_viewed_dir),
             ("tree_toggle", &self.tree_toggle),
+            ("shell_command", &self.shell_command),
             ("filter_open", &self.filter_open),
             ("filter_closed", &self.filter_closed),
             ("filter_all", &self.filter_all),
@@ -299,6 +302,7 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         "mark_viewed",
         "mark_viewed_dir",
         "tree_toggle",
+        "shell_command",
         "filter_open",
         "filter_closed",
         "filter_all",
@@ -413,6 +417,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("mark_viewed", &seq_to_value(&self.mark_viewed))?;
         map.serialize_entry("mark_viewed_dir", &seq_to_value(&self.mark_viewed_dir))?;
         map.serialize_entry("tree_toggle", &seq_to_value(&self.tree_toggle))?;
+        map.serialize_entry("shell_command", &seq_to_value(&self.shell_command))?;
         map.serialize_entry("filter_open", &seq_to_value(&self.filter_open))?;
         map.serialize_entry("filter_closed", &seq_to_value(&self.filter_closed))?;
         map.serialize_entry("filter_all", &seq_to_value(&self.filter_all))?;

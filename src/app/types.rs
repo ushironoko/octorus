@@ -958,3 +958,27 @@ impl SymbolSearchState {
         None
     }
 }
+
+/// シェルコマンド実行のオーバーレイ状態
+#[derive(Debug, Clone)]
+pub struct ShellState {
+    pub input: String,
+    pub cursor: usize,
+    pub phase: ShellPhase,
+}
+
+#[derive(Debug, Clone)]
+pub enum ShellPhase {
+    Input,
+    Running,
+    Done(ShellCommandResult),
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellCommandResult {
+    pub command: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub scroll_offset: usize,
+}

@@ -26,13 +26,13 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::app::{App, AppState, DataState};
+use crate::app::{App, AppState, DataState, ShellCommandResult, ShellPhase};
 
 static KITTY_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -111,6 +111,15 @@ AppState::IssueList => issue_list::render(frame, app),
     if let Some(ref popup) = app.symbol_popup {
         render_symbol_popup(frame, popup);
     }
+
+    // Shell overlay (Running indicator or Done popup)
+    if let Some(ref shell) = app.shell_state {
+        match &shell.phase {
+            ShellPhase::Input => {} // Handled by build_footer_line + build_footer_block_with_border
+            ShellPhase::Running => render_shell_running_indicator(frame, app),
+            ShellPhase::Done(result) => render_shell_output_popup(frame, result),
+        }
+    }
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -161,4 +170,93 @@ fn render_symbol_popup(frame: &mut Frame, popup: &crate::app::SymbolPopupState) 
     );
 
     frame.render_widget(list, popup_area);
+}
+
+fn render_shell_running_indicator(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 36u16.min(area.width.saturating_sub(4));
+    let height = 3u16;
+    let popup_area = centered_rect(width, height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let text = format!("{} Running... (Ctrl+C: cancel)", app.spinner_char());
+    let paragraph = Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default().fg(Color::Yellow),
+    )))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title("Shell"),
+    );
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn render_shell_output_popup(frame: &mut Frame, result: &ShellCommandResult) {
+    let area = frame.area();
+    let width = (area.width * 80 / 100).max(40).min(area.width);
+    let height = (area.height * 70 / 100).max(10).min(area.height);
+    let popup_area = centered_rect(width, height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let success = result.exit_code == Some(0);
+    let (icon, border_color) = if success {
+        ("\u{2713}", Color::Green)
+    } else {
+        ("\u{2717}", Color::Red)
+    };
+
+    let exit_str = result
+        .exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let title = format!(
+        " {} $ {} (exit: {}) ",
+        icon, result.command, exit_str
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for line in result.stdout.lines() {
+        lines.push(Line::from(Span::raw(line.to_string())));
+    }
+    if !result.stderr.is_empty() {
+        if !result.stdout.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "--- stderr ---",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+        }
+        for line in result.stderr.lines() {
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Red),
+            )));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no output)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let footer_text = " q/Esc: close | j/k: scroll | Ctrl-d/u: page | g/G: top/bottom ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(title)
+        .title_bottom(Line::from(Span::styled(
+            footer_text,
+            Style::default().fg(Color::DarkGray),
+        )));
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((result.scroll_offset as u16, 0))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, popup_area);
 }

@@ -87,9 +87,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.render_widget(empty, chunks[1]);
     }
 
-    let footer_text =
-        "j/k/↑↓: move | Enter: open in browser | R: refresh | O: open PR | q: back | ?: help";
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let footer = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 

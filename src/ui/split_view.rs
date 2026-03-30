@@ -266,12 +266,10 @@ fn render_file_list_pane(
         next_chunk += 1;
     }
 
+    let help_text_owned;
     let help_text = if is_focused {
-        if app.file_list_filter.is_some() {
-            "j/k/↑↓: move | Esc: clear filter | Enter/→/l: diff | ←/h/q: back"
-        } else {
-            "j/k/↑↓: move | Space /: filter | Enter/→/l: diff | O: browser | ←/h/q: back"
-        }
+        help_text_owned = super::footer::footer_hint_back(&app.config.keybindings);
+        help_text_owned.as_str()
     } else {
         "←/h: focus files"
     };
@@ -370,12 +368,10 @@ fn render_diff_pane_normal(
     render_diff_header(frame, app, chunks[0], border_color);
     render_diff_body(frame, app, chunks[1], border_color);
 
+    let footer_text_owned;
     let footer_text = if is_focused {
-        if app.is_local_mode() {
-            "j/k/↑↓: scroll | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
-        } else {
-            "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
-        }
+        footer_text_owned = super::footer::footer_hint_back(&app.config.keybindings);
+        footer_text_owned.as_str()
     } else {
         "Enter/→: focus diff"
     };

@@ -214,35 +214,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     let footer_idx = chunks.len() - 1;
-    let footer_line = if app.is_issue_comment_submitting() {
-        Line::from(Span::styled(
-            " Submitting...",
-            Style::default().fg(Color::Yellow),
-        ))
-    } else if let Some((success, ref message)) = app.cmt.submission_result {
-        let (icon, color) = if success {
-            ("\u{2713}", Color::Green)
-        } else {
-            ("\u{2717}", Color::Red)
-        };
-        Line::from(Span::styled(
-            format!(" {} {}", icon, message),
-            Style::default().fg(color),
-        ))
-    } else {
-        let kb = &app.config.keybindings;
-        Line::from(Span::styled(
-            format!(
-                " {}/Esc: back | j/k: scroll | {}: comment | {}: comments | {}: browser | {}: toggle rich",
-                kb.quit.display(),
-                kb.comment.display(),
-                kb.comment_list.display(),
-                kb.open_in_browser.display(),
-                kb.toggle_markdown_rich.display(),
-            ),
-            Style::default().fg(Color::DarkGray),
-        ))
-    };
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let footer_line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(footer_line);
     frame.render_widget(footer, chunks[footer_idx]);
 }
@@ -452,7 +425,7 @@ mod tests {
         │                                                                                                  │
         │                                                                                                  │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-         q/Esc/Esc: back | j/k: scroll | c: comment | C: comments | O: browser | M: toggle rich
+        ? Help | ! Shell | q/Esc Back
         ");
     }
 

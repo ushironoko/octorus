@@ -205,27 +205,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         next_chunk += 1;
     }
 
-    let ai_rally_text = if app.has_background_rally() {
-        "A: Resume Rally"
-    } else {
-        "A: AI Rally"
-    };
-    let filter_hint = if app.file_list_filter.is_some() {
-        "Esc: clear filter"
-    } else {
-        "Space /: filter"
-    };
-    let help_text = if app.is_local_mode() {
-        format!(
-            "j/k/↑↓: move | Enter/→/l: split view | {} | {} | R: refresh | q: quit | ?: help",
-            filter_hint, ai_rally_text
-        )
-    } else {
-        format!(
-            "j/k/↑↓: move | Enter/→/l: split view | {} | v: viewed | V: viewed dir | O: browser | {}: description | {}: CI checks | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
-            filter_hint, app.config.keybindings.pr_description.display(), app.config.keybindings.ci_checks.display(), ai_rally_text
-        )
-    };
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
     let footer_line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
     frame.render_widget(footer, chunks[next_chunk]);

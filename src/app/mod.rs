@@ -28,8 +28,9 @@ pub use types::{
     IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
     LeftPaneFocus, LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection,
     PauseState, PendingGitOpsConfirm, PermissionInfo, PrListState, RefreshRequest,
-    RepoSymbolSearchResult, ReviewAction, SymbolPopupState,
-    SpanVec, SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction, WatcherHandle,
+    RepoSymbolSearchResult, ReviewAction, ShellCommandResult, ShellPhase, ShellState,
+    SymbolPopupState, SpanVec, SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction,
+    WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -49,6 +50,7 @@ mod key_sequence;
 mod local_mode;
 mod polling;
 mod pr_list;
+mod shell_command;
 mod symbol;
 #[cfg(test)]
 mod tests;
@@ -184,6 +186,10 @@ pub struct App {
     pub tree_mode_active: bool,
     /// ファイルツリー状態（初回トグルで生成、展開状態を保持）
     pub file_tree_state: Option<file_tree::FileTreeState>,
+    /// シェルコマンド実行オーバーレイ状態
+    pub shell_state: Option<ShellState>,
+    /// シェルコマンド結果の非同期受信チャネル
+    shell_result_receiver: Option<mpsc::Receiver<ShellCommandResult>>,
 }
 
 impl App {
@@ -255,6 +261,8 @@ impl App {
             update_check_receiver: None,
             tree_mode_active: false,
             file_tree_state: None,
+            shell_state: None,
+            shell_result_receiver: None,
         }
     }
 
@@ -341,6 +349,7 @@ impl App {
             self.poll_issue_comment_submit_updates();
             self.poll_update_check();
             self.poll_symbol_search_updates();
+            self.poll_shell_result();
             if let SymbolSearchState::Ready(..) = &self.symbol_search {
                 if let Some(result) = self.symbol_search.take_ready() {
                     let full_path = std::path::Path::new(&result.repo_root).join(&result.file_path);

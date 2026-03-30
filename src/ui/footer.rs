@@ -1,23 +1,54 @@
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders},
 };
 
-use crate::app::App;
+use crate::app::{App, ShellPhase};
+use crate::config::KeybindingsConfig;
+
+/// Build footer hint text for screens with "Back" action.
+pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
+    format!(
+        "{} Help | {} Shell | {} Back",
+        kb.help.display(),
+        kb.shell_command.display(),
+        kb.quit.display(),
+    )
+}
+
+/// Build footer hint text for the top-level screen with "Quit" action.
+pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
+    format!(
+        "{} Help | {} Shell | {} Quit",
+        kb.help.display(),
+        kb.shell_command.display(),
+        kb.quit.display(),
+    )
+}
 
 /// Build footer line content based on app state.
 ///
-/// During submission or result display, the footer shows only the status
-/// (full-width override). Otherwise, it shows the normal help text with
-/// optional comments loading indicator appended.
+/// Priority cascade:
+/// 1. Shell input overlay (highest)
+/// 2. Approve confirmation
+/// 3. PR comment submitting
+/// 4. Issue comment submitting
+/// 5. Submission result
+/// 6. Default help text + loading indicators
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
+    // Shell input overlay
+    if let Some(ref shell) = app.shell_state {
+        if matches!(shell.phase, ShellPhase::Input) {
+            return render_shell_input_line(&shell.input, shell.cursor);
+        }
+    }
     if app.is_pending_approve_confirmation() {
         Line::from(Span::styled(
             app.approve_confirmation_footer_text(),
             Style::default().fg(Color::Yellow),
         ))
-    } else if app.is_submitting_comment() {
+    } else if app.is_submitting_comment() || app.is_issue_comment_submitting() {
         Line::from(Span::styled(
             format!("{} Submitting...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
@@ -57,12 +88,49 @@ pub fn build_footer_block(app: &App) -> Block<'static> {
 }
 
 pub fn build_footer_block_with_border(app: &App, base_style: Style) -> Block<'static> {
-    let style = if app.is_pending_approve_confirmation() {
+    let style = if app
+        .shell_state
+        .as_ref()
+        .is_some_and(|s| matches!(s.phase, ShellPhase::Input))
+    {
+        Style::default().fg(Color::Cyan)
+    } else if app.is_pending_approve_confirmation() {
         Style::default().fg(Color::Yellow)
     } else {
         base_style
     };
     Block::default().borders(Borders::ALL).border_style(style)
+}
+
+/// Render the shell command input line with cursor visualization.
+fn render_shell_input_line<'a>(input: &'a str, cursor: usize) -> Line<'a> {
+    let chars: Vec<char> = input.chars().collect();
+    let before: String = chars[..cursor.min(chars.len())].iter().collect();
+    let cursor_char: String = if cursor < chars.len() {
+        chars[cursor].to_string()
+    } else {
+        " ".to_string()
+    };
+    let after: String = if cursor < chars.len() {
+        chars[cursor + 1..].iter().collect()
+    } else {
+        String::new()
+    };
+
+    Line::from(vec![
+        Span::styled(
+            "! ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(before),
+        Span::styled(
+            cursor_char,
+            Style::default().add_modifier(Modifier::REVERSED),
+        ),
+        Span::raw(after),
+    ])
 }
 
 #[cfg(test)]
@@ -163,5 +231,67 @@ mod tests {
         app.set_pending_approve_body_for_test(None);
         let normal_line = build_footer_line(&app, HELP);
         assert_eq!(line_to_string(&normal_line), HELP);
+    }
+
+    #[test]
+    fn test_footer_hint_back_reflects_keybindings() {
+        let kb = KeybindingsConfig::default();
+        let hint = footer_hint_back(&kb);
+        assert!(hint.contains("Help"));
+        assert!(hint.contains("Shell"));
+        assert!(hint.contains("Back"));
+        assert!(hint.contains(&kb.help.display()));
+        assert!(hint.contains(&kb.shell_command.display()));
+        assert!(hint.contains(&kb.quit.display()));
+    }
+
+    #[test]
+    fn test_footer_hint_quit_reflects_keybindings() {
+        let kb = KeybindingsConfig::default();
+        let hint = footer_hint_quit(&kb);
+        assert!(hint.contains("Quit"));
+        assert!(hint.contains(&kb.help.display()));
+    }
+
+    #[test]
+    fn test_shell_input_renders_prompt_with_cursor() {
+        use crate::app::ShellState;
+
+        let mut app = App::new_for_test();
+        app.shell_state = Some(ShellState {
+            input: "ls -la".to_string(),
+            cursor: 3,
+            phase: ShellPhase::Input,
+        });
+
+        let line = build_footer_line(&app, HELP);
+        let text = line_to_string(&line);
+        assert!(text.starts_with("! "));
+        assert!(text.contains("ls "));
+        // Cursor char 'l' should be present
+        assert!(text.contains('l'));
+    }
+
+    #[test]
+    fn test_shell_input_cyan_border() {
+        use crate::app::ShellState;
+
+        let mut app = App::new_for_test();
+        app.shell_state = Some(ShellState {
+            input: String::new(),
+            cursor: 0,
+            phase: ShellPhase::Input,
+        });
+
+        // Shell input active should produce Cyan border (not default)
+        let block_with_shell = build_footer_block_with_border(&app, Style::default());
+        // Normal state should produce default border
+        app.shell_state = None;
+        let block_normal = build_footer_block_with_border(&app, Style::default());
+
+        // Verify they differ (Cyan vs default)
+        let shell_debug = format!("{:?}", block_with_shell);
+        let normal_debug = format!("{:?}", block_normal);
+        assert_ne!(shell_debug, normal_debug);
     }
 }
