@@ -215,11 +215,13 @@ fn render_tree_pane(
         );
         frame.render_widget(footer, chunks[2]);
     } else {
-        let footer_line = super::footer::build_footer_line(app, help_text);
+        let footer_line =
+            super::footer::build_footer_line_with_focus(app, help_text, is_focused);
         let footer =
-            Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+            Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
                 app,
                 Style::default().fg(border_color),
+                is_focused,
             ));
         frame.render_widget(footer, chunks[2]);
     }
@@ -278,10 +280,11 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
     } else {
         "Enter/l: focus diff"
     };
-    let footer_line = super::footer::build_footer_line(app, footer_text);
-    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+    let footer_line = super::footer::build_footer_line_with_focus(app, footer_text, is_focused);
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         Style::default().fg(border_color),
+        is_focused,
     ));
     frame.render_widget(footer, chunks[2]);
 }

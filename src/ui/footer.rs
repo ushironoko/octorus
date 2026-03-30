@@ -26,16 +26,26 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
 }
 
 /// Priority cascade:
-/// 1. Shell input overlay (highest)
+/// 1. Shell input overlay (highest, focused pane only)
 /// 2. Approve confirmation
 /// 3. PR comment submitting
 /// 4. Issue comment submitting
 /// 5. Submission result
 /// 6. Default help text + loading indicators
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
-    if let Some(ref shell) = app.shell_state {
-        if matches!(shell.phase, ShellPhase::Input) {
-            return render_shell_input_line(&shell.input, shell.cursor);
+    build_footer_line_with_focus(app, help_text, true)
+}
+
+pub fn build_footer_line_with_focus<'a>(
+    app: &'a App,
+    help_text: &'a str,
+    is_focused: bool,
+) -> Line<'a> {
+    if is_focused {
+        if let Some(ref shell) = app.shell_state {
+            if matches!(shell.phase, ShellPhase::Input) {
+                return render_shell_input_line(&shell.input, shell.cursor);
+            }
         }
     }
     if app.is_pending_approve_confirmation() {
@@ -83,11 +93,20 @@ pub fn build_footer_block(app: &App) -> Block<'static> {
 }
 
 pub fn build_footer_block_with_border(app: &App, base_style: Style) -> Block<'static> {
-    let style = if app
-        .shell_state
-        .as_ref()
-        .is_some_and(|s| matches!(s.phase, ShellPhase::Input))
-    {
+    build_footer_block_with_focus(app, base_style, true)
+}
+
+pub fn build_footer_block_with_focus(
+    app: &App,
+    base_style: Style,
+    is_focused: bool,
+) -> Block<'static> {
+    let shell_input_active = is_focused
+        && app
+            .shell_state
+            .as_ref()
+            .is_some_and(|s| matches!(s.phase, ShellPhase::Input));
+    let style = if shell_input_active {
         Style::default().fg(Color::Cyan)
     } else if app.is_pending_approve_confirmation() {
         Style::default().fg(Color::Yellow)

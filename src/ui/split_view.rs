@@ -273,10 +273,11 @@ fn render_file_list_pane(
     } else {
         "←/h: focus files"
     };
-    let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         Style::default().fg(border_color),
+        is_focused,
     ));
     frame.render_widget(footer, chunks[next_chunk]);
 }
@@ -376,7 +377,7 @@ fn render_diff_pane_normal(
         "Enter/→: focus diff"
     };
 
-    render_diff_footer(frame, app, chunks[2], footer_text, border_color);
+    render_diff_footer(frame, app, chunks[2], footer_text, border_color, is_focused);
 }
 
 fn render_diff_footer(
@@ -385,11 +386,13 @@ fn render_diff_footer(
     area: ratatui::layout::Rect,
     help_text: &str,
     border_color: Color,
+    is_focused: bool,
 ) {
-    let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         Style::default().fg(border_color),
+        is_focused,
     ));
     frame.render_widget(footer, area);
 }
@@ -486,7 +489,7 @@ fn render_diff_pane_with_comments(
     }
 
     let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
-    render_diff_footer(frame, app, chunks[3], footer_text, border_color);
+    render_diff_footer(frame, app, chunks[3], footer_text, border_color, true);
 }
 
 fn render_diff_header(
