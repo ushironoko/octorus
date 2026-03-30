@@ -257,6 +257,8 @@ impl App {
         }
         self.shell_state = None;
         self.shell_result_receiver = None;
+        self.cmt.submission_result = Some((false, "Shell command cancelled".to_string()));
+        self.cmt.submission_result_time = Some(std::time::Instant::now());
     }
 }
 
