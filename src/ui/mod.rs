@@ -23,10 +23,13 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::Rect,
+    layout::{Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
@@ -260,4 +263,20 @@ fn render_shell_output_popup(
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, popup_area);
+
+    if max_scroll > 0 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll).position(clamped_scroll);
+        frame.render_stateful_widget(
+            scrollbar,
+            popup_area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
