@@ -144,6 +144,8 @@ pub struct ShellConfig {
     pub timeout_secs: u64,
 }
 
+const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 10;
+
 fn default_shell_timeout() -> u64 {
     DEFAULT_SHELL_TIMEOUT_SECS
 }
