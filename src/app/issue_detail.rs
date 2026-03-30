@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 
@@ -412,20 +412,6 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('d') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
-            let state = self.issue_state.as_mut().unwrap();
-            state.issue_comment_detail_scroll =
-                state.issue_comment_detail_scroll.saturating_add(10);
-            return Ok(());
-        }
-
-        if key.code == KeyCode::Char('u') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
-            let state = self.issue_state.as_mut().unwrap();
-            state.issue_comment_detail_scroll =
-                state.issue_comment_detail_scroll.saturating_sub(10);
-            return Ok(());
-        }
-
         Ok(())
     }
 }
@@ -434,6 +420,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::github::IssueDetail;
+    use crossterm::event::KeyCode;
 
     fn make_issue_detail_with_comments(comments: Vec<serde_json::Value>) -> IssueDetail {
         IssueDetail {

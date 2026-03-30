@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 use tokio::sync::mpsc;
 
 use crate::filter::ListFilter;
@@ -288,7 +288,7 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('o') {
+        if self.matches_single_key(&key, &kb.filter_open) {
             let needs_reload = {
                 let state = self.issue_state.as_mut().unwrap();
                 if state.issue_list_state_filter != IssueStateFilter::Open {
@@ -304,7 +304,7 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('c') {
+        if self.matches_single_key(&key, &kb.filter_closed) {
             let needs_reload = {
                 let state = self.issue_state.as_mut().unwrap();
                 if state.issue_list_state_filter != IssueStateFilter::Closed {
@@ -320,7 +320,7 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('a') {
+        if self.matches_single_key(&key, &kb.filter_all) {
             let needs_reload = {
                 let state = self.issue_state.as_mut().unwrap();
                 if state.issue_list_state_filter != IssueStateFilter::All {
@@ -361,6 +361,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyCode;
 
     #[tokio::test]
     async fn test_open_issue_list_initializes_state() {

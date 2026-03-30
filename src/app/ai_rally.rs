@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use tokio::sync::mpsc;
@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
 use crate::ai::prompt_loader::{PromptLoader, PromptSource};
 use crate::ai::{Context, Orchestrator, RallyState};
+use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::ui;
 
 use super::types::*;
@@ -18,353 +19,316 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        let kb = self.config.keybindings.clone();
+
         // Handle modal state first
-        if let Some(ref mut rally_state) = self.ai_rally_state {
-            if rally_state.showing_log_detail {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                        rally_state.showing_log_detail = false;
-                    }
-                    _ => {}
+        let in_log_detail = self
+            .ai_rally_state
+            .as_ref()
+            .is_some_and(|s| s.showing_log_detail);
+        if in_log_detail {
+            if self.matches_single_key(&key, &kb.quit)
+                || self.matches_single_key(&key, &kb.open_panel)
+            {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    rally_state.showing_log_detail = false;
                 }
+            }
+            return Ok(());
+        }
+
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        if !rally_state.logs.is_empty() {
+                            rally_state.selected_log_index = Some(0);
+                            rally_state.log_scroll_offset = 1;
+                        }
+                    }
+                    return Ok(());
+                }
+                self.clear_pending_keys();
+            } else if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+                self.push_pending_key(kb_event);
                 return Ok(());
             }
         }
 
-        match key.code {
-            KeyCode::Char('b') => {
-                // Ignore background key while config warning is pending
-                // (no orchestrator running yet)
-                if self
-                    .ai_rally_state
-                    .as_ref()
-                    .and_then(|s| s.pending_config_warning.as_ref())
-                    .is_some()
-                {
-                    return Ok(());
-                }
-                // バックグラウンドで実行を継続したままFileListに戻る
-                // abort()を呼ばない、状態も保持したまま
-                self.state = AppState::FileList;
+        if self.matches_single_key(&key, &kb.rally_background) {
+            if self
+                .ai_rally_state
+                .as_ref()
+                .and_then(|s| s.pending_config_warning.as_ref())
+                .is_some()
+            {
+                return Ok(());
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
-                // If waiting for config warning confirmation, reject and return
-                if self
-                    .ai_rally_state
-                    .as_ref()
-                    .and_then(|s| s.pending_config_warning.as_ref())
-                    .is_some()
-                {
-                    self.pending_rally_context = None;
-                    self.cleanup_rally_state();
-                    self.state = AppState::FileList;
-                    return Ok(());
-                }
-                // Send abort command to orchestrator if in waiting state
-                if let Some(ref state) = self.ai_rally_state {
-                    if matches!(
-                        state.state,
-                        RallyState::WaitingForClarification
-                            | RallyState::WaitingForPermission
-                            | RallyState::WaitingForPostConfirmation
-                    ) {
-                        self.send_rally_command(OrchestratorCommand::Abort);
-                    }
-                }
-                // Abort the orchestrator task if running
-                if let Some(handle) = self.rally_abort_handle.take() {
-                    handle.abort();
-                }
-                // Abort rally and return to file list
+            self.state = AppState::FileList;
+        } else if self.matches_single_key(&key, &kb.quit) {
+            if self
+                .ai_rally_state
+                .as_ref()
+                .and_then(|s| s.pending_config_warning.as_ref())
+                .is_some()
+            {
+                self.pending_rally_context = None;
                 self.cleanup_rally_state();
                 self.state = AppState::FileList;
+                return Ok(());
             }
-            KeyCode::Char('y') => {
-                // If waiting for config warning confirmation, approve and spawn orchestrator
-                if self
-                    .ai_rally_state
-                    .as_ref()
-                    .and_then(|s| s.pending_config_warning.as_ref())
-                    .is_some()
-                {
+            if let Some(ref state) = self.ai_rally_state {
+                if matches!(
+                    state.state,
+                    RallyState::WaitingForClarification
+                        | RallyState::WaitingForPermission
+                        | RallyState::WaitingForPostConfirmation
+                ) {
+                    self.send_rally_command(OrchestratorCommand::Abort);
+                }
+            }
+            if let Some(handle) = self.rally_abort_handle.take() {
+                handle.abort();
+            }
+            self.cleanup_rally_state();
+            self.state = AppState::FileList;
+        } else if self.matches_single_key(&key, &kb.confirm_yes) {
+            if self
+                .ai_rally_state
+                .as_ref()
+                .and_then(|s| s.pending_config_warning.as_ref())
+                .is_some()
+            {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    rally_state.pending_config_warning = None;
+                }
+                if let Some(context) = self.pending_rally_context.take() {
+                    if let Some(prompt_loader) = self.pending_rally_prompt_loader.take() {
+                        self.spawn_rally_orchestrator(context, prompt_loader);
+                    }
+                }
+                return Ok(());
+            }
+
+            let current_state = self
+                .ai_rally_state
+                .as_ref()
+                .map(|s| s.state)
+                .unwrap_or(RallyState::Error);
+
+            match current_state {
+                RallyState::WaitingForPermission => {
+                    self.send_rally_command(OrchestratorCommand::PermissionResponse(true));
                     if let Some(ref mut rally_state) = self.ai_rally_state {
-                        rally_state.pending_config_warning = None;
+                        rally_state.pending_permission = None;
+                        rally_state.state = RallyState::RevieweeFix;
+                        rally_state.push_log(LogEntry::new(
+                            LogEventType::Info,
+                            "Permission granted, continuing...".to_string(),
+                        ));
                     }
-                    if let Some(context) = self.pending_rally_context.take() {
-                        if let Some(prompt_loader) = self.pending_rally_prompt_loader.take() {
-                            self.spawn_rally_orchestrator(context, prompt_loader);
-                        }
-                    }
-                    return Ok(());
                 }
-
-                // Grant permission or open clarification editor
-                let current_state = self
-                    .ai_rally_state
-                    .as_ref()
-                    .map(|s| s.state)
-                    .unwrap_or(RallyState::Error);
-
-                match current_state {
-                    RallyState::WaitingForPermission => {
-                        // Send permission granted
-                        self.send_rally_command(OrchestratorCommand::PermissionResponse(true));
-                        // Clear pending permission and update state to prevent duplicate sends
-                        if let Some(ref mut rally_state) = self.ai_rally_state {
-                            rally_state.pending_permission = None;
-                            rally_state.state = RallyState::RevieweeFix;
-                            rally_state.push_log(LogEntry::new(
-                                LogEventType::Info,
-                                "Permission granted, continuing...".to_string(),
-                            ));
-                        }
-                    }
-                    RallyState::WaitingForClarification => {
-                        // Get the question for the editor
-                        let question = self
-                            .ai_rally_state
-                            .as_ref()
-                            .and_then(|s| s.pending_question.clone())
-                            .unwrap_or_default();
-
-                        // Open editor synchronously (restore terminal first)
-                        self.open_clarification_editor_sync(&question, terminal)?;
-                    }
-                    RallyState::WaitingForPostConfirmation => {
-                        // Approve posting
-                        self.send_rally_command(OrchestratorCommand::PostConfirmResponse(true));
-                        if let Some(ref mut rally_state) = self.ai_rally_state {
-                            rally_state.pending_review_post = None;
-                            rally_state.pending_fix_post = None;
-                            // Transition state immediately to prevent duplicate sends
-                            rally_state.state = RallyState::RevieweeFix;
-                            rally_state.push_log(LogEntry::new(
-                                LogEventType::Info,
-                                "Post approved, posting to PR...".to_string(),
-                            ));
-                        }
-                    }
-                    _ => {}
+                RallyState::WaitingForClarification => {
+                    let question = self
+                        .ai_rally_state
+                        .as_ref()
+                        .and_then(|s| s.pending_question.clone())
+                        .unwrap_or_default();
+                    self.open_clarification_editor_sync(&question, terminal)?;
                 }
+                RallyState::WaitingForPostConfirmation => {
+                    self.send_rally_command(OrchestratorCommand::PostConfirmResponse(true));
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        rally_state.pending_review_post = None;
+                        rally_state.pending_fix_post = None;
+                        rally_state.state = RallyState::RevieweeFix;
+                        rally_state.push_log(LogEntry::new(
+                            LogEventType::Info,
+                            "Post approved, posting to PR...".to_string(),
+                        ));
+                    }
+                }
+                _ => {}
             }
-            KeyCode::Char('n') => {
-                // If waiting for config warning confirmation, reject and return
-                if self
-                    .ai_rally_state
-                    .as_ref()
-                    .and_then(|s| s.pending_config_warning.as_ref())
-                    .is_some()
-                {
-                    self.pending_rally_context = None;
-                    self.cleanup_rally_state();
+        } else if self.matches_single_key(&key, &kb.confirm_no) {
+            if self
+                .ai_rally_state
+                .as_ref()
+                .and_then(|s| s.pending_config_warning.as_ref())
+                .is_some()
+            {
+                self.pending_rally_context = None;
+                self.cleanup_rally_state();
+                self.state = AppState::FileList;
+                return Ok(());
+            }
+
+            let current_state = self
+                .ai_rally_state
+                .as_ref()
+                .map(|s| s.state)
+                .unwrap_or(RallyState::Error);
+
+            match current_state {
+                RallyState::WaitingForPermission => {
+                    self.send_rally_command(OrchestratorCommand::PermissionResponse(false));
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        rally_state.pending_permission = None;
+                        rally_state.push_log(LogEntry::new(
+                            LogEventType::Info,
+                            "Permission denied, continuing without it...".to_string(),
+                        ));
+                    }
+                }
+                RallyState::WaitingForClarification => {
+                    self.send_rally_command(OrchestratorCommand::SkipClarification);
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        rally_state.pending_question = None;
+                        rally_state.push_log(LogEntry::new(
+                            LogEventType::Info,
+                            "Clarification skipped, continuing with best judgment..."
+                                .to_string(),
+                        ));
+                    }
+                }
+                RallyState::WaitingForPostConfirmation => {
+                    self.send_rally_command(OrchestratorCommand::PostConfirmResponse(false));
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        rally_state.pending_review_post = None;
+                        rally_state.pending_fix_post = None;
+                        rally_state.state = RallyState::RevieweeFix;
+                        rally_state.push_log(LogEntry::new(
+                            LogEventType::Info,
+                            "Post skipped, continuing...".to_string(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        } else if self.matches_single_key(&key, &kb.retry) {
+            if let Some(ref state) = self.ai_rally_state {
+                if state.state == RallyState::Error {
+                    if let Some(handle) = self.rally_abort_handle.take() {
+                        handle.abort();
+                    }
+                    self.ai_rally_state = None;
+                    self.rally_event_receiver = None;
                     self.state = AppState::FileList;
+                    self.start_ai_rally();
+                }
+            }
+        } else if self.matches_single_key(&key, &kb.move_down) {
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                let total_logs = rally_state.logs.len();
+                if total_logs == 0 {
+                    return Ok(());
+                }
+                let current = rally_state.selected_log_index.unwrap_or(0);
+                let new_index = (current + 1).min(total_logs.saturating_sub(1));
+                rally_state.selected_log_index = Some(new_index);
+                self.adjust_log_scroll_to_selection();
+            }
+        } else if self.matches_single_key(&key, &kb.move_up) {
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                let total_logs = rally_state.logs.len();
+                if total_logs == 0 {
+                    return Ok(());
+                }
+                let current = rally_state
+                    .selected_log_index
+                    .unwrap_or(total_logs.saturating_sub(1));
+                let new_index = current.saturating_sub(1);
+                rally_state.selected_log_index = Some(new_index);
+                self.adjust_log_scroll_to_selection();
+            }
+        } else if self.matches_single_key(&key, &kb.page_down)
+            || Self::is_shift_char_shortcut(&key, 'j')
+        {
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                let total_logs = rally_state.logs.len();
+                if total_logs == 0 {
+                    return Ok(());
+                }
+                let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
+                let current = rally_state.selected_log_index.unwrap_or(0);
+                let new_index = (current + page_step).min(total_logs.saturating_sub(1));
+                rally_state.selected_log_index = Some(new_index);
+                self.adjust_log_scroll_to_selection();
+            }
+        } else if self.matches_single_key(&key, &kb.page_up)
+            || Self::is_shift_char_shortcut(&key, 'k')
+        {
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                let total_logs = rally_state.logs.len();
+                if total_logs == 0 {
+                    return Ok(());
+                }
+                let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
+                let current = rally_state
+                    .selected_log_index
+                    .unwrap_or(total_logs.saturating_sub(1));
+                let new_index = current.saturating_sub(page_step);
+                rally_state.selected_log_index = Some(new_index);
+                self.adjust_log_scroll_to_selection();
+            }
+        } else if self.matches_single_key(&key, &kb.open_panel) {
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                if rally_state.selected_log_index.is_some() && !rally_state.logs.is_empty() {
+                    rally_state.showing_log_detail = true;
+                }
+            }
+        } else if self.matches_single_key(&key, &kb.jump_to_last) {
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                let total_logs = rally_state.logs.len();
+                if total_logs > 0 {
+                    rally_state.selected_log_index = Some(total_logs.saturating_sub(1));
+                    rally_state.log_scroll_offset = 0;
+                }
+            }
+        } else if self.matches_single_key(&key, &kb.rally_pause) {
+            if self
+                .ai_rally_state
+                .as_ref()
+                .and_then(|s| s.pending_config_warning.as_ref())
+                .is_some()
+            {
+                return Ok(());
+            }
+
+            if let Some(ref mut rally_state) = self.ai_rally_state {
+                if !matches!(
+                    rally_state.state,
+                    RallyState::ReviewerReviewing | RallyState::RevieweeFix
+                ) {
                     return Ok(());
                 }
 
-                // Deny permission or skip clarification
-                let current_state = self
-                    .ai_rally_state
-                    .as_ref()
-                    .map(|s| s.state)
-                    .unwrap_or(RallyState::Error);
-
-                match current_state {
-                    RallyState::WaitingForPermission => {
-                        // Send permission denied
-                        self.send_rally_command(OrchestratorCommand::PermissionResponse(false));
-                        // Clear pending permission - state change is delegated to Orchestrator's StateChanged event
-                        if let Some(ref mut rally_state) = self.ai_rally_state {
-                            rally_state.pending_permission = None;
-                            // Do NOT change rally_state.state here - let Orchestrator's StateChanged event handle it
-                            rally_state.push_log(LogEntry::new(
+                match rally_state.pause_state {
+                    PauseState::Running => {
+                        rally_state.pause_state = PauseState::PauseRequested;
+                        self.send_rally_command(OrchestratorCommand::Pause);
+                        if let Some(ref mut rs) = self.ai_rally_state {
+                            rs.push_log(LogEntry::new(
                                 LogEventType::Info,
-                                "Permission denied, continuing without it...".to_string(),
+                                "Pausing after current step...".to_string(),
                             ));
                         }
                     }
-                    RallyState::WaitingForClarification => {
-                        // Send skip clarification (continue with best judgment)
-                        self.send_rally_command(OrchestratorCommand::SkipClarification);
-                        // Clear pending question - state change is delegated to Orchestrator's StateChanged event
-                        if let Some(ref mut rally_state) = self.ai_rally_state {
-                            rally_state.pending_question = None;
-                            // Do NOT change rally_state.state here - let Orchestrator's StateChanged event handle it
-                            rally_state.push_log(LogEntry::new(
+                    PauseState::PauseRequested | PauseState::Paused => {
+                        rally_state.pause_state = PauseState::Running;
+                        self.send_rally_command(OrchestratorCommand::Resume);
+                        if let Some(ref mut rs) = self.ai_rally_state {
+                            rs.push_log(LogEntry::new(
                                 LogEventType::Info,
-                                "Clarification skipped, continuing with best judgment..."
-                                    .to_string(),
+                                "Resuming...".to_string(),
                             ));
                         }
                     }
-                    RallyState::WaitingForPostConfirmation => {
-                        // Skip posting
-                        self.send_rally_command(OrchestratorCommand::PostConfirmResponse(false));
-                        if let Some(ref mut rally_state) = self.ai_rally_state {
-                            rally_state.pending_review_post = None;
-                            rally_state.pending_fix_post = None;
-                            // Transition state immediately to prevent duplicate sends
-                            rally_state.state = RallyState::RevieweeFix;
-                            rally_state.push_log(LogEntry::new(
-                                LogEventType::Info,
-                                "Post skipped, continuing...".to_string(),
-                            ));
-                        }
-                    }
-                    _ => {}
                 }
             }
-            KeyCode::Char('r') => {
-                // Retry on error state
-                if let Some(ref state) = self.ai_rally_state {
-                    if state.state == RallyState::Error {
-                        // Abort current handle if any
-                        if let Some(handle) = self.rally_abort_handle.take() {
-                            handle.abort();
-                        }
-                        // Clear state and restart
-                        self.ai_rally_state = None;
-                        self.rally_event_receiver = None;
-                        self.state = AppState::FileList;
-                        // Restart the rally
-                        self.start_ai_rally();
-                    }
-                }
-            }
-            // Log selection and scrolling
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    let total_logs = rally_state.logs.len();
-                    if total_logs == 0 {
-                        return Ok(());
-                    }
-
-                    // Initialize selection if not set
-                    let current = rally_state.selected_log_index.unwrap_or(0);
-                    let new_index = (current + 1).min(total_logs.saturating_sub(1));
-                    rally_state.selected_log_index = Some(new_index);
-
-                    // Auto-scroll to keep selection visible
-                    self.adjust_log_scroll_to_selection();
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    let total_logs = rally_state.logs.len();
-                    if total_logs == 0 {
-                        return Ok(());
-                    }
-
-                    // Initialize selection if not set (start from last)
-                    let current = rally_state
-                        .selected_log_index
-                        .unwrap_or(total_logs.saturating_sub(1));
-                    let new_index = current.saturating_sub(1);
-                    rally_state.selected_log_index = Some(new_index);
-
-                    // Auto-scroll to keep selection visible
-                    self.adjust_log_scroll_to_selection();
-                }
-            }
-            KeyCode::Char('J') => {
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    let total_logs = rally_state.logs.len();
-                    if total_logs == 0 {
-                        return Ok(());
-                    }
-
-                    let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
-                    let current = rally_state.selected_log_index.unwrap_or(0);
-                    let new_index = (current + page_step).min(total_logs.saturating_sub(1));
-                    rally_state.selected_log_index = Some(new_index);
-                    self.adjust_log_scroll_to_selection();
-                }
-            }
-            KeyCode::Char('K') => {
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    let total_logs = rally_state.logs.len();
-                    if total_logs == 0 {
-                        return Ok(());
-                    }
-
-                    let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
-                    let current = rally_state
-                        .selected_log_index
-                        .unwrap_or(total_logs.saturating_sub(1));
-                    let new_index = current.saturating_sub(page_step);
-                    rally_state.selected_log_index = Some(new_index);
-                    self.adjust_log_scroll_to_selection();
-                }
-            }
-            KeyCode::Enter => {
-                // Show log detail modal
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    if rally_state.selected_log_index.is_some() && !rally_state.logs.is_empty() {
-                        rally_state.showing_log_detail = true;
-                    }
-                }
-            }
-            KeyCode::Char('G') => {
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    let total_logs = rally_state.logs.len();
-                    if total_logs > 0 {
-                        rally_state.selected_log_index = Some(total_logs.saturating_sub(1));
-                        rally_state.log_scroll_offset = 0; // 0 means auto-scroll to bottom
-                    }
-                }
-            }
-            KeyCode::Char('g') => {
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    if !rally_state.logs.is_empty() {
-                        rally_state.selected_log_index = Some(0);
-                        rally_state.log_scroll_offset = 1; // 1 is minimum (not 0 which means auto-scroll)
-                    }
-                }
-            }
-            KeyCode::Char('p') => {
-                // Ignore while config warning is pending
-                if self
-                    .ai_rally_state
-                    .as_ref()
-                    .and_then(|s| s.pending_config_warning.as_ref())
-                    .is_some()
-                {
-                    return Ok(());
-                }
-
-                if let Some(ref mut rally_state) = self.ai_rally_state {
-                    // Only allow pause toggle during active agent execution
-                    if !matches!(
-                        rally_state.state,
-                        RallyState::ReviewerReviewing | RallyState::RevieweeFix
-                    ) {
-                        return Ok(());
-                    }
-
-                    match rally_state.pause_state {
-                        PauseState::Running => {
-                            rally_state.pause_state = PauseState::PauseRequested;
-                            self.send_rally_command(OrchestratorCommand::Pause);
-                            if let Some(ref mut rs) = self.ai_rally_state {
-                                rs.push_log(LogEntry::new(
-                                    LogEventType::Info,
-                                    "Pausing after current step...".to_string(),
-                                ));
-                            }
-                        }
-                        PauseState::PauseRequested | PauseState::Paused => {
-                            rally_state.pause_state = PauseState::Running;
-                            self.send_rally_command(OrchestratorCommand::Resume);
-                            if let Some(ref mut rs) = self.ai_rally_state {
-                                rs.push_log(LogEntry::new(
-                                    LogEventType::Info,
-                                    "Resuming...".to_string(),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
         Ok(())
     }

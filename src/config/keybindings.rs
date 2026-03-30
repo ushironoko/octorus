@@ -65,6 +65,17 @@ pub struct KeybindingsConfig {
     pub mark_viewed_dir: KeySequence,
 
     pub tree_toggle: KeySequence,
+
+    pub filter_open: KeySequence,
+    pub filter_closed: KeySequence,
+    pub filter_all: KeySequence,
+    pub tab_prev: KeySequence,
+    pub tab_next: KeySequence,
+    pub rally_background: KeySequence,
+    pub rally_pause: KeySequence,
+    pub retry: KeySequence,
+    pub confirm_yes: KeySequence,
+    pub confirm_no: KeySequence,
 }
 
 impl Default for KeybindingsConfig {
@@ -127,6 +138,19 @@ impl Default for KeybindingsConfig {
             mark_viewed: KeySequence::single(KeyBinding::char('v')),
             mark_viewed_dir: KeySequence::single(KeyBinding::char('V')),
             tree_toggle: KeySequence::single(KeyBinding::char('t')),
+
+            filter_open: KeySequence::single(KeyBinding::char('o')),
+            filter_closed: KeySequence::single(KeyBinding::char('c')),
+            filter_all: KeySequence::single(KeyBinding::char('a')),
+            tab_prev: KeySequence::single(KeyBinding::char('[')),
+            tab_next: KeySequence::single(KeyBinding::char(']')),
+            rally_background: KeySequence::single(KeyBinding::char('b')),
+            rally_pause: KeySequence::single(KeyBinding::char('p')),
+            retry: KeySequence::single(KeyBinding::char('r')),
+            confirm_yes: KeySequence::single(KeyBinding::char('y'))
+                .with_alt(vec![KeyBinding::char('Y')]),
+            confirm_no: KeySequence::single(KeyBinding::char('n'))
+                .with_alt(vec![KeyBinding::char('N')]),
         }
     }
 }
@@ -189,6 +213,16 @@ impl KeybindingsConfig {
             ("mark_viewed", &self.mark_viewed),
             ("mark_viewed_dir", &self.mark_viewed_dir),
             ("tree_toggle", &self.tree_toggle),
+            ("filter_open", &self.filter_open),
+            ("filter_closed", &self.filter_closed),
+            ("filter_all", &self.filter_all),
+            ("tab_prev", &self.tab_prev),
+            ("tab_next", &self.tab_next),
+            ("rally_background", &self.rally_background),
+            ("rally_pause", &self.rally_pause),
+            ("retry", &self.retry),
+            ("confirm_yes", &self.confirm_yes),
+            ("confirm_no", &self.confirm_no),
         ];
 
         for (name, seq) in &bindings {
@@ -265,6 +299,16 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         "mark_viewed",
         "mark_viewed_dir",
         "tree_toggle",
+        "filter_open",
+        "filter_closed",
+        "filter_all",
+        "tab_prev",
+        "tab_next",
+        "rally_background",
+        "rally_pause",
+        "retry",
+        "confirm_yes",
+        "confirm_no",
     ];
 
     let context_groups: &[&[&str]] = &[
@@ -272,6 +316,10 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         &["toggle_local_mode", "move_right"], // L vs l: different cases
         &["toggle_auto_focus", "go_to_file"], // F vs gf: different sequence lengths
         &["git_ops", "jump_to_last"],         // G: git ops in file list, jump_to_last in diff/other views
+        &["filter_closed", "comment"],
+        &["filter_all", "approve"],
+        &["retry", "reply", "request_changes"],
+        &["confirm_no", "next_comment"],
     ];
 
     // git ops 固有キーは git ops 画面でのみ有効なので、他の全キーと context compatible
@@ -365,6 +413,16 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("mark_viewed", &seq_to_value(&self.mark_viewed))?;
         map.serialize_entry("mark_viewed_dir", &seq_to_value(&self.mark_viewed_dir))?;
         map.serialize_entry("tree_toggle", &seq_to_value(&self.tree_toggle))?;
+        map.serialize_entry("filter_open", &seq_to_value(&self.filter_open))?;
+        map.serialize_entry("filter_closed", &seq_to_value(&self.filter_closed))?;
+        map.serialize_entry("filter_all", &seq_to_value(&self.filter_all))?;
+        map.serialize_entry("tab_prev", &seq_to_value(&self.tab_prev))?;
+        map.serialize_entry("tab_next", &seq_to_value(&self.tab_next))?;
+        map.serialize_entry("rally_background", &seq_to_value(&self.rally_background))?;
+        map.serialize_entry("rally_pause", &seq_to_value(&self.rally_pause))?;
+        map.serialize_entry("retry", &seq_to_value(&self.retry))?;
+        map.serialize_entry("confirm_yes", &seq_to_value(&self.confirm_yes))?;
+        map.serialize_entry("confirm_no", &seq_to_value(&self.confirm_no))?;
 
         map.end()
     }

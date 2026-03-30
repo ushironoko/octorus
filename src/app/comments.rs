@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use std::time::Instant;
@@ -463,23 +463,18 @@ impl App {
             return self.handle_discussion_detail_input(key, visible_lines);
         }
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.state = self.previous_state;
-            }
-            KeyCode::Char('[') => {
-                self.cmt.comment_tab = match self.cmt.comment_tab {
-                    CommentTab::Review => CommentTab::Discussion,
-                    CommentTab::Discussion => CommentTab::Review,
-                };
-            }
-            KeyCode::Char(']') => {
-                self.cmt.comment_tab = match self.cmt.comment_tab {
-                    CommentTab::Review => CommentTab::Discussion,
-                    CommentTab::Discussion => CommentTab::Review,
-                };
-            }
-            KeyCode::Char('j') | KeyCode::Down => match self.cmt.comment_tab {
+        let kb = self.config.keybindings.clone();
+        if self.matches_single_key(&key, &kb.quit) {
+            self.state = self.previous_state;
+        } else if self.matches_single_key(&key, &kb.tab_prev)
+            || self.matches_single_key(&key, &kb.tab_next)
+        {
+            self.cmt.comment_tab = match self.cmt.comment_tab {
+                CommentTab::Review => CommentTab::Discussion,
+                CommentTab::Discussion => CommentTab::Review,
+            };
+        } else if self.matches_single_key(&key, &kb.move_down) {
+            match self.cmt.comment_tab {
                 CommentTab::Review => {
                     if let Some(ref comments) = self.cmt.review_comments {
                         if !comments.is_empty() {
@@ -497,8 +492,9 @@ impl App {
                         }
                     }
                 }
-            },
-            KeyCode::Char('k') | KeyCode::Up => match self.cmt.comment_tab {
+            }
+        } else if self.matches_single_key(&key, &kb.move_up) {
+            match self.cmt.comment_tab {
                 CommentTab::Review => {
                     self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(1);
                 }
@@ -506,42 +502,45 @@ impl App {
                     self.cmt.selected_discussion_comment =
                         self.cmt.selected_discussion_comment.saturating_sub(1);
                 }
-            },
-            KeyCode::Char('J') => {
-                let step = visible_lines.max(1);
-                match self.cmt.comment_tab {
-                    CommentTab::Review => {
-                        if let Some(ref comments) = self.cmt.review_comments {
-                            if !comments.is_empty() {
-                                self.cmt.selected_comment =
-                                    (self.cmt.selected_comment + step).min(comments.len() - 1);
-                            }
+            }
+        } else if self.matches_single_key(&key, &kb.page_down)
+            || Self::is_shift_char_shortcut(&key, 'j')
+        {
+            let step = visible_lines.max(1);
+            match self.cmt.comment_tab {
+                CommentTab::Review => {
+                    if let Some(ref comments) = self.cmt.review_comments {
+                        if !comments.is_empty() {
+                            self.cmt.selected_comment =
+                                (self.cmt.selected_comment + step).min(comments.len() - 1);
                         }
                     }
-                    CommentTab::Discussion => {
-                        if let Some(ref comments) = self.cmt.discussion_comments {
-                            if !comments.is_empty() {
-                                self.cmt.selected_discussion_comment =
-                                    (self.cmt.selected_discussion_comment + step)
-                                        .min(comments.len() - 1);
-                            }
+                }
+                CommentTab::Discussion => {
+                    if let Some(ref comments) = self.cmt.discussion_comments {
+                        if !comments.is_empty() {
+                            self.cmt.selected_discussion_comment =
+                                (self.cmt.selected_discussion_comment + step)
+                                    .min(comments.len() - 1);
                         }
                     }
                 }
             }
-            KeyCode::Char('K') => {
-                let step = visible_lines.max(1);
-                match self.cmt.comment_tab {
-                    CommentTab::Review => {
-                        self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(step);
-                    }
-                    CommentTab::Discussion => {
-                        self.cmt.selected_discussion_comment =
-                            self.cmt.selected_discussion_comment.saturating_sub(step);
-                    }
+        } else if self.matches_single_key(&key, &kb.page_up)
+            || Self::is_shift_char_shortcut(&key, 'k')
+        {
+            let step = visible_lines.max(1);
+            match self.cmt.comment_tab {
+                CommentTab::Review => {
+                    self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(step);
+                }
+                CommentTab::Discussion => {
+                    self.cmt.selected_discussion_comment =
+                        self.cmt.selected_discussion_comment.saturating_sub(step);
                 }
             }
-            KeyCode::Enter => match self.cmt.comment_tab {
+        } else if self.matches_single_key(&key, &kb.open_panel) {
+            match self.cmt.comment_tab {
                 CommentTab::Review => {
                     self.jump_to_comment();
                 }
@@ -556,8 +555,7 @@ impl App {
                         self.cmt.discussion_comment_detail_scroll = 0;
                     }
                 }
-            },
-            _ => {}
+            }
         }
         Ok(())
     }
@@ -567,40 +565,34 @@ impl App {
         key: event::KeyEvent,
         visible_lines: usize,
     ) -> Result<()> {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => {
-                self.cmt.discussion_comment_detail_mode = false;
-                self.cmt.discussion_comment_detail_scroll = 0;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.cmt.discussion_comment_detail_scroll =
-                    self.cmt.discussion_comment_detail_scroll.saturating_add(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.cmt.discussion_comment_detail_scroll =
-                    self.cmt.discussion_comment_detail_scroll.saturating_sub(1);
-            }
-            KeyCode::Char('J') => {
-                self.cmt.discussion_comment_detail_scroll = self
-                    .cmt.discussion_comment_detail_scroll
-                    .saturating_add(visible_lines.max(1));
-            }
-            KeyCode::Char('K') => {
-                self.cmt.discussion_comment_detail_scroll = self
-                    .cmt.discussion_comment_detail_scroll
-                    .saturating_sub(visible_lines.max(1));
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cmt.discussion_comment_detail_scroll = self
-                    .cmt.discussion_comment_detail_scroll
-                    .saturating_add(visible_lines / 2);
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cmt.discussion_comment_detail_scroll = self
-                    .cmt.discussion_comment_detail_scroll
-                    .saturating_sub(visible_lines / 2);
-            }
-            _ => {}
+        let kb = self.config.keybindings.clone();
+        if self.matches_single_key(&key, &kb.quit)
+            || self.matches_single_key(&key, &kb.open_panel)
+        {
+            self.cmt.discussion_comment_detail_mode = false;
+            self.cmt.discussion_comment_detail_scroll = 0;
+        } else if self.matches_single_key(&key, &kb.move_down) {
+            self.cmt.discussion_comment_detail_scroll =
+                self.cmt.discussion_comment_detail_scroll.saturating_add(1);
+        } else if self.matches_single_key(&key, &kb.move_up) {
+            self.cmt.discussion_comment_detail_scroll =
+                self.cmt.discussion_comment_detail_scroll.saturating_sub(1);
+        } else if Self::is_shift_char_shortcut(&key, 'j') {
+            self.cmt.discussion_comment_detail_scroll = self
+                .cmt.discussion_comment_detail_scroll
+                .saturating_add(visible_lines.max(1));
+        } else if Self::is_shift_char_shortcut(&key, 'k') {
+            self.cmt.discussion_comment_detail_scroll = self
+                .cmt.discussion_comment_detail_scroll
+                .saturating_sub(visible_lines.max(1));
+        } else if self.matches_single_key(&key, &kb.page_down) {
+            self.cmt.discussion_comment_detail_scroll = self
+                .cmt.discussion_comment_detail_scroll
+                .saturating_add(visible_lines / 2);
+        } else if self.matches_single_key(&key, &kb.page_up) {
+            self.cmt.discussion_comment_detail_scroll = self
+                .cmt.discussion_comment_detail_scroll
+                .saturating_sub(visible_lines / 2);
         }
         Ok(())
     }
