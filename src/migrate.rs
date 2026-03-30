@@ -127,6 +127,56 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         filename: "rereview.md",
         sha256: HASH_REREVIEW_0_5_6,
     },
+    // 0.5.8 — config.toml updated with [layout] section
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "config.toml",
+        sha256: HASH_GLOBAL_CONFIG_0_5_8,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "config.toml",
+        sha256: HASH_LOCAL_CONFIG_0_5_8,
+    },
+    // 0.5.8 — prompts unchanged from 0.5.6
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "reviewer.md",
+        sha256: HASH_REVIEWER_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "reviewer.md",
+        sha256: HASH_REVIEWER_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "reviewee.md",
+        sha256: HASH_REVIEWEE_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "reviewee.md",
+        sha256: HASH_REVIEWEE_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.5.8",
+        filename: "rereview.md",
+        sha256: HASH_REREVIEW_0_5_6,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.5.8",
+        filename: "rereview.md",
+        sha256: HASH_REREVIEW_0_5_6,
+    },
     // SKILL.md
     DefaultFileHash {
         scope: FileScope::Skill,
@@ -161,6 +211,10 @@ const HASH_GLOBAL_CONFIG_0_5_6: &str =
     "c72fc993956ff633bce2d6841d96c1583f02c1b8d8c262e9b11f53a2f6ffcaea";
 const HASH_LOCAL_CONFIG_0_5_6: &str =
     "dd3fbdd57e338f31a079e3c7a383fdfbb7f12db79e7be5430ad089e9a2fb3c60";
+const HASH_GLOBAL_CONFIG_0_5_8: &str =
+    "432c5a06806123c2a3a944353c826d004ab775759e158728541f87039240560e";
+const HASH_LOCAL_CONFIG_0_5_8: &str =
+    "db391a2874904add6f193366aaa0d5eb7b35689f5fae04cf4a2d8d740c1c353e";
 const HASH_REVIEWER_0_5_6: &str =
     "d9dfdd90d4041ef424edbab3754ab94bafbdad9d69e7297db195cf6194701e58";
 const HASH_REVIEWEE_0_5_6: &str =
@@ -1137,13 +1191,13 @@ mod tests {
                 FileScope::Global,
                 "config.toml",
                 DEFAULT_CONFIG,
-                HASH_GLOBAL_CONFIG_0_5_6,
+                HASH_GLOBAL_CONFIG_0_5_8,
             ),
             (
                 FileScope::Local,
                 "config.toml",
                 DEFAULT_LOCAL_CONFIG,
-                HASH_LOCAL_CONFIG_0_5_6,
+                HASH_LOCAL_CONFIG_0_5_8,
             ),
             (
                 FileScope::Global,
@@ -1240,13 +1294,13 @@ mod tests {
         .unwrap();
 
         let manifest = Some(VersionManifest {
-            binary_version: "0.5.6".to_string(),
+            binary_version: "0.5.8".to_string(),
             initialized_at: "2024-01-01T00:00:00Z".to_string(),
             last_migrated_at: None,
             files: HashMap::new(),
         });
 
-        let actions = build_migration_plan(&config_dir, None, &manifest, "0.5.6", false, false);
+        let actions = build_migration_plan(&config_dir, None, &manifest, "0.5.8", false, false);
 
         // Should only have skips + WriteManifest
         assert!(
@@ -1502,7 +1556,7 @@ mod tests {
         )
         .unwrap();
 
-        let version = "0.5.6";
+        let version = "0.5.8";
 
         // First migration — should be "all up to date" but write manifest
         let actions = build_migration_plan(&config_dir, None, &None, version, false, false);
@@ -1540,7 +1594,7 @@ mod tests {
         )
         .unwrap();
 
-        let version = "0.5.6";
+        let version = "0.5.8";
         let manifest_path = config_dir.join(".version");
 
         // Run 1

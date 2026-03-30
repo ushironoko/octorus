@@ -188,7 +188,7 @@ impl Config {
         if table.contains_key("editor") {
             overrides.insert("editor".to_string());
         }
-        for section in ["diff", "ai", "keybindings"] {
+        for section in ["diff", "ai", "keybindings", "layout"] {
             if let Some(toml::Value::Table(sub)) = table.get(section) {
                 for key in sub.keys() {
                     overrides.insert(format!("{}.{}", section, key));

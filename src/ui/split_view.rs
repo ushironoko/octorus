@@ -34,7 +34,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .constraints([
+            Constraint::Percentage(app.config.layout.left_panel_percent()),
+            Constraint::Percentage(app.config.layout.right_panel_percent()),
+        ])
         .split(outer_chunks[0]);
 
     let is_file_focused = app.state == AppState::SplitViewFileList;

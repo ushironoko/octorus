@@ -23,6 +23,12 @@ theme = "base16-ocean.dark"
 # Number of spaces per tab character in diff view (minimum: 1)
 tab_width = 4
 
+[layout]
+# Left panel width percentage in split view (10-90, right panel fills the rest)
+# left_panel_width = 35
+# Hide header/footer for focused editing (default: false)
+# zen_mode = false
+
 [keybindings]
 approve = 'a'
 request_changes = 'r'
@@ -68,6 +74,10 @@ pub(crate) const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configu
 # [diff]
 # theme = "base16-ocean.dark"
 # tab_width = 4
+
+# [layout]
+# left_panel_width = 35
+# zen_mode = false
 
 # [ai]
 # reviewer = "claude"
@@ -881,14 +891,11 @@ mod tests {
         let manifest = read_manifest(&manifest_path).expect("manifest should exist");
 
         // config.toml matches a known default hash, so version should be detected
-        // (the exact version depends on what's registered in DEFAULT_HASHES)
-        let current_version = env!("CARGO_PKG_VERSION");
         let config_version = &manifest.files["config.toml"].version;
-        // It should either match a known version from DEFAULT_HASHES or be 0.0.0
-        // It should NOT be the current binary version (unless current IS in DEFAULT_HASHES)
+        // DEFAULT_LOCAL_CONFIG currently matches the 0.5.8 hash in DEFAULT_HASHES
         assert!(
-            config_version != current_version || config_version == "0.5.6",
-            "skipped file should have detected version or 0.0.0, got {}",
+            config_version == "0.5.8",
+            "skipped file should detect version 0.5.8 from hash, got {}",
             config_version
         );
     }
