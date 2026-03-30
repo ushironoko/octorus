@@ -112,7 +112,6 @@ AppState::IssueList => issue_list::render(frame, app),
         render_symbol_popup(frame, popup);
     }
 
-    // Shell overlay (Running indicator or Done popup)
     if let Some(ref shell) = app.shell_state {
         match &shell.phase {
             ShellPhase::Input => {} // Handled by build_footer_line + build_footer_block_with_border

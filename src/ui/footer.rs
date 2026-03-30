@@ -7,7 +7,6 @@ use ratatui::{
 use crate::app::{App, ShellPhase};
 use crate::config::KeybindingsConfig;
 
-/// Build footer hint text for screens with "Back" action.
 pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
     format!(
         "{} Help | {} Shell | {} Back",
@@ -17,7 +16,6 @@ pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
     )
 }
 
-/// Build footer hint text for the top-level screen with "Quit" action.
 pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
     format!(
         "{} Help | {} Shell | {} Quit",
@@ -27,8 +25,6 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
     )
 }
 
-/// Build footer line content based on app state.
-///
 /// Priority cascade:
 /// 1. Shell input overlay (highest)
 /// 2. Approve confirmation
@@ -37,7 +33,6 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
 /// 5. Submission result
 /// 6. Default help text + loading indicators
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
-    // Shell input overlay
     if let Some(ref shell) = app.shell_state {
         if matches!(shell.phase, ShellPhase::Input) {
             return render_shell_input_line(&shell.input, shell.cursor);
@@ -102,7 +97,6 @@ pub fn build_footer_block_with_border(app: &App, base_style: Style) -> Block<'st
     Block::default().borders(Borders::ALL).border_style(style)
 }
 
-/// Render the shell command input line with cursor visualization.
 fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
     let chars: Vec<char> = input.chars().collect();
     let before: String = chars[..cursor.min(chars.len())].iter().collect();

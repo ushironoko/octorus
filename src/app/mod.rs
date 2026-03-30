@@ -186,7 +186,6 @@ pub struct App {
     pub tree_mode_active: bool,
     /// ファイルツリー状態（初回トグルで生成、展開状態を保持）
     pub file_tree_state: Option<file_tree::FileTreeState>,
-    /// シェルコマンド実行オーバーレイ状態
     pub shell_state: Option<ShellState>,
     shell_result_receiver: Option<mpsc::Receiver<ShellCommandResult>>,
     shell_abort_handle: Option<AbortHandle>,

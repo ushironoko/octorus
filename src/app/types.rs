@@ -959,7 +959,7 @@ impl SymbolSearchState {
     }
 }
 
-/// app.stateを変更せずオーバーレイとして動作するシェルコマンド状態
+/// Operates as an overlay without changing AppState, so shell commands work in any screen.
 #[derive(Debug, Clone)]
 pub struct ShellState {
     pub input: String,
@@ -981,7 +981,7 @@ pub struct ShellCommandResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
-    /// Done遷移時に一度だけ構築するレンダリング済み行キャッシュ
+    /// Pre-built at Done transition to avoid re-computing on every render.
     pub cached_lines: Vec<CachedShellLine>,
     pub total_lines: usize,
 }
