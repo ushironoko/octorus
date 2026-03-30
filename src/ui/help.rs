@@ -369,6 +369,20 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
+        "Shell Settings",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(config_value_line(
+        "Timeout (secs)",
+        &config.shell.timeout_secs.to_string(),
+        "shell.timeout_secs",
+        overrides,
+    ));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
         "Prompt Resolution",
         Style::default()
             .fg(Color::Yellow)

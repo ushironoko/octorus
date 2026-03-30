@@ -134,3 +134,24 @@ impl LayoutConfig {
         100u16.saturating_sub(self.left_panel_percent())
     }
 }
+
+const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 10;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShellConfig {
+    #[serde(default = "default_shell_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_shell_timeout() -> u64 {
+    DEFAULT_SHELL_TIMEOUT_SECS
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_shell_timeout(),
+        }
+    }
+}

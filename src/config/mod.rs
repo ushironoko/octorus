@@ -4,7 +4,7 @@ mod schema;
 
 pub use keybindings::KeybindingsConfig;
 pub use loader::{find_project_root, find_project_root_in};
-pub use schema::{AiConfig, DiffConfig, GitOpsConfig, LayoutConfig};
+pub use schema::{AiConfig, DiffConfig, GitOpsConfig, LayoutConfig, ShellConfig};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -33,6 +33,7 @@ pub struct Config {
     pub layout: LayoutConfig,
     #[serde(alias = "git_log")]
     pub git_ops: GitOpsConfig,
+    pub shell: ShellConfig,
     #[serde(skip)]
     pub project_root: PathBuf,
     /// Path of the global config file if it was loaded successfully.

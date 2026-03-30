@@ -133,23 +133,28 @@ impl App {
         #[cfg(not(target_os = "windows"))]
         let (shell_bin, flag) = ("sh", "-c");
 
+        let timeout_secs = self.config.shell.timeout_secs;
+
         let handle = tokio::spawn(async move {
-            let result = tokio::process::Command::new(shell_bin)
-                .arg(flag)
-                .arg(&command)
-                .current_dir(&working_dir)
-                .output()
-                .await;
+            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+            let result = tokio::time::timeout(
+                timeout_duration,
+                tokio::process::Command::new(shell_bin)
+                    .arg(flag)
+                    .arg(&command)
+                    .current_dir(&working_dir)
+                    .output(),
+            )
+            .await;
 
             let shell_result = match result {
-                Ok(output) => {
+                Ok(Ok(output)) => {
                     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                     let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
                     truncate_at_char_boundary(&mut stdout, MAX_OUTPUT_BYTES);
                     truncate_at_char_boundary(&mut stderr, MAX_OUTPUT_BYTES);
 
-                    let (cached_lines, total_lines) =
-                        build_cached_lines(&stdout, &stderr);
+                    let (cached_lines, total_lines) = build_cached_lines(&stdout, &stderr);
 
                     ShellCommandResult {
                         command,
@@ -160,10 +165,21 @@ impl App {
                         total_lines,
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     let stderr = format!("Failed to execute: {}", e);
-                    let (cached_lines, total_lines) =
-                        build_cached_lines("", &stderr);
+                    let (cached_lines, total_lines) = build_cached_lines("", &stderr);
+                    ShellCommandResult {
+                        command,
+                        stdout: String::new(),
+                        stderr,
+                        exit_code: None,
+                        cached_lines,
+                        total_lines,
+                    }
+                }
+                Err(_) => {
+                    let stderr = format!("Timed out after {}s", timeout_secs);
+                    let (cached_lines, total_lines) = build_cached_lines("", &stderr);
                     ShellCommandResult {
                         command,
                         stdout: String::new(),
