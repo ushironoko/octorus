@@ -309,6 +309,12 @@ All octorus settings are configurable. Settings can be global or project-local.
 |-----|------|---------|-------------|
 | `max_diff_cache` | `usize` | `20` | Max entries for commit diff cache (including prefetch) |
 
+#### `[shell]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `timeout_secs` | `u64` | `10` | Shell command execution timeout in seconds |
+
 #### `[keybindings]`
 
 See [Configurable Keybindings](#configurable-keybindings) for the full list. Three formats are supported:
@@ -792,6 +798,7 @@ go_to_definition = ["g", "d"]
 | `toggle_zen_mode` | `Z` | Toggle zen mode (fullscreen diff) |
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
+| `shell_command` | `!` | Execute shell command |
 
 ### Keyword Filter
 
