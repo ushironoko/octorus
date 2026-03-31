@@ -57,6 +57,7 @@ pub struct KeybindingsConfig {
     pub git_ops_discard: KeySequence,
     pub git_ops_commit: KeySequence,
     pub git_ops_undo: KeySequence,
+    pub git_ops_reset: KeySequence,
     pub git_ops_push: KeySequence,
 
     pub issue_list: KeySequence,
@@ -132,6 +133,7 @@ impl Default for KeybindingsConfig {
             git_ops_discard: KeySequence::single(KeyBinding::char('d')),
             git_ops_commit: KeySequence::single(KeyBinding::char('c')),
             git_ops_undo: KeySequence::single(KeyBinding::char('u')),
+            git_ops_reset: KeySequence::single(KeyBinding::char('r')),
             git_ops_push: KeySequence::single(KeyBinding::char('P')),
 
             issue_list: KeySequence::single(KeyBinding::char('I')),
@@ -209,6 +211,7 @@ impl KeybindingsConfig {
             ("git_ops_discard", &self.git_ops_discard),
             ("git_ops_commit", &self.git_ops_commit),
             ("git_ops_undo", &self.git_ops_undo),
+            ("git_ops_reset", &self.git_ops_reset),
             ("git_ops_push", &self.git_ops_push),
             ("issue_list", &self.issue_list),
             ("tab_switch", &self.tab_switch),
@@ -297,6 +300,7 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         "git_ops_discard",
         "git_ops_commit",
         "git_ops_undo",
+        "git_ops_reset",
         "git_ops_push",
         "tab_switch",
         "mark_viewed",
@@ -411,6 +415,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("git_ops_discard", &seq_to_value(&self.git_ops_discard))?;
         map.serialize_entry("git_ops_commit", &seq_to_value(&self.git_ops_commit))?;
         map.serialize_entry("git_ops_undo", &seq_to_value(&self.git_ops_undo))?;
+        map.serialize_entry("git_ops_reset", &seq_to_value(&self.git_ops_reset))?;
         map.serialize_entry("git_ops_push", &seq_to_value(&self.git_ops_push))?;
         map.serialize_entry("issue_list", &seq_to_value(&self.issue_list))?;
         map.serialize_entry("tab_switch", &seq_to_value(&self.tab_switch))?;

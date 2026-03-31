@@ -631,7 +631,8 @@ pub enum DestructiveOp {
     UndoUnstage { paths: Vec<String> },
     UndoStageAll { tree_hash: Option<String> },
     UndoCommit,
-    ResetSoft { sha: String },
+    ResetSoft { sha: String, head_offset: usize },
+    ForcePush { branch: String },
 }
 
 impl DestructiveOp {
@@ -653,7 +654,10 @@ impl DestructiveOp {
                 }
             }
             Self::UndoCommit => vec!["reset --soft HEAD~1".into()],
-            Self::ResetSoft { sha } => vec![format!("reset --soft {}", sha)],
+            Self::ResetSoft { head_offset, .. } => {
+                vec![format!("reset --soft HEAD~{}", head_offset)]
+            }
+            Self::ForcePush { .. } => vec![],
         }
     }
 
@@ -671,7 +675,8 @@ impl DestructiveOp {
                 }
             }
             Self::UndoCommit => "git reset --soft HEAD~1".to_string(),
-            Self::ResetSoft { sha } => format!("git reset --soft {}", &sha[..sha.len().min(7)]),
+            Self::ResetSoft { sha, .. } => format!("git reset --soft {}", &sha[..sha.len().min(7)]),
+            Self::ForcePush { branch } => format!("git push --force-with-lease origin {}", branch),
         }
     }
 }
@@ -683,10 +688,12 @@ pub struct SimulationPreview {
     pub after: crate::gitfilm::GitfilmAreaSnapshot,
 }
 
-/// gitfilm シミュレーション結果
+/// 確認モーダルの表示内容
 #[derive(Debug, Clone)]
 pub enum SimulationResult {
     Success(SimulationPreview),
+    /// シミュレーションなし、メッセージのみの確認（force push 等）
+    Message(String),
 }
 
 /// GitOps の破壊的操作の確認待ち状態

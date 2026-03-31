@@ -357,10 +357,24 @@ impl App {
                     }
                     Ok(Err(msg)) => {
                         ops.pushing = false;
-                        ops.op_message = Some((format!("Error: {}", msg), Instant::now()));
                         ops.op_receiver = None;
-                        // エラー時もステータス再取得（楽観的更新の巻き戻し）
-                        op_succeeded = true;
+                        if let Some(branch) = msg.strip_prefix("FORCE_PUSH:") {
+                            ops.pending_confirm = Some(PendingGitOpsConfirm::Previewing {
+                                op: DestructiveOp::ForcePush {
+                                    branch: branch.to_string(),
+                                },
+                                result: SimulationResult::Message(
+                                    "Push was rejected (non-fast-forward).\nForce push will overwrite remote history."
+                                        .to_string(),
+                                ),
+                                scroll_offset: 0,
+                            });
+                        } else {
+                            ops.op_message =
+                                Some((format!("Error: {}", msg), Instant::now()));
+                            // エラー時もステータス再取得（楽観的更新の巻き戻し）
+                            op_succeeded = true;
+                        }
                     }
                     Err(mpsc::error::TryRecvError::Empty) => {}
                     Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -914,22 +928,13 @@ impl App {
         Ok(())
     }
 
-    /// u: undo（ツリーペイン用 — stage/unstage のみ）
+    /// u: undo（スタックから操作を巻き戻す）
     fn execute_undo(&mut self) {
         let action = {
             let Some(ref mut ops) = self.git_ops_state else {
                 return;
             };
             match ops.undo_stack.pop() {
-                Some(UndoAction::Commit) => {
-                    // Commit undo はコミット履歴ペインからのみ実行可能
-                    ops.undo_stack.push(UndoAction::Commit);
-                    ops.op_message = Some((
-                        "Commit undo: switch to commit pane".to_string(),
-                        Instant::now(),
-                    ));
-                    return;
-                }
                 Some(action) => action,
                 None => {
                     ops.op_message =
@@ -952,8 +957,6 @@ impl App {
                         }
                     }
                 }
-                // `git restore --staged` ではなく `git update-index --cacheinfo` で
-                // 操作前のインデックスを精密復元（MM ファイルの部分ステージ対応）
                 self.run_git_index_restore(paths, previous_index_entries, count);
             }
             UndoAction::Unstage { paths } => {
@@ -985,7 +988,19 @@ impl App {
                     self.run_git_op_silent(vec!["reset".to_string()], "Undo stage all".to_string());
                 }
             }
-            UndoAction::Commit => unreachable!(),
+            UndoAction::Commit => {
+                if let Some(ref mut ops) = self.git_ops_state {
+                    ops.diff_store.clear();
+                    ops.commit_log.diff_store.clear();
+                    ops.commit_log.commits.clear();
+                    ops.commit_log.selected = 0;
+                    ops.commit_log.initialized = false;
+                }
+                self.run_git_op_silent(
+                    vec!["reset".to_string(), "--soft".to_string(), "HEAD~1".to_string()],
+                    "Undo commit (changes are staged)".to_string(),
+                );
+            }
         }
     }
 
@@ -1114,7 +1129,19 @@ impl App {
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    let _ = tx.send(Err(format!("Push failed: {}", stderr))).await;
+                    let is_rejected = stderr.contains("rejected")
+                        || stderr.contains("non-fast-forward")
+                        || stderr.contains("failed to push");
+                    if is_rejected {
+                        // "FORCE_PUSH:<branch>" プレフィックスで force push 可能な失敗を通知
+                        let _ = tx
+                            .send(Err(format!("FORCE_PUSH:{}", branch)))
+                            .await;
+                    } else {
+                        let _ = tx
+                            .send(Err(format!("Push failed: {}", stderr)))
+                            .await;
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(Err(format!("Push failed: {}", e))).await;
@@ -1194,13 +1221,12 @@ impl App {
 
         // Undo → 確認待ちに遷移
         if self.matches_single_key(&key, &kb.git_ops_undo) {
-            if let Some(ref ops) = self.git_ops_state {
-                if let Some(action) = ops.undo_stack.last() {
-                    let op = action.to_destructive_op();
-                    self.start_confirm_with_simulation(op);
-                } else if let Some(ref mut ops) = self.git_ops_state {
-                    ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
-                }
+            let undo_op = self
+                .git_ops_state
+                .as_ref()
+                .and_then(|ops| ops.undo_stack.last().map(|a| a.to_destructive_op()));
+            if let Some(op) = undo_op {
+                self.start_confirm_with_simulation(op);
             }
             return;
         }
@@ -1331,8 +1357,20 @@ impl App {
             return;
         }
 
-        // Undo / reset --soft → 確認待ちに遷移（ローカルモードのみ）
+        // Undo → スタックから巻き戻し
         if self.matches_single_key(&key, &kb.git_ops_undo) {
+            let undo_op = self
+                .git_ops_state
+                .as_ref()
+                .and_then(|ops| ops.undo_stack.last().map(|a| a.to_destructive_op()));
+            if let Some(op) = undo_op {
+                self.start_confirm_with_simulation(op);
+            }
+            return;
+        }
+
+        // Reset --soft → 選択中コミットへ reset（ローカルモードのみ）
+        if self.matches_single_key(&key, &kb.git_ops_reset) {
             if !(self.local_mode || self.pr_number.is_none()) {
                 if let Some(ref mut ops) = self.git_ops_state {
                     ops.op_message = Some((
@@ -1343,13 +1381,22 @@ impl App {
                 return;
             }
             if let Some(ref ops) = self.git_ops_state {
-                let sha = ops
-                    .commit_log
-                    .commits
-                    .get(ops.commit_log.selected)
-                    .map(|c| c.sha.clone());
-                if let Some(sha) = sha {
-                    let op = DestructiveOp::ResetSoft { sha };
+                let selected = ops.commit_log.selected;
+                let (target, offset) = if selected == 0 {
+                    // HEAD を選択 → 親にリセット（最新コミットを取り消す）
+                    (
+                        ops.commit_log.commits.first().map(|c| format!("{}~1", c.sha)),
+                        1,
+                    )
+                } else {
+                    // それ以降 → そのコミットにリセット（以降の変更を staged に戻す）
+                    (
+                        ops.commit_log.commits.get(selected).map(|c| c.sha.clone()),
+                        selected,
+                    )
+                };
+                if let Some(sha) = target {
+                    let op = DestructiveOp::ResetSoft { sha, head_offset: offset };
                     self.start_confirm_with_simulation(op);
                 }
             }
@@ -1371,18 +1418,49 @@ impl App {
         }
     }
 
-    /// 選択中コミットに対して git reset --soft を実行
-    fn reset_soft_to_selected_commit(&mut self) {
-        let sha = self
-            .git_ops_state
-            .as_ref()
-            .and_then(|ops| ops.commit_log.commits.get(ops.commit_log.selected))
-            .map(|c| c.sha.clone());
-
-        let Some(sha) = sha else {
+    /// git push --force-with-lease を実行
+    fn execute_force_push(&mut self, branch: &str) {
+        let Some(ref mut ops) = self.git_ops_state else {
             return;
         };
+        ops.pushing = true;
 
+        let working_dir = self.working_dir.clone();
+        let branch = branch.to_string();
+        let (tx, rx) = mpsc::channel(1);
+        ops.op_receiver = Some(rx);
+
+        tokio::spawn(async move {
+            let dir = working_dir.as_deref().unwrap_or(".");
+            let output = tokio::process::Command::new("git")
+                .args(["push", "--force-with-lease", "origin", &branch])
+                .current_dir(dir)
+                .output()
+                .await;
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let _ = tx
+                        .send(Ok(format!("Force pushed to origin/{}", branch)))
+                        .await;
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    let _ = tx
+                        .send(Err(format!("Force push failed: {}", stderr)))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(format!("Force push failed: {}", e)))
+                        .await;
+                }
+            }
+        });
+    }
+
+    /// 指定 SHA に対して git reset --soft を実行
+    fn execute_reset_soft(&mut self, sha: &str) {
         if let Some(ref mut ops) = self.git_ops_state {
             ops.diff_store.clear();
             ops.commit_log.diff_store.clear();
@@ -1392,7 +1470,7 @@ impl App {
         }
 
         self.run_git_op_silent(
-            vec!["reset".to_string(), "--soft".to_string(), sha],
+            vec!["reset".to_string(), "--soft".to_string(), sha.to_string()],
             "Reset --soft (changes are staged)".to_string(),
         );
     }
@@ -1438,6 +1516,7 @@ impl App {
         if let Some(op) = needs_execute {
             match op {
                 DestructiveOp::Discard { .. } => self.discard_changes(),
+                DestructiveOp::ForcePush { branch } => self.execute_force_push(&branch),
                 _ => self.execute_undo(),
             }
         }
@@ -1452,7 +1531,8 @@ impl App {
         let needs_execute = self.handle_confirm_input_common(key, kb);
         if let Some(op) = needs_execute {
             match op {
-                DestructiveOp::ResetSoft { .. } => self.reset_soft_to_selected_commit(),
+                DestructiveOp::ResetSoft { sha, .. } => self.execute_reset_soft(&sha),
+                DestructiveOp::ForcePush { branch } => self.execute_force_push(&branch),
                 _ => self.execute_undo(),
             }
         }
@@ -2385,8 +2465,8 @@ mod tests {
         assert_eq!(app.git_ops_state.as_ref().unwrap().undo_stack.len(), 0);
     }
 
-    #[test]
-    fn test_undo_commit_blocked_from_tree_pane() {
+    #[tokio::test]
+    async fn test_undo_commit_executes_from_tree_pane() {
         let (mut app, _tx) = make_git_ops_app();
         let mut ops = GitOpsState::new(Vec::new());
         ops.undo_stack.push(UndoAction::Commit);
@@ -2395,12 +2475,9 @@ mod tests {
 
         app.execute_undo();
 
-        // Commit はスタックに戻されている
         let ops = app.git_ops_state.as_ref().unwrap();
-        assert_eq!(ops.undo_stack.len(), 1);
-        assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
-        // メッセージが表示されている
-        assert!(ops.op_message.as_ref().unwrap().0.contains("commit pane"));
+        assert_eq!(ops.undo_stack.len(), 0, "Commit should be popped");
+        assert!(ops.op_receiver.is_some(), "git reset --soft HEAD~1 should be running");
     }
 
     #[test]
@@ -2417,7 +2494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_undo_commit_behind_stage_is_preserved() {
+    async fn test_undo_commit_behind_stage_both_execute() {
         let (mut app, _tx) = make_git_ops_app();
         let mut ops = GitOpsState::new(vec![
             entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
@@ -2437,11 +2514,10 @@ mod tests {
         assert_eq!(ops.undo_stack.len(), 1);
         assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
 
-        // 次に undo → Commit はブロックされスタックに戻る
+        // Commit undo も実行される
         app.execute_undo();
         let ops = app.git_ops_state.as_ref().unwrap();
-        assert_eq!(ops.undo_stack.len(), 1);
-        assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
+        assert_eq!(ops.undo_stack.len(), 0, "Commit should also be popped");
     }
 
     #[test]
@@ -2625,6 +2701,64 @@ mod tests {
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(ops.pending_confirm.is_none());
         assert_eq!(ops.undo_stack.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_commit_undo_from_tree_executes() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(vec![]);
+        ops.undo_stack.push(UndoAction::Commit);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::UndoCommit,
+        });
+        app.git_ops_state = Some(ops);
+
+        simulate_tree_confirm(&mut app, KeyCode::Char('y'));
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(ops.pending_confirm.is_none());
+        assert_eq!(ops.undo_stack.len(), 0, "Commit should be popped and executed");
+    }
+
+    #[tokio::test]
+    async fn test_confirm_y_executes_undo_previewing() {
+        let (mut app, _tx) = make_git_ops_app();
+        let mut ops = GitOpsState::new(vec![
+            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
+        ]);
+        ops.undo_stack.push(UndoAction::Stage {
+            paths: vec!["a.rs".to_string()],
+            previous_index_entries: vec![],
+        });
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Previewing {
+            op: DestructiveOp::UndoStage { paths: vec!["a.rs".to_string()] },
+            result: SimulationResult::Success(SimulationPreview {
+                before: crate::gitfilm::GitfilmAreaSnapshot {
+                    working_tree: vec![],
+                    staging_area: vec![crate::gitfilm::GitfilmFileEntry {
+                        path: "a.rs".to_string(),
+                        status: "staged (modified)".to_string(),
+                    }],
+                    repository: crate::gitfilm::GitfilmRepoState { commits: vec![] },
+                },
+                after: crate::gitfilm::GitfilmAreaSnapshot {
+                    working_tree: vec![crate::gitfilm::GitfilmFileEntry {
+                        path: "a.rs".to_string(),
+                        status: "modified".to_string(),
+                    }],
+                    staging_area: vec![],
+                    repository: crate::gitfilm::GitfilmRepoState { commits: vec![] },
+                },
+            }),
+            scroll_offset: 0,
+        });
+        app.git_ops_state = Some(ops);
+
+        simulate_tree_confirm(&mut app, KeyCode::Char('y'));
+
+        let ops = app.git_ops_state.as_ref().unwrap();
+        assert!(ops.pending_confirm.is_none(), "pending_confirm should be cleared after Y");
+        assert_eq!(ops.undo_stack.len(), 0, "undo_stack should be empty after execute");
     }
 
 }

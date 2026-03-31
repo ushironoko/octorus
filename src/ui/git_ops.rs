@@ -840,7 +840,7 @@ mod tests {
         ]);
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::ResetSoft { sha: "abc1234".to_string() },
+            op: DestructiveOp::ResetSoft { sha: "abc1234".to_string(), head_offset: 1 },
         });
         app.git_ops_state = Some(ops);
 
