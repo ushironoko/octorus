@@ -632,7 +632,8 @@ This view can be opened directly from the CLI with the `--git-ops` flag.
 | `k` / `↑` | Move up in commit list |
 | `g` | Jump to first commit |
 | `G` | Jump to last commit |
-| `u` | Reset --soft to selected commit (local mode only, Y/n confirmation) |
+| `u` | Undo last operation (Y/n confirmation) |
+| `r` | Reset --soft to selected commit (local mode only, Y/n confirmation) |
 | `Tab` | Switch to tree pane |
 | `Enter` / `l` / `→` | Focus diff pane (commit diff) |
 | `q` / `Esc` | Close git ops |
@@ -796,6 +797,14 @@ go_to_definition = ["g", "d"]
 | `multiline_select` | `V` | Enter multiline selection mode |
 | `tree_toggle` | `t` | Toggle file tree view |
 | `toggle_zen_mode` | `Z` | Toggle zen mode (fullscreen diff) |
+| **Git Ops** |||
+| `git_ops_stage` | `Space` | Stage/unstage file or directory |
+| `git_ops_stage_all` | `s` | Stage all files |
+| `git_ops_discard` | `d` | Discard changes |
+| `git_ops_commit` | `c` | Commit (opens editor) |
+| `git_ops_undo` | `u` | Undo last operation |
+| `git_ops_reset` | `r` | Reset --soft to selected commit |
+| `git_ops_push` | `P` | Push to origin |
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
 | `shell_command` | `!` | Execute shell command |
