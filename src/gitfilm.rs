@@ -15,21 +15,18 @@ const GITFILM_BINARY: Option<&[u8]> =
 const GITFILM_BINARY: Option<&[u8]> =
     Some(include_bytes!("../vendor/gitfilm-x86_64-unknown-linux-gnu"));
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const GITFILM_BINARY: Option<&[u8]> =
-    Some(include_bytes!("../vendor/gitfilm-x86_64-pc-windows-msvc.exe"));
+    Some(include_bytes!("../vendor/gitfilm-aarch64-unknown-linux-gnu"));
 
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "macos", target_arch = "x86_64"),
     all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 )))]
 const GITFILM_BINARY: Option<&[u8]> = None;
 
-#[cfg(target_os = "windows")]
-const GITFILM_FILENAME: &str = "gitfilm.exe";
-#[cfg(not(target_os = "windows"))]
 const GITFILM_FILENAME: &str = "gitfilm";
 
 /// gitfilm JSON output: 3-area model snapshot
