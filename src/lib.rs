@@ -10,6 +10,7 @@ pub mod diff_store;
 pub mod diff;
 pub mod editor;
 pub mod filter;
+pub mod gitfilm;
 pub mod github;
 pub mod headless;
 pub mod keybinding;

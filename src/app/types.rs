@@ -606,13 +606,109 @@ impl UndoAction {
             }
         }
     }
+
+    pub fn to_destructive_op(&self) -> DestructiveOp {
+        match self {
+            UndoAction::Commit => DestructiveOp::UndoCommit,
+            UndoAction::Stage { paths, .. } => DestructiveOp::UndoStage {
+                paths: paths.clone(),
+            },
+            UndoAction::Unstage { paths } => DestructiveOp::UndoUnstage {
+                paths: paths.clone(),
+            },
+            UndoAction::StageAll { tree_hash } => DestructiveOp::UndoStageAll {
+                tree_hash: tree_hash.clone(),
+            },
+        }
+    }
+}
+
+/// 構造化された破壊的操作
+#[derive(Debug, Clone)]
+pub enum DestructiveOp {
+    Discard { path: String },
+    UndoStage { paths: Vec<String> },
+    UndoUnstage { paths: Vec<String> },
+    UndoStageAll { tree_hash: Option<String> },
+    UndoCommit,
+    ResetSoft { sha: String, head_offset: usize },
+    ForcePush { branch: String },
+}
+
+impl DestructiveOp {
+    /// gitfilm に渡す操作文字列を生成（各要素が1つの操作）
+    pub fn to_gitfilm_args(&self) -> Vec<String> {
+        match self {
+            Self::Discard { path } => vec![format!("restore {}", path)],
+            Self::UndoStage { paths } => {
+                vec![format!("reset --mixed HEAD -- {}", paths.join(" "))]
+            }
+            Self::UndoUnstage { paths } => {
+                vec![format!("add {}", paths.join(" "))]
+            }
+            Self::UndoStageAll { tree_hash } => {
+                if let Some(hash) = tree_hash {
+                    vec![format!("reset --mixed {}", hash)]
+                } else {
+                    vec!["reset".into()]
+                }
+            }
+            Self::UndoCommit => vec!["reset --soft HEAD~1".into()],
+            Self::ResetSoft { head_offset, .. } => {
+                vec![format!("reset --soft HEAD~{}", head_offset)]
+            }
+            Self::ForcePush { .. } => vec![],
+        }
+    }
+
+    /// 表示用のコマンド文字列
+    pub fn display_command(&self) -> String {
+        match self {
+            Self::Discard { path } => format!("git restore -- {}", path),
+            Self::UndoStage { paths } => format!("git reset -- {}", paths.join(" ")),
+            Self::UndoUnstage { paths } => format!("git add {}", paths.join(" ")),
+            Self::UndoStageAll { tree_hash } => {
+                if let Some(hash) = tree_hash {
+                    format!("git read-tree {}", &hash[..hash.len().min(7)])
+                } else {
+                    "git reset".to_string()
+                }
+            }
+            Self::UndoCommit => "git reset --soft HEAD~1".to_string(),
+            Self::ResetSoft { sha, .. } => format!("git reset --soft {}", &sha[..sha.len().min(7)]),
+            Self::ForcePush { branch } => format!("git push --force-with-lease origin {}", branch),
+        }
+    }
+}
+
+/// gitfilm シミュレーション結果の UI 用モデル
+#[derive(Debug, Clone)]
+pub struct SimulationPreview {
+    pub before: crate::gitfilm::GitfilmAreaSnapshot,
+    pub after: crate::gitfilm::GitfilmAreaSnapshot,
+}
+
+/// 確認モーダルの表示内容
+#[derive(Debug, Clone)]
+pub enum SimulationResult {
+    Success(SimulationPreview),
+    /// シミュレーションなし、メッセージのみの確認（force push 等）
+    Message(String),
 }
 
 /// GitOps の破壊的操作の確認待ち状態
 #[derive(Debug, Clone)]
 pub enum PendingGitOpsConfirm {
-    Discard { path: String, command: String },
-    Undo { command: String },
+    /// gitfilm未対応時のフォールバック（現行動作互換）
+    Simple { op: DestructiveOp },
+    /// gitfilm シミュレーション実行中
+    Simulating { op: DestructiveOp, abort_id: u64 },
+    /// シミュレーション結果表示中（モーダル）
+    Previewing {
+        op: DestructiveOp,
+        result: SimulationResult,
+        scroll_offset: usize,
+    },
 }
 
 /// GitOps 左ペインのサブフォーカス
@@ -705,6 +801,11 @@ pub struct GitOpsState {
     pub left_return_focus: LeftPaneFocus,
     /// コミット履歴（サブ構造体）
     pub commit_log: CommitLogState,
+    /// gitfilm バイナリのパス（初期化時に展開結果をキャッシュ）
+    pub gitfilm_path: Option<std::path::PathBuf>,
+    /// gitfilm シミュレーション結果の非同期受信
+    pub(crate) simulate_receiver:
+        Option<(u64, mpsc::Receiver<Result<crate::gitfilm::GitfilmSimOutput, String>>)>,
 }
 
 /// ツリー表示の1行
@@ -744,6 +845,8 @@ impl GitOpsState {
             left_focus: LeftPaneFocus::Tree,
             left_return_focus: LeftPaneFocus::Tree,
             commit_log: CommitLogState::new(),
+            gitfilm_path: crate::gitfilm::extract_gitfilm(),
+            simulate_receiver: None,
         }
     }
 

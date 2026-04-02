@@ -921,8 +921,12 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key("g/G", key_width)
         )),
         Line::from(format!(
-            "{}  Reset --soft (local mode only)",
-            fmt_key("u", key_width)
+            "{}  Undo last operation",
+            fmt_key(&kb.git_ops_undo.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Reset --soft to selected commit (local mode only)",
+            fmt_key(&kb.git_ops_reset.display(), key_width)
         )),
         Line::from(format!(
             "{}  Switch to tree pane",

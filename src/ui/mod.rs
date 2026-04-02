@@ -12,6 +12,7 @@ mod issue_detail;
 mod issue_list;
 mod pr_description;
 mod pr_list;
+mod simulate_modal;
 mod split_view;
 pub mod text_area;
 
@@ -108,6 +109,21 @@ AppState::IssueList => issue_list::render(frame, app),
         AppState::IssueCommentList => issue_comment_list::render(frame, app),
         AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff => {
             git_ops::render(frame, app)
+        }
+    }
+
+    // GitOps シミュレーションモーダル
+    if matches!(app.state, AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff) {
+        if let Some(ref ops) = app.git_ops_state {
+            match &ops.pending_confirm {
+                Some(crate::app::PendingGitOpsConfirm::Simulating { .. }) => {
+                    simulate_modal::render_simulating(frame, app);
+                }
+                Some(crate::app::PendingGitOpsConfirm::Previewing { .. }) => {
+                    simulate_modal::render_preview(frame, app);
+                }
+                _ => {}
+            }
         }
     }
 
