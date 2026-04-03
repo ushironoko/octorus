@@ -5,7 +5,8 @@ use super::client::gh_api;
 fn parse_total_count(json: &serde_json::Value) -> u32 {
     json.get("total_count")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+        .unwrap_or(0)
 }
 
 pub async fn fetch_mentioned_issues_count(repo: &str) -> Result<u32> {

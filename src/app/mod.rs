@@ -192,9 +192,9 @@ pub struct App {
     pub shell_state: Option<ShellState>,
     shell_result_receiver: Option<mpsc::Receiver<ShellCommandResult>>,
     shell_abort_handle: Option<AbortHandle>,
-    /// Cockpit 画面の全状態（None = Cockpit 非表示）
+    /// Full cockpit screen state (None = cockpit inactive).
     pub cockpit_state: Option<CockpitState>,
-    /// Cockpit 起点時のルート帰還先
+    /// Root return destination when launched from cockpit.
     pub home_state: Option<AppState>,
 }
 

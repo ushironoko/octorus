@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::github;
 
-use super::types::{CockpitMenuItem, CockpitState, LoadState, PrListState};
+use super::types::{CockpitMenuItem, LoadState, PrListState};
 use super::{App, AppState, DataState};
 
 impl App {
@@ -73,7 +73,6 @@ impl App {
         self.pr_number = None;
         self.local_mode = false;
         self.deactivate_watcher();
-        self.data_state = DataState::Loading;
         self.started_from_pr_list = false;
         self.selected_file = 0;
         self.file_list_scroll_offset = 0;
@@ -85,15 +84,16 @@ impl App {
     }
 
     pub fn open_cockpit(&mut self) {
+        debug_assert!(
+            self.cockpit_state.is_some(),
+            "open_cockpit requires prior new_cockpit initialization"
+        );
+
         let repo_available = self
             .cockpit_state
             .as_ref()
             .map(|s| s.repo_available)
             .unwrap_or(false);
-
-        if self.cockpit_state.is_none() {
-            self.cockpit_state = Some(CockpitState::new(repo_available));
-        }
 
         self.state = AppState::Cockpit;
 
