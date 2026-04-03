@@ -170,6 +170,18 @@ Zen mode displays the interface in fullscreen. Toggle it with the `Z` key.
 
 This is especially effective on small screens.
 
+### Shell Command
+
+Press `!` in any view to execute a shell command without leaving the TUI. The command runs asynchronously in the working directory and can be cancelled with `Ctrl+C` while running.
+
+Results are displayed in a scrollable popup with stdout in white and stderr in red. The exit code is shown in the title bar.
+
+**Constraints:**
+
+- Output is truncated at 1 MB
+- Timeout: configurable via `[shell].timeout_secs` (default: `10` seconds)
+- Not available during text input, filter input, or modal dialogs
+
 ### AI Rally
 
 ![AI Rally](assets/ai_rally.png)
@@ -823,6 +835,36 @@ go_to_definition = ["g", "d"]
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
 | `shell_command` | `!` | Execute shell command |
+
+### Shell Command Input
+
+| Key | Action |
+|-----|--------|
+| Characters | Type command |
+| `Enter` | Execute |
+| `Backspace` / `Delete` | Delete character |
+| `←` / `→` | Move cursor |
+| `Home` / `End` | Jump to start / end |
+| `Ctrl+u` | Clear input |
+| `Esc` | Cancel |
+
+### Shell Command Running
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+c` | Cancel execution |
+
+### Shell Command Output
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `Ctrl+d` | Page down |
+| `Ctrl+u` | Page up |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `q` / `Esc` | Close |
 
 ### Keyword Filter
 
