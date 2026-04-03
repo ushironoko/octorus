@@ -7,38 +7,13 @@
 [![Crates.io](https://img.shields.io/crates/v/octorus.svg)](https://crates.io/crates/octorus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[日本語](./README-jp.md)
+High-performance code review in your terminal for GitHub PRs, issues, local diffs, CI status, and Git operations. Includes an integrated AI-powered review cycle.
 
-View and review GitHub PR diffs and local diffs exceeding 6,000 files and 300,000 lines — right in your terminal. Two AI agents automatically review and iterate on corrections until approval.
-
->Octorus is currently undergoing significant refactoring and feature additions for v0.6.0. Some features that have not yet been released are already reflected in the README. We will deliver them to you soon, so please wait a little longer.
-
-## Features
-
-### Performance
-- Fast startup with intelligent caching
-- Tested with 6,000+ files and 300,000+ lines
-
-### AI Rally
-Automated PR review and fix cycle using AI agents. A reviewer agent analyzes diffs and posts comments, then a reviewee agent fixes issues and commits — looping until approved.
-
-### Local Diff Mode
-Preview local `git diff HEAD` in real time with file watcher — no PR required. Toggle between PR mode and Local mode on the fly (`L` key).
-
-### PR Review
-- Split view with file list and diff preview
-- Syntax highlighting with powered by tree-sitter
-- Add inline comments and code suggestions on specific lines
-- View and navigate review comments with jump-to-line
-- Submit reviews (Approve / Request Changes / Comment)
-- Vim-like symbol search(`gd`), on-the-fly file display and editing(`gf`)
-- Git log view for browsing PR commits with diff preview
-- CI checks status display with workflow details
-
-### Customization
-- Fully configurable keybindings and editor
-- Customizable AI-Rally prompt templates
-- Customizable with any syntax highlighting theme.
+## Key Features
+- **Fast and smooth**: Handles 1,000,000+ diff lines and 6,000+ files
+- **Multifunctional**: PR review, issue view, local diff view, CI status, and Git operations are integrated into one system with search, filters, comments, suggestions, and more.
+- **Automatic Review and Code Fix**: Automated review and fix workflows for Claude and Codex, while keeping the process under your control
+- **Customization**: Customize all settings, including keybindings, themes, and agent prompts
 
 ## Requirements
 
@@ -60,59 +35,36 @@ Or install via [mise](https://mise.jdx.dev/):
 mise use -g github:ushironoko/octorus
 ```
 
-Or build from source:
-
-```bash
-git clone https://github.com/ushironoko/octorus.git
-cd octorus
-cargo build --release
-cp target/release/or ~/.local/bin/
-```
-
 ## Usage
 
 ```bash
-# 1. Initialize config (recommended for AI Rally)
+# 1. Initialize config
 or init
 
-# 2. Open PR list for current repository (auto-detected from git remote)
+# 2. Open the Cockpit dashboard (default when no flags are given)
 or
 
-# 3. Open specific PR
-or --repo owner/repo --pr 123
+# 3. Open a specific PR directly
+or --pr 123
 
-# 4. Start AI Rally (select PR from list, then auto-start)
-or --ai-rally
-
-# 5. Run AI Rally in headless mode (no TUI, CI/CD friendly)
-or --repo owner/repo --pr 123 --ai-rally
-
-# 6. Run headless AI Rally on local diff
-or --local --ai-rally
-
-# 7. Preview local working tree diff in real time
+# 4. Preview local changes
 or --local
-
-# 8. Open issue list
-or --issue
-
-# 9. Open specific issue directly
-or --issue 10
 ```
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `-r, --repo <REPO>` | Repository name (e.g., "owner/repo") |
-| `-p, --pr <PR>` | Pull request number |
-| `--ai-rally` | Start AI Rally mode directly (headless when combined with `--pr` or `--local`) |
-| `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
-| `-i, --issue [NUMBER]` | Open issue list, or open a specific issue directly if number is provided |
+| `-r, --repo <REPO>` | Repository name (e.g., `owner/repo`). Auto-detected from current directory if omitted |
+| `-p, --pr [<PR>]` | Open PR list (flag only), or open a specific PR directly if number is provided |
+| `-i, --issue [<ISSUE>]` | Open issue list (flag only), or open a specific issue directly if number is provided |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
-| `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
+| `--ai-rally` | Start AI Rally mode directly. Runs in headless mode when combined with `--pr <number>` or `--local` |
 | `--git-ops` | Open Git Ops view directly on startup |
+| `--auto-focus` | Auto-focus changed file when local diff updates (local mode only) |
+| `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
 | `--accept-local-overrides` | Accept local `.octorus/` overrides for AI settings in headless mode |
+| `--output <FILE>` | Write JSON result to a file in addition to stdout (headless mode) |
 
 ### Subcommands
 
@@ -132,59 +84,114 @@ or --issue 10
 - `.octorus/config.toml` - Project-local configuration (overrides global)
 - `.octorus/prompts/` - Project-local prompt templates
 
-## AI Rally
+## Reviewing Code in your Terminal
 
-AI Rally is an automated PR review and fix cycle that uses two AI agents:
+octorus is an all-in-one review tool for the terminal UI. It shows GitHub PRs, issues, CI status, local diffs, Git Ops, and AI-Rally.
 
-- **Reviewer**: Analyzes the PR diff and provides review feedback
-- **Reviewee**: Fixes issues based on the review feedback and commits changes
+### Cockpit
 
-### How it works
+Running `or` with no flags opens the Cockpit — a dashboard that serves as the main entry point.
 
+- Live counts: issues mentioning you and PRs requesting your review
+- Navigation menu to PR List, Issue List, Local Diff, and Git Ops
+- Press `Enter` to navigate, `q` to quit, `?` for help, `r` to refresh counts
+- When no GitHub repo is detected, remote features (PR List, Issue List) are disabled; Local Diff and Git Ops remain available
+
+### Pull Requests
+
+![PR list](assets/pr_list.png)
+
+- Infinite scroll PR list with state filter (open / closed / all)
+
+![File list](assets/file_list.png)
+
+- Split view: file list (35%) + diff preview (65%), focused pane highlighted
+- Syntax highlighting powered by tree-sitter
+- Inline comments and code suggestions on specific lines
+- Multiline selection mode (`Shift+Enter`) for range comments and suggestions
+- Show Comment List for Review Comments and Discussions
+- Review submission (Approve / Request Changes / Comment)
+- Mark files and directories as viewed
+- File tree view toggle
+- Go to Definition (`gd`) with symbol popup and jump stack (up to 100 positions)
+- Go to File (`gf`) open file at cursor line in external editor (`editor` config → `$VISUAL` → `$EDITOR` → `vi`)
+- Keyword filter for PR list and file list
+- Show PR Description with Markdown renderer
+- Open PR in browser
+
+### Issues
+
+![Issue list](assets/issue_list.png)
+
+- Infinite scroll issue list with state filter (open / closed / all)
+
+![Issue detail](assets/issue_detail.png)
+
+- Issue detail view with Markdown renderer
+- Linked PR navigation — jump directly to a linked PR
+- Issue comment list and comment detail view
+- Keyword filter
+- Open issue in browser
+
+### CI Status
+
+- CI checks list with workflow name and duration
+- Status icons: `✓` (pass), `✕` (fail), `○` (pending), `-` (skipped/cancelled)
+- Open check run in browser
+
+### Local Diff
+
+![Local Diff](assets/local_diff.png)
+
+- Preview uncommitted changes (`git diff HEAD`) without creating a PR
+- Real-time file watching — diff refreshes automatically on save (ignoring `.git/` internals)
+- Auto-focus mode (`--auto-focus` or `F` key) — automatically selects the most recently changed file
+- Header shows `[LOCAL]` or `[LOCAL AF]` when auto-focus is active
+
+```bash
+or --local
+or --local --auto-focus
 ```
-┌─────────────────┐
-│  Start Rally    │  Press 'A' in File List View
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│    Reviewer     │  AI reviews the PR diff
-│ (Claude/Codex)  │  → Posts review comments to PR
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    │ Approve?│
-    └────┬────┘
-     No  │  Yes ──→ Done ✓
-         ▼
-┌─────────────────┐
-│    Reviewee     │  AI fixes issues
-│ (Claude/Codex)  │  → Commits locally (no push by default)
-└────────┬────────┘
-         │
-    ┌────┴──────────────┐
-    │                   │
-    ▼                   ▼
- Completed    NeedsClarification /
-    │          NeedsPermission
-    │                   │
-    │          User responds (y/n)
-    │                   │
-    └─────────┬─────────┘
-              ▼
-┌───────────────────────┐
-│  Re-review (Reviewer) │  Updated diff:
-│                       │  git diff (local) or
-│                       │  gh pr diff (if pushed)
-└───────────┬───────────┘
-            │
-       ┌────┴────┐
-       │ Approve?│  ... repeat until approved
-       └─────────┘       or max iterations
-```
+
+### Git Ops
+
+![Git Ops](assets/git_ops.png)
+
+- Show staging, committing, and commit history
+- Tree pane (70%) + commit history pane (30%) + diff preview
+- Stage/unstage individual files or directories
+- Discard, undo, soft-reset with Y/n confirmation showing the exact git command
+- Push to origin
+- Infinite scroll commit history
+
+### Zen mode
+
+Zen mode displays the interface in fullscreen. Toggle it with the `Z` key.
+
+This is especially effective on small screens.
+
+### Shell Command
+
+Press `!` to enter shell command mode and execute any shell command.
+
+- Runs asynchronously in the working directory
+- Not available during text input, filter input, or modal dialogs
+- Output is truncated at 1 MB
+- Timeout: configurable via `[shell].timeout_secs` (default: `10` seconds)
+
+### AI Rally
+
+![AI Rally](assets/ai_rally.png)
+
+- Automated PR review and fix cycle using two AI agents
+- **Reviewer**: analyzes the PR diff and provides review feedback
+- **Reviewee**: fixes issues based on the review feedback and commits changes
+- Permission and clarification prompts during the cycle
+- Pause / resume / retry / run in background
 
 ### Headless Mode (CI/CD)
 
-When `--ai-rally` is combined with `--pr` or `--local`, AI Rally runs in **headless mode** — no TUI is launched, all output goes to stderr, and the process exits with a code suitable for CI/CD pipelines.
+When `--ai-rally` is combined with `--pr` or `--local`, AI Rally runs in **headless mode** — no TUI is launched, all output goes to stderr.
 
 ```bash
 # Headless rally on a specific PR
@@ -196,28 +203,6 @@ or --local --ai-rally
 # With custom working directory
 or --repo owner/repo --pr 123 --ai-rally --working-dir /path/to/repo
 ```
-
-**JSON output** (stdout):
-
-Headless mode writes a JSON object to stdout on completion:
-
-```json
-{
-  "result": "Approved",
-  "iterations": 2,
-  "summary": "All issues resolved",
-  "last_review": { ... },
-  "last_fix": { ... }
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `result` | `"Approved"` / `"NotApproved"` / `"Error"` | Final outcome |
-| `iterations` | number | Number of review-fix iterations completed |
-| `summary` | string | Human-readable summary |
-| `last_review` | object \| null | Last reviewer output (if available) |
-| `last_fix` | object \| null | Last reviewee output (if available) |
 
 **Exit codes:**
 
@@ -234,26 +219,6 @@ Headless mode writes a JSON object to stdout on completion:
 | Permission needed | Auto-deny (prevents dynamic tool expansion) |
 | Post confirmation | Auto-approve (posts review/fix to PR) |
 | Agent text/thinking | Suppressed (prevents JSON leakage to stdout) |
-
-**CI/CD example (GitHub Actions):**
-
-```yaml
-- name: AI Rally Review
-  run: |
-    or --repo ${{ github.repository }} --pr ${{ github.event.pull_request.number }} --ai-rally
-```
-
-### Features
-
-- **PR Integration**: Review comments are automatically posted to the PR
-- **External Bot Support**: Collects feedback from Copilot, CodeRabbit, and other bots
-- **Safe Operations**: Dangerous git operations (`--force`, `reset --hard`) are prohibited
-- **Session Persistence**: Rally state is saved locally and can be resumed
-- **Interactive Flow**: When the AI agent needs clarification or permission, you can respond interactively
-- **Local Diff Support**: Re-review iterations prioritize local `git diff` for unpushed changes; falls back to `gh pr diff` when changes have been pushed
-- **Pause/Resume**: Press `p` to pause the rally at the next checkpoint (between iterations). Press `p` again to resume. The header shows `(Pausing...)` while waiting and `(PAUSED)` when stopped
-- **Background Execution**: Press `b` to run rally in background while continuing to browse files
-- **Auto Post**: Set `auto_post = true` in `[ai]` config to skip confirmation prompts and automatically post review/fix comments to the PR
 
 ### Recommended Configuration
 
@@ -316,125 +281,78 @@ Additional tools can be enabled via config using Claude Code's `--allowedTools` 
 reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
 
-**Breaking Change (v0.2.0)**: `git push` is now disabled by default.
-To enable, add `"Bash(git push:*)"` to `reviewee_additional_tools`.
+### octorus skills
 
-## Local Diff Mode
+Recommended setup for coding agents. Run the `or init` subcommand to create the skill file in `~/.claude/skills/octorus`.
 
-Local Diff Mode lets you preview your uncommitted changes (`git diff HEAD`) directly in the TUI — no pull request required. A file watcher detects changes in real time and refreshes the diff automatically.
-
-### Starting Local Diff Mode
-
-```bash
-# Start in local diff mode
-or --local
-
-# With auto-focus: automatically jump to the changed file on each update
-or --local --auto-focus
-```
-
-### Real-Time File Watching
-
-When running in local mode, octorus watches your working directory for file changes (ignoring `.git/` internals and access-only events). As soon as you save a file, the diff view updates automatically.
-
-### Auto-Focus
-
-When `--auto-focus` is enabled (or toggled with `F`), octorus automatically selects and focuses the file that changed most recently. If you're in the file list, it transitions to the split view diff. The selection algorithm picks the nearest changed file relative to your current cursor position.
-
-The header displays `[LOCAL]` in local mode, or `[LOCAL AF]` when auto-focus is active.
-
-### Switching Between PR and Local Mode
-
-You can toggle between PR mode and Local mode at any time by pressing `L`:
-
-```
-PR mode ──[L]──► Local mode
-  │                │
-  │  UI state is   │  Starts file watcher
-  │  saved/restored│  Shows git diff HEAD
-  │                │
-Local mode ──[L]──► PR mode
-```
-
-Your UI state (selected file, scroll position) is preserved across mode switches. If you started from a PR, pressing `L` in local mode returns you to that PR with its cached data.
-
-### Differences from PR Mode
-
-The following features are **disabled** in local mode since there is no associated pull request:
-
-| Feature | Available? |
-|---------|-----------|
-| Browse changed files | ✅ |
-| Syntax-highlighted diff | ✅ |
-| Split view | ✅ |
-| Go to definition (`gd`) | ✅ |
-| Open file in editor (`gf`) | ✅ |
-| Add inline comments | ❌ |
-| Add suggestions | ❌ |
-| Submit reviews | ❌ |
-| View comment list | ❌ |
-| View CI checks (`S`) | ❌ |
-| Open PR in browser (`O`) | ❌ |
+You can instruct the agent with "/octorus ai-rally in local".
 
 ## Configuration
+
+All octorus settings are configurable. Settings can be global or project-local.
+
+### Settings Reference
+
+#### Top-level
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `editor` | `string` | (none) | Editor command for `gf` keybinding (e.g., `"vim"`, `"code --wait"`). Ignored in local config |
+
+#### `[diff]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `theme` | `string` | `"base16-ocean.dark"` | Syntax highlighting theme. Case-insensitive. See [Theme](#theme) |
+| `tab_width` | `u8` | `4` | Tab display width. Minimum `1` (values below are clamped) |
+| `bg_color` | `bool` | `true` | Show background color on added/deleted lines |
+
+#### `[layout]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `left_panel_width` | `u16` | `35` | Left panel width percentage in split view (clamped to `10`–`90`). Right panel fills the rest |
+| `zen_mode` | `bool` | `false` | Zen mode — hides UI chrome for distraction-free diff reading |
+
+#### `[ai]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `reviewer` | `string` | `"claude"` | Reviewer agent. `"claude"` or `"codex"` |
+| `reviewee` | `string` | `"claude"` | Reviewee agent. `"claude"` or `"codex"` |
+| `max_iterations` | `u32` | `10` | Max review-fix iterations. Hard limit: `100` |
+| `timeout_secs` | `u64` | `600` | Timeout per agent invocation in seconds. Hard limit: `7200` |
+| `prompt_dir` | `string` | (none) | Custom prompt template directory. Absolute paths and `..` are rejected in local config |
+| `reviewer_additional_tools` | `string[]` | `[]` | Additional tools for reviewer (Claude only). Uses `--allowedTools` format |
+| `reviewee_additional_tools` | `string[]` | `[]` | Additional tools for reviewee (Claude only). Uses `--allowedTools` format |
+| `auto_post` | `bool` | `false` | Post reviews/fixes to PR without confirmation |
+
+#### `[git_ops]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_diff_cache` | `usize` | `20` | Max entries for commit diff cache (including prefetch) |
+
+#### `[shell]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `timeout_secs` | `u64` | `10` | Shell command execution timeout in seconds |
+
+#### `[keybindings]`
+
+See [Configurable Keybindings](#configurable-keybindings) for the full list. Three formats are supported:
+
+```toml
+[keybindings]
+move_down = "j"                          # Simple key
+page_down = { key = "d", ctrl = true }   # Key with modifier
+go_to_definition = ["g", "d"]            # Two-key sequence
+```
 
 ### Global Configuration
 
 Run `or init` to create default config files, or create `~/.config/octorus/config.toml` manually:
-
-```toml
-# Editor for writing review body.
-# Resolved in order: this value → $VISUAL → $EDITOR → vi
-# Supports arguments: editor = "code --wait"
-# editor = "vim"
-
-[diff]
-# Syntax highlighting theme for diff view
-# See "Theme" section below for available options
-theme = "base16-ocean.dark"
-# Number of spaces per tab character in diff view (minimum: 1)
-tab_width = 4
-# Show background color on added/removed lines (default: true)
-# bg_color = false
-
-[keybindings]
-# See "Configurable Keybindings" section below for all options
-approve = "a"
-request_changes = "r"
-comment = "c"
-suggestion = "s"
-
-[git_ops]
-# Maximum number of cached commit diffs (default: 20)
-max_diff_cache = 20
-
-[ai]
-# AI agent to use for reviewer/reviewee
-# Supported: "claude" (Claude Code), "codex" (OpenAI Codex CLI)
-reviewer = "claude"
-reviewee = "claude"
-
-# Maximum iterations before stopping
-max_iterations = 10
-
-# Timeout per agent execution (seconds)
-timeout_secs = 600
-
-# Custom prompt directory (default: ~/.config/octorus/prompts/)
-# prompt_dir = "/custom/path/to/prompts"
-
-# Additional tools for reviewer (Claude only)
-# Use Claude Code's --allowedTools format
-# reviewer_additional_tools = []
-
-# Additional tools for reviewee (Claude only)
-# Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
-# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
-
-# Auto-post review/fix comments to PR without confirmation prompt
-# Default is false (asks for confirmation before posting)
-# auto_post = true
-```
 
 ### Project-Local Configuration
 
@@ -572,6 +490,7 @@ Custom themes with the same name as a built-in theme will override it.
 | `Space /` | Keyword filter |
 | `R` | Refresh PR list |
 | `L` | Toggle local diff mode |
+| `Z` | Toggle zen mode |
 | `?` | Toggle help |
 | `q` | Quit |
 
@@ -602,12 +521,13 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 | `Space /` | Keyword filter |
 | `L` | Toggle local diff mode |
 | `F` | Toggle auto-focus (local mode) |
+| `Z` | Toggle zen mode |
 | `?` | Toggle help |
 | `q` | Quit |
 
 ### Split View
 
-The split view shows the file list (left, 35%) and a diff preview (right, 65%). The focused pane is highlighted with a yellow border.
+The split view shows the file list (left) and a diff preview (right). The default ratio is 35%/65%, configurable via `layout.left_panel_width`. The focused pane is highlighted with a yellow border.
 
 **File List Focus:**
 
@@ -617,6 +537,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `k` / `↑` | Move file selection (diff follows) |
 | `t` | Toggle file tree view |
 | `Enter` / `→` / `l` | Focus diff pane |
+| `Z` | Toggle zen mode |
 | `←` / `h` / `q` | Back to file list |
 
 **Diff Focus:**
@@ -707,7 +628,7 @@ The git ops view provides staging, committing, and commit history browsing in a 
 
 Destructive operations (discard, undo, reset) show a Y/n confirmation prompt with the exact git command that will be executed. The commits pane title shows `↑N` when local commits are ahead of the remote.
 
-Can be opened directly from CLI with `--git-ops` flag.
+This view can be opened directly from the CLI with the `--git-ops` flag.
 
 **Tree Focus:**
 
@@ -735,7 +656,8 @@ Can be opened directly from CLI with `--git-ops` flag.
 | `k` / `↑` | Move up in commit list |
 | `g` | Jump to first commit |
 | `G` | Jump to last commit |
-| `u` | Reset --soft to selected commit (local mode only, Y/n confirmation) |
+| `u` | Undo last operation (Y/n confirmation) |
+| `r` | Reset --soft to selected commit (local mode only, Y/n confirmation) |
 | `Tab` | Switch to tree pane |
 | `Enter` / `l` / `→` | Focus diff pane (commit diff) |
 | `q` / `Esc` | Close git ops |
@@ -785,6 +707,7 @@ Status icons: `✓` (pass), `✕` (fail), `○` (pending), `-` (skipped/cancelle
 | `O` | Open issue in browser |
 | `R` | Refresh issue list |
 | `Space /` | Keyword filter |
+| `Z` | Toggle zen mode |
 | `?` | Toggle help |
 | `q` / `Esc` | Back to PR list |
 
@@ -837,6 +760,36 @@ Status icons: `✓` (pass), `✕` (fail), `○` (pending), `-` (skipped/cancelle
 | `p` | Pause / Resume rally |
 | `r` | Retry (on error) |
 | `q` / `Esc` | Abort and exit rally |
+
+### Shell Command Input
+
+| Key | Action |
+|-----|--------|
+| Characters | Type command |
+| `Enter` | Execute |
+| `Backspace` / `Delete` | Delete character |
+| `←` / `→` | Move cursor |
+| `Home` / `End` | Jump to start / end |
+| `Ctrl+u` | Clear input |
+| `Esc` | Cancel |
+
+### Shell Command Running
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+c` | Cancel execution |
+
+### Shell Command Output
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `Ctrl+d` | Page down |
+| `Ctrl+u` | Page up |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `q` / `Esc` | Close |
 
 ### Configurable Keybindings
 
@@ -897,8 +850,18 @@ go_to_definition = ["g", "d"]
 | `go_to_file` | `gf` | Open file in $EDITOR |
 | `multiline_select` | `V` | Enter multiline selection mode |
 | `tree_toggle` | `t` | Toggle file tree view |
+| `toggle_zen_mode` | `Z` | Toggle zen mode (fullscreen diff) |
+| **Git Ops** |||
+| `git_ops_stage` | `Space` | Stage/unstage file or directory |
+| `git_ops_stage_all` | `s` | Stage all files |
+| `git_ops_discard` | `d` | Discard changes |
+| `git_ops_commit` | `c` | Commit (opens editor) |
+| `git_ops_undo` | `u` | Undo last operation |
+| `git_ops_reset` | `r` | Reset --soft to selected commit |
+| `git_ops_push` | `P` | Push to origin |
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
+| `shell_command` | `!` | Execute shell command |
 
 ### Keyword Filter
 

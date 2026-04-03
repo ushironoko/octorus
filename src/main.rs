@@ -5,6 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::ffi::OsString;
 use std::io;
 use std::panic;
 use std::path::{Path, PathBuf};
@@ -105,6 +106,53 @@ enum Commands {
     },
 }
 
+/// Print ASCII art logo with nebula gradient (#eaafc8 → #654ea3)
+fn print_logo() {
+    use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+    use std::io::IsTerminal;
+
+    const LOGO_LINES: [&str; 6] = [
+        r"  ██████╗   ██████╗ ████████╗  ██████╗  ██████╗  ██╗   ██╗ ███████╗",
+        r" ██╔═══██╗ ██╔════╝ ╚══██╔══╝ ██╔═══██╗ ██╔══██╗ ██║   ██║ ██╔════╝",
+        r" ██║   ██║ ██║         ██║    ██║   ██║ ██████╔╝ ██║   ██║ ███████╗",
+        r" ██║   ██║ ██║         ██║    ██║   ██║ ██╔══██╗ ██║   ██║ ╚════██║",
+        r" ╚██████╔╝ ╚██████╗    ██║    ╚██████╔╝ ██║  ██║ ╚██████╔╝ ███████║",
+        r"  ╚═════╝   ╚═════╝    ╚═╝     ╚═════╝  ╚═╝  ╚═╝  ╚═════╝  ╚══════╝",
+    ];
+
+    let mut stdout = io::stdout();
+    let use_color = stdout.is_terminal();
+
+    if use_color {
+        const START: (u8, u8, u8) = (234, 175, 200); // #eaafc8
+        const END: (u8, u8, u8) = (101, 78, 163); // #654ea3
+        let steps = (LOGO_LINES.len() - 1) as f32;
+
+        for (i, line) in LOGO_LINES.iter().enumerate() {
+            let t = i as f32 / steps;
+            let r = (START.0 as f32 + (END.0 as f32 - START.0 as f32) * t) as u8;
+            let g = (START.1 as f32 + (END.1 as f32 - START.1 as f32) * t) as u8;
+            let b = (START.2 as f32 + (END.2 as f32 - START.2 as f32) * t) as u8;
+            let _ = execute!(
+                stdout,
+                SetForegroundColor(Color::Rgb { r, g, b }),
+                Print(line),
+                ResetColor,
+                Print("\n")
+            );
+        }
+    } else {
+        for line in &LOGO_LINES {
+            println!("{line}");
+        }
+    }
+    println!();
+}
+
+fn is_root_help(raw_args: &[OsString]) -> bool {
+    raw_args.len() == 1 && raw_args[0].to_str().is_some_and(|arg| arg == "-h" || arg == "--help")
+}
+
 /// Restore terminal to normal state
 fn restore_terminal() {
     octorus::ui::cleanup_keyboard_enhancement();
@@ -143,6 +191,15 @@ async fn main() -> Result<()> {
                 tracing::info!("Debug logging enabled");
             }
         }
+    }
+
+    let raw_args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if raw_args.is_empty() || is_root_help(&raw_args) {
+        use clap::CommandFactory;
+        print_logo();
+        Args::command().print_help()?;
+        println!();
+        return Ok(());
     }
 
     let args = Args::parse();
