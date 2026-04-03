@@ -172,15 +172,12 @@ This is especially effective on small screens.
 
 ### Shell Command
 
-Press `!` in any view to execute a shell command without leaving the TUI. The command runs asynchronously in the working directory and can be cancelled with `Ctrl+C` while running.
+Press `!` to enter shell command mode and execute any shell command.
 
-Results are displayed in a scrollable popup with stdout in white and stderr in red. The exit code is shown in the title bar.
-
-**Constraints:**
-
+- Runs asynchronously in the working directory
+- Not available during text input, filter input, or modal dialogs
 - Output is truncated at 1 MB
 - Timeout: configurable via `[shell].timeout_secs` (default: `10` seconds)
-- Not available during text input, filter input, or modal dialogs
 
 ### AI Rally
 
