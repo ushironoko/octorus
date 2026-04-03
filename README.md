@@ -764,6 +764,36 @@ Status icons: `✓` (pass), `✕` (fail), `○` (pending), `-` (skipped/cancelle
 | `r` | Retry (on error) |
 | `q` / `Esc` | Abort and exit rally |
 
+### Shell Command Input
+
+| Key | Action |
+|-----|--------|
+| Characters | Type command |
+| `Enter` | Execute |
+| `Backspace` / `Delete` | Delete character |
+| `←` / `→` | Move cursor |
+| `Home` / `End` | Jump to start / end |
+| `Ctrl+u` | Clear input |
+| `Esc` | Cancel |
+
+### Shell Command Running
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+c` | Cancel execution |
+
+### Shell Command Output
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `Ctrl+d` | Page down |
+| `Ctrl+u` | Page up |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `q` / `Esc` | Close |
+
 ### Configurable Keybindings
 
 All keybindings can be customized in the `[keybindings]` section. Three formats are supported:
@@ -835,36 +865,6 @@ go_to_definition = ["g", "d"]
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
 | `shell_command` | `!` | Execute shell command |
-
-### Shell Command Input
-
-| Key | Action |
-|-----|--------|
-| Characters | Type command |
-| `Enter` | Execute |
-| `Backspace` / `Delete` | Delete character |
-| `←` / `→` | Move cursor |
-| `Home` / `End` | Jump to start / end |
-| `Ctrl+u` | Clear input |
-| `Esc` | Cancel |
-
-### Shell Command Running
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+c` | Cancel execution |
-
-### Shell Command Output
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Scroll down |
-| `k` / `↑` | Scroll up |
-| `Ctrl+d` | Page down |
-| `Ctrl+u` | Page up |
-| `g` | Jump to top |
-| `G` | Jump to bottom |
-| `q` / `Esc` | Close |
 
 ### Keyword Filter
 
