@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     // Set up panic hook before anything else
     setup_panic_hook();
 
-    // OR_DEBUG=1 でファイルログを有効化（TUI の画面を壊さないよう stderr ではなくファイルに出力）
+    // OR_DEBUG=1 enables file logging (file, not stderr, to avoid corrupting the TUI)
     if std::env::var("OR_DEBUG").ok().as_deref() == Some("1") {
         let log_dir = cache::cache_dir();
         if std::fs::create_dir_all(&log_dir).is_ok() {
@@ -169,25 +169,19 @@ async fn main() -> Result<()> {
         };
     }
 
-    // No action flags → show help (PR and Issue are treated equally, no implicit default)
-    if args.pr.is_none() && !args.local && args.issue.is_none() && !args.git_ops {
-        use clap::CommandFactory;
-        Args::command().print_help()?;
-        println!();
-        return Ok(());
-    }
+    let is_no_args = args.pr.is_none() && !args.local && args.issue.is_none() && !args.git_ops;
 
-    let repo = match args.repo.clone() {
-        Some(r) => r,
+    let (repo, repo_available) = match args.repo.clone() {
+        Some(r) => (r, true),
         None => {
-            if args.local {
-                // --local: detect_repo を試みるが、失敗しても "local" でフォールバック
-                github::detect_repo()
-                    .await
-                    .unwrap_or_else(|_| "local".to_string())
+            if args.local || is_no_args {
+                match github::detect_repo().await {
+                    Ok(r) => (r, true),
+                    Err(_) => ("local".to_string(), false),
+                }
             } else {
                 match github::detect_repo().await {
-                    Ok(r) => r,
+                    Ok(r) => (r, true),
                     Err(e) => {
                         eprintln!("Error: {}", e);
                         std::process::exit(1);
@@ -196,6 +190,15 @@ async fn main() -> Result<()> {
             }
         }
     };
+
+    if is_no_args {
+        let config = if let Some(ref dir) = args.working_dir {
+            config::Config::load_for_dir(Path::new(dir))?
+        } else {
+            config::Config::load()?
+        };
+        return run_with_cockpit(&repo, config, &args, repo_available).await;
+    }
 
     // Pre-initialize syntax highlighting in background to avoid delay on first diff view
     std::thread::spawn(|| {
@@ -305,9 +308,8 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
                             }
                         }
                         RefreshRequest::PrRefresh { .. } => {
-                            // ローカルモードでは PrRefresh を無視する。
-                            // pr_number == 0 の擬似値で API 呼び出しすると無効なリクエストになるため、
-                            // LocalRefresh として処理する。
+                            // In local mode, pr_number == 0 is a dummy value that would
+                            // produce invalid API calls, so treat PrRefresh as LocalRefresh.
                             let tx_retry = tx.clone();
                             loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
                         }
@@ -387,11 +389,9 @@ fn is_octorus_config_file(path: &Path) -> bool {
 
 /// Run the app with a specific PR number (existing flow)
 async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) -> Result<()> {
-    // リトライ用のチャンネル
     let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
     let refresh_pending = Arc::new(AtomicBool::new(false));
 
-    // 常に Loading 状態で開始し、バックグラウンドで API 取得
     let (mut app, tx) = app::App::new_loading(repo, pr, config.clone());
 
     app.set_retry_sender(retry_tx);
@@ -441,10 +441,7 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
         }
     });
 
-    // Run the app and ensure terminal is restored on error
     let result = app.run().await;
-
-    // Signal background tasks to stop
     cancel_token.cancel();
 
     if let Err(ref e) = result {
@@ -452,11 +449,8 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
         eprintln!("Error: {:#}", e);
     }
 
-    // spawn_blocking タスク（プリフェッチ等）が巨大ファイル処理中の場合、
-    // tokio ランタイムの drop が完了を待ち続けるため、即座にプロセスを終了する。
-    // これにより Drop ベースのクリーンアップはスキップされるが、バックグラウンドタスクは
-    // cancel_token.cancel() で明示的に停止済みであり、残るのは spawn_blocking の
-    // tree-sitter パース処理のみ。OS がプロセス終了時にリソースを回収するため問題なし。
+    // Immediate exit to avoid hanging on spawn_blocking tasks (e.g. tree-sitter
+    // parsing). Background tasks are already cancelled; the OS reclaims resources.
     let exit_code = if result.is_ok() { 0 } else { 1 };
     std::process::exit(exit_code);
 }
@@ -468,7 +462,7 @@ async fn run_with_pr_list(
     args: &Args,
     issue_arg: Option<u32>,
 ) -> Result<()> {
-    // リトライ用のチャンネル（PR リスト画面から Local モードへの切替に対応）
+    // Retry channel also handles PR list → Local mode transitions.
     let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
     let refresh_pending = Arc::new(AtomicBool::new(false));
 
@@ -484,21 +478,17 @@ async fn run_with_pr_list(
         app.open_git_ops();
     }
 
-    // --issue: Issue モードで開始
     match issue_arg {
         Some(n) if n > 0 => {
-            // --issue 10: Issue Detail を直接開く
             app.open_issue_list();
             app.select_issue(n);
         }
         Some(_) => {
-            // --issue (番号なし): Issue 一覧で開始
             app.open_issue_list();
         }
         None => {}
     }
 
-    // Start loading PR list
     let (pr_list_tx, rx) = mpsc::channel(2);
     app.set_pr_list_receiver(rx);
 
@@ -510,15 +500,12 @@ async fn run_with_pr_list(
         let _ = pr_list_tx.send(result.map_err(|e| e.to_string())).await;
     });
 
-    // データ取得用チャンネル（Local モード切替時に使用）
+    // Data channel for local-mode transitions from the PR list screen.
     let (data_tx, data_rx) = mpsc::channel(2);
     app.set_data_receiver(0, data_rx);
 
-    // Cancellation token for graceful shutdown
     let cancel_token = CancellationToken::new();
     let token_clone = cancel_token.clone();
-
-    // リトライループ（Local/PR リフレッシュ対応）
     let repo_for_retry = repo.to_string();
     let working_dir = args.working_dir.clone();
 
@@ -549,10 +536,7 @@ async fn run_with_pr_list(
         }
     });
 
-    // Run the app
     let result = app.run().await;
-
-    // Signal background tasks to stop
     cancel_token.cancel();
 
     if let Err(ref e) = result {
@@ -560,9 +544,72 @@ async fn run_with_pr_list(
         eprintln!("Error: {:#}", e);
     }
 
-    // run_with_pr と同様、spawn_blocking タスクの完了待ちによるハングを防止するため
-    // 即座にプロセスを終了する。バックグラウンドタスクやサブプロセスの明示的な停止は
-    // app.run() 内で完了済み。
+    // Same immediate-exit rationale as run_with_pr.
+    let exit_code = if result.is_ok() { 0 } else { 1 };
+    std::process::exit(exit_code);
+}
+
+/// Run the app with Cockpit dashboard (no-args startup)
+async fn run_with_cockpit(
+    repo: &str,
+    config: config::Config,
+    args: &Args,
+    repo_available: bool,
+) -> Result<()> {
+    let (retry_tx, mut retry_rx) = mpsc::channel::<app::RefreshRequest>(1);
+    let refresh_pending = Arc::new(AtomicBool::new(false));
+
+    let mut app = app::App::new_cockpit(repo, config, repo_available);
+    app.set_retry_sender(retry_tx);
+    start_update_check(&mut app);
+    setup_working_dir(&mut app, args);
+
+    app.open_cockpit();
+
+    let (data_tx, data_rx) = mpsc::channel(2);
+    app.set_data_receiver(0, data_rx);
+
+    let cancel_token = CancellationToken::new();
+    let token_clone = cancel_token.clone();
+
+    let repo_for_retry = repo.to_string();
+    let working_dir = args.working_dir.clone();
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = token_clone.cancelled() => {}
+            _ = async {
+                while let Some(request) = retry_rx.recv().await {
+                    match request {
+                        app::RefreshRequest::PrRefresh { pr_number } => {
+                            let tx_retry = data_tx.clone();
+                            loader::fetch_pr_data(repo_for_retry.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
+                                .await;
+                        }
+                        app::RefreshRequest::LocalRefresh => {
+                            refresh_pending.store(false, Ordering::Release);
+                            loop {
+                                let tx_retry = data_tx.clone();
+                                loader::fetch_local_diff(repo_for_retry.clone(), working_dir.clone(), tx_retry).await;
+                                if !refresh_pending.swap(false, Ordering::AcqRel) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } => {}
+        }
+    });
+
+    let result = app.run().await;
+    cancel_token.cancel();
+
+    if let Err(ref e) = result {
+        restore_terminal();
+        eprintln!("Error: {:#}", e);
+    }
+
     let exit_code = if result.is_ok() { 0 } else { 1 };
     std::process::exit(exit_code);
 }
@@ -594,8 +641,7 @@ fn setup_working_dir(app: &mut app::App, args: &Args) {
     if let Some(dir) = args.working_dir.clone() {
         app.set_working_dir(Some(dir));
     } else {
-        // Use current directory as default.
-        // Note: current_dir() can fail in edge cases (e.g., if the current directory
+        // current_dir() can fail in edge cases (e.g., if the current directory
         // has been deleted, or on some restricted environments). When --ai-rally is
         // used without --working-dir, we need a valid directory for the AI agents.
         match std::env::current_dir() {

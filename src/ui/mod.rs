@@ -1,5 +1,6 @@
 mod ai_rally;
 mod checks_list;
+mod cockpit;
 mod comment_list;
 pub(crate) mod common;
 pub mod diff_view;
@@ -110,6 +111,7 @@ AppState::IssueList => issue_list::render(frame, app),
         AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff => {
             git_ops::render(frame, app)
         }
+        AppState::Cockpit => cockpit::render(frame, app),
     }
 
     // GitOps シミュレーションモーダル
