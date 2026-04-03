@@ -30,9 +30,27 @@ fn init_help_exits_successfully() {
         .success();
 }
 
-// no-args now launches the Cockpit TUI (alternate screen),
-// which cannot be tested via assert_cmd.
-// Cockpit startup routing is covered by unit tests in src/app/cockpit.rs.
+// No-args launches the Cockpit TUI (alternate screen), so we can't test
+// the full flow via assert_cmd. But we CAN verify that the binary does NOT
+// fall back to printing help — it should attempt to enter TUI mode and
+// eventually fail or hang (timeout), never printing "Usage:" to stdout.
+#[test]
+fn no_args_does_not_print_help() {
+    let output = cargo_bin_cmd!("or")
+        .timeout(std::time::Duration::from_secs(3))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Usage"),
+        "no-args should enter Cockpit, not print help"
+    );
+    assert!(
+        !stdout.contains(HELP_BANNER_LINE),
+        "no-args should enter Cockpit, not print help banner"
+    );
+}
 
 #[test]
 fn invalid_repo_exits_with_error() {

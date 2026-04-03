@@ -194,7 +194,7 @@ async fn main() -> Result<()> {
     }
 
     let raw_args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    if raw_args.is_empty() || is_root_help(&raw_args) {
+    if is_root_help(&raw_args) {
         use clap::CommandFactory;
         print_logo();
         Args::command().print_help()?;
