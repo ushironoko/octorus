@@ -17,14 +17,14 @@ use crate::github::{
     IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
 
-/// コメントのdiff内位置を表す構造体
+/// Position of a comment within the diff.
 #[derive(Debug, Clone)]
 pub struct CommentPosition {
     pub diff_line_index: usize,
     pub comment_index: usize,
 }
 
-/// ジャンプ履歴の1エントリ（Go to Definition / Jump Back 用）
+/// Single entry in the jump history stack (Go to Definition / Jump Back).
 #[derive(Debug, Clone)]
 pub struct JumpLocation {
     pub file_index: usize,
@@ -32,103 +32,95 @@ pub struct JumpLocation {
     pub scroll_offset: usize,
 }
 
-/// シンボル選択ポップアップの状態
+/// State for the symbol selection popup.
 #[derive(Debug, Clone)]
 pub struct SymbolPopupState {
-    /// 候補シンボル一覧 (name, start, end)
+    /// Candidate symbols: (name, start, end).
     pub symbols: Vec<(String, usize, usize)>,
-    /// 選択中のインデックス
     pub selected: usize,
 }
 
-/// インターン済みの Span（アロケーション削減）
-///
-/// 文字列をインターナーに格納し、4バイトの Spur で参照することで
-/// 重複トークンのアロケーションを削減する。
+/// Interned span: a 4-byte `Spur` reference + style, reducing allocations
+/// for repeated tokens.
 #[derive(Clone)]
 pub struct InternedSpan {
-    /// インターン済み文字列への参照（4 bytes）
     pub content: Spur,
-    /// スタイル情報（8 bytes）
     pub style: Style,
 }
 
 pub type SpanVec = SmallVec<[InternedSpan; 8]>;
 
-/// Diff行のキャッシュ（シンタックスハイライト済み）
+/// Cached diff line with syntax-highlighted spans.
 #[derive(Clone)]
 pub struct CachedDiffLine {
-    /// 基本の Span（REVERSED なし）
+    /// Base spans (without REVERSED modifier).
     pub spans: SpanVec,
-    /// 行の種類（背景色の決定に使用）
+    /// Used to determine background color.
     pub line_type: LineType,
 }
 
-/// Diff表示のキャッシュ
+/// Diff rendering cache.
 pub struct DiffCache {
-    /// キャッシュ対象のファイルインデックス
     pub file_index: usize,
-    /// patch のハッシュ（変更検出用）
+    /// Hash of the patch content for change detection.
     pub patch_hash: u64,
-    /// パース済みの行データ
     pub lines: Vec<CachedDiffLine>,
-    /// 文字列インターナー（キャッシュ内で共有）
+    /// String interner shared across this cache.
     pub interner: Rodeo,
-    /// シンタックスハイライト済みかどうか（プレーンキャッシュは false）
+    /// False for plain caches (diff coloring only).
     pub highlighted: bool,
-    /// Markdown リッチ表示モードで構築されたかどうか
     pub markdown_rich: bool,
 }
 
 impl DiffCache {
-    /// Spur を文字列参照に解決する
+    /// Resolve a `Spur` to a string reference.
     ///
-    /// ライフタイムは DiffCache に依存するため、ゼロコピーでレンダリング可能。
+    /// Lifetime is tied to DiffCache, enabling zero-copy rendering.
     pub fn resolve(&self, spur: Spur) -> &str {
         self.interner.resolve(&spur)
     }
 }
 
-/// 文字列のハッシュを計算
+/// Compute a hash for the given string.
 pub fn hash_string(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     s.hash(&mut hasher);
     hasher.finish()
 }
 
-/// 複数行選択の状態
+/// Multiline selection state.
 #[derive(Debug, Clone)]
 pub struct MultilineSelection {
-    /// 選択開始行（diff内のインデックス）。Shift+Enter押下時の行。
+    /// Anchor line (diff index). Set on Shift+Enter.
     pub anchor_line: usize,
-    /// 選択終了行（diff内のインデックス）。カーソル移動で更新。
+    /// Cursor line (diff index). Updated on cursor movement.
     pub cursor_line: usize,
 }
 
 impl MultilineSelection {
-    /// 選択範囲の先頭行（小さい方）
+    /// First line of the selection (the smaller index).
     pub fn start(&self) -> usize {
         self.anchor_line.min(self.cursor_line)
     }
 
-    /// 選択範囲の末尾行（大きい方）
+    /// Last line of the selection (the larger index).
     pub fn end(&self) -> usize {
         self.anchor_line.max(self.cursor_line)
     }
 }
 
-/// 行ベース入力のコンテキスト（コメント/サジェスチョン共通）
+/// Line-based input context shared by comment and suggestion modes.
 #[derive(Debug, Clone)]
 pub struct LineInputContext {
     pub file_index: usize,
     pub line_number: u32,
-    /// patch 内の position（1始まり）。GitHub API の `position` パラメータに対応。
+    /// 1-based position within the patch; maps to GitHub API `position`.
     pub diff_position: u32,
-    /// 複数行選択時の開始行番号（new file の行番号）
+    /// Start line number in the new file (for multiline selections).
     pub start_line_number: Option<u32>,
 }
 
-/// 統一入力モード
+/// Unified input mode.
 #[derive(Debug, Clone)]
 pub enum InputMode {
     Comment(LineInputContext),
@@ -164,10 +156,11 @@ IssueList,
     IssueCommentList,
     GitOpsSplitTree,
     GitOpsSplitDiff,
+    Cockpit,
 }
 
 impl AppState {
-    /// PR データ（DataState）に依存しない画面かどうか
+    /// Whether this screen is independent of PR DataState.
     pub fn is_data_state_independent(self) -> bool {
         matches!(
             self,
@@ -181,10 +174,11 @@ impl AppState {
                 | Self::TextInput
                 | Self::GitOpsSplitTree
                 | Self::GitOpsSplitDiff
+                | Self::Cockpit
         )
     }
 
-    /// Issue 系の画面かどうか
+    /// Whether this is an Issue-related screen.
     pub fn is_issue(self) -> bool {
         matches!(
             self,
@@ -337,14 +331,95 @@ pub enum CommentTab {
     Discussion,
 }
 
-/// リトライリクエストの種類（統一リトライループで使用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CockpitMenuItem {
+    PrList,
+    IssueList,
+    LocalDiff,
+    GitOps,
+}
+
+impl CockpitMenuItem {
+    pub const ALL: [Self; 4] = [Self::PrList, Self::IssueList, Self::LocalDiff, Self::GitOps];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_index(i: usize) -> Self {
+        Self::ALL[i.min(Self::ALL.len() - 1)]
+    }
+
+    pub fn next(self) -> Self {
+        Self::from_index(self.index().saturating_add(1))
+    }
+
+    pub fn prev(self) -> Self {
+        Self::from_index(self.index().saturating_sub(1))
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PrList => "PR List",
+            Self::IssueList => "Issue List",
+            Self::LocalDiff => "Local Diff",
+            Self::GitOps => "Git Ops",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::PrList => "Browse pull requests",
+            Self::IssueList => "Browse issues",
+            Self::LocalDiff => "View local git diff",
+            Self::GitOps => "Git operations (stage, commit, push)",
+        }
+    }
+
+    /// Whether this item requires a GitHub repo to function.
+    pub fn requires_repo(self) -> bool {
+        matches!(self, Self::PrList | Self::IssueList)
+    }
+}
+
+pub struct CockpitState {
+    pub selected_item: CockpitMenuItem,
+    pub mentioned_issues_count: LoadState<u32>,
+    pub review_prs_count: LoadState<u32>,
+    pub(crate) mentioned_receiver: Option<mpsc::Receiver<Result<u32, String>>>,
+    pub(crate) review_receiver: Option<mpsc::Receiver<Result<u32, String>>>,
+    pub repo_available: bool,
+}
+
+impl CockpitState {
+    pub fn new(repo_available: bool) -> Self {
+        Self {
+            selected_item: CockpitMenuItem::PrList,
+            mentioned_issues_count: if repo_available {
+                LoadState::Loading
+            } else {
+                LoadState::NotLoaded
+            },
+            review_prs_count: if repo_available {
+                LoadState::Loading
+            } else {
+                LoadState::NotLoaded
+            },
+            mentioned_receiver: None,
+            review_receiver: None,
+            repo_available,
+        }
+    }
+}
+
+/// Retry request variants dispatched through the unified retry loop.
 #[derive(Debug, Clone)]
 pub enum RefreshRequest {
     PrRefresh { pr_number: u32 },
     LocalRefresh,
 }
 
-/// PRファイルの viewed 変更結果
+/// Result of a file viewed-state mutation.
 #[derive(Debug, Clone)]
 pub(super) enum MarkViewedResult {
     Completed {
@@ -355,20 +430,19 @@ pub(super) enum MarkViewedResult {
     },
 }
 
-/// ファイルウォッチャーのハンドル
+/// Handle for the file watcher thread.
 ///
-/// `active` フラグで callback の処理を制御する。
-/// スレッド自体は `_thread` で保持され、プロセス終了まで生存する。
+/// The `active` flag gates callback processing.
+/// The thread itself lives in `_thread` and survives until process exit.
 pub struct WatcherHandle {
     pub(crate) active: Arc<AtomicBool>,
     pub(crate) _thread: std::thread::JoinHandle<()>,
 }
 
-/// PRデータの読み込み状態。
+/// PR data loading state.
 ///
-/// `Loaded` のフィールドは `Arc` ではなく `Box`/`Vec` で保持する。
-/// `SessionCache` との間のデータ分配は `clone()` で行う（PR更新時のみ発生）。
-/// シングルスレッドで完結する設計のため、`Arc` による共有所有権は不要。
+/// Fields use `Box`/`Vec` instead of `Arc` because the app is single-threaded;
+/// data is shared with `SessionCache` via `clone()` (only on PR refresh).
 #[derive(Debug, Clone)]
 pub enum DataState {
     Loading,
@@ -430,7 +504,7 @@ impl<T> LoadState<T> {
     }
 }
 
-/// Git status のファイルステータス
+/// Git status file status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
     Unmodified,
@@ -475,7 +549,7 @@ impl FileStatus {
     }
 }
 
-/// git status --porcelain=v1 の1エントリ
+/// Single entry from `git status --porcelain=v1`.
 #[derive(Debug, Clone)]
 pub struct GitStatusEntry {
     pub path: String,
@@ -490,7 +564,7 @@ pub struct GitStatusEntry {
 }
 
 impl GitStatusEntry {
-    /// staged 状態か（index が Unmodified/Untracked/Ignored 以外）
+    /// Whether this file is staged (index is not Unmodified/Untracked/Ignored).
     pub fn is_staged(&self) -> bool {
         !matches!(
             self.index_status,
@@ -498,7 +572,7 @@ impl GitStatusEntry {
         )
     }
 
-    /// worktree 変更があるか
+    /// Whether the worktree has changes.
     pub fn has_worktree_changes(&self) -> bool {
         !matches!(
             self.worktree_status,
@@ -518,14 +592,12 @@ impl GitStatusEntry {
         }
     }
 
-    /// 変更種別ラベル: ファイルの性質を固定幅2文字で返す
+    /// Fixed-width 2-char change type label.
     ///
-    /// stage/unstage で変化しない。色だけが変わる。
-    /// 判定ロジック: index/worktree の両方を見て「このファイルは何の変更か」を決定。
-    /// optimistic_stage/unstage で index/worktree が入れ替わっても結果が同じになるよう、
-    /// 両方の非trivialな状態から種別を判定する。
+    /// Stable across stage/unstage: both index and worktree statuses are
+    /// considered so that optimistic stage/unstage swaps produce the same label.
     pub fn change_type_label(&self) -> &'static str {
-        // untracked/added は同じ「新規ファイル」
+        // untracked and added are both "new file"
         if self.index_status == FileStatus::Untracked
             || self.worktree_status == FileStatus::Untracked
             || (self.index_status == FileStatus::Added
@@ -534,7 +606,7 @@ impl GitStatusEntry {
             return "??";
         }
 
-        // index 側が非trivial ならそれを使う（staged 状態）
+        // Prefer index status when non-trivial (staged state).
         let kind = if self.index_status != FileStatus::Unmodified {
             self.index_status
         } else {
@@ -553,7 +625,7 @@ impl GitStatusEntry {
     }
 }
 
-/// git update-index --cacheinfo で使用するインデックスエントリ
+/// Index entry for `git update-index --cacheinfo`.
 #[derive(Debug, Clone)]
 pub struct IndexEntry {
     pub mode: String,
@@ -561,25 +633,24 @@ pub struct IndexEntry {
     pub path: String,
 }
 
-/// Undo スタックのアクション
+/// Undo stack action.
 pub enum UndoAction {
-    /// commit を取り消す（git reset --soft HEAD~1）
+    /// Undo commit (git reset --soft HEAD~1).
     Commit,
-    /// stage を取り消す（インデックスを前の状態に精密復元）
+    /// Undo stage (precise index restoration).
     ///
-    /// `previous_index_entries` に操作前のインデックスエントリを保持。
-    /// MM ファイルの部分ステージを安全に復元するため、
-    /// `git restore --staged` ではなく `git update-index --cacheinfo` を使用。
+    /// Uses `git update-index --cacheinfo` instead of `git restore --staged`
+    /// to safely restore partial staging of MM files.
     Stage {
         paths: Vec<String>,
         previous_index_entries: Vec<IndexEntry>,
     },
-    /// unstage を取り消す（git add -- <paths>）
+    /// Undo unstage (git add -- <paths>).
     Unstage { paths: Vec<String> },
-    /// stage all を取り消す（インデックスツリーを前の状態に復元）
+    /// Undo stage-all (restore index tree).
     ///
-    /// `tree_hash` に `git write-tree` で保存したツリーハッシュを保持。
-    /// undo 時に `git read-tree` で完全復元。
+    /// `tree_hash` holds the tree hash saved by `git write-tree`;
+    /// undo restores it via `git read-tree`.
     StageAll { tree_hash: Option<String> },
 }
 
@@ -623,7 +694,7 @@ impl UndoAction {
     }
 }
 
-/// 構造化された破壊的操作
+/// Structured destructive operation.
 #[derive(Debug, Clone)]
 pub enum DestructiveOp {
     Discard { path: String },
@@ -636,7 +707,7 @@ pub enum DestructiveOp {
 }
 
 impl DestructiveOp {
-    /// gitfilm に渡す操作文字列を生成（各要素が1つの操作）
+    /// Generate operation strings for gitfilm (one per element).
     pub fn to_gitfilm_args(&self) -> Vec<String> {
         match self {
             Self::Discard { path } => vec![format!("restore {}", path)],
@@ -661,7 +732,7 @@ impl DestructiveOp {
         }
     }
 
-    /// 表示用のコマンド文字列
+    /// Human-readable command string for display.
     pub fn display_command(&self) -> String {
         match self {
             Self::Discard { path } => format!("git restore -- {}", path),
@@ -681,29 +752,29 @@ impl DestructiveOp {
     }
 }
 
-/// gitfilm シミュレーション結果の UI 用モデル
+/// UI model for gitfilm simulation results.
 #[derive(Debug, Clone)]
 pub struct SimulationPreview {
     pub before: crate::gitfilm::GitfilmAreaSnapshot,
     pub after: crate::gitfilm::GitfilmAreaSnapshot,
 }
 
-/// 確認モーダルの表示内容
+/// Confirmation modal content.
 #[derive(Debug, Clone)]
 pub enum SimulationResult {
     Success(SimulationPreview),
-    /// シミュレーションなし、メッセージのみの確認（force push 等）
+    /// Message-only confirmation without simulation (e.g. force push).
     Message(String),
 }
 
-/// GitOps の破壊的操作の確認待ち状態
+/// Pending confirmation state for GitOps destructive operations.
 #[derive(Debug, Clone)]
 pub enum PendingGitOpsConfirm {
-    /// gitfilm未対応時のフォールバック（現行動作互換）
+    /// Fallback when gitfilm is unavailable (legacy-compatible).
     Simple { op: DestructiveOp },
-    /// gitfilm シミュレーション実行中
+    /// gitfilm simulation in progress.
     Simulating { op: DestructiveOp, abort_id: u64 },
-    /// シミュレーション結果表示中（モーダル）
+    /// Displaying simulation results (modal).
     Previewing {
         op: DestructiveOp,
         result: SimulationResult,
@@ -711,7 +782,7 @@ pub enum PendingGitOpsConfirm {
     },
 }
 
-/// GitOps 左ペインのサブフォーカス
+/// GitOps left pane sub-focus.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LeftPaneFocus {
     #[default]
@@ -719,7 +790,7 @@ pub enum LeftPaneFocus {
     Commits,
 }
 
-/// コミット履歴関連の全状態（GitOpsState のサブ構造体）
+/// Commit history state (sub-struct of GitOpsState).
 pub struct CommitLogState {
     pub commits: Vec<PrCommit>,
     pub selected: usize,
@@ -766,58 +837,50 @@ impl CommitLogState {
     }
 }
 
-/// GitOps 画面の全状態
+/// Full state for the GitOps screen.
 pub struct GitOpsState {
     pub entries: Vec<GitStatusEntry>,
-    /// ツリービュー状態（FileTreeState に委譲）
+    /// Tree view state (delegated to FileTreeState).
     pub tree: crate::app::file_tree::FileTreeState,
     pub diff_store: DiffCacheStore<String>,
     pub diff_scroll: DiffScrollState,
-    /// 呼び出し元の AppState（close 時に復帰）
+    /// Caller's AppState to restore on close.
     pub return_state: AppState,
-    /// 非同期 git status 受信
     pub(crate) status_receiver: Option<mpsc::Receiver<Result<Vec<GitStatusEntry>, String>>>,
-    /// 非同期 git diff patch 受信（ファイルパスごとの on-demand diff）
+    /// Per-file on-demand diff patch receiver.
     pub(crate) diff_patch_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
-    /// 非同期 git 操作結果受信（stage/unstage/discard/commit undo etc.）
+    /// Git operation result receiver (stage/unstage/discard/commit undo etc.).
     pub(crate) op_receiver: Option<mpsc::Receiver<Result<String, String>>>,
-    /// 操作結果メッセージ（タイマー付き自動消去）
+    /// Operation result message with auto-clear timer.
     pub op_message: Option<(String, std::time::Instant)>,
-    /// Undo スタック
     pub undo_stack: Vec<UndoAction>,
-    /// 破壊的操作の確認待ち
     pub pending_confirm: Option<PendingGitOpsConfirm>,
-    /// status 更新フラグ（prefetch トリガー用）
+    /// Status-updated flag used to trigger prefetch.
     pub(crate) status_updated: bool,
-    /// Push 実行中フラグ
     pub pushing: bool,
-    /// ローカルがリモートより先行しているコミット数
+    /// Number of local commits ahead of the remote.
     pub ahead_count: u32,
-    /// ahead_count 非同期受信
     pub(crate) ahead_receiver: Option<mpsc::Receiver<u32>>,
-    /// 左ペインのサブフォーカス（Tree / Commits）
     pub left_focus: LeftPaneFocus,
-    /// Diff から戻る先の左サブペイン
+    /// Left sub-pane to return to from diff.
     pub left_return_focus: LeftPaneFocus,
-    /// コミット履歴（サブ構造体）
     pub commit_log: CommitLogState,
-    /// gitfilm バイナリのパス（初期化時に展開結果をキャッシュ）
+    /// Cached gitfilm binary path (resolved once at init).
     pub gitfilm_path: Option<std::path::PathBuf>,
-    /// gitfilm シミュレーション結果の非同期受信
     pub(crate) simulate_receiver:
         Option<(u64, mpsc::Receiver<Result<crate::gitfilm::GitfilmSimOutput, String>>)>,
 }
 
-/// ツリー表示の1行
+/// Single row in the tree view.
 #[derive(Debug, Clone)]
 pub enum TreeRow {
-    /// ディレクトリ行
+    /// Directory row.
     Dir {
         path: String,
         depth: usize,
         expanded: bool,
     },
-    /// ファイル行
+    /// File row.
     File {
         index: usize,
         depth: usize,
@@ -850,17 +913,17 @@ impl GitOpsState {
         }
     }
 
-    /// staged ファイルが存在するか
+    /// Whether any staged files exist.
     pub fn has_staged_files(&self) -> bool {
         self.entries.iter().any(|e| e.is_staged())
     }
 
-    /// unmerged ファイルが存在するか
+    /// Whether any unmerged files exist.
     pub fn has_unmerged_files(&self) -> bool {
         self.entries.iter().any(|e| e.unmerged)
     }
 
-    /// 現在選択中のエントリのパスを返す
+    /// Return the path of the currently selected entry.
     pub fn selected_path(&self) -> Option<&str> {
         self.tree
             .selected_file_index()
@@ -871,7 +934,7 @@ impl GitOpsState {
 /// Receiver with origin issue_number tracking (stale response prevention)
 pub(crate) type IssueReceiver<T> = Option<(u32, mpsc::Receiver<Result<T, String>>)>;
 
-/// Issue詳細画面のフォーカス
+/// Focus target in the issue detail screen.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum IssueDetailFocus {
     #[default]
@@ -879,10 +942,10 @@ pub enum IssueDetailFocus {
     LinkedPrs,
 }
 
-/// Issue画面の全状態（GitLogState パターン）
+/// Full state for the Issue screen.
 ///
-/// `App.issue_state: Option<IssueState>` として保持。
-/// 画面クローズ時に `None` で全破棄。
+/// Held as `App.issue_state: Option<IssueState>`;
+/// set to `None` on screen close to discard everything.
 pub struct IssueState {
     // List
     pub issues: LoadState<Vec<IssueSummary>>,
@@ -906,9 +969,9 @@ pub struct IssueState {
     pub(crate) issue_comment_submit_receiver:
         Option<(u32, mpsc::Receiver<Result<IssueComment, String>>)>,
     pub(crate) issue_comment_submitting: bool,
-    // Linked PRs（IssueDetail から分離管理）
+    // Linked PRs (managed separately from IssueDetail)
     pub linked_prs: LoadState<Vec<LinkedPr>>,
-    // Receivers（origin issue_number 追跡で stale 防止）
+    // Receivers (track origin issue_number to prevent stale updates)
     pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, String>>>,
     pub(crate) issue_detail_receiver: IssueReceiver<IssueDetail>,
     pub(crate) linked_prs_receiver: IssueReceiver<Vec<LinkedPr>>,
@@ -1019,7 +1082,7 @@ impl Default for ChecksState {
     }
 }
 
-/// リポジトリ全体検索の結果
+/// Repository-wide symbol search result.
 #[derive(Debug, Clone)]
 pub struct RepoSymbolSearchResult {
     pub file_path: String,
@@ -1027,14 +1090,14 @@ pub struct RepoSymbolSearchResult {
     pub repo_root: String,
 }
 
-/// リポジトリ全体シンボル検索の非同期更新
+/// Async update for repository-wide symbol search.
 pub enum SymbolSearchUpdate {
     Found(RepoSymbolSearchResult),
     NotFound,
     Failed(String),
 }
 
-/// リポジトリ全体シンボル検索の状態
+/// Repository-wide symbol search state.
 pub enum SymbolSearchState {
     Idle,
     Searching {
@@ -1045,12 +1108,12 @@ pub enum SymbolSearchState {
 }
 
 impl SymbolSearchState {
-    /// 検索中かどうか
+    /// Whether a search is in progress.
     pub fn is_searching(&self) -> bool {
         matches!(self, Self::Searching { .. })
     }
 
-    /// submission_result に表示するためのタイムスタンプ付き結果を生成
+    /// Generate a timestamped result for display in submission_result.
     pub fn take_ready(&mut self) -> Option<RepoSymbolSearchResult> {
         if matches!(self, Self::Ready(..)) {
             let old = std::mem::replace(self, Self::Idle);
@@ -1094,4 +1157,61 @@ pub struct ShellCommandResult {
 pub struct CachedShellLine {
     pub text: String,
     pub is_stderr: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cockpit_menu_item_next_clamps_at_last() {
+        assert_eq!(CockpitMenuItem::PrList.next(), CockpitMenuItem::IssueList);
+        assert_eq!(CockpitMenuItem::IssueList.next(), CockpitMenuItem::LocalDiff);
+        assert_eq!(CockpitMenuItem::LocalDiff.next(), CockpitMenuItem::GitOps);
+        assert_eq!(CockpitMenuItem::GitOps.next(), CockpitMenuItem::GitOps);
+    }
+
+    #[test]
+    fn cockpit_menu_item_prev_clamps_at_first() {
+        assert_eq!(CockpitMenuItem::GitOps.prev(), CockpitMenuItem::LocalDiff);
+        assert_eq!(CockpitMenuItem::LocalDiff.prev(), CockpitMenuItem::IssueList);
+        assert_eq!(CockpitMenuItem::IssueList.prev(), CockpitMenuItem::PrList);
+        assert_eq!(CockpitMenuItem::PrList.prev(), CockpitMenuItem::PrList);
+    }
+
+    #[test]
+    fn cockpit_menu_item_from_index_clamps_overflow() {
+        assert_eq!(CockpitMenuItem::from_index(0), CockpitMenuItem::PrList);
+        assert_eq!(CockpitMenuItem::from_index(3), CockpitMenuItem::GitOps);
+        assert_eq!(CockpitMenuItem::from_index(100), CockpitMenuItem::GitOps);
+    }
+
+    #[test]
+    fn cockpit_menu_item_requires_repo() {
+        assert!(CockpitMenuItem::PrList.requires_repo());
+        assert!(CockpitMenuItem::IssueList.requires_repo());
+        assert!(!CockpitMenuItem::LocalDiff.requires_repo());
+        assert!(!CockpitMenuItem::GitOps.requires_repo());
+    }
+
+    #[test]
+    fn cockpit_state_new_repo_available() {
+        let state = CockpitState::new(true);
+        assert!(state.repo_available);
+        assert!(state.mentioned_issues_count.is_loading());
+        assert!(state.review_prs_count.is_loading());
+    }
+
+    #[test]
+    fn cockpit_state_new_repo_unavailable() {
+        let state = CockpitState::new(false);
+        assert!(!state.repo_available);
+        assert!(!state.mentioned_issues_count.is_loading());
+        assert!(!state.review_prs_count.is_loading());
+    }
+
+    #[test]
+    fn cockpit_is_data_state_independent() {
+        assert!(AppState::Cockpit.is_data_state_independent());
+    }
 }
