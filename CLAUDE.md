@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pls read README.md.
+Plz read README.md.
 
 ## Build & Test Commands
 
