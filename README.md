@@ -41,8 +41,14 @@ mise use -g github:ushironoko/octorus
 # 1. Initialize config
 or init
 
-# 2. show help.
+# 2. Open the Cockpit dashboard (default when no flags are given)
 or
+
+# 3. Open a specific PR directly
+or --pr 123
+
+# 4. Preview local changes
+or --local
 ```
 
 ### Options
@@ -81,6 +87,16 @@ or
 ## Reviewing Code in your Terminal
 
 octorus is an all-in-one review tool for the terminal UI. It shows GitHub PRs, issues, CI status, local diffs, Git Ops, and AI-Rally.
+
+### Cockpit
+
+Running `or` with no flags opens the Cockpit — a dashboard that serves as the main entry point.
+
+- OCTORUS logo with nebula gradient
+- Live counts: issues mentioning you and PRs requesting your review (fetched from GitHub Search API)
+- Navigation menu to PR List, Issue List, Local Diff, and Git Ops
+- Press `Enter` to navigate, `q` to quit, `?` for help, `r` to refresh counts
+- When no GitHub repo is detected, remote features (PR List, Issue List) are disabled; Local Diff and Git Ops remain available
 
 ### Pull Requests
 
