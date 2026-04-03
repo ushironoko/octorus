@@ -14,10 +14,9 @@ use super::types::*;
 use super::{App, AppState};
 
 impl App {
-    /// 1ページあたりのコミット取得件数
+    /// Number of commits fetched per page
     pub(crate) const COMMITS_PER_PAGE: u32 = 30;
 
-    /// GitOps 画面を開く
     pub fn open_git_ops(&mut self) {
         let caller_state = self.state;
         let mut ops = GitOpsState::new(Vec::new());
@@ -29,20 +28,23 @@ impl App {
         self.refresh_ahead_count();
     }
 
-    /// GitOps 画面を閉じる
     pub(crate) fn close_git_ops(&mut self) {
         let return_state = self
             .git_ops_state
             .as_ref()
             .map(|ops| ops.return_state)
             .unwrap_or(AppState::FileList);
-        self.git_ops_state = None;
-        self.state = return_state;
-        // コミット等の変更を反映するため PR データを再取得
-        self.retry_load();
+
+        if return_state == AppState::Cockpit {
+            self.return_to_cockpit();
+        } else {
+            self.git_ops_state = None;
+            self.state = return_state;
+            self.retry_load();
+        }
     }
 
-    /// 左ペインのサブフォーカスをトグル（Tree ↔ Commits）
+    /// Toggle left pane sub-focus between Tree and Commits.
     pub(crate) fn toggle_git_ops_left_focus(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -53,7 +55,7 @@ impl App {
         };
     }
 
-    /// Diff ペインから左ペインへ戻る（left_return_focus を復帰）
+    /// Return from diff pane to left pane, restoring left_return_focus
     pub(crate) fn return_from_git_ops_diff(&mut self) {
         if let Some(ref mut ops) = self.git_ops_state {
             ops.left_focus = ops.left_return_focus;
@@ -61,7 +63,7 @@ impl App {
         self.state = AppState::GitOpsSplitTree;
     }
 
-    /// コミット一覧をバックグラウンドで取得
+    /// Fetch commit list in the background
     fn fetch_git_ops_commits(&mut self, page: u32) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -96,7 +98,7 @@ impl App {
         }
     }
 
-    /// 追加のコミットを読み込み（無限スクロール用）
+    /// Load more commits for infinite scrolling
     fn load_more_git_ops_commits(&mut self) {
         let Some(ref ops) = self.git_ops_state else {
             return;
@@ -108,7 +110,7 @@ impl App {
         self.fetch_git_ops_commits(next_page);
     }
 
-    /// コミット選択変更時に diff をバックグラウンド取得
+    /// Fetch diff in background when commit selection changes
     fn start_fetch_git_ops_commit_diff(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -159,7 +161,7 @@ impl App {
         }
     }
 
-    /// コミット一覧取得後にバックグラウンドで先頭 N 件の diff をプリフェッチ
+    /// Prefetch diffs for the first N commits in background after fetching the commit list
     fn start_prefetch_git_ops_commit_diffs(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -228,7 +230,7 @@ impl App {
         });
     }
 
-    /// git status をバックグラウンドで取得
+    /// Fetch git status in the background
     pub(crate) fn refresh_git_status(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -243,7 +245,7 @@ impl App {
         });
     }
 
-    /// リモートに対するローカルの先行コミット数を非同期で更新
+    /// Async update of local ahead-of-remote commit count
     fn refresh_ahead_count(&mut self) {
         let working_dir = self.working_dir.clone();
         let Some(ref mut ops) = self.git_ops_state else {
@@ -272,7 +274,7 @@ impl App {
         });
     }
 
-    /// GitOps 関連の非同期結果をポーリング
+    /// Poll async results for GitOps operations
     pub(crate) fn poll_git_ops_updates(&mut self) {
         let mut status_updated = false;
         if let Some(ref mut ops) = self.git_ops_state {
@@ -372,7 +374,7 @@ impl App {
                         } else {
                             ops.op_message =
                                 Some((format!("Error: {}", msg), Instant::now()));
-                            // エラー時もステータス再取得（楽観的更新の巻き戻し）
+                            // Re-fetch status on error to rollback optimistic updates
                             op_succeeded = true;
                         }
                     }
@@ -408,7 +410,7 @@ impl App {
                     .unwrap_or(usize::MAX)
             });
 
-            // gitfilm シミュレーション結果のポーリング
+            // Poll gitfilm simulation results
             if let Some((expected_id, ref mut rx)) = ops.simulate_receiver {
                 match rx.try_recv() {
                     Ok(result) => {
@@ -543,7 +545,7 @@ impl App {
                                 }
                             }
 
-                            // ハイライト版をバックグラウンドで構築
+                            // Build syntax-highlighted version in background
                             let theme = self.config.diff.theme.clone();
                             let sha_clone = sha.clone();
                             let selected = cl.selected;
@@ -615,7 +617,7 @@ impl App {
         }
     }
 
-    /// 選択ファイルの diff をオンデマンドで取得
+    /// Fetch diff for the selected file on demand
     pub(crate) fn update_git_ops_diff(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -653,7 +655,7 @@ impl App {
         });
     }
 
-    /// Space: stage/unstage トグル（ディレクトリの場合は配下を一括操作）
+    /// Space: toggle stage/unstage (bulk operation for directories)
     pub(crate) fn toggle_stage(&mut self) {
         let Some(ref ops) = self.git_ops_state else {
             return;
@@ -742,7 +744,7 @@ impl App {
         };
         let count = paths.len();
 
-        // undo 用にインデックスエントリを事前キャプチャ
+        // Capture index entries before the operation for undo support
         let previous_index_entries =
             capture_index_entries(self.working_dir.as_deref(), &paths);
 
@@ -783,7 +785,7 @@ impl App {
         });
     }
 
-    /// s: 全ファイルをステージ
+    /// s: stage all files
     pub(crate) fn stage_all(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -797,7 +799,7 @@ impl App {
             return;
         }
 
-        // undo 用にインデックスツリーハッシュを事前キャプチャ
+        // Capture index tree hash before the operation for undo support
         let tree_hash = capture_tree_hash(self.working_dir.as_deref());
 
         let working_dir = self.working_dir.clone();
@@ -822,7 +824,7 @@ impl App {
         ops.undo_stack.push(UndoAction::StageAll { tree_hash });
     }
 
-    /// d: 変更を破棄
+    /// d: discard changes
     pub(crate) fn discard_changes(&mut self) {
         let Some(ref ops) = self.git_ops_state else {
             return;
@@ -869,7 +871,7 @@ impl App {
         });
     }
 
-    /// c: コミット（外部エディタ起動）
+    /// c: commit (launches external editor)
     pub(crate) fn git_ops_commit(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -928,7 +930,7 @@ impl App {
         Ok(())
     }
 
-    /// u: undo（スタックから操作を巻き戻す）
+    /// u: undo (pop and revert the last operation from the stack)
     fn execute_undo(&mut self) {
         let action = {
             let Some(ref mut ops) = self.git_ops_state else {
@@ -1004,7 +1006,7 @@ impl App {
         }
     }
 
-    /// 精密インデックス復元（Stage undo 用）
+    /// Precise index restoration for undoing stage operations
     fn run_git_index_restore(
         &mut self,
         paths: Vec<String>,
@@ -1026,7 +1028,7 @@ impl App {
             let entry_paths: std::collections::HashSet<String> =
                 previous_entries.iter().map(|e| e.path.clone()).collect();
 
-            // 1. 操作前のインデックスエントリを復元
+            // 1. Restore index entries to their pre-operation state
             for entry in &previous_entries {
                 let cacheinfo = format!("{},{},{}", entry.mode, entry.hash, entry.path);
                 if let Err(e) =
@@ -1036,7 +1038,7 @@ impl App {
                 }
             }
 
-            // 2. 操作前に untracked だったファイルをインデックスから除去
+            // 2. Remove files from index that were untracked before the operation
             let new_paths: Vec<&str> = paths
                 .iter()
                 .filter(|p| !entry_paths.contains(p.as_str()))
@@ -1133,7 +1135,7 @@ impl App {
                         || stderr.contains("non-fast-forward")
                         || stderr.contains("failed to push");
                     if is_rejected {
-                        // "FORCE_PUSH:<branch>" プレフィックスで force push 可能な失敗を通知
+                        // Signal a force-pushable rejection via "FORCE_PUSH:<branch>" prefix
                         let _ = tx
                             .send(Err(format!("FORCE_PUSH:{}", branch)))
                             .await;
@@ -1150,7 +1152,7 @@ impl App {
         });
     }
 
-    /// ディレクトリの展開/折りたたみトグル
+    /// Toggle directory expand/collapse
     pub(crate) fn toggle_dir_expand(&mut self) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -1158,7 +1160,7 @@ impl App {
         ops.tree.toggle_expand();
     }
 
-    /// GitOpsSplitTree の入力処理
+    /// Handle input for GitOpsSplitTree state
     pub(crate) fn handle_git_ops_tree_input(
         &mut self,
         key: event::KeyEvent,
@@ -1203,7 +1205,7 @@ impl App {
             return;
         }
 
-        // Discard → 確認待ちに遷移
+        // Discard: enter confirmation prompt
         if self.matches_single_key(&key, &kb.git_ops_discard) {
             if let Some(ref mut ops) = self.git_ops_state {
                 if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
@@ -1219,7 +1221,7 @@ impl App {
             return;
         }
 
-        // Undo → 確認待ちに遷移
+        // Undo: enter confirmation prompt
         if self.matches_single_key(&key, &kb.git_ops_undo) {
             let undo_op = self
                 .git_ops_state
@@ -1274,7 +1276,7 @@ impl App {
         }
     }
 
-    /// Commits フォーカスの入力処理
+    /// Handle input when Commits pane is focused
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
         let kb = self.config.keybindings.clone();
 
@@ -1283,7 +1285,7 @@ impl App {
             return;
         }
 
-        // gg シーケンス処理（先頭ジャンプ）
+        // gg sequence: jump to first item
         if let Some(kb_event) = crate::keybinding::event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -1357,7 +1359,7 @@ impl App {
             return;
         }
 
-        // Undo → スタックから巻き戻し
+        // Undo: revert from undo stack
         if self.matches_single_key(&key, &kb.git_ops_undo) {
             let undo_op = self
                 .git_ops_state
@@ -1369,7 +1371,7 @@ impl App {
             return;
         }
 
-        // Reset --soft → 選択中コミットへ reset（ローカルモードのみ）
+        // Reset --soft to selected commit (local mode only)
         if self.matches_single_key(&key, &kb.git_ops_reset) {
             if !(self.local_mode || self.pr_number.is_none()) {
                 if let Some(ref mut ops) = self.git_ops_state {
@@ -1383,13 +1385,13 @@ impl App {
             if let Some(ref ops) = self.git_ops_state {
                 let selected = ops.commit_log.selected;
                 let (target, offset) = if selected == 0 {
-                    // HEAD を選択 → 親にリセット（最新コミットを取り消す）
+                    // HEAD selected: reset to parent to undo the latest commit
                     (
                         ops.commit_log.commits.first().map(|c| format!("{}~1", c.sha)),
                         1,
                     )
                 } else {
-                    // それ以降 → そのコミットにリセット（以降の変更を staged に戻す）
+                    // Non-HEAD: reset to this commit, moving subsequent changes back to staged
                     (
                         ops.commit_log.commits.get(selected).map(|c| c.sha.clone()),
                         selected,
@@ -1418,7 +1420,7 @@ impl App {
         }
     }
 
-    /// git push --force-with-lease を実行
+    /// Execute git push --force-with-lease
     fn execute_force_push(&mut self, branch: &str) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -1459,7 +1461,7 @@ impl App {
         });
     }
 
-    /// 指定 SHA に対して git reset --soft を実行
+    /// Execute git reset --soft to the given SHA
     fn execute_reset_soft(&mut self, sha: &str) {
         if let Some(ref mut ops) = self.git_ops_state {
             ops.diff_store.clear();
@@ -1475,7 +1477,7 @@ impl App {
         );
     }
 
-    /// 破壊的操作の確認を開始（gitfilm 利用可能ならシミュレーション、不可なら Simple）
+    /// Start confirmation for a destructive op (simulate via gitfilm if available, otherwise Simple)
     fn start_confirm_with_simulation(&mut self, op: DestructiveOp) {
         let Some(ref mut ops) = self.git_ops_state else {
             return;
@@ -1506,7 +1508,7 @@ impl App {
         }
     }
 
-    /// Tree ペインの確認ダイアログ入力処理
+    /// Handle confirmation dialog input in the Tree pane
     fn handle_tree_confirm_input(
         &mut self,
         key: &event::KeyEvent,
@@ -1522,7 +1524,7 @@ impl App {
         }
     }
 
-    /// Commits ペインの確認ダイアログ入力処理
+    /// Handle confirmation dialog input in the Commits pane
     fn handle_commits_confirm_input(
         &mut self,
         key: &event::KeyEvent,
@@ -1538,7 +1540,7 @@ impl App {
         }
     }
 
-    /// 確認ダイアログの共通入力処理。実行すべき操作があれば返す。
+    /// Shared confirmation dialog input handler. Returns the op to execute, if confirmed.
     fn handle_confirm_input_common(
         &mut self,
         key: &event::KeyEvent,
@@ -1596,7 +1598,7 @@ impl App {
                 }
             }
             PendingGitOpsConfirm::Simulating { .. } => {
-                // シミュレーション中はキャンセルのみ
+                // Only cancellation is allowed while simulation is running
                 if self.matches_single_key(key, &kb.confirm_no)
                     || self.matches_single_key(key, &kb.quit)
                 {
@@ -1610,7 +1612,7 @@ impl App {
         None
     }
 
-    /// left_return_focus に応じてアクティブな diff_scroll を返す
+    /// Return the active diff_scroll based on left_return_focus
     fn active_git_ops_diff_scroll(&mut self) -> Option<&mut crate::diff_store::DiffScrollState> {
         self.git_ops_state.as_mut().map(|ops| match ops.left_return_focus {
             LeftPaneFocus::Commits => &mut ops.commit_log.diff_scroll,
@@ -1618,11 +1620,10 @@ impl App {
         })
     }
 
-    /// GitOpsSplitDiff の入力処理
+    /// Handle input for GitOpsSplitDiff state
     pub(crate) fn handle_git_ops_diff_input(&mut self, key: event::KeyEvent) {
         let kb = self.config.keybindings.clone();
 
-        // gg シーケンス処理
         if let Some(kb_event) = crate::keybinding::event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
@@ -1704,7 +1705,7 @@ impl App {
     }
 }
 
-/// git status --porcelain=v1 -z の出力をパース
+/// Parse output of git status --porcelain=v1 -z
 pub(crate) async fn fetch_git_status(
     working_dir: Option<&str>,
 ) -> Result<Vec<GitStatusEntry>, String> {
@@ -1744,7 +1745,7 @@ async fn run_git_op(working_dir: Option<&str>, args: &[&str]) -> Result<String, 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// git ls-files --stage で対象パスのインデックスエントリを取得（同期）
+/// Capture index entries for the given paths via git ls-files --stage (synchronous)
 fn capture_index_entries(working_dir: Option<&str>, paths: &[String]) -> Vec<IndexEntry> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["ls-files", "--stage", "-z", "--"]);
@@ -1781,7 +1782,7 @@ fn capture_index_entries(working_dir: Option<&str>, paths: &[String]) -> Vec<Ind
         .collect()
 }
 
-/// git write-tree で現在のインデックスツリーハッシュを取得（同期）
+/// Capture the current index tree hash via git write-tree (synchronous)
 fn capture_tree_hash(working_dir: Option<&str>) -> Option<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.arg("write-tree");
@@ -1884,7 +1885,7 @@ fn build_git_add_args(paths: &[String]) -> Vec<String> {
     args
 }
 
-/// on-demand diff patch からプレーン/ハイライトキャッシュを構築
+/// Build plain and syntax-highlighted caches from an on-demand diff patch
 fn build_git_ops_diff_from_patch(
     ops: &mut GitOpsState,
     key: String,
@@ -1921,7 +1922,7 @@ fn build_git_ops_diff_from_patch(
     ops.diff_store.set_highlight_rx(rx);
 }
 
-/// GitOpsState のツリーを再構築するヘルパー
+/// Rebuild the file tree for GitOpsState
 pub(crate) fn rebuild_git_ops_tree(ops: &mut GitOpsState) {
     let paths: Vec<(usize, &str)> = ops
         .entries
@@ -1932,7 +1933,7 @@ pub(crate) fn rebuild_git_ops_tree(ops: &mut GitOpsState) {
     ops.tree.rebuild(&paths);
 }
 
-/// 2フェーズプリフェッチ: 並列 diff 取得 → 単一 spawn_blocking でハイライト
+/// Two-phase prefetch: parallel diff fetching, then single spawn_blocking for highlighting
 fn start_git_ops_prefetch(
     ops: &mut GitOpsState,
     working_dir: Option<String>,
@@ -2016,7 +2017,7 @@ mod tests {
     use crossterm::event::KeyCode;
     use insta::assert_snapshot;
 
-    /// FileStatus のスペースを · に置換して可視化
+    /// Replace space with · so unmodified status is visible in snapshots
     fn vis(s: FileStatus) -> char {
         match s.as_char() {
             ' ' => '·',
@@ -2024,7 +2025,6 @@ mod tests {
         }
     }
 
-    /// テスト用ヘルパー: GitStatusEntry を簡潔に生成
     fn entry(path: &str, index: FileStatus, worktree: FileStatus) -> GitStatusEntry {
         GitStatusEntry {
             path: path.to_string(),
@@ -2039,7 +2039,6 @@ mod tests {
         }
     }
 
-    /// visible_rows を人間が読める文字列にダンプ
     fn dump_visible_rows(ops: &GitOpsState) -> String {
         ops.tree.visible_rows
             .iter()
@@ -2189,7 +2188,6 @@ mod tests {
     fn test_git_ops_highlight_survives_file_switch() {
         let mut ops = GitOpsState::new(Vec::new());
 
-        // a.rs のハイライト済みキャッシュをセット
         let highlighted = DiffCache {
             file_index: 0,
             patch_hash: 100,
@@ -2201,7 +2199,6 @@ mod tests {
         ops.diff_store
             .set_current("a.rs".to_string(), highlighted);
 
-        // b.rs に切り替え（plain）
         let plain_b = DiffCache {
             file_index: 1,
             patch_hash: 200,
@@ -2213,10 +2210,9 @@ mod tests {
         ops.diff_store
             .set_current("b.rs".to_string(), plain_b);
 
-        // a.rs はストアに退避されているはず（highlighted だった）
+        // a.rs should have been evicted to the store because it was highlighted
         assert!(ops.diff_store.store_contains_key(&"a.rs".to_string()));
 
-        // a.rs を復元
         assert!(ops.diff_store.try_restore(&"a.rs".to_string(), None));
         assert!(ops.diff_store.current.as_ref().unwrap().highlighted);
         assert_eq!(ops.diff_store.current.as_ref().unwrap().patch_hash, 100);
@@ -2246,7 +2242,6 @@ mod tests {
     fn test_git_ops_prefetch_enables_instant_restore() {
         let mut ops = GitOpsState::new(Vec::new());
 
-        // プリフェッチでハイライト済みキャッシュを格納
         let cache = DiffCache {
             file_index: 0,
             patch_hash: 100,
@@ -2260,7 +2255,7 @@ mod tests {
         ops.diff_store.set_prefetch_rx(rx);
         ops.diff_store.poll_prefetch(|_| 0);
 
-        // フリッカーなしの即座復元（plain→highlighted 遷移なし）
+        // Instant restore without flicker (no plain->highlighted transition)
         assert!(ops.diff_store.try_restore(&"a.rs".to_string(), None));
         assert!(ops.diff_store.current.as_ref().unwrap().highlighted);
     }
@@ -2273,10 +2268,10 @@ mod tests {
     }
 
     // =================================================================
-    // スナップショットテスト
+    // Snapshot tests
     // =================================================================
 
-    /// ツリー構造: フラットファイル + ネストディレクトリの混在
+    /// Tree structure: mix of flat files and nested directories
     #[test]
     fn test_tree_structure_mixed() {
         let entries = vec![
@@ -2300,7 +2295,7 @@ mod tests {
         ");
     }
 
-    /// ツリー構造: ディレクトリ折りたたみ後
+    /// Tree structure: after collapsing a directory
     #[test]
     fn test_tree_structure_collapsed() {
         let entries = vec![
@@ -2311,7 +2306,6 @@ mod tests {
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
 
-        // src/app/ を折りたたみ
         ops.tree.expanded_dirs.remove("src/app");
         rebuild_git_ops_tree(&mut ops);
         assert_snapshot!(dump_visible_rows(&ops), @"
@@ -2321,7 +2315,7 @@ mod tests {
         ");
     }
 
-    /// change_type_label が stage/unstage で不変であることを保証
+    /// Ensure change_type_label remains stable across stage/unstage
     #[test]
     fn test_change_type_label_stable_across_stage_unstage() {
         // unstaged modified → staged modified
@@ -2344,11 +2338,10 @@ mod tests {
         assert_eq!(label_before, label_after, "?? file label must not change on stage");
     }
 
-    /// optimistic_stage の状態遷移
     #[test]
     fn test_optimistic_stage_transitions() {
         let cases = vec![
-            // (初期index, 初期worktree, 期待index, 期待worktree)
+            // (initial_index, initial_worktree, expected_index, expected_worktree)
             ("·M → staged", FileStatus::Unmodified, FileStatus::Modified, FileStatus::Modified, FileStatus::Unmodified),
             ("?? → staged", FileStatus::Untracked, FileStatus::Untracked, FileStatus::Added, FileStatus::Unmodified),
             ("·D → staged", FileStatus::Unmodified, FileStatus::Deleted, FileStatus::Deleted, FileStatus::Unmodified),
@@ -2373,7 +2366,6 @@ mod tests {
         ");
     }
 
-    /// optimistic_unstage の状態遷移
     #[test]
     fn test_optimistic_unstage_transitions() {
         let cases = vec![
@@ -2401,7 +2393,6 @@ mod tests {
         ");
     }
 
-    /// parse_porcelain_status: 複雑なケース（rename, unmerge, mixed status）
     #[test]
     fn test_parse_porcelain_status_complex() {
         // MM (staged + worktree modified), UU (unmerged), R (rename), A (added), D (deleted)
@@ -2426,7 +2417,6 @@ mod tests {
         ");
     }
 
-    /// parse_porcelain_status: 空入力
     #[test]
     fn test_parse_porcelain_status_empty() {
         let entries = parse_porcelain_status("");
@@ -2436,7 +2426,7 @@ mod tests {
     }
 
     // =================================================================
-    // undo / discard シナリオテスト
+    // undo / discard scenario tests
     // =================================================================
 
     use crate::config::Config;
@@ -2499,7 +2489,7 @@ mod tests {
         let mut ops = GitOpsState::new(vec![
             entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
         ]);
-        // Commit → Stage の順でスタックに積む（Stage が先に pop される）
+        // Push Commit then Stage so that Stage is popped first
         ops.undo_stack.push(UndoAction::Commit);
         ops.undo_stack.push(UndoAction::Stage {
             paths: vec!["a.rs".to_string()],
@@ -2508,13 +2498,11 @@ mod tests {
         app.git_ops_state = Some(ops);
         app.state = AppState::GitOpsSplitTree;
 
-        // Stage undo が実行される
         app.execute_undo();
         let ops = app.git_ops_state.as_ref().unwrap();
         assert_eq!(ops.undo_stack.len(), 1);
         assert!(matches!(ops.undo_stack[0], UndoAction::Commit));
 
-        // Commit undo も実行される
         app.execute_undo();
         let ops = app.git_ops_state.as_ref().unwrap();
         assert_eq!(ops.undo_stack.len(), 0, "Commit should also be popped");
@@ -2542,7 +2530,7 @@ mod tests {
         app.git_ops_state = Some(ops);
         app.state = AppState::GitOpsSplitTree;
 
-        // discard はスタックを変更しない（undo は引き続き可能）
+        // discard must not alter the undo stack so undo remains available
         let ops = app.git_ops_state.as_ref().unwrap();
         assert_eq!(ops.undo_stack.len(), 3);
     }
@@ -2559,15 +2547,15 @@ mod tests {
         app.state = AppState::GitOpsSplitTree;
 
         app.execute_undo();
-        // StageAll undo はツリーペインから実行可能
+        // StageAll undo must be executable from the tree pane
         assert_eq!(app.git_ops_state.as_ref().unwrap().undo_stack.len(), 0);
     }
 
     // =================================================================
-    // 確認プロンプト (Y/n) テスト
+    // Confirmation prompt (Y/n) tests
     // =================================================================
 
-    /// 確認待ち状態の入力処理をシミュレート（terminal 不要な範囲でテスト）
+    /// Simulate confirmation dialog input without requiring a terminal
     fn simulate_tree_confirm(app: &mut super::super::App, code: KeyCode) {
         let key = crossterm::event::KeyEvent::new(
             code,
@@ -2592,7 +2580,6 @@ mod tests {
         }
         app.git_ops_state = Some(ops);
 
-        // discard のキーバインドを直接シミュレート
         if let Some(ref mut ops) = app.git_ops_state {
             if let Some(entry) = ops.selected_path().and_then(|p| {
                 ops.entries.iter().find(|e| e.path == p)
@@ -2642,7 +2629,7 @@ mod tests {
         let ops = GitOpsState::new(Vec::new());
         app.git_ops_state = Some(ops);
 
-        // undo スタックが空の場合、pending_confirm にならず直接メッセージ
+        // When the undo stack is empty, skip pending_confirm and show a message directly
         let ops_ref = app.git_ops_state.as_mut().unwrap();
         if let Some(action) = ops_ref.undo_stack.last() {
             let op = action.to_destructive_op();
@@ -2672,12 +2659,12 @@ mod tests {
         let initial_row = ops.tree.selected_row;
         app.git_ops_state = Some(ops);
 
-        // j キー（move_down）は確認中は何もしない
+        // j (move_down) should be ignored while confirmation is active
         simulate_tree_confirm(&mut app, KeyCode::Char('j'));
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert_eq!(ops.tree.selected_row, initial_row);
-        // pending_confirm は j では消えない（simulate_tree_confirm は y/n/Esc 以外何もしない）
+        // pending_confirm must survive j because only y/n/Esc are handled
         assert!(ops.pending_confirm.is_some());
     }
 

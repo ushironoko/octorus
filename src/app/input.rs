@@ -19,8 +19,8 @@ impl App {
     ) -> Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                // Kitty keyboard protocol が有効な場合、Release/Repeat イベントも
-                // 報告されるため、Press のみ処理して二重実行を防止する。
+                // Only handle Press events to avoid double-execution when
+                // Kitty keyboard protocol reports Release/Repeat events.
                 if key.kind != KeyEventKind::Press {
                     return Ok(());
                 }
@@ -50,13 +50,15 @@ impl App {
                     }
                 }
 
-                // PR一覧画面は独自のLoading処理があるためスキップ
-                // Help画面・PrDescription画面はデータ状態に依存しないためスキップ
                 if !self.state.is_data_state_independent() {
                     if let DataState::Error(_) = &self.data_state {
                         let kb = &self.config.keybindings;
                         if self.matches_single_key(&key, &kb.quit) {
-                            self.should_quit = true;
+                            if self.home_state == Some(AppState::Cockpit) {
+                                self.return_to_cockpit();
+                            } else {
+                                self.should_quit = true;
+                            }
                         } else if self.matches_single_key(&key, &kb.retry) {
                             self.retry_load();
                         }
@@ -65,7 +67,11 @@ impl App {
 
                     if matches!(self.data_state, DataState::Loading) {
                         if self.matches_single_key(&key, &self.config.keybindings.quit) {
-                            self.should_quit = true;
+                            if self.home_state == Some(AppState::Cockpit) {
+                                self.return_to_cockpit();
+                            } else {
+                                self.should_quit = true;
+                            }
                         }
                         return Ok(());
                     }
@@ -156,6 +162,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                     AppState::GitOpsSplitDiff => {
                         self.handle_git_ops_diff_input(key);
                     }
+                    AppState::Cockpit => self.handle_cockpit_input(key)?,
                 }
             }
         }
@@ -163,7 +170,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
     }
     pub(crate) fn retry_load(&mut self) {
         if let Some(ref tx) = self.retry_sender {
-            // 既にデータがある場合は Loading に戻さない（バックグラウンド更新のみ）
+            // Keep current data visible during background refresh
             if !matches!(self.data_state, DataState::Loaded { .. }) {
                 self.data_state = DataState::Loading;
             }
@@ -186,17 +193,17 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
-        // ツリーモードで Dir 行にいる場合、v (mark_viewed) を無効化
+        // Prevent stale selection when filter yields no results
+        // Disable mark_viewed on directory rows in tree mode
         if !self.is_filter_selection_empty("file") {
             if self.is_file_tree_active() && self.is_file_tree_on_dir_row() {
-                // Dir 行: V (mark_viewed_dir) はツリーパスベースで処理
+                // Dir rows use tree-path-based batch marking
                 let kb = &self.config.keybindings;
                 if !self.local_mode && self.matches_single_key(&key, &kb.mark_viewed_dir) {
                     self.start_mark_tree_directory_as_viewed();
                     return Ok(());
                 }
-                // Dir 行: v (mark_viewed) は無効
+                // Single-file mark_viewed is meaningless on a directory row
                 if self.matches_single_key(&key, &kb.mark_viewed) {
                     return Ok(());
                 }
@@ -218,7 +225,9 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             if self.handle_filter_esc("file") {
                 return Ok(());
             }
-            if self.started_from_pr_list {
+            if self.home_state == Some(AppState::Cockpit) && self.local_mode {
+                self.return_to_cockpit();
+            } else if self.started_from_pr_list {
                 self.back_to_pr_list();
             } else {
                 self.should_quit = true;
@@ -303,7 +312,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                     return Ok(());
                 }
 
-                // gg: Jump to first (tree/flat 共通)
+                // gg: Jump to first (shared across tree/flat modes)
                 if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
                     if tree_active {
@@ -325,7 +334,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             }
         }
 
-        // G: Jump to last (tree/flat 共通)
+        // G: Jump to last (shared across tree/flat modes)
         if self.matches_single_key(&key, &kb.jump_to_last) {
             if tree_active {
                 self.file_tree_jump_to_last();
@@ -342,7 +351,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
-            // ツリーモード: Dir 行なら展開トグル、File 行なら diff 遷移
+            // Tree mode: toggle expand on dir rows, enter diff on file rows
             if tree_active && self.file_tree_enter() {
                 return Ok(());
             }
@@ -381,7 +390,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // ローカルモードではコメント投稿等のAPI呼び出しはオーケストレーター側でスキップされる。
+        // In local mode, API calls (comment posting, etc.) are skipped by the orchestrator
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(());
@@ -439,7 +448,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<bool> {
-        // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
+        // Prevent stale selection when filter yields no results
         if !self.is_filter_selection_empty("file") && self.handle_mark_viewed_key(key) {
             return Ok(true);
         }
@@ -758,7 +767,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             return Ok(());
         }
 
-        // ?: help
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::ChecksList;
             self.state = AppState::Help;
@@ -789,18 +797,16 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
     // FileTree integration methods
     // ============================================================
 
-    /// ファイル一覧のツリー表示をトグル。
-    /// ON: FileTreeState を生成（初回）または再利用し、rebuild + カーソル復元。
-    /// OFF: tree_mode_active を false にするが file_tree_state は保持（展開状態を失わない）。
+    /// Toggle tree view for the file list.
+    /// ON: creates or reuses FileTreeState, rebuilds, and restores cursor.
+    /// OFF: deactivates tree mode but preserves expansion state.
     pub(crate) fn toggle_file_tree(&mut self) {
         if self.tree_mode_active {
-            // OFF にする
             self.tree_mode_active = false;
             return;
         }
 
-        // ON にする
-        // self.files() を先に借りてパスを収集し、借用を解放してから tree を操作
+        // Collect paths first to release the borrow before mutating tree state
         let paths: Vec<(usize, String)> = self
             .files()
             .iter()
@@ -816,7 +822,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         let selected = self.selected_file;
 
         if let Some(ref mut tree) = self.file_tree_state {
-            // 既存の tree_state を再利用（展開状態維持）
+            // Reuse existing tree state to preserve expansion state
             tree.rebuild_owned(paths);
             if let Some(row) = tree.find_row_for_file(selected) {
                 tree.selected_row = row;
@@ -864,9 +870,9 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         self.with_file_tree(|t| t.jump_to_last());
     }
 
-    /// ツリーモードで Enter:
-    /// - Dir 行: 展開/折畳トグル → true を返す
-    /// - File 行: 何もしない → false を返す（呼び出し元が diff 遷移を行う）
+    /// Handle Enter in tree mode.
+    /// Returns true if the row was a directory (toggled expand), false if
+    /// it was a file (caller should transition to diff view).
     pub(crate) fn file_tree_enter(&mut self) -> bool {
         if let Some(ref mut tree) = self.file_tree_state {
             if tree.selected_dir_path().is_some() {
@@ -877,7 +883,6 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         false
     }
 
-    /// ツリーモードで現在 Dir 行にいるかどうか。
     pub(crate) fn is_file_tree_on_dir_row(&self) -> bool {
         if let Some(ref tree) = self.file_tree_state {
             tree.selected_dir_path().is_some()
@@ -886,18 +891,17 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
     }
 
-    /// ツリーモードがアクティブなら、現在のファイル一覧でツリーを再構築する。
-    /// データリロード後やフィルタ解除後に呼び出す。
+    /// Rebuild file tree from the current file list after data reload or filter clear.
     pub(crate) fn rebuild_file_tree_if_active(&mut self) {
         if !self.tree_mode_active || self.file_tree_state.is_none() {
             return;
         }
-        // フィルタ中はスキップ（フラット表示を維持）
+        // Skip rebuild while filter is active to keep flat display
         if self.file_list_filter.is_some() {
             return;
         }
 
-        // self.files() を先に借りてパスを収集し、借用を解放してから tree を操作
+        // Collect paths first to release the borrow before mutating tree state
         let paths: Vec<(usize, String)> = self
             .files()
             .iter()
@@ -911,13 +915,12 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
 
         let tree = self.file_tree_state.as_mut().unwrap();
 
-        // 選択復元用に現在の情報を保存
+        // Save current selection for restoration after rebuild
         let prev_file_idx = tree.selected_file_index();
         let prev_dir_path = tree.selected_dir_path().map(|s| s.to_string());
 
         tree.rebuild_owned(paths);
 
-        // 選択復元
         if let Some(idx) = prev_file_idx {
             if let Some(row) = tree.find_row_for_file(idx) {
                 tree.selected_row = row;
@@ -930,11 +933,11 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                 return;
             }
         }
-        // フォールバック: 先頭
+        // Fallback: select the first row
         tree.selected_row = 0;
     }
 
-    /// ツリーモードで Dir 行の V: 配下全ファイルを mark viewed。
+    /// Mark all files under the selected directory as viewed (tree mode).
     pub(crate) fn start_mark_tree_directory_as_viewed(&mut self) {
         let dir_path = self
             .file_tree_state
@@ -957,7 +960,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         self.start_mark_paths_as_viewed(target_paths, true);
     }
 
-    /// ツリーモード用の mark_viewed_dir: ディレクトリパスプレフィックスで未読ファイルを収集。
+    /// Collect unviewed file paths under a directory prefix (for tree mode batch marking).
     pub(crate) fn collect_unviewed_paths_under_dir(
         files: &[ChangedFile],
         dir_path: &str,

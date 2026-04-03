@@ -1,6 +1,7 @@
 mod client;
 pub mod comment;
 mod commit;
+mod dashboard;
 
 macro_rules! define_state_filter {
     ($name:ident) => {
@@ -44,6 +45,7 @@ mod issue;
 mod pr;
 
 pub use client::{detect_repo, gh_command, DetectRepoError};
+pub use dashboard::{fetch_mentioned_issues_count, fetch_review_requested_prs_count};
 pub use comment::{create_multiline_review_comment, create_reply_comment, create_review_comment};
 pub use commit::{
     fetch_commit_diff, fetch_local_commit_diff, fetch_local_commits, fetch_pr_commits,

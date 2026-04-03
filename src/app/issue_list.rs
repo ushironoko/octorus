@@ -77,10 +77,8 @@ impl App {
         state.issue_comment_list_scroll_offset = 0;
         state.issue_comment_detail_mode = false;
         state.issue_comment_detail_scroll = 0;
-        // Keep issue_comment_submit_receiver and issue_comment_submitting alive
-        // so in-flight submissions are not dropped when switching issues.
-        // poll_issue_comment_submit_updates() checks the origin issue_number
-        // to apply the result to the correct issue.
+        // poll_issue_comment_submit_updates() checks the origin issue_number,
+        // so in-flight submissions survive issue switches without data loss.
         state.selected_linked_pr = 0;
         state.detail_focus = Default::default();
         state.linked_prs = LoadState::Loading;
@@ -130,14 +128,17 @@ impl App {
             if self.handle_filter_esc("issue") {
                 return Ok(());
             }
-            // Block navigation while an issue comment submission is in flight.
             // Dropping issue_state would lose the receiver, so the user would
             // get no success/failure feedback and caches would not be updated.
             if self.is_issue_comment_submitting() {
                 return Ok(());
             }
-            self.issue_state = None;
-            self.state = AppState::PullRequestList;
+            if self.home_state == Some(AppState::Cockpit) {
+                self.return_to_cockpit();
+            } else {
+                self.issue_state = None;
+                self.state = AppState::PullRequestList;
+            }
             return Ok(());
         }
 

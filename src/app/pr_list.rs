@@ -21,7 +21,11 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.quit) {
-            self.should_quit = true;
+            if self.home_state == Some(AppState::Cockpit) {
+                self.return_to_cockpit();
+            } else {
+                self.should_quit = true;
+            }
             return Ok(());
         }
 
@@ -237,7 +241,7 @@ impl App {
         });
     }
 
-    /// 追加のPRを読み込み（無限スクロール用）
+    /// Load next page of PRs for infinite scroll.
     pub(crate) fn load_more_prs(&mut self) {
         if self.prs.pr_list.is_loading() {
             return;
@@ -321,8 +325,8 @@ impl App {
 
         self.retry_load();
     }
-    /// PR detail 画面で蓄積した一時状態をすべてクリアする。
-    /// data_receiver / retry_sender は永続のため維持。
+    /// Clear transient state accumulated in PR detail screens.
+    /// data_receiver / retry_sender are long-lived and kept intact.
     fn reset_pr_detail_state(&mut self) {
         if self.local_mode {
             self.deactivate_watcher();

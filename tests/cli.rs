@@ -30,14 +30,9 @@ fn init_help_exits_successfully() {
         .success();
 }
 
-#[test]
-fn no_args_shows_help() {
-    cargo_bin_cmd!("or")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(HELP_BANNER_LINE))
-        .stdout(predicate::str::contains("Usage"));
-}
+// no-args now launches the Cockpit TUI (alternate screen),
+// which cannot be tested via assert_cmd.
+// Cockpit startup routing is covered by unit tests in src/app/cockpit.rs.
 
 #[test]
 fn invalid_repo_exits_with_error() {

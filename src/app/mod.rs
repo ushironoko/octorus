@@ -22,7 +22,8 @@ use std::time::Instant;
 
 mod types;
 pub use types::{
-    hash_string, AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab,
+    hash_string, AiRallyState, AppState, CachedDiffLine, CockpitMenuItem, CockpitState,
+    CommentPosition, CommentTab,
     ChecksState, CommentState, CommitLogState, DataState, DiffCache, FileStatus, GitOpsState,
     GitStatusEntry, HelpTab,
     IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
@@ -37,6 +38,7 @@ pub use types::{
 use types::MarkViewedResult;
 
 mod ai_rally;
+mod cockpit;
 mod comments;
 mod diff_cache;
 pub mod file_tree;
@@ -190,6 +192,10 @@ pub struct App {
     pub shell_state: Option<ShellState>,
     shell_result_receiver: Option<mpsc::Receiver<ShellCommandResult>>,
     shell_abort_handle: Option<AbortHandle>,
+    /// Full cockpit screen state (None = cockpit inactive).
+    pub cockpit_state: Option<CockpitState>,
+    /// Root return destination when launched from cockpit.
+    pub home_state: Option<AppState>,
 }
 
 impl App {
@@ -264,6 +270,8 @@ impl App {
             shell_state: None,
             shell_result_receiver: None,
             shell_abort_handle: None,
+            cockpit_state: None,
+            home_state: None,
         }
     }
 
@@ -292,6 +300,17 @@ impl App {
         app.started_from_pr_list = true;
         app.previous_state = AppState::PullRequestList;
         app.zen_mode = zen_mode;
+        app
+    }
+
+    pub fn new_cockpit(repo: &str, config: Config, repo_available: bool) -> Self {
+        let zen_mode = config.layout.zen_mode;
+        let mut app = Self::base_app(repo.to_string(), config);
+        app.pr_number = None;
+        app.state = AppState::Cockpit;
+        app.home_state = Some(AppState::Cockpit);
+        app.zen_mode = zen_mode;
+        app.cockpit_state = Some(CockpitState::new(repo_available));
         app
     }
 
@@ -347,6 +366,7 @@ impl App {
             self.poll_issue_list_updates();
             self.poll_issue_detail_updates();
             self.poll_linked_prs_updates();
+            self.poll_cockpit_updates();
             self.poll_issue_comment_submit_updates();
             self.poll_update_check();
             self.poll_symbol_search_updates();
