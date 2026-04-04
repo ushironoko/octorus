@@ -1,8 +1,12 @@
 use anyhow::Result;
+use chrono::Utc;
 use crossterm::event::{self, KeyEvent};
+use std::time::Instant;
 use tokio::sync::mpsc;
 
+use crate::cache::{load_local_review_comments, save_local_review_comments, PrCacheKey};
 use crate::github;
+use crate::github::comment::ReviewComment;
 use crate::loader::CommentSubmitResult;
 use crate::ui::text_area::TextAreaAction;
 
@@ -124,6 +128,11 @@ impl App {
     }
 
     fn submit_review_comment_inner(&mut self, ctx: LineInputContext, body: String) {
+        if self.local_mode {
+            self.submit_local_review_comment(ctx, body);
+            return;
+        }
+
         let Some(file) = self.files().get(ctx.file_index) else {
             return;
         };
@@ -165,7 +174,49 @@ impl App {
         });
     }
 
+    fn next_local_comment_id(comments: &[ReviewComment]) -> u64 {
+        comments.iter().map(|c| c.id).max().unwrap_or(0) + 1
+    }
+
+    fn submit_local_review_comment(&mut self, ctx: LineInputContext, body: String) {
+        let Some(file) = self.files().get(ctx.file_index) else {
+            return;
+        };
+
+        let mut comments = match load_local_review_comments(&self.repo, self.working_dir.as_deref())
+        {
+            Ok(comments) => comments,
+            Err(e) => {
+                self.cmt.submission_result =
+                    Some((false, format!("Failed to load local comments: {}", e)));
+                self.cmt.submission_result_time = Some(Instant::now());
+                return;
+            }
+        };
+
+        let next_id = Self::next_local_comment_id(&comments);
+        comments.push(ReviewComment {
+            id: next_id,
+            path: file.filename.clone(),
+            line: Some(ctx.line_number),
+            body,
+            user: github::User {
+                login: Self::local_comment_author(),
+            },
+            created_at: Utc::now().to_rfc3339(),
+            is_resolved: false,
+            resolved_at: None,
+        });
+
+        self.persist_local_review_comments(comments, "Saved local comment");
+    }
+
     pub(crate) fn submit_reply(&mut self, comment_id: u64, body: String) {
+        if self.local_mode {
+            self.submit_local_reply(comment_id, body);
+            return;
+        }
+
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
 
@@ -184,6 +235,100 @@ impl App {
                 .await;
         });
     }
+
+    fn submit_local_reply(&mut self, comment_id: u64, body: String) {
+        let Some(parent) = self
+            .cmt.review_comments
+            .as_ref()
+            .and_then(|comments: &Vec<ReviewComment>| comments.iter().find(|comment| comment.id == comment_id))
+            .cloned()
+        else {
+            self.cmt.submission_result = Some((false, "Reply target not found".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return;
+        };
+
+        let Some(line_number) = parent.line else {
+            self.cmt.submission_result = Some((false, "Reply target has no line".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return;
+        };
+
+        let mut comments = match load_local_review_comments(&self.repo, self.working_dir.as_deref())
+        {
+            Ok(comments) => comments,
+            Err(e) => {
+                self.cmt.submission_result =
+                    Some((false, format!("Failed to load local comments: {}", e)));
+                self.cmt.submission_result_time = Some(Instant::now());
+                return;
+            }
+        };
+
+        let next_id = Self::next_local_comment_id(&comments);
+        comments.push(ReviewComment {
+            id: next_id,
+            path: parent.path,
+            line: Some(line_number),
+            body,
+            user: github::User {
+                login: Self::local_comment_author(),
+            },
+            created_at: Utc::now().to_rfc3339(),
+            is_resolved: false,
+            resolved_at: None,
+        });
+
+        self.persist_local_review_comments(comments, "Saved local reply");
+    }
+
+    fn persist_local_review_comments(
+        &mut self,
+        comments: Vec<ReviewComment>,
+        success_message: &str,
+    ) {
+        if let Err(e) =
+            save_local_review_comments(&self.repo, self.working_dir.as_deref(), &comments)
+        {
+            self.cmt.submission_result = Some((false, format!("Failed to save local comments: {}", e)));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return;
+        }
+
+        let cache_key = PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number: self.pr_number(),
+        };
+        self.session_cache
+            .put_review_comments(cache_key, comments.clone());
+        self.cmt.review_comments = Some(comments);
+        self.cmt.selected_comment = self
+            .cmt.review_comments
+            .as_ref()
+            .map(|comments: &Vec<ReviewComment>| comments.len().saturating_sub(1))
+            .unwrap_or(0);
+        self.cmt.comments_loading = false;
+        self.cmt.comment_submitting = false;
+        self.cmt.comment_submit_receiver = None;
+        self.update_file_comment_positions();
+        // ensure_diff_cache() requires a tokio runtime for spawn_blocking.
+        // In sync test contexts (e.g. #[test] without #[tokio::test]), no runtime
+        // is available, so we skip the call to avoid a panic.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            self.ensure_diff_cache();
+        }
+        self.cmt.submission_result = Some((true, success_message.to_string()));
+        self.cmt.submission_result_time = Some(Instant::now());
+    }
+
+    fn local_comment_author() -> String {
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "local".to_string())
+    }
+
     pub(crate) fn is_issue_comment_submitting(&self) -> bool {
         self.issue_state
             .as_ref()
@@ -212,8 +357,7 @@ impl App {
         }
         if self.matches_single_key(key, &self.config.keybindings.approve) {
             PendingApproveChoice::Submit
-        } else if self.matches_single_key(key, &self.config.keybindings.quit)
-                   {
+        } else if self.matches_single_key(key, &self.config.keybindings.quit) {
             self.cmt.pending_approve_body = None;
             self.cmt.submission_result = None;
             self.cmt.submission_result_time = None;

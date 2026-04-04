@@ -21,6 +21,7 @@ use octorus::{app, cache, config, github, headless, loader, syntax};
 
 // init/update/migrate are only used by the binary, not needed for benchmarks
 mod init;
+mod local_comments;
 mod migrate;
 mod update;
 
@@ -90,6 +91,54 @@ enum Commands {
     },
     /// Remove AI Rally session data
     Clean,
+    /// Show saved local comments for the current worktree
+    LocalComments {
+        /// Repository name (e.g., "owner/repo"). Auto-detected if omitted.
+        #[arg(short, long)]
+        repo: Option<String>,
+
+        /// Working directory used to scope local comments (defaults to current directory)
+        #[arg(long)]
+        working_dir: Option<String>,
+
+        /// Maximum number of newest comments to show
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+
+        /// Print JSON instead of plain text
+        #[arg(long, default_value = "false")]
+        json: bool,
+
+        /// Show all comments, including resolved ones
+        #[arg(long, conflicts_with = "resolved")]
+        all: bool,
+
+        /// Show only resolved comments
+        #[arg(long, conflicts_with = "all")]
+        resolved: bool,
+    },
+    /// Update saved local comments for the current worktree
+    UpdateLocalComment {
+        /// Repository name (e.g., "owner/repo"). Auto-detected if omitted.
+        #[arg(short, long)]
+        repo: Option<String>,
+
+        /// Working directory used to scope local comments (defaults to current directory)
+        #[arg(long)]
+        working_dir: Option<String>,
+
+        /// Mark the specified comments as resolved
+        #[arg(long, conflicts_with = "reopen")]
+        resolve: bool,
+
+        /// Reopen the specified comments
+        #[arg(long, conflicts_with = "resolve")]
+        reopen: bool,
+
+        /// One or more local comment IDs to update
+        #[arg(required = true, num_args = 1.., value_name = "ID")]
+        ids: Vec<u64>,
+    },
     /// Update to the latest version from GitHub Releases
     Update,
     /// Migrate configuration files and prompts after an update
@@ -214,6 +263,21 @@ async fn main() -> Result<()> {
                 println!("Rally sessions cleaned: {}", rally_dir.display());
                 Ok(())
             }
+            Commands::LocalComments {
+                repo,
+                working_dir,
+                limit,
+                json,
+                all,
+                resolved,
+            } => local_comments::show_local_comments_command(repo, working_dir, limit, json, all, resolved).await,
+            Commands::UpdateLocalComment {
+                repo,
+                working_dir,
+                resolve,
+                reopen,
+                ids,
+            } => local_comments::update_local_comments_command(repo, working_dir, resolve, reopen, ids).await,
             Commands::Update => {
                 update::run_update()?;
                 Ok(())

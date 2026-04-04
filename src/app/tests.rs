@@ -2,11 +2,34 @@ use super::types::{MarkViewedResult, PendingApproveChoice};
 use super::*;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use lasso::Rodeo;
+use serial_test::serial;
+use tempfile::tempdir;
 
 use crate::cache::{PrCacheKey, PrData};
 use crate::github::comment::ReviewComment;
 use crate::github::{ChangedFile, PrCommit, PullRequest};
 use crate::loader::DataLoadResult;
+
+struct ScopedCacheHome {
+    old: Option<std::ffi::OsString>,
+}
+
+impl ScopedCacheHome {
+    fn new(dir: &std::path::Path) -> Self {
+        let old = std::env::var_os("XDG_CACHE_HOME");
+        unsafe { std::env::set_var("XDG_CACHE_HOME", dir) };
+        Self { old }
+    }
+}
+
+impl Drop for ScopedCacheHome {
+    fn drop(&mut self) {
+        match self.old.take() {
+            Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+        }
+    }
+}
 
 #[test]
 fn test_find_diff_line_index_basic() {
@@ -618,8 +641,14 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
         "diff_cache should be rebuilt for the new selected file"
     );
     // selected_line and scroll_offset must be reset
-    assert_eq!(app.diff_scroll.selected_line, 0, "selected_line should be reset to 0");
-    assert_eq!(app.diff_scroll.scroll_offset, 0, "scroll_offset should be reset to 0");
+    assert_eq!(
+        app.diff_scroll.selected_line, 0,
+        "selected_line should be reset to 0"
+    );
+    assert_eq!(
+        app.diff_scroll.scroll_offset, 0,
+        "scroll_offset should be reset to 0"
+    );
 }
 
 #[tokio::test]
@@ -677,6 +706,8 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        is_resolved: false,
+        resolved_at: None,
     }]);
 
     // Pre-populate stale comment positions for the old file
@@ -3445,8 +3476,11 @@ fn test_adjust_scroll_invariant_all_positions() {
         for visible_lines in [1usize, 5, 10, 20, 40] {
             for selected_line in 0..diff_line_count {
                 // scroll_offset が selected_line より手前にあるケース
-                for initial_scroll in [0, selected_line.saturating_sub(visible_lines), selected_line]
-                {
+                for initial_scroll in [
+                    0,
+                    selected_line.saturating_sub(visible_lines),
+                    selected_line,
+                ] {
                     let mut app = App::new_for_test();
                     app.diff_scroll.line_count = diff_line_count;
                     app.diff_scroll.selected_line = selected_line;
@@ -3465,7 +3499,8 @@ fn test_adjust_scroll_invariant_all_positions() {
                         initial_scroll,
                     );
                     assert!(
-                        app.diff_scroll.selected_line < app.diff_scroll.scroll_offset + visible_lines,
+                        app.diff_scroll.selected_line
+                            < app.diff_scroll.scroll_offset + visible_lines,
                         "cursor below viewport: selected_line={}, scroll_offset={}, \
                          visible_lines={}, diff_line_count={}, initial_scroll={}",
                         app.diff_scroll.selected_line,
@@ -3611,12 +3646,185 @@ fn test_cleanup_rally_state() {
     app.rally_command_sender = Some(cmd_tx);
     let (_, event_rx) = mpsc::channel(100);
     app.rally_event_receiver = Some(event_rx);
+    app.pending_rally_seed_review = Some(crate::ai::ReviewerOutput {
+        action: crate::ai::ReviewAction::RequestChanges,
+        summary: "seeded".to_string(),
+        comments: vec![],
+        blocking_issues: vec![],
+    });
 
     app.cleanup_rally_state();
 
     assert!(app.ai_rally_state.is_none());
     assert!(app.rally_command_sender.is_none());
     assert!(app.rally_event_receiver.is_none());
+    assert!(app.pending_rally_seed_review.is_none());
+}
+
+#[test]
+#[serial]
+fn test_build_seed_review_from_local_comments_returns_none_without_comments() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    let seed = app.build_seed_review_from_local_comments().unwrap();
+
+    assert!(seed.is_none());
+}
+
+#[test]
+#[serial]
+fn test_build_seed_review_from_local_comments_uses_persisted_comments() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &[crate::github::comment::ReviewComment {
+            id: 1,
+            path: "src/main.rs".to_string(),
+            line: Some(12),
+            body: "Please simplify this branch.".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+            is_resolved: false,
+            resolved_at: None,
+        }],
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+
+    let seed = app
+        .build_seed_review_from_local_comments()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(seed.action, crate::ai::ReviewAction::RequestChanges);
+    assert_eq!(seed.comments.len(), 1);
+    assert_eq!(seed.comments[0].path, "src/main.rs");
+    assert_eq!(seed.comments[0].line, 12);
+    assert_eq!(seed.comments[0].body, "Please simplify this branch.");
+    assert_eq!(
+        seed.comments[0].severity,
+        crate::ai::adapter::CommentSeverity::Major
+    );
+    assert!(seed.summary.contains("1 local comment"));
+}
+
+#[test]
+#[serial]
+fn test_build_seed_review_from_local_comments_skips_resolved_comments() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &[crate::github::comment::ReviewComment {
+            id: 1,
+            path: "src/main.rs".to_string(),
+            line: Some(12),
+            body: "Already handled.".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+            is_resolved: true,
+            resolved_at: Some("2026-03-24T01:00:00Z".to_string()),
+        }],
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+
+    let seed = app.build_seed_review_from_local_comments().unwrap();
+
+    assert!(seed.is_none());
+}
+
+#[test]
+#[serial]
+fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &[crate::github::comment::ReviewComment {
+            id: 1,
+            path: "src/main.rs".to_string(),
+            line: Some(7),
+            body: "Handle the error explicitly.".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+            is_resolved: false,
+            resolved_at: None,
+        }],
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.pr_number = Some(0);
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+    app.config.local_overrides.insert("ai.reviewer".to_string());
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "src/main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+fn main() {}".to_string()),
+            viewed: false,
+        }],
+    };
+
+    app.start_ai_rally();
+
+    assert_eq!(app.state, AppState::AiRally);
+    assert!(app.pending_rally_context.is_some());
+    assert!(app.pending_rally_prompt_loader.is_some());
+    assert!(app.pending_rally_seed_review.is_some());
+    assert_eq!(
+        app.pending_rally_seed_review
+            .as_ref()
+            .unwrap()
+            .comments
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -4148,7 +4356,9 @@ async fn test_jump_back_restores_position() {
                 status: "modified".to_string(),
                 additions: 1,
                 deletions: 0,
-                patch: Some("@@ -1,6 +1,6 @@\n line1\n line2\n line3\n line4\n line5\n+line6".to_string()),
+                patch: Some(
+                    "@@ -1,6 +1,6 @@\n line1\n line2\n line3\n line4\n line5\n+line6".to_string(),
+                ),
                 viewed: false,
             },
             ChangedFile {
@@ -4156,7 +4366,10 @@ async fn test_jump_back_restores_position() {
                 status: "modified".to_string(),
                 additions: 1,
                 deletions: 0,
-                patch: Some("@@ -1,11 +1,11 @@\n l1\n l2\n l3\n l4\n l5\n l6\n l7\n l8\n l9\n l10\n+l11".to_string()),
+                patch: Some(
+                    "@@ -1,11 +1,11 @@\n l1\n l2\n l3\n l4\n l5\n l6\n l7\n l8\n l9\n l10\n+l11"
+                        .to_string(),
+                ),
                 viewed: false,
             },
         ],
@@ -4246,6 +4459,32 @@ fn test_enter_suggestion_input_sets_mode() {
     assert_eq!(app.state, AppState::TextInput);
 }
 
+#[test]
+fn test_enter_comment_input_works_in_local_mode() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        }],
+    };
+    app.diff_scroll.selected_line = 2;
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    assert!(matches!(app.input_mode, Some(InputMode::Comment(_))));
+    assert_eq!(app.state, AppState::TextInput);
+}
+
 #[tokio::test]
 async fn test_open_comment_list_transitions_state() {
     let mut app = App::new_for_test();
@@ -4296,6 +4535,112 @@ async fn test_open_comment_list_sets_previous_state() {
 }
 
 #[test]
+fn test_open_comment_list_transitions_state_in_local_mode() {
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![],
+    };
+    app.state = AppState::FileList;
+    app.previous_state = AppState::FileList;
+
+    app.open_comment_list();
+
+    assert_eq!(app.state, AppState::CommentList);
+    assert_eq!(app.cmt.comment_tab, CommentTab::Review);
+}
+
+#[test]
+#[serial]
+fn test_submit_local_comment_persists_and_loads() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = App::new_for_test();
+    app.repo = "owner/repo".to_string();
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "src/test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        }],
+    };
+    app.diff_scroll.selected_line = 2;
+    app.state = AppState::DiffView;
+
+    let cache_key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 0,
+    };
+    app.session_cache.put_pr_data(
+        cache_key,
+        PrData {
+            pr: Box::new(make_local_pr()),
+            files: app.files().to_vec(),
+            pr_updated_at: "".to_string(),
+        },
+    );
+
+    app.enter_comment_input();
+    let ctx = match app.input_mode.clone() {
+        Some(InputMode::Comment(ctx)) => ctx,
+        other => panic!("expected comment input mode, got {:?}", other),
+    };
+
+    app.submit_comment(ctx, "local note".to_string());
+
+    assert_eq!(app.cmt.review_comments.as_ref().map(|c: &Vec<crate::github::comment::ReviewComment>| c.len()), Some(1));
+    assert_eq!(
+        app.cmt.review_comments.as_ref().unwrap()[0].body,
+        "local note".to_string()
+    );
+
+    let mut reloaded = App::new_for_test();
+    reloaded.repo = "owner/repo".to_string();
+    reloaded.local_mode = true;
+    reloaded.pr_number = Some(0);
+    reloaded.working_dir = Some(workdir.to_string_lossy().to_string());
+    reloaded.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "src/test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        }],
+    };
+    reloaded.load_review_comments();
+
+    let stored = reloaded.cmt.review_comments.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].path, "src/test.rs");
+    assert_eq!(stored[0].line, Some(2));
+    assert_eq!(stored[0].body, "local note");
+
+    let path = crate::cache::local_review_comments_path(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn test_update_file_comment_positions_empty_comments() {
     let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
     app.cmt.review_comments = Some(vec![]);
@@ -4316,6 +4661,8 @@ fn test_update_file_comment_positions_with_comments() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        is_resolved: false,
+        resolved_at: None,
     }]);
     app.update_file_comment_positions();
     assert_eq!(app.cmt.file_comment_positions.len(), 1);
@@ -4334,6 +4681,8 @@ fn test_update_file_comment_positions_stale_comment() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        is_resolved: false,
+        resolved_at: None,
     }]);
     app.update_file_comment_positions();
     assert!(app.cmt.file_comment_positions.is_empty());
@@ -4401,6 +4750,8 @@ fn test_enter_reply_input_sets_mode() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        is_resolved: false,
+        resolved_at: None,
     }]);
     app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 1,
@@ -4487,6 +4838,8 @@ async fn test_jump_to_comment_sets_file_and_line() {
             login: "r".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        is_resolved: false,
+        resolved_at: None,
     }]);
     app.cmt.selected_comment = 0;
 
@@ -5361,7 +5714,10 @@ async fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
     // ensure_diff_cache は非markdown なので markdown_rich 不一致を無視してキャッシュを維持
     app.ensure_diff_cache();
     assert!(
-        app.diff_store.current.as_ref().is_some_and(|c| c.highlighted),
+        app.diff_store
+            .current
+            .as_ref()
+            .is_some_and(|c| c.highlighted),
         "non-md file: highlighted cache should be preserved despite markdown_rich mismatch"
     );
 }
@@ -5397,7 +5753,10 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
 
     // ストアから復元されるはず（markdown_rich 不一致は無視）
     assert!(
-        app.diff_store.current.as_ref().is_some_and(|c| c.highlighted),
+        app.diff_store
+            .current
+            .as_ref()
+            .is_some_and(|c| c.highlighted),
         "non-md file: store cache should be restored despite markdown_rich mismatch"
     );
 }
@@ -5431,7 +5790,10 @@ async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
 
     // markdown ファイルなので markdown_rich 不一致 → 再構築（plain に戻る）
     assert!(
-        app.diff_store.current.as_ref().is_some_and(|c| !c.highlighted),
+        app.diff_store
+            .current
+            .as_ref()
+            .is_some_and(|c| !c.highlighted),
         "md file: cache should be rebuilt (plain) on markdown_rich mismatch"
     );
 }
@@ -6092,11 +6454,7 @@ fn make_app_with_files(filenames: &[&str]) -> App {
 
 #[test]
 fn test_toggle_file_tree_on() {
-    let mut app = make_app_with_files(&[
-        "src/app/mod.rs",
-        "src/lib.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/app/mod.rs", "src/lib.rs", "README.md"]);
 
     assert!(!app.tree_mode_active);
     assert!(app.file_tree_state.is_none());
@@ -6114,10 +6472,7 @@ fn test_toggle_file_tree_on() {
 
 #[test]
 fn test_toggle_file_tree_off_preserves_state() {
-    let mut app = make_app_with_files(&[
-        "src/app/mod.rs",
-        "src/lib.rs",
-    ]);
+    let mut app = make_app_with_files(&["src/app/mod.rs", "src/lib.rs"]);
 
     app.toggle_file_tree(); // ON
     assert!(app.tree_mode_active);
@@ -6144,11 +6499,7 @@ fn test_toggle_file_tree_off_preserves_state() {
 
 #[test]
 fn test_toggle_preserves_selection() {
-    let mut app = make_app_with_files(&[
-        "src/app/mod.rs",
-        "src/lib.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/app/mod.rs", "src/lib.rs", "README.md"]);
     app.selected_file = 1; // src/lib.rs
 
     app.toggle_file_tree(); // ON
@@ -6165,10 +6516,7 @@ fn test_toggle_preserves_selection() {
 
 #[test]
 fn test_retoggle_restores_expanded_dirs() {
-    let mut app = make_app_with_files(&[
-        "src/app/mod.rs",
-        "src/lib.rs",
-    ]);
+    let mut app = make_app_with_files(&["src/app/mod.rs", "src/lib.rs"]);
 
     app.toggle_file_tree(); // ON
 
@@ -6190,10 +6538,7 @@ fn test_retoggle_restores_expanded_dirs() {
 
 #[test]
 fn test_tree_nav_down_updates_selected_file() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
 
@@ -6215,11 +6560,7 @@ fn test_tree_nav_down_updates_selected_file() {
 
 #[test]
 fn test_tree_nav_on_dir_keeps_selected_file() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "tests/test.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "tests/test.rs", "README.md"]);
     app.selected_file = 2; // README.md
 
     app.toggle_file_tree();
@@ -6231,7 +6572,12 @@ fn test_tree_nav_on_dir_keeps_selected_file() {
     // Dir 行に移動しても selected_file は変わらない
     let old_selected = app.selected_file;
     // Dir 行にカーソルを強制配置
-    if let Some(dir_row) = app.file_tree_state.as_ref().unwrap().find_row_for_dir("src") {
+    if let Some(dir_row) = app
+        .file_tree_state
+        .as_ref()
+        .unwrap()
+        .find_row_for_dir("src")
+    {
         app.file_tree_state.as_mut().unwrap().selected_row = dir_row;
     }
     // file_tree_move_down で Dir 行を通過
@@ -6247,10 +6593,7 @@ fn test_tree_nav_on_dir_keeps_selected_file() {
 
 #[test]
 fn test_tree_enter_dir_toggles_expand() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
 
@@ -6275,10 +6618,7 @@ fn test_tree_enter_dir_toggles_expand() {
 
 #[test]
 fn test_tree_enter_file_opens_split() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
 
@@ -6294,10 +6634,7 @@ fn test_tree_enter_file_opens_split() {
 
 #[test]
 fn test_tree_dir_row_blocks_mark_viewed() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
 
@@ -6312,10 +6649,7 @@ fn test_tree_dir_row_blocks_mark_viewed() {
 
 #[test]
 fn test_tree_filter_shows_flat() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
     assert!(app.is_file_tree_active());
@@ -6329,10 +6663,7 @@ fn test_tree_filter_shows_flat() {
 
 #[test]
 fn test_tree_survives_filter_clear() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
     let _tree_row_count = app.file_tree_state.as_ref().unwrap().row_count();
@@ -6353,33 +6684,34 @@ fn test_tree_survives_filter_clear() {
 
 #[test]
 fn test_selected_file_always_valid_index() {
-    let mut app = make_app_with_files(&[
-        "src/app/mod.rs",
-        "src/lib.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/app/mod.rs", "src/lib.rs", "README.md"]);
 
     app.toggle_file_tree();
 
     // 様々なナビゲーション操作後も selected_file は有効
     for _ in 0..10 {
         app.file_tree_move_down();
-        assert!(app.selected_file < app.files().len(),
-            "selected_file {} >= files().len() {}", app.selected_file, app.files().len());
+        assert!(
+            app.selected_file < app.files().len(),
+            "selected_file {} >= files().len() {}",
+            app.selected_file,
+            app.files().len()
+        );
     }
     for _ in 0..10 {
         app.file_tree_move_up();
-        assert!(app.selected_file < app.files().len(),
-            "selected_file {} >= files().len() {}", app.selected_file, app.files().len());
+        assert!(
+            app.selected_file < app.files().len(),
+            "selected_file {} >= files().len() {}",
+            app.selected_file,
+            app.files().len()
+        );
     }
 }
 
 #[test]
 fn test_rebuild_on_data_reload() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
 
     app.toggle_file_tree();
 
@@ -6429,11 +6761,7 @@ fn test_tree_page_down_up() {
 
 #[test]
 fn test_tree_jump_to_first_last() {
-    let mut app = make_app_with_files(&[
-        "src/a.rs",
-        "src/b.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/a.rs", "src/b.rs", "README.md"]);
 
     app.toggle_file_tree();
 
@@ -6477,16 +6805,21 @@ fn test_deep_nested_collapse_hides_descendants() {
     use crate::app::file_tree::FileTreeState;
 
     let mut tree = FileTreeState::new();
-    tree.rebuild(&[
-        (0, "a/b/c/file.rs"),
-        (1, "a/b/other.rs"),
-        (2, "a/top.rs"),
-    ]);
+    tree.rebuild(&[(0, "a/b/c/file.rs"), (1, "a/b/other.rs"), (2, "a/top.rs")]);
 
     // 初回: 全ディレクトリ展開、全ファイル表示
-    assert!(tree.find_row_for_file(0).is_some(), "file.rs should be visible");
-    assert!(tree.find_row_for_file(1).is_some(), "other.rs should be visible");
-    assert!(tree.find_row_for_file(2).is_some(), "top.rs should be visible");
+    assert!(
+        tree.find_row_for_file(0).is_some(),
+        "file.rs should be visible"
+    );
+    assert!(
+        tree.find_row_for_file(1).is_some(),
+        "other.rs should be visible"
+    );
+    assert!(
+        tree.find_row_for_file(2).is_some(),
+        "top.rs should be visible"
+    );
 
     // "a" を折り畳む → 全子孫が非表示
     let a_row = tree.find_row_for_dir("a").unwrap();
@@ -6494,26 +6827,52 @@ fn test_deep_nested_collapse_hides_descendants() {
     tree.toggle_expand();
 
     // "a" 行のみ残る
-    assert_eq!(tree.row_count(), 1, "only 'a' dir should remain, dump:\n{}", tree.dump_tree());
-    assert!(tree.find_row_for_dir("a/b").is_none(), "a/b should be hidden");
-    assert!(tree.find_row_for_dir("a/b/c").is_none(), "a/b/c should be hidden");
-    assert!(tree.find_row_for_file(0).is_none(), "file.rs should be hidden");
-    assert!(tree.find_row_for_file(1).is_none(), "other.rs should be hidden");
-    assert!(tree.find_row_for_file(2).is_none(), "top.rs should be hidden");
+    assert_eq!(
+        tree.row_count(),
+        1,
+        "only 'a' dir should remain, dump:\n{}",
+        tree.dump_tree()
+    );
+    assert!(
+        tree.find_row_for_dir("a/b").is_none(),
+        "a/b should be hidden"
+    );
+    assert!(
+        tree.find_row_for_dir("a/b/c").is_none(),
+        "a/b/c should be hidden"
+    );
+    assert!(
+        tree.find_row_for_file(0).is_none(),
+        "file.rs should be hidden"
+    );
+    assert!(
+        tree.find_row_for_file(1).is_none(),
+        "other.rs should be hidden"
+    );
+    assert!(
+        tree.find_row_for_file(2).is_none(),
+        "top.rs should be hidden"
+    );
 
     // "a" を再展開 → "a/b" は expanded のまま、"a/b/c" も
     tree.toggle_expand();
-    assert!(tree.find_row_for_file(0).is_some(), "file.rs should be visible again");
-    assert!(tree.find_row_for_file(1).is_some(), "other.rs should be visible again");
-    assert!(tree.find_row_for_file(2).is_some(), "top.rs should be visible again");
+    assert!(
+        tree.find_row_for_file(0).is_some(),
+        "file.rs should be visible again"
+    );
+    assert!(
+        tree.find_row_for_file(1).is_some(),
+        "other.rs should be visible again"
+    );
+    assert!(
+        tree.find_row_for_file(2).is_some(),
+        "top.rs should be visible again"
+    );
 }
 
 #[test]
 fn test_select_pr_resets_tree_state() {
-    let mut app = make_app_with_files(&[
-        "src/main.rs",
-        "README.md",
-    ]);
+    let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
     app.started_from_pr_list = true;
 
     app.toggle_file_tree();

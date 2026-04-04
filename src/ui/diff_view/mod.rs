@@ -1435,6 +1435,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         "j/k/↑↓: extend selection | c: comment | s: suggest | Esc: cancel".to_string()
     } else if app.cmt.comment_panel_open {
         "r: reply | Esc: close".to_string()
+    } else if app.is_local_mode() {
+        "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | M: markdown rich | Ctrl-d/u: page | ←/h/q: back".to_string()
     } else {
         super::footer::footer_hint_back(&app.config.keybindings)
     };

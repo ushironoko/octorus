@@ -5,18 +5,15 @@ use std::io::Stdout;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::cache::PrCacheKey;
+use crate::cache::{load_local_review_comments, PrCacheKey};
 use crate::github::{self, comment::ReviewComment};
 use crate::ui;
 
 use super::types::*;
-use super::{App, AppState};
+use super::{App, AppState, CommentTab};
 
 impl App {
     pub(crate) fn enter_comment_input(&mut self) {
-        if self.local_mode {
-            return;
-        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -25,7 +22,8 @@ impl App {
         };
 
         // Get actual line number from diff
-        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line) else {
+        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
+        else {
             return;
         };
 
@@ -122,9 +120,6 @@ impl App {
         Ok(())
     }
     pub(crate) fn enter_suggestion_input(&mut self) {
-        if self.local_mode {
-            return;
-        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -133,7 +128,8 @@ impl App {
         };
 
         // Check if this line can have a suggestion
-        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line) else {
+        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
+        else {
             return;
         };
 
@@ -172,9 +168,6 @@ impl App {
     }
     /// 複数行選択モードを開始する（Shift+Enter）
     pub(crate) fn enter_multiline_selection(&mut self) {
-        if self.local_mode {
-            return;
-        }
         // 現在の行がコメント可能な行であることを確認
         let Some(file) = self.files().get(self.selected_file) else {
             return;
@@ -182,7 +175,8 @@ impl App {
         let Some(patch) = file.patch.as_ref() else {
             return;
         };
-        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line) else {
+        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
+        else {
             return;
         };
         if !matches!(
@@ -197,9 +191,6 @@ impl App {
         });
     }
     pub(crate) fn enter_multiline_comment_input(&mut self) {
-        if self.local_mode {
-            return;
-        }
         let Some(ref selection) = self.multiline_selection else {
             return;
         };
@@ -265,9 +256,6 @@ impl App {
         self.state = AppState::TextInput;
     }
     pub(crate) fn enter_multiline_suggestion_input(&mut self) {
-        if self.local_mode {
-            return;
-        }
         let Some(ref selection) = self.multiline_selection else {
             return;
         };
@@ -348,17 +336,20 @@ impl App {
         self.state = AppState::TextInput;
     }
     pub(crate) fn open_comment_list(&mut self) {
-        if self.local_mode {
-            return;
-        }
         self.state = AppState::CommentList;
+        self.cmt.comment_tab = CommentTab::Review;
         self.cmt.discussion_comment_detail_mode = false;
         self.cmt.discussion_comment_detail_scroll = 0;
 
         // Load review comments
         self.load_review_comments();
-        // Load discussion comments
-        self.load_discussion_comments();
+        if self.local_mode {
+            self.cmt.discussion_comments = Some(vec![]);
+            self.cmt.discussion_comments_loading = false;
+        } else {
+            // Load discussion comments
+            self.load_discussion_comments();
+        }
     }
 
     pub(crate) fn load_review_comments(&mut self) {
@@ -372,6 +363,34 @@ impl App {
             self.cmt.selected_comment = 0;
             self.cmt.comment_list_scroll_offset = 0;
             self.cmt.comments_loading = false;
+            return;
+        }
+
+        if self.local_mode {
+            match load_local_review_comments(&self.repo, self.working_dir.as_deref()) {
+                Ok(comments) => {
+                    self.session_cache
+                        .put_review_comments(cache_key, comments.clone());
+                    self.cmt.review_comments = Some(comments);
+                    self.cmt.selected_comment = 0;
+                    self.cmt.comment_list_scroll_offset = 0;
+                    self.cmt.comments_loading = false;
+                    if matches!(
+                        self.state,
+                        AppState::DiffView | AppState::SplitViewDiff | AppState::SplitViewFileList
+                    ) {
+                        self.update_file_comment_positions();
+                        self.ensure_diff_cache();
+                    }
+                }
+                Err(e) => {
+                    self.cmt.review_comments = Some(vec![]);
+                    self.cmt.comments_loading = false;
+                    self.cmt.submission_result =
+                        Some((false, format!("Failed to load local comments: {}", e)));
+                    self.cmt.submission_result_time = Some(Instant::now());
+                }
+            }
             return;
         }
 
@@ -408,6 +427,8 @@ impl App {
                                 body,
                                 user: review.user,
                                 created_at: review.submitted_at.unwrap_or_default(),
+                                is_resolved: false,
+                                resolved_at: None,
                             });
                         }
                     }
@@ -457,6 +478,10 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        if self.local_mode {
+            return self.handle_local_comment_list_input(key, terminal).await;
+        }
+
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
         if self.cmt.discussion_comment_detail_mode {
@@ -476,12 +501,7 @@ impl App {
         } else if self.matches_single_key(&key, &kb.move_down) {
             match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    if let Some(ref comments) = self.cmt.review_comments {
-                        if !comments.is_empty() {
-                            self.cmt.selected_comment =
-                                (self.cmt.selected_comment + 1).min(comments.len().saturating_sub(1));
-                        }
-                    }
+                    self.navigate_review_comments(&key, visible_lines);
                 }
                 CommentTab::Discussion => {
                     if let Some(ref comments) = self.cmt.discussion_comments {
@@ -496,7 +516,7 @@ impl App {
         } else if self.matches_single_key(&key, &kb.move_up) {
             match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(1);
+                    self.navigate_review_comments(&key, visible_lines);
                 }
                 CommentTab::Discussion => {
                     self.cmt.selected_discussion_comment =
@@ -506,17 +526,12 @@ impl App {
         } else if self.matches_single_key(&key, &kb.page_down)
             || Self::is_shift_char_shortcut(&key, 'j')
         {
-            let step = visible_lines.max(1);
             match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    if let Some(ref comments) = self.cmt.review_comments {
-                        if !comments.is_empty() {
-                            self.cmt.selected_comment =
-                                (self.cmt.selected_comment + step).min(comments.len() - 1);
-                        }
-                    }
+                    self.navigate_review_comments(&key, visible_lines);
                 }
                 CommentTab::Discussion => {
+                    let step = visible_lines.max(1);
                     if let Some(ref comments) = self.cmt.discussion_comments {
                         if !comments.is_empty() {
                             self.cmt.selected_discussion_comment =
@@ -529,12 +544,12 @@ impl App {
         } else if self.matches_single_key(&key, &kb.page_up)
             || Self::is_shift_char_shortcut(&key, 'k')
         {
-            let step = visible_lines.max(1);
             match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(step);
+                    self.navigate_review_comments(&key, visible_lines);
                 }
                 CommentTab::Discussion => {
+                    let step = visible_lines.max(1);
                     self.cmt.selected_discussion_comment =
                         self.cmt.selected_discussion_comment.saturating_sub(step);
                 }
@@ -558,6 +573,68 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn handle_local_comment_list_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+
+        let kb = self.config.keybindings.clone();
+        if self.matches_single_key(&key, &kb.quit) {
+            self.state = self.previous_state;
+        } else if self.navigate_review_comments(&key, visible_lines) {
+            // handled by navigate_review_comments
+        } else if key.code == event::KeyCode::Char('g') {
+            self.cmt.selected_comment = 0;
+        } else if Self::is_shift_char_shortcut(&key, 'g') {
+            if let Some(ref comments) = self.cmt.review_comments {
+                if !comments.is_empty() {
+                    self.cmt.selected_comment = comments.len() - 1;
+                }
+            }
+        } else if self.matches_single_key(&key, &kb.open_panel) {
+            self.jump_to_comment();
+        }
+
+        Ok(())
+    }
+
+    fn navigate_review_comments(&mut self, key: &event::KeyEvent, visible_lines: usize) -> bool {
+        let kb = self.config.keybindings.clone();
+        if self.matches_single_key(key, &kb.move_down) {
+            if let Some(ref comments) = self.cmt.review_comments {
+                if !comments.is_empty() {
+                    self.cmt.selected_comment =
+                        (self.cmt.selected_comment + 1).min(comments.len().saturating_sub(1));
+                }
+            }
+            true
+        } else if self.matches_single_key(key, &kb.move_up) {
+            self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(1);
+            true
+        } else if self.matches_single_key(key, &kb.page_down)
+            || Self::is_shift_char_shortcut(key, 'j')
+        {
+            let step = visible_lines.max(1);
+            if let Some(ref comments) = self.cmt.review_comments {
+                if !comments.is_empty() {
+                    self.cmt.selected_comment =
+                        (self.cmt.selected_comment + step).min(comments.len() - 1);
+                }
+            }
+            true
+        } else if self.matches_single_key(key, &kb.page_up)
+            || Self::is_shift_char_shortcut(key, 'k')
+        {
+            let step = visible_lines.max(1);
+            self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(step);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn handle_discussion_detail_input(

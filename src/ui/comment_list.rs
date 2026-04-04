@@ -1,3 +1,5 @@
+use super::common::{render_rally_status_bar, wrap_text};
+use crate::app::{App, CommentTab};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
@@ -8,10 +10,13 @@ use ratatui::{
     },
     Frame,
 };
-use super::common::{render_rally_status_bar, wrap_text};
-use crate::app::{App, CommentTab};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    if app.is_local_mode() {
+        render_local_comment_list(frame, app);
+        return;
+    }
+
     if app.cmt.discussion_comment_detail_mode {
         render_discussion_detail(frame, app);
         return;
@@ -52,6 +57,58 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let help_text = super::footer::footer_hint_back(&app.config.keybindings);
     let footer = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, chunks[footer_chunk_idx]);
+}
+
+fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(frame.area());
+
+    let count = app.cmt.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
+    let loading = if app.cmt.comments_loading {
+        format!(" {}", app.spinner_char())
+    } else {
+        String::new()
+    };
+    let header = Paragraph::new(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("[Local Comments ({})]{}", count, loading),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(Block::default().borders(Borders::ALL).title("octorus"));
+    frame.render_widget(header, chunks[0]);
+
+    render_review_comments(frame, app, chunks[1]);
+
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+    }
+
+    let footer_chunk_idx = if has_rally { 3 } else { 2 };
+    let footer = Paragraph::new("j/k/↑↓: move | Enter: jump to file | q: back")
+        .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
@@ -227,6 +284,16 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
                     format!("@{}", comment.user.login),
                     Style::default().fg(Color::Cyan),
                 ),
+                if comment.is_resolved {
+                    Span::raw(" ")
+                } else {
+                    Span::raw("")
+                },
+                if comment.is_resolved {
+                    Span::styled("[resolved]", Style::default().fg(Color::DarkGray))
+                } else {
+                    Span::raw("")
+                },
                 Span::raw(" on "),
                 Span::styled(
                     format!("{}{}", comment.path, line_info),
@@ -504,6 +571,8 @@ mod tests {
                 body: "This looks good.".to_string(),
                 user: User { login: "reviewer1".to_string() },
                 created_at: "2025-01-01T00:00:00Z".to_string(),
+                is_resolved: false,
+                resolved_at: None,
             },
         ]);
 
