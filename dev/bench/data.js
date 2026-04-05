@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775198748307,
+  "lastUpdate": 1775354717905,
   "repoUrl": "https://github.com/ushironoko/octorus",
   "entries": {
     "octorus Benchmark": [
@@ -6597,6 +6597,370 @@ window.BENCHMARK_DATA = {
             "name": "archive/visible_range/visible_only/5000",
             "value": 22176,
             "range": "± 145",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "ushironoko",
+            "username": "ushironoko",
+            "email": "apple19940820@gmail.com"
+          },
+          "committer": {
+            "name": "ushironoko",
+            "username": "ushironoko",
+            "email": "apple19940820@gmail.com"
+          },
+          "id": "d1c61e10005ba10f39b4a5522bbe6fa767ece895",
+          "message": "fix: no-args startup falls back to help instead of Cockpit dashboard\n\nThe raw_args.is_empty() guard in main() caused no-args invocation to\nprint help and exit before reaching the Cockpit routing. Remove the\nguard so no-args correctly enters the Cockpit dashboard.\n\nAdd CLI integration test to prevent regression.",
+          "timestamp": "2026-04-03T04:12:59Z",
+          "url": "https://github.com/ushironoko/octorus/commit/d1c61e10005ba10f39b4a5522bbe6fa767ece895"
+        },
+        "date": 1775354717623,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "diff_parsing/classify_line/header",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_diff",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_plus",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_minus",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/added",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/removed",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context_long",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/100",
+            "value": 633,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/500",
+            "value": 3162,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/1000",
+            "value": 6368,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/start/5",
+            "value": 1966,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/middle/50",
+            "value": 2239,
+            "range": "± 21",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/end/95",
+            "value": 2494,
+            "range": "± 50",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/start/5",
+            "value": 8863,
+            "range": "± 98",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/middle/250",
+            "value": 10382,
+            "range": "± 535",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/end/495",
+            "value": 11860,
+            "range": "± 114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/start/5",
+            "value": 21988,
+            "range": "± 215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/middle/500",
+            "value": 24790,
+            "range": "± 171",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/end/995",
+            "value": 28398,
+            "range": "± 309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/simple",
+            "value": 18440,
+            "range": "± 117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/complex",
+            "value": 22252,
+            "range": "± 270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/100",
+            "value": 22285792,
+            "range": "± 67263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/500",
+            "value": 28673583,
+            "range": "± 189867",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/1000",
+            "value": 45677385,
+            "range": "± 318117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache/5000",
+            "value": 131380891,
+            "range": "± 2308168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/100",
+            "value": 23827,
+            "range": "± 264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/500",
+            "value": 134875,
+            "range": "± 1528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/1000",
+            "value": 279519,
+            "range": "± 2950",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_cache/build_cache_no_highlight/5000",
+            "value": 1413980,
+            "range": "± 36988",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/span_clone/100",
+            "value": 51078,
+            "range": "± 133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/borrowed_spans/100",
+            "value": 5393,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/span_clone/500",
+            "value": 194836,
+            "range": "± 1203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/borrowed_spans/500",
+            "value": 32249,
+            "range": "± 106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/span_clone/1000",
+            "value": 476785,
+            "range": "± 2528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "selected_line/borrowed_spans/1000",
+            "value": 93383,
+            "range": "± 7232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/all_lines/1000",
+            "value": 478650,
+            "range": "± 2664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/visible_borrowed/1000",
+            "value": 3035,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/all_lines/5000",
+            "value": 2251805,
+            "range": "± 8658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "visible_range/visible_borrowed/5000",
+            "value": 2566,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_rust/100",
+            "value": 22467920,
+            "range": "± 133942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_rust/500",
+            "value": 29606567,
+            "range": "± 402187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_rust/1000",
+            "value": 48767205,
+            "range": "± 194388",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_rust/10000",
+            "value": 191953817,
+            "range": "± 1529429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_haskell/100",
+            "value": 217063647,
+            "range": "± 854177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_haskell/500",
+            "value": 233929777,
+            "range": "± 664298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_haskell/1000",
+            "value": 327557078,
+            "range": "± 1141147",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_haskell/10000",
+            "value": 41218473760,
+            "range": "± 137185413",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_vue/100",
+            "value": 31045585,
+            "range": "± 236498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_vue/500",
+            "value": 39018301,
+            "range": "± 243293",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_vue/1000",
+            "value": 45794611,
+            "range": "± 411803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlighter/tree_sitter_vue/10000",
+            "value": 213557508,
+            "range": "± 2092222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/selected_line/line_style/100",
+            "value": 51108,
+            "range": "± 312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/selected_line/line_style/500",
+            "value": 208390,
+            "range": "± 818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/selected_line/line_style/1000",
+            "value": 487055,
+            "range": "± 2091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/visible_range/visible_only/1000",
+            "value": 32086,
+            "range": "± 227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "archive/visible_range/visible_only/5000",
+            "value": 21337,
+            "range": "± 741",
             "unit": "ns/iter"
           }
         ]
