@@ -24,6 +24,18 @@ pub struct CommentPosition {
     pub comment_index: usize,
 }
 
+/// A thread of review comments: one root comment and zero or more replies.
+/// Indices refer into the flat `review_comments` vec in [`CommentState`].
+///
+/// Invariant: indices are invalidated if `review_comments` is replaced
+/// without calling `build_review_threads()` — always go through
+/// `apply_review_comments()` to keep them in sync.
+#[derive(Debug, Clone)]
+pub struct CommentThread {
+    pub root: usize,
+    pub replies: Vec<usize>,
+}
+
 /// Single entry in the jump history stack (Go to Definition / Jump Back).
 #[derive(Debug, Clone)]
 pub struct JumpLocation {
@@ -1018,6 +1030,13 @@ pub struct CommentState {
     /// the on-disk [`crate::cache::LocalReviewComment`] records when in local
     /// mode; empty otherwise.
     pub local_comment_meta: std::collections::HashMap<u64, crate::cache::LocalCommentMeta>,
+    pub review_threads: Vec<CommentThread>,
+    pub selected_thread: usize,
+    pub expanded_thread: Option<usize>,
+    pub expanded_selected: usize,
+    pub expanded_selected_comment_id: Option<u64>,
+    pub expanded_scroll_offset: usize,
+    pub thread_scroll_offset: usize,
     pub selected_comment: usize,
     pub comment_list_scroll_offset: usize,
     pub comments_loading: bool,
@@ -1043,6 +1062,18 @@ pub struct CommentState {
     pub(crate) submission_result_time: Option<std::time::Instant>,
     pub(crate) pending_approve_body: Option<String>,
     pub selected_inline_comment: usize,
+}
+
+impl CommentState {
+    pub(crate) fn reset_threads(&mut self) {
+        self.review_threads.clear();
+        self.selected_thread = 0;
+        self.expanded_thread = None;
+        self.expanded_selected = 0;
+        self.expanded_selected_comment_id = None;
+        self.expanded_scroll_offset = 0;
+        self.thread_scroll_offset = 0;
+    }
 }
 
 #[derive(Default)]

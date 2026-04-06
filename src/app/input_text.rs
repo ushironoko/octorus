@@ -209,6 +209,7 @@ impl App {
                 login: Self::local_comment_author(),
             },
             created_at: Utc::now().to_rfc3339(),
+            in_reply_to_id: None,
         }));
 
         self.persist_local_review_comments(comments, "Saved local comment");
@@ -282,6 +283,7 @@ impl App {
                 login: Self::local_comment_author(),
             },
             created_at: Utc::now().to_rfc3339(),
+            in_reply_to_id: None,
         }));
 
         self.persist_local_review_comments(comments, "Saved local reply");

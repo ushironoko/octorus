@@ -213,12 +213,7 @@ fn render_comment_list_generic<T, F>(
 }
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let review_count = app
-        .cmt
-        .review_comments
-        .as_ref()
-        .map(|c| c.len())
-        .unwrap_or(0);
+    let review_count = app.cmt.review_threads.len();
     let discussion_count = app
         .cmt
         .discussion_comments
@@ -254,7 +249,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         Span::raw(" "),
         Span::styled(
             format!(
-                "[Review Comments ({})]{}",
+                "[Review Threads ({})]{}",
                 review_count,
                 loading_indicator(app.cmt.comments_loading)
             ),
@@ -277,7 +272,12 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 }
 
 fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
-    use crate::github::comment::ReviewComment;
+    if app.cmt.expanded_thread.is_some() {
+        render_expanded_thread(frame, app, area);
+        return;
+    }
+
+    use crate::app::CommentThread;
     use std::collections::HashSet;
 
     let resolved_ids: HashSet<u64> = app
@@ -288,18 +288,49 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         .map(|(id, _)| *id)
         .collect();
 
-    render_comment_list_generic(
-        frame,
-        area,
-        app.cmt.review_comments.as_deref(),
-        app.cmt.comments_loading,
-        app.cmt.selected_comment,
-        &mut app.cmt.comment_list_scroll_offset,
-        "review comments",
-        |comment: &ReviewComment, _i: usize, is_selected: bool, body_width: usize| {
+    let threads = &app.cmt.review_threads;
+    let comments = app.cmt.review_comments.as_deref();
+
+    if app.cmt.comments_loading && comments.is_none() {
+        let loading_msg = Paragraph::new("Loading review comments...")
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(loading_msg, area);
+        return;
+    }
+
+    if threads.is_empty() {
+        let empty = Paragraph::new("No review comments found")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let Some(ref all_comments) = app.cmt.review_comments else {
+        return;
+    };
+
+    let available_width = area.width.saturating_sub(4) as usize;
+    let body_width = available_width.saturating_sub(4);
+
+    let items: Vec<ListItem> = threads
+        .iter()
+        .enumerate()
+        .map(|(i, thread): (usize, &CommentThread)| {
+            let is_selected = i == app.cmt.selected_thread;
+            let comment = &all_comments[thread.root];
             let prefix = if is_selected { "> " } else { "  " };
             let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let resolved = resolved_ids.contains(&comment.id);
+
+            let reply_count = thread.replies.len();
+            let reply_info = if reply_count > 0 {
+                format!("  ({} {})", reply_count, if reply_count == 1 { "reply" } else { "replies" })
+            } else {
+                String::new()
+            };
+
             let header_line = Line::from(vec![
                 Span::raw(prefix),
                 Span::styled(
@@ -321,6 +352,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
                     format!("{}{}", comment.path, line_info),
                     Style::default().fg(Color::Green),
                 ),
+                Span::styled(reply_info, Style::default().fg(Color::DarkGray)),
             ]);
 
             let mut lines = vec![header_line];
@@ -333,8 +365,161 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
             lines.push(Line::from(""));
 
             ListItem::new(lines)
-        },
+        })
+        .collect();
+
+    let total_items = threads.len();
+    let mut list_state = ListState::default()
+        .with_offset(app.cmt.thread_scroll_offset)
+        .with_selected(Some(app.cmt.selected_thread));
+
+    let block = Block::default().borders(Borders::ALL);
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     );
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    app.cmt.thread_scroll_offset = list_state.offset();
+
+    if total_items > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state =
+            ScrollbarState::new(total_items.saturating_sub(1)).position(app.cmt.selected_thread);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
+}
+
+fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let Some(thread_idx) = app.cmt.expanded_thread else {
+        return;
+    };
+    let Some(thread) = app.cmt.review_threads.get(thread_idx) else {
+        return;
+    };
+    let Some(ref all_comments) = app.cmt.review_comments else {
+        return;
+    };
+
+    let available_width = area.width.saturating_sub(4) as usize;
+    let body_width = available_width.saturating_sub(6);
+
+    // Build flat list: index 0 = root, 1..=N = replies
+    let comment_indices: Vec<usize> = std::iter::once(thread.root)
+        .chain(thread.replies.iter().copied())
+        .collect();
+
+    let items: Vec<ListItem> = comment_indices
+        .iter()
+        .enumerate()
+        .map(|(i, &ci)| {
+            let comment = &all_comments[ci];
+            let is_selected = i == app.cmt.expanded_selected;
+            let prefix = if is_selected { "> " } else { "  " };
+            let is_root = i == 0;
+
+            let header_line = if is_root {
+                let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
+                Line::from(vec![
+                    Span::raw(prefix),
+                    Span::styled(
+                        format!("@{}", comment.user.login),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw(" on "),
+                    Span::styled(
+                        format!("{}{}", comment.path, line_info),
+                        Style::default().fg(Color::Green),
+                    ),
+                ])
+            } else {
+                let date = comment
+                    .created_at
+                    .split('T')
+                    .next()
+                    .unwrap_or(&comment.created_at);
+                Line::from(vec![
+                    Span::raw(prefix),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(
+                        format!("@{}", comment.user.login),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
+                ])
+            };
+
+            let indent = if is_root { "    " } else { "      " };
+            let mut lines = vec![header_line];
+            for body_line in comment.body.lines() {
+                let wrapped = wrap_text(body_line, body_width);
+                for wrapped_line in wrapped {
+                    lines.push(Line::from(vec![Span::raw(indent), Span::raw(wrapped_line)]));
+                }
+            }
+            lines.push(Line::from(""));
+
+            ListItem::new(lines)
+        })
+        .collect();
+
+    let total_items = comment_indices.len();
+    let root_comment = &all_comments[thread.root];
+    let line_info = root_comment
+        .line
+        .map(|l| format!(":{}", l))
+        .unwrap_or_default();
+    let title = format!(
+        "Thread: {}{} ({} comments)",
+        root_comment.path,
+        line_info,
+        total_items
+    );
+
+    let mut list_state = ListState::default()
+        .with_offset(app.cmt.expanded_scroll_offset)
+        .with_selected(Some(app.cmt.expanded_selected));
+
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    app.cmt.expanded_scroll_offset = list_state.offset();
+
+    if total_items > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state = ScrollbarState::new(total_items.saturating_sub(1))
+            .position(app.cmt.expanded_selected);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
@@ -519,10 +704,10 @@ mod tests {
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
-        │ [Review Comments (0)]  [Discussion (0)]                                                          │
+        │ [Review Threads (0)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │No review comments                                                                                │
+        │No review comments found                                                                          │
         │                                                                                                  │
         │                                                                                                  │
         │                                                                                                  │
@@ -554,7 +739,7 @@ mod tests {
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
-        │ [Review Comments (0)]  [Discussion (0)]                                                          │
+        │ [Review Threads (0)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │No review comments found                                                                          │
@@ -595,11 +780,13 @@ mod tests {
                 login: "reviewer1".to_string(),
             },
             created_at: "2025-01-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
         }]);
+        app.build_review_threads();
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
-        │ [Review Comments (1)]  [Discussion (0)]                                                          │
+        │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │> @reviewer1 on src/main.rs:10                                                                    │
@@ -634,7 +821,7 @@ mod tests {
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
-        │ [Review Comments (0)]  [Discussion (0)]                                                          │
+        │ [Review Threads (0)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │No discussion comments                                                                            │
@@ -676,7 +863,7 @@ mod tests {
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
-        │ [Review Comments (0)]  [Discussion (1)]                                                          │
+        │ [Review Threads (0)]  [Discussion (1)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │> @commenter  2025-03-01                                                                          │
@@ -719,6 +906,7 @@ mod tests {
                     login: "dacuna".to_string(),
                 },
                 created_at: "2026-03-25T02:00:00+00:00".to_string(),
+                in_reply_to_id: None,
             },
             ReviewComment {
                 id: 2,
@@ -730,6 +918,7 @@ mod tests {
                     login: "dacuna".to_string(),
                 },
                 created_at: "2026-03-25T03:00:00+00:00".to_string(),
+                in_reply_to_id: None,
             },
         ]);
         app.cmt.local_comment_meta.insert(
@@ -739,6 +928,7 @@ mod tests {
                 resolved_at: Some("2026-03-25T04:00:00+00:00".to_string()),
             },
         );
+        app.build_review_threads();
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
@@ -775,6 +965,7 @@ mod tests {
         app.set_local_mode(true);
         app.cmt.comment_tab = CommentTab::Review;
         app.cmt.review_comments = Some(vec![]);
+        app.build_review_threads();
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
@@ -797,6 +988,190 @@ mod tests {
         │                                                                                                  │
         │                                                                                                  │
         │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Back                                                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_build_review_threads_groups_replies() {
+        let mut app = App::new_for_test();
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 100,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Root comment".to_string(),
+                user: User { login: "alice".to_string() },
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+            ReviewComment {
+                id: 101,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "First reply".to_string(),
+                user: User { login: "bob".to_string() },
+                created_at: "2025-01-01T01:00:00Z".to_string(),
+                in_reply_to_id: Some(100),
+            },
+            ReviewComment {
+                id: 102,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Second reply".to_string(),
+                user: User { login: "carol".to_string() },
+                created_at: "2025-01-01T02:00:00Z".to_string(),
+                in_reply_to_id: Some(100),
+            },
+            ReviewComment {
+                id: 200,
+                path: "src/lib.rs".to_string(),
+                line: Some(5),
+                start_line: None,
+                body: "Independent thread".to_string(),
+                user: User { login: "dave".to_string() },
+                created_at: "2025-01-01T03:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+        ]);
+        app.build_review_threads();
+
+        assert_eq!(app.cmt.review_threads.len(), 2);
+
+        let t0 = &app.cmt.review_threads[0];
+        assert_eq!(t0.root, 0);
+        assert_eq!(t0.replies, vec![1, 2]);
+
+        let t1 = &app.cmt.review_threads[1];
+        assert_eq!(t1.root, 3);
+        assert!(t1.replies.is_empty());
+    }
+
+    #[test]
+    fn test_threaded_review_comments_rendering() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 100,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Needs refactoring".to_string(),
+                user: User { login: "alice".to_string() },
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+            ReviewComment {
+                id: 101,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Agreed".to_string(),
+                user: User { login: "bob".to_string() },
+                created_at: "2025-01-01T01:00:00Z".to_string(),
+                in_reply_to_id: Some(100),
+            },
+        ]);
+        app.build_review_threads();
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Threads (1)]  [Discussion (0)]                                                           │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │> @alice on src/main.rs:10  (1 reply)                                                             │
+        │    Needs refactoring                                                                             │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Back                                                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_expanded_thread_rendering() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 100,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Needs refactoring".to_string(),
+                user: User { login: "alice".to_string() },
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+            ReviewComment {
+                id: 101,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Agreed, will fix".to_string(),
+                user: User { login: "bob".to_string() },
+                created_at: "2025-01-02T00:00:00Z".to_string(),
+                in_reply_to_id: Some(100),
+            },
+            ReviewComment {
+                id: 102,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Done in latest push".to_string(),
+                user: User { login: "alice".to_string() },
+                created_at: "2025-01-03T00:00:00Z".to_string(),
+                in_reply_to_id: Some(100),
+            },
+        ]);
+        app.build_review_threads();
+        app.cmt.expanded_thread = Some(0);
+        app.cmt.expanded_selected = 0;
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Review Threads (1)]  [Discussion (0)]                                                           │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Thread: src/main.rs:10 (3 comments)───────────────────────────────────────────────────────────────┐
+        │> @alice on src/main.rs:10                                                                        ▲
+        │    Needs refactoring                                                                             █
+        │                                                                                                  █
+        │    @bob  2025-01-02                                                                              █
+        │      Agreed, will fix                                                                            █
+        │                                                                                                  █
+        │    @alice  2025-01-03                                                                            █
+        │      Done in latest push                                                                         █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  ║
+        │                                                                                                  ▼
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │

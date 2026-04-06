@@ -268,6 +268,7 @@ impl App {
         self.cmt.pending_approve_body = None;
         self.cmt.review_comments = None;
         self.cmt.file_comment_counts.clear();
+        self.cmt.reset_threads();
 
         self.tree_mode_active = false;
         self.file_tree_state = None;
@@ -343,6 +344,7 @@ impl App {
         self.cmt.review_comments = None;
         self.cmt.discussion_comments = None;
         self.cmt.file_comment_counts.clear();
+        self.cmt.reset_threads();
         self.diff_store.clear();
         self.diff_scroll.reset();
         self.cmt.comment_receiver = None;

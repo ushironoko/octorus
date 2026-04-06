@@ -372,8 +372,72 @@ impl App {
         }
     }
 
+    /// Group flat review comments into threads using `in_reply_to_id`.
+    pub(crate) fn build_review_threads(&mut self) {
+        use std::collections::HashMap;
+        self.cmt.review_threads.clear();
+
+        let Some(ref comments) = self.cmt.review_comments else {
+            return;
+        };
+
+        // Map comment id → index for lookup
+        let id_to_idx: HashMap<u64, usize> = comments
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.id, i))
+            .collect();
+
+        // Group by root
+        let n = comments.len();
+        let mut root_to_thread: HashMap<usize, usize> = HashMap::new();
+        for i in 0..n {
+            // Walk in_reply_to_id chain to find the thread root.
+            // Bounded by n to guard against cycles.
+            let mut root_idx = i;
+            for _ in 0..n {
+                match comments[root_idx].in_reply_to_id.and_then(|pid| id_to_idx.get(&pid)) {
+                    Some(&parent) if parent != root_idx => root_idx = parent,
+                    _ => break,
+                }
+            }
+            if let Some(&thread_idx) = root_to_thread.get(&root_idx) {
+                if i != root_idx {
+                    self.cmt.review_threads[thread_idx].replies.push(i);
+                }
+            } else {
+                let thread_idx = self.cmt.review_threads.len();
+                root_to_thread.insert(root_idx, thread_idx);
+                let mut thread = CommentThread {
+                    root: root_idx,
+                    replies: Vec::new(),
+                };
+                if i != root_idx {
+                    thread.replies.push(i);
+                }
+                self.cmt.review_threads.push(thread);
+            }
+        }
+
+        // Sort replies within each thread by created_at
+        for thread in &mut self.cmt.review_threads {
+            thread
+                .replies
+                .sort_by(|&a, &b| comments[a].created_at.cmp(&comments[b].created_at));
+        }
+
+        // Sort threads by root comment's created_at
+        self.cmt
+            .review_threads
+            .sort_by(|a, b| comments[a.root].created_at.cmp(&comments[b.root].created_at));
+    }
+
     /// Apply a fetched (or cached) set of review comments to the UI state:
-    /// file comment counts and selection reset.
+    /// file comment counts, thread grouping, and selection reset.
+    ///
+    /// Selection state is preserved when the set of thread roots is unchanged
+    /// (i.e. a background poll returned the same threads, possibly with new
+    /// replies). A structural change (new/removed threads) resets selection.
     pub(crate) fn apply_review_comments(&mut self, comments: Vec<ReviewComment>) {
         // Count all comments per file (including replies) so the badge
         // reflects total activity, not just thread count.
@@ -383,9 +447,72 @@ impl App {
                 *self.cmt.file_comment_counts.entry(c.path.clone()).or_insert(0) += 1;
             }
         }
+
+        let old_root_ids: Vec<u64> = self
+            .cmt
+            .review_threads
+            .iter()
+            .filter_map(|t| {
+                self.cmt
+                    .review_comments
+                    .as_ref()
+                    .and_then(|cs| cs.get(t.root))
+                    .map(|c| c.id)
+            })
+            .collect();
+
         self.cmt.review_comments = Some(comments);
-        self.cmt.selected_comment = 0;
-        self.cmt.comment_list_scroll_offset = 0;
+        self.build_review_threads();
+
+        let new_root_ids: Vec<u64> = self
+            .cmt
+            .review_threads
+            .iter()
+            .filter_map(|t| {
+                self.cmt
+                    .review_comments
+                    .as_ref()
+                    .and_then(|cs| cs.get(t.root))
+                    .map(|c| c.id)
+            })
+            .collect();
+
+        let threads_unchanged = old_root_ids == new_root_ids;
+        if !threads_unchanged {
+            self.cmt.selected_comment = 0;
+            self.cmt.comment_list_scroll_offset = 0;
+            self.cmt.selected_thread = 0;
+            self.cmt.thread_scroll_offset = 0;
+            self.cmt.expanded_thread = None;
+            self.cmt.expanded_selected = 0;
+            self.cmt.expanded_selected_comment_id = None;
+            self.cmt.expanded_scroll_offset = 0;
+        } else if let Some(expanded_idx) = self.cmt.expanded_thread {
+            // Thread content may have changed (new replies). Restore
+            // the positional index by comment ID so the user doesn't
+            // get silently shifted to a different comment.
+            if let Some(thread) = self.cmt.review_threads.get(expanded_idx) {
+                if let Some(target_id) = self.cmt.expanded_selected_comment_id {
+                    let indices: Vec<usize> = std::iter::once(thread.root)
+                        .chain(thread.replies.iter().copied())
+                        .collect();
+                    let comments = self.cmt.review_comments.as_deref().unwrap();
+                    match indices.iter().position(|&ci| comments[ci].id == target_id) {
+                        Some(pos) => self.cmt.expanded_selected = pos,
+                        None => {
+                            self.cmt.expanded_thread = None;
+                            self.cmt.expanded_selected = 0;
+                            self.cmt.expanded_selected_comment_id = None;
+                        }
+                    }
+                }
+            } else {
+                self.cmt.expanded_thread = None;
+                self.cmt.expanded_selected = 0;
+                self.cmt.expanded_selected_comment_id = None;
+            }
+        }
+
         self.cmt.comments_loading = false;
     }
 
@@ -471,6 +598,7 @@ impl App {
                                 body,
                                 user: review.user,
                                 created_at: review.submitted_at.unwrap_or_default(),
+                                in_reply_to_id: None,
                             });
                         }
                     }
@@ -538,7 +666,14 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.quit) {
-            self.state = self.previous_state;
+            // In expanded thread view, collapse first; otherwise go back
+            if self.cmt.comment_tab == CommentTab::Review && self.cmt.expanded_thread.is_some() {
+                self.cmt.expanded_thread = None;
+                self.cmt.expanded_selected = 0;
+                self.cmt.expanded_selected_comment_id = None;
+            } else {
+                self.state = self.previous_state;
+            }
         } else if self.matches_single_key(&key, &kb.tab_prev)
             || self.matches_single_key(&key, &kb.tab_next)
         {
@@ -548,9 +683,7 @@ impl App {
             };
         } else if self.matches_single_key(&key, &kb.move_down) {
             match self.cmt.comment_tab {
-                CommentTab::Review => {
-                    self.navigate_review_comments(&key, visible_lines);
-                }
+                CommentTab::Review => self.review_nav_down(1),
                 CommentTab::Discussion => {
                     if let Some(ref comments) = self.cmt.discussion_comments {
                         if !comments.is_empty() {
@@ -563,9 +696,7 @@ impl App {
             }
         } else if self.matches_single_key(&key, &kb.move_up) {
             match self.cmt.comment_tab {
-                CommentTab::Review => {
-                    self.navigate_review_comments(&key, visible_lines);
-                }
+                CommentTab::Review => self.review_nav_up(1),
                 CommentTab::Discussion => {
                     self.cmt.selected_discussion_comment =
                         self.cmt.selected_discussion_comment.saturating_sub(1);
@@ -574,12 +705,10 @@ impl App {
         } else if self.matches_single_key(&key, &kb.page_down)
             || Self::is_shift_char_shortcut(&key, 'j')
         {
+            let step = visible_lines.max(1);
             match self.cmt.comment_tab {
-                CommentTab::Review => {
-                    self.navigate_review_comments(&key, visible_lines);
-                }
+                CommentTab::Review => self.review_nav_down(step),
                 CommentTab::Discussion => {
-                    let step = visible_lines.max(1);
                     if let Some(ref comments) = self.cmt.discussion_comments {
                         if !comments.is_empty() {
                             self.cmt.selected_discussion_comment =
@@ -592,12 +721,10 @@ impl App {
         } else if self.matches_single_key(&key, &kb.page_up)
             || Self::is_shift_char_shortcut(&key, 'k')
         {
+            let step = visible_lines.max(1);
             match self.cmt.comment_tab {
-                CommentTab::Review => {
-                    self.navigate_review_comments(&key, visible_lines);
-                }
+                CommentTab::Review => self.review_nav_up(step),
                 CommentTab::Discussion => {
-                    let step = visible_lines.max(1);
                     self.cmt.selected_discussion_comment =
                         self.cmt.selected_discussion_comment.saturating_sub(step);
                 }
@@ -605,7 +732,36 @@ impl App {
         } else if self.matches_single_key(&key, &kb.open_panel) {
             match self.cmt.comment_tab {
                 CommentTab::Review => {
-                    self.jump_to_comment();
+                    if let Some(thread_idx) = self
+                        .cmt
+                        .expanded_thread
+                        .filter(|&i| i < self.cmt.review_threads.len())
+                    {
+                        // Jump to the selected comment within the expanded thread
+                        let thread = &self.cmt.review_threads[thread_idx];
+                        let indices: Vec<usize> = std::iter::once(thread.root)
+                            .chain(thread.replies.iter().copied())
+                            .collect();
+                        if let Some(&ci) = indices.get(self.cmt.expanded_selected) {
+                            self.cmt.selected_comment = ci;
+                            self.jump_to_comment();
+                        }
+                    } else if !self.cmt.review_threads.is_empty() {
+                        let last = self.cmt.review_threads.len() - 1;
+                        self.cmt.selected_thread = self.cmt.selected_thread.min(last);
+                        let thread = &self.cmt.review_threads[self.cmt.selected_thread];
+                        if thread.replies.is_empty() {
+                            // Single comment, jump to file
+                            self.cmt.selected_comment = thread.root;
+                            self.jump_to_comment();
+                        } else {
+                            // Expand thread
+                            self.cmt.expanded_thread = Some(self.cmt.selected_thread);
+                            self.cmt.expanded_selected = 0;
+                            self.cmt.expanded_scroll_offset = 0;
+                            self.sync_expanded_comment_id();
+                        }
+                    }
                 }
                 CommentTab::Discussion => {
                     if self
@@ -706,6 +862,54 @@ impl App {
         } else {
             false
         }
+    }
+
+    fn review_nav_down(&mut self, step: usize) {
+        if let Some(thread_idx) = self
+            .cmt
+            .expanded_thread
+            .filter(|&i| i < self.cmt.review_threads.len())
+        {
+            let thread = &self.cmt.review_threads[thread_idx];
+            let max = thread.replies.len(); // 0 = root, 1..=len = replies
+            self.cmt.expanded_selected = (self.cmt.expanded_selected + step).min(max);
+            self.sync_expanded_comment_id();
+        } else {
+            let max = self.cmt.review_threads.len().saturating_sub(1);
+            self.cmt.selected_thread = (self.cmt.selected_thread + step).min(max);
+        }
+    }
+
+    fn review_nav_up(&mut self, step: usize) {
+        if self
+            .cmt
+            .expanded_thread
+            .filter(|&i| i < self.cmt.review_threads.len())
+            .is_some()
+        {
+            self.cmt.expanded_selected = self.cmt.expanded_selected.saturating_sub(step);
+            self.sync_expanded_comment_id();
+        } else {
+            self.cmt.selected_thread = self.cmt.selected_thread.saturating_sub(step);
+        }
+    }
+
+    /// Store the comment ID for the current `expanded_selected` position
+    /// so it can be restored after a background poll rebuilds threads.
+    fn sync_expanded_comment_id(&mut self) {
+        let Some(thread_idx) = self.cmt.expanded_thread else {
+            return;
+        };
+        let Some(thread) = self.cmt.review_threads.get(thread_idx) else {
+            return;
+        };
+        let indices: Vec<usize> = std::iter::once(thread.root)
+            .chain(thread.replies.iter().copied())
+            .collect();
+        self.cmt.expanded_selected_comment_id = indices
+            .get(self.cmt.expanded_selected)
+            .and_then(|&ci| self.cmt.review_comments.as_ref()?.get(ci))
+            .map(|c| c.id);
     }
 
     pub(crate) fn handle_discussion_detail_input(

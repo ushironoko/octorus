@@ -23,14 +23,14 @@ use std::time::Instant;
 mod types;
 pub use types::{
     hash_string, AiRallyState, AppState, CachedDiffLine, CachedShellLine, ChecksState,
-    CockpitMenuItem, CockpitState, CommentPosition, CommentState, CommentTab, CommitLogState,
-    DataState, DestructiveOp, DiffCache, FileStatus, GitOpsState, GitStatusEntry, HelpTab,
-    IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation, LeftPaneFocus,
-    LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection, PauseState,
-    PendingGitOpsConfirm, PermissionInfo, PrListState, RefreshRequest, RepoSymbolSearchResult,
-    ReviewAction, ShellCommandResult, ShellPhase, ShellState, SimulationPreview, SimulationResult,
-    SpanVec, SymbolPopupState, SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction,
-    WatcherHandle,
+    CockpitMenuItem, CockpitState, CommentPosition, CommentState, CommentTab, CommentThread,
+    CommitLogState, DataState, DestructiveOp, DiffCache, FileStatus, GitOpsState, GitStatusEntry,
+    HelpTab, IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
+    LeftPaneFocus, LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection,
+    PauseState, PendingGitOpsConfirm, PermissionInfo, PrListState, RefreshRequest,
+    RepoSymbolSearchResult, ReviewAction, ShellCommandResult, ShellPhase, ShellState,
+    SimulationPreview, SimulationResult, SpanVec, SymbolPopupState, SymbolSearchState,
+    SymbolSearchUpdate, TreeRow, UndoAction, WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
