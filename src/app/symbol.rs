@@ -251,9 +251,12 @@ impl App {
 
         let kb = self.config.keybindings.clone();
 
-        if self.matches_single_key(&key, &kb.quit)
-            || self.matches_single_key(&key, &kb.help)
-        {
+        if self.matches_single_key(&key, &kb.help) {
+            self.open_help(AppState::PrDescription);
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &kb.quit) {
             self.state = self.previous_state;
             return Ok(());
         }

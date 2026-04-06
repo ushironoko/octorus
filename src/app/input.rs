@@ -434,10 +434,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::FileList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::FileList);
             return Ok(());
         }
 
@@ -675,6 +672,13 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         });
     }
 
+    pub(crate) fn open_help(&mut self, from: AppState) {
+        self.previous_state = from;
+        self.state = AppState::Help;
+        self.help_scroll_offset = 0;
+        self.config_scroll_offset = 0;
+    }
+
     pub(crate) fn open_checks_list(&mut self, pr_number: u32) {
         if self.state != AppState::ChecksList {
             self.chk.checks_return_state = self.state;
@@ -768,10 +772,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::ChecksList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::ChecksList);
             return Ok(());
         }
 

@@ -1173,6 +1173,11 @@ impl App {
             return;
         }
 
+        if self.matches_single_key(&key, &kb.help) {
+            self.open_help(AppState::GitOpsSplitTree);
+            return;
+        }
+
         if self.matches_single_key(&key, &kb.quit) {
             self.close_git_ops();
             return;
@@ -1693,6 +1698,11 @@ impl App {
             if let Some(scroll) = self.active_git_ops_diff_scroll() {
                 scroll.jump_to_last();
             }
+            return;
+        }
+
+        if self.matches_single_key(&key, &kb.help) {
+            self.open_help(AppState::GitOpsSplitDiff);
             return;
         }
 
