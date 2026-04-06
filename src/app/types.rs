@@ -1023,6 +1023,7 @@ pub struct CommentState {
     pub comments_loading: bool,
     pub file_comment_positions: Vec<CommentPosition>,
     pub file_comment_lines: std::collections::HashSet<usize>,
+    pub file_comment_counts: std::collections::HashMap<String, usize>,
     pub comment_panel_open: bool,
     pub comment_panel_scroll: u16,
     pub comment_tab: CommentTab,

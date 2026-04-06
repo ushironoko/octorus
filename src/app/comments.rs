@@ -372,6 +372,23 @@ impl App {
         }
     }
 
+    /// Apply a fetched (or cached) set of review comments to the UI state:
+    /// file comment counts and selection reset.
+    pub(crate) fn apply_review_comments(&mut self, comments: Vec<ReviewComment>) {
+        // Count all comments per file (including replies) so the badge
+        // reflects total activity, not just thread count.
+        self.cmt.file_comment_counts.clear();
+        for c in &comments {
+            if c.path != "[PR Review]" {
+                *self.cmt.file_comment_counts.entry(c.path.clone()).or_insert(0) += 1;
+            }
+        }
+        self.cmt.review_comments = Some(comments);
+        self.cmt.selected_comment = 0;
+        self.cmt.comment_list_scroll_offset = 0;
+        self.cmt.comments_loading = false;
+    }
+
     pub(crate) fn load_review_comments(&mut self) {
         let cache_key = PrCacheKey {
             repo: self.repo.clone(),
@@ -414,11 +431,8 @@ impl App {
         }
 
         if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
-            self.cmt.review_comments = Some(comments.to_vec());
             self.cmt.local_comment_meta.clear();
-            self.cmt.selected_comment = 0;
-            self.cmt.comment_list_scroll_offset = 0;
-            self.cmt.comments_loading = false;
+            self.apply_review_comments(comments.to_vec());
             return;
         }
 

@@ -5180,8 +5180,8 @@ fn test_load_more_prs_skips_when_loading() {
     assert_eq!(app.prs.pr_list_receiver.is_some(), prev_receiver);
 }
 
-#[test]
-fn test_select_pr_cache_miss_sets_loading() {
+#[tokio::test]
+async fn test_select_pr_cache_miss_sets_loading() {
     let mut app = App::new_for_test();
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
     let (_data_tx, data_rx) = mpsc::channel(2);
@@ -7023,8 +7023,8 @@ fn test_deep_nested_collapse_hides_descendants() {
     );
 }
 
-#[test]
-fn test_select_pr_resets_tree_state() {
+#[tokio::test]
+async fn test_select_pr_resets_tree_state() {
     let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
     app.started_from_pr_list = true;
 
