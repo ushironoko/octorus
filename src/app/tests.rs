@@ -3211,6 +3211,7 @@ fn test_refresh_all_resets_state() {
     app.cmt.discussion_comments = Some(vec![]);
     app.cmt.comments_loading = true;
     app.cmt.discussion_comments_loading = true;
+    app.chk.ci_status = Some(crate::github::CiStatus::Failure);
     let filter = crate::filter::ListFilter::new();
     app.file_list_filter = Some(filter);
 
@@ -3221,6 +3222,8 @@ fn test_refresh_all_resets_state() {
     assert!(app.cmt.discussion_comments.is_none());
     assert!(!app.cmt.comments_loading);
     assert!(!app.cmt.discussion_comments_loading);
+    assert!(app.chk.ci_status.is_none());
+    assert!(app.chk.ci_status_receiver.is_none());
     assert!(app.file_list_filter.is_none());
 }
 

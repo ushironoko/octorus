@@ -658,6 +658,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         self.cmt.discussion_comments = None;
         self.cmt.comments_loading = false;
         self.cmt.discussion_comments_loading = false;
+        self.chk.ci_status = None;
+        self.chk.ci_status_receiver = None;
         self.file_list_filter = None;
         self.data_state = DataState::Loading;
         self.retry_load();

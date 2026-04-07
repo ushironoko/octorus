@@ -39,10 +39,11 @@ impl CiStatus {
             match item.type_name.as_str() {
                 "CheckRun" => match item.conclusion.as_deref() {
                     Some("SUCCESS") | Some("NEUTRAL") | Some("SKIPPED") => {}
-                    Some(_) => return Self::Failure,
-                    None => {
+                    // gh returns conclusion: "" for in-progress/queued checks
+                    None | Some("") => {
                         has_pending = true;
                     }
+                    Some(_) => return Self::Failure,
                 },
                 "StatusContext" => match item.state.as_deref() {
                     Some("SUCCESS") => {}
@@ -510,6 +511,30 @@ mod tests {
             state: None,
         }];
         assert_eq!(CiStatus::from_rollup(&items), CiStatus::Success);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_empty_conclusion_is_pending() {
+        // gh returns conclusion: "" (not null) for in-progress/queued checks
+        let items = vec![
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("build".to_string()),
+                status: Some("COMPLETED".to_string()),
+                conclusion: Some("SUCCESS".to_string()),
+                context: None,
+                state: None,
+            },
+            StatusCheckRollupItem {
+                type_name: "CheckRun".to_string(),
+                name: Some("test".to_string()),
+                status: Some("IN_PROGRESS".to_string()),
+                conclusion: Some("".to_string()),
+                context: None,
+                state: None,
+            },
+        ];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Pending);
     }
 
     #[test]
