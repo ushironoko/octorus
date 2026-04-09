@@ -90,7 +90,7 @@ fn hash_path_for_filename(path: &str) -> u64 {
     hasher.finish()
 }
 
-fn effective_working_dir(working_dir: Option<&str>) -> Result<String> {
+pub fn effective_working_dir(working_dir: Option<&str>) -> Result<String> {
     if let Some(dir) = working_dir {
         return Ok(dir.to_owned());
     }
@@ -477,6 +477,7 @@ mod tests {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(42),
+            start_line: None,
             body: "hello".to_string(),
             user: User {
                 login: "local".to_string(),

@@ -199,6 +199,7 @@ impl App {
             id: next_id,
             path: file.filename.clone(),
             line: Some(ctx.line_number),
+            start_line: ctx.start_line_number,
             body,
             user: github::User {
                 login: Self::local_comment_author(),
@@ -270,6 +271,7 @@ impl App {
             id: next_id,
             path: parent.path,
             line: Some(line_number),
+            start_line: None,
             body,
             user: github::User {
                 login: Self::local_comment_author(),

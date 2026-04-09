@@ -246,8 +246,9 @@ impl Orchestrator {
                 }
             }
 
-            let (review_result, seeded_review) = if iteration == 1 {
-                if let Some(review) = self.seed_review.take() {
+            let (review_result, seeded_review) =
+                if iteration == 1 && self.seed_review.is_some() {
+                    let review = self.seed_review.take().unwrap();
                     self.send_event(RallyEvent::Log(format!(
                         "Using {} local comment{} as the initial review seed",
                         review.comments.len(),
@@ -256,61 +257,9 @@ impl Orchestrator {
                     .await;
                     (review, true)
                 } else {
-                    self.session.update_state(RallyState::ReviewerReviewing);
-                    self.send_event(RallyEvent::StateChanged(RallyState::ReviewerReviewing))
-                        .await;
-                    if let Err(e) = write_session(&self.session) {
-                        warn!("Failed to write session: {}", e);
-                        self.send_event(RallyEvent::Log(format!(
-                            "Warning: Failed to write session: {}",
-                            e
-                        )))
-                        .await;
-                    }
-
-                    let review = match self.run_reviewer_with_timeout(&context, iteration).await {
-                        Ok(result) => result,
-                        Err(e) => {
-                            self.session.update_state(RallyState::Error);
-                            let _ = write_session(&self.session);
-                            self.send_event(RallyEvent::Error(format!("Reviewer failed: {:#}", e)))
-                                .await;
-                            self.send_event(RallyEvent::StateChanged(RallyState::Error))
-                                .await;
-                            return Err(e);
-                        }
-                    };
-
+                    let review = self.run_reviewer_step(&context, iteration).await?;
                     (review, false)
-                }
-            } else {
-                self.session.update_state(RallyState::ReviewerReviewing);
-                self.send_event(RallyEvent::StateChanged(RallyState::ReviewerReviewing))
-                    .await;
-                if let Err(e) = write_session(&self.session) {
-                    warn!("Failed to write session: {}", e);
-                    self.send_event(RallyEvent::Log(format!(
-                        "Warning: Failed to write session: {}",
-                        e
-                    )))
-                    .await;
-                }
-
-                let review = match self.run_reviewer_with_timeout(&context, iteration).await {
-                    Ok(result) => result,
-                    Err(e) => {
-                        self.session.update_state(RallyState::Error);
-                        let _ = write_session(&self.session);
-                        self.send_event(RallyEvent::Error(format!("Reviewer failed: {:#}", e)))
-                            .await;
-                        self.send_event(RallyEvent::StateChanged(RallyState::Error))
-                            .await;
-                        return Err(e);
-                    }
                 };
-
-                (review, false)
-            };
 
             // Store the review for later use
             if let Err(e) = write_history_entry(
@@ -928,6 +877,37 @@ impl Orchestrator {
     #[allow(dead_code)]
     pub async fn continue_with_permission(&mut self, action: &str) -> Result<()> {
         self.handle_permission_granted(action).await
+    }
+
+    async fn run_reviewer_step(
+        &mut self,
+        context: &Context,
+        iteration: u32,
+    ) -> Result<ReviewerOutput> {
+        self.session.update_state(RallyState::ReviewerReviewing);
+        self.send_event(RallyEvent::StateChanged(RallyState::ReviewerReviewing))
+            .await;
+        if let Err(e) = write_session(&self.session) {
+            warn!("Failed to write session: {}", e);
+            self.send_event(RallyEvent::Log(format!(
+                "Warning: Failed to write session: {}",
+                e
+            )))
+            .await;
+        }
+
+        match self.run_reviewer_with_timeout(context, iteration).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.session.update_state(RallyState::Error);
+                let _ = write_session(&self.session);
+                self.send_event(RallyEvent::Error(format!("Reviewer failed: {:#}", e)))
+                    .await;
+                self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                    .await;
+                Err(e)
+            }
+        }
     }
 
     async fn run_reviewer_with_timeout(

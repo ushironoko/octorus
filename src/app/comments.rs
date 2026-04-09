@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, PrCacheKey};
 use crate::github::{self, comment::ReviewComment};
+use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::ui;
 
 use super::types::*;
@@ -337,7 +338,9 @@ impl App {
     }
     pub(crate) fn open_comment_list(&mut self) {
         self.state = AppState::CommentList;
-        self.cmt.comment_tab = CommentTab::Review;
+        if self.local_mode {
+            self.cmt.comment_tab = CommentTab::Review;
+        }
         self.cmt.discussion_comment_detail_mode = false;
         self.cmt.discussion_comment_detail_scroll = 0;
 
@@ -424,6 +427,7 @@ impl App {
                                 id: review.id,
                                 path: "[PR Review]".to_string(),
                                 line: None,
+                                start_line: None,
                                 body,
                                 user: review.user,
                                 created_at: review.submitted_at.unwrap_or_default(),
@@ -583,13 +587,35 @@ impl App {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
         let kb = self.config.keybindings.clone();
+
+        if !self.pending_keys.is_empty() {
+            if let Some(kb_event) = event_to_keybinding(&key) {
+                self.push_pending_key(kb_event);
+
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    self.cmt.selected_comment = 0;
+                    return Ok(());
+                }
+
+                self.clear_pending_keys();
+            } else {
+                self.clear_pending_keys();
+            }
+            return Ok(());
+        }
+
+        if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+            if let Some(kb_event) = event_to_keybinding(&key) {
+                self.push_pending_key(kb_event);
+            }
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.quit) {
             self.state = self.previous_state;
         } else if self.navigate_review_comments(&key, visible_lines) {
-            // handled by navigate_review_comments
-        } else if key.code == event::KeyCode::Char('g') {
-            self.cmt.selected_comment = 0;
-        } else if Self::is_shift_char_shortcut(&key, 'g') {
+        } else if self.matches_single_key(&key, &kb.jump_to_last) {
             if let Some(ref comments) = self.cmt.review_comments {
                 if !comments.is_empty() {
                     self.cmt.selected_comment = comments.len() - 1;

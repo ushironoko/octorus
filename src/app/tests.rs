@@ -701,6 +701,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
         id: 1,
         path: "file_4.rs".to_string(),
         line: Some(1),
+        start_line: None,
         body: "comment on old file".to_string(),
         user: crate::github::User {
             login: "reviewer".to_string(),
@@ -3696,6 +3697,7 @@ fn test_build_seed_review_from_local_comments_uses_persisted_comments() {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(12),
+            start_line: None,
             body: "Please simplify this branch.".to_string(),
             user: crate::github::User {
                 login: "local".to_string(),
@@ -3745,6 +3747,7 @@ fn test_build_seed_review_from_local_comments_skips_resolved_comments() {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(12),
+            start_line: None,
             body: "Already handled.".to_string(),
             user: crate::github::User {
                 login: "local".to_string(),
@@ -3782,6 +3785,7 @@ fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(7),
+            start_line: None,
             body: "Handle the error explicitly.".to_string(),
             user: crate::github::User {
                 login: "local".to_string(),
@@ -4656,6 +4660,7 @@ fn test_update_file_comment_positions_with_comments() {
         id: 1,
         path: "test.rs".to_string(),
         line: Some(1),
+        start_line: None,
         body: "comment at line 1".to_string(),
         user: crate::github::User {
             login: "reviewer".to_string(),
@@ -4676,6 +4681,7 @@ fn test_update_file_comment_positions_stale_comment() {
         id: 1,
         path: "other_file.rs".to_string(), // different file
         line: Some(1),
+        start_line: None,
         body: "wrong file".to_string(),
         user: crate::github::User {
             login: "reviewer".to_string(),
@@ -4745,6 +4751,7 @@ fn test_enter_reply_input_sets_mode() {
         id: 42,
         path: "test.rs".to_string(),
         line: Some(1),
+        start_line: None,
         body: "original comment".to_string(),
         user: crate::github::User {
             login: "reviewer".to_string(),
@@ -4833,6 +4840,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
         id: 1,
         path: "second.rs".to_string(),
         line: Some(2),
+        start_line: None,
         body: "check this".to_string(),
         user: crate::github::User {
             login: "r".to_string(),

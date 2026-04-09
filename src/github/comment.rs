@@ -14,16 +14,27 @@ async fn fetch_and_parse<T: DeserializeOwned>(
     serde_json::from_value(json).context(error_context)
 }
 
+/// Unified review comment used for both GitHub API responses and local-mode comments.
+///
+/// Fields marked "local-only" (`is_resolved`, `resolved_at`, `start_line`) are only
+/// meaningful for local comments. They default to zero-values via `#[serde(default)]`
+/// and are omitted from serialization when empty (`skip_serializing_if`), so GitHub API
+/// deserialization is unaffected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewComment {
     pub id: u64,
     pub path: String,
     pub line: Option<u32>,
+    /// Start line for multiline comments (local-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
     pub body: String,
     pub user: User,
     pub created_at: String,
+    /// Whether this comment has been resolved (local-only).
     #[serde(default)]
     pub is_resolved: bool,
+    /// Timestamp when resolved (local-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<String>,
 }
@@ -197,6 +208,7 @@ mod tests {
             id: 1,
             path: "lib.rs".to_string(),
             line: Some(10),
+            start_line: None,
             body: "LGTM".to_string(),
             user: User { login: "dev".to_string() },
             created_at: "2025-03-01T12:00:00Z".to_string(),
@@ -310,6 +322,22 @@ mod tests {
             "created_at": "2025-01-01T00:00:00Z"
         });
         let comment: ReviewComment = serde_json::from_value(json).unwrap();
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z", is_resolved: false, resolved_at: None }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z", is_resolved: false, resolved_at: None }"#);
+    }
+
+    #[test]
+    fn test_review_comment_snapshot_resolved() {
+        let comment = ReviewComment {
+            id: 10,
+            path: "src/app.rs".to_string(),
+            line: Some(50),
+            start_line: Some(45),
+            body: "Resolved comment".to_string(),
+            user: User { login: "dacuna".to_string() },
+            created_at: "2026-03-25T00:00:00Z".to_string(),
+            is_resolved: true,
+            resolved_at: Some("2026-03-25T01:00:00Z".to_string()),
+        };
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Resolved comment", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z", is_resolved: true, resolved_at: Some("2026-03-25T01:00:00Z") }"#);
     }
 }

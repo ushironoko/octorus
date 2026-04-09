@@ -58,7 +58,7 @@ pub async fn show_local_comments_command(
     resolved: bool,
 ) -> Result<()> {
     let repo = resolve_repo(repo).await;
-    let working_dir = resolve_working_dir_arg(working_dir)?;
+    let working_dir = cache::effective_working_dir(working_dir.as_deref())?;
     let filter = local_comments_filter(all, resolved);
 
     let comments = cache::load_local_review_comments(&repo, Some(&working_dir))?;
@@ -113,7 +113,7 @@ pub async fn update_local_comments_command(
     };
 
     let repo = resolve_repo(repo).await;
-    let working_dir = resolve_working_dir_arg(working_dir)?;
+    let working_dir = cache::effective_working_dir(working_dir.as_deref())?;
 
     let mut comments = cache::load_local_review_comments(&repo, Some(&working_dir))?;
     let result = update_local_comments(&mut comments, &ids, action);
@@ -136,15 +136,6 @@ async fn resolve_repo(repo: Option<String>) -> String {
         None => github::detect_repo()
             .await
             .unwrap_or_else(|_| "local".to_string()),
-    }
-}
-
-fn resolve_working_dir_arg(working_dir: Option<String>) -> Result<String> {
-    match working_dir {
-        Some(dir) => Ok(dir),
-        None => std::env::current_dir()
-            .map(|path| path.to_string_lossy().to_string())
-            .map_err(|e| anyhow::anyhow!("Failed to determine working directory: {}", e)),
     }
 }
 
@@ -334,6 +325,7 @@ fn join_ids(ids: &[u64]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
     use octorus::github::comment::ReviewComment;
     use octorus::github::User;
 
@@ -344,6 +336,7 @@ mod tests {
                 id: 1,
                 path: "src/a.rs".to_string(),
                 line: Some(10),
+                start_line: None,
                 body: "older".to_string(),
                 user: User {
                     login: "alice".to_string(),
@@ -356,6 +349,7 @@ mod tests {
                 id: 2,
                 path: "src/b.rs".to_string(),
                 line: Some(20),
+                start_line: None,
                 body: "newer".to_string(),
                 user: User {
                     login: "bob".to_string(),
@@ -380,6 +374,7 @@ mod tests {
                 id: 1,
                 path: "src/a.rs".to_string(),
                 line: Some(10),
+                start_line: None,
                 body: "first".to_string(),
                 user: User {
                     login: "alice".to_string(),
@@ -392,6 +387,7 @@ mod tests {
                 id: 2,
                 path: "src/b.rs".to_string(),
                 line: Some(20),
+                start_line: None,
                 body: "second".to_string(),
                 user: User {
                     login: "bob".to_string(),
@@ -414,6 +410,7 @@ mod tests {
             id: 7,
             path: "src/main.rs".to_string(),
             line: Some(42),
+            start_line: None,
             body: "why is this here?".to_string(),
             user: User {
                 login: "dacuna".to_string(),
@@ -479,6 +476,7 @@ mod tests {
             id: 7,
             path: "src/main.rs".to_string(),
             line: Some(42),
+            start_line: None,
             body: "why is this here?".to_string(),
             user: User {
                 login: "dacuna".to_string(),
@@ -507,6 +505,7 @@ mod tests {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(1),
+            start_line: None,
             body: "hello".to_string(),
             user: User {
                 login: "dacuna".to_string(),
@@ -529,6 +528,7 @@ mod tests {
                 id: 1,
                 path: "src/main.rs".to_string(),
                 line: Some(1),
+                start_line: None,
                 body: "open".to_string(),
                 user: User {
                     login: "dacuna".to_string(),
@@ -541,6 +541,7 @@ mod tests {
                 id: 2,
                 path: "src/main.rs".to_string(),
                 line: Some(2),
+                start_line: None,
                 body: "resolved".to_string(),
                 user: User {
                     login: "dacuna".to_string(),
@@ -564,6 +565,7 @@ mod tests {
                 id: 1,
                 path: "src/main.rs".to_string(),
                 line: Some(1),
+                start_line: None,
                 body: "open".to_string(),
                 user: User {
                     login: "dacuna".to_string(),
@@ -576,6 +578,7 @@ mod tests {
                 id: 2,
                 path: "src/main.rs".to_string(),
                 line: Some(2),
+                start_line: None,
                 body: "resolved".to_string(),
                 user: User {
                     login: "dacuna".to_string(),
@@ -590,5 +593,56 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, 2);
+    }
+
+    #[test]
+    fn test_snapshot_format_local_comments_text_with_comments() {
+        let comments = vec![ReviewComment {
+            id: 7,
+            path: "src/main.rs".to_string(),
+            line: Some(42),
+            start_line: None,
+            body: "why is this here?".to_string(),
+            user: User {
+                login: "dacuna".to_string(),
+            },
+            created_at: "2026-03-25T02:00:00+00:00".to_string(),
+            is_resolved: false,
+            resolved_at: None,
+        }];
+
+        assert_snapshot!(
+            format_local_comments_text(
+                "owner/repo",
+                "/tmp/worktree",
+                1,
+                1,
+                LocalCommentsFilter::Open,
+                &comments,
+            ),
+            @"
+        Showing 1 comment (open) for owner/repo (/tmp/worktree) [open: 1, resolved: 0, total: 1]
+
+        #7 [open] 2026-03-25T02:00:00+00:00 src/main.rs:42 dacuna
+          why is this here?
+        "
+        );
+    }
+
+    #[test]
+    fn test_snapshot_format_update_local_comments_text() {
+        let payload = UpdateLocalCommentsOutput {
+            repo: "owner/repo".to_string(),
+            working_dir: "/tmp/worktree".to_string(),
+            action: LocalCommentAction::Resolve,
+            updated_ids: vec![3, 7],
+            missing_ids: vec![99],
+        };
+
+        assert_snapshot!(format_update_local_comments_text(&payload), @"
+        Resolved 2 local comments for owner/repo (/tmp/worktree)
+        Updated IDs: 3, 7
+        Missing IDs: 99
+        ");
     }
 }

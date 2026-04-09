@@ -107,8 +107,10 @@ fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
     }
 
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
-    let footer = Paragraph::new("j/k/↑↓: move | Enter: jump to file | q: back")
-        .block(Block::default().borders(Borders::ALL));
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let footer_line = super::footer::build_footer_line(app, &help_text);
+    let footer =
+        Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
@@ -568,6 +570,7 @@ mod tests {
                 id: 1,
                 path: "src/main.rs".to_string(),
                 line: Some(10),
+                start_line: None,
                 body: "This looks good.".to_string(),
                 user: User { login: "reviewer1".to_string() },
                 created_at: "2025-01-01T00:00:00Z".to_string(),
@@ -660,6 +663,101 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │> @commenter  2025-03-01                                                                          │
         │    Thanks for the fix!                                                                           │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Back                                                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_local_comment_list_rendering() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.set_local_mode(true);
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 1,
+                path: "src/main.rs".to_string(),
+                line: Some(10),
+                start_line: None,
+                body: "Fix this variable naming".to_string(),
+                user: User { login: "dacuna".to_string() },
+                created_at: "2026-03-25T02:00:00+00:00".to_string(),
+                is_resolved: false,
+                resolved_at: None,
+            },
+            ReviewComment {
+                id: 2,
+                path: "src/lib.rs".to_string(),
+                line: Some(42),
+                start_line: None,
+                body: "Consider error handling".to_string(),
+                user: User { login: "dacuna".to_string() },
+                created_at: "2026-03-25T03:00:00+00:00".to_string(),
+                is_resolved: true,
+                resolved_at: Some("2026-03-25T04:00:00+00:00".to_string()),
+            },
+        ]);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Local Comments (2)]                                                                             │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │> @dacuna on src/main.rs:10                                                                       ▲
+        │    Fix this variable naming                                                                      █
+        │                                                                                                  █
+        │  @dacuna [resolved] on src/lib.rs:42                                                             █
+        │    Consider error handling                                                                       █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  ▼
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Back                                                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_local_comment_list_empty() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.set_local_mode(true);
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![]);
+
+        assert_snapshot!(render_full(&mut app), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │ [Local Comments (0)]                                                                             │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │No review comments found                                                                          │
+        │                                                                                                  │
         │                                                                                                  │
         │                                                                                                  │
         │                                                                                                  │
