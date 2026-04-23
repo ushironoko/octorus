@@ -198,10 +198,7 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::IssueDetail;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::IssueDetail);
             return Ok(());
         }
 
@@ -360,10 +357,7 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::IssueCommentList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::IssueCommentList);
             return Ok(());
         }
 

@@ -2156,6 +2156,26 @@ fn test_help_scroll_q_returns_to_previous_state() {
 }
 
 #[test]
+fn test_open_help_from_diff_view_sets_previous_state() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::DiffView;
+    app.open_help(AppState::DiffView);
+    assert_eq!(app.state, AppState::Help);
+    assert_eq!(app.previous_state, AppState::DiffView);
+}
+
+#[test]
+fn test_open_help_from_split_view_diff_sets_previous_state() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewDiff;
+    app.open_help(AppState::SplitViewDiff);
+    assert_eq!(app.state, AppState::Help);
+    assert_eq!(app.previous_state, AppState::SplitViewDiff);
+}
+
+#[test]
 fn test_help_viewport_overhead_matches_render_layout() {
     // The render layout uses:
     //   Constraint::Length(3) for tab header + Constraint::Min(0) for content
@@ -3191,6 +3211,7 @@ fn test_refresh_all_resets_state() {
     app.cmt.discussion_comments = Some(vec![]);
     app.cmt.comments_loading = true;
     app.cmt.discussion_comments_loading = true;
+    app.chk.ci_status = Some(crate::github::CiStatus::Failure);
     let filter = crate::filter::ListFilter::new();
     app.file_list_filter = Some(filter);
 
@@ -3201,6 +3222,8 @@ fn test_refresh_all_resets_state() {
     assert!(app.cmt.discussion_comments.is_none());
     assert!(!app.cmt.comments_loading);
     assert!(!app.cmt.discussion_comments_loading);
+    assert!(app.chk.ci_status.is_none());
+    assert!(app.chk.ci_status_receiver.is_none());
     assert!(app.file_list_filter.is_none());
 }
 

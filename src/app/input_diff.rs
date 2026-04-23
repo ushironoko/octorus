@@ -187,10 +187,7 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::SplitViewFileList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::SplitViewFileList);
             return Ok(());
         }
 
@@ -206,6 +203,15 @@ impl App {
     ) -> Result<()> {
         if self.symbol_popup.is_some() {
             self.handle_symbol_popup_input(key, terminal).await?;
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &self.config.keybindings.help) {
+            let from = match variant {
+                DiffViewVariant::SplitPane => AppState::SplitViewDiff,
+                DiffViewVariant::Fullscreen => AppState::DiffView,
+            };
+            self.open_help(from);
             return Ok(());
         }
 

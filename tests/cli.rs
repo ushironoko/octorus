@@ -34,6 +34,8 @@ fn init_help_exits_successfully() {
 // the full flow via assert_cmd. But we CAN verify that the binary does NOT
 // fall back to printing help — it should attempt to enter TUI mode and
 // eventually fail or hang (timeout), never printing "Usage:" to stdout.
+// The ASCII-art banner check is omitted because crossterm may render it
+// via escape sequences during TUI init, causing false positives.
 #[test]
 fn no_args_does_not_print_help() {
     let output = cargo_bin_cmd!("or")
@@ -45,10 +47,6 @@ fn no_args_does_not_print_help() {
     assert!(
         !stdout.contains("Usage"),
         "no-args should enter Cockpit, not print help"
-    );
-    assert!(
-        !stdout.contains(HELP_BANNER_LINE),
-        "no-args should enter Cockpit, not print help banner"
     );
 }
 

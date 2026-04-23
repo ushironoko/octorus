@@ -348,10 +348,7 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::IssueList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::IssueList);
             return Ok(());
         }
 

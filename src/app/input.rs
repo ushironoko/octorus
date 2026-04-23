@@ -434,10 +434,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::FileList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::FileList);
             return Ok(());
         }
 
@@ -661,6 +658,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         self.cmt.discussion_comments = None;
         self.cmt.comments_loading = false;
         self.cmt.discussion_comments_loading = false;
+        self.chk.ci_status = None;
+        self.chk.ci_status_receiver = None;
         self.file_list_filter = None;
         self.data_state = DataState::Loading;
         self.retry_load();
@@ -673,6 +672,13 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
                 github::gh_command(&["pr", "view", &pr_number.to_string(), "-R", &repo, "--web"])
                     .await;
         });
+    }
+
+    pub(crate) fn open_help(&mut self, from: AppState) {
+        self.previous_state = from;
+        self.state = AppState::Help;
+        self.help_scroll_offset = 0;
+        self.config_scroll_offset = 0;
     }
 
     pub(crate) fn open_checks_list(&mut self, pr_number: u32) {
@@ -768,10 +774,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.matches_single_key(&key, &kb.help) {
-            self.previous_state = AppState::ChecksList;
-            self.state = AppState::Help;
-            self.help_scroll_offset = 0;
-            self.config_scroll_offset = 0;
+            self.open_help(AppState::ChecksList);
             return Ok(());
         }
 

@@ -10,6 +10,8 @@ use super::types::*;
 use super::{App, SuggestionHighlightCache};
 
 impl App {
+    /// Note: the help keybinding (?) is intentionally not handled here
+    /// because this is a free-form text input and ? is a literal character.
     pub(crate) fn handle_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
         // 送信中は入力を無視（各送信種別に対応するInputModeのみブロック）
         if self.cmt.comment_submitting {
