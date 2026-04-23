@@ -47,7 +47,8 @@ impl CiStatus {
                 },
                 "StatusContext" => match item.state.as_deref() {
                     Some("SUCCESS") => {}
-                    Some("PENDING") | Some("EXPECTED") => has_pending = true,
+                    // gh returns state: "" for in-progress StatusContext entries
+                    Some("PENDING") | Some("EXPECTED") | Some("") => has_pending = true,
                     Some(_) => return Self::Failure,
                     None => {}
                 },
@@ -534,6 +535,21 @@ mod tests {
                 state: None,
             },
         ];
+        assert_eq!(CiStatus::from_rollup(&items), CiStatus::Pending);
+    }
+
+    #[test]
+    fn test_ci_status_from_rollup_empty_state_is_pending() {
+        // gh may return state: "" for in-progress StatusContext entries,
+        // analogous to conclusion: "" for CheckRun.
+        let items = vec![StatusCheckRollupItem {
+            type_name: "StatusContext".to_string(),
+            name: None,
+            status: None,
+            conclusion: None,
+            context: Some("ci/in-progress".to_string()),
+            state: Some("".to_string()),
+        }];
         assert_eq!(CiStatus::from_rollup(&items), CiStatus::Pending);
     }
 

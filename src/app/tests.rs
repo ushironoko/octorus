@@ -2159,7 +2159,6 @@ fn test_help_scroll_q_returns_to_previous_state() {
 fn test_open_help_from_diff_view_sets_previous_state() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.state = AppState::DiffView;
     app.open_help(AppState::DiffView);
     assert_eq!(app.state, AppState::Help);
     assert_eq!(app.previous_state, AppState::DiffView);
@@ -2169,7 +2168,6 @@ fn test_open_help_from_diff_view_sets_previous_state() {
 fn test_open_help_from_split_view_diff_sets_previous_state() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
-    app.state = AppState::SplitViewDiff;
     app.open_help(AppState::SplitViewDiff);
     assert_eq!(app.state, AppState::Help);
     assert_eq!(app.previous_state, AppState::SplitViewDiff);
