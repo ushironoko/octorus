@@ -194,7 +194,9 @@ pub fn save_local_review_comments(
 
 /// Delete the on-disk local comments file for `(repo, working_dir)` and return
 /// the number of comments that were stored before deletion. Returns Ok(0) when
-/// no file exists.
+/// no file exists. Returns an error when the file exists but cannot be parsed,
+/// so callers can distinguish "nothing to delete" from "refused to clobber
+/// unreadable data" (corrupt or future-version files).
 pub fn delete_local_review_comments(repo: &str, working_dir: Option<&str>) -> Result<usize> {
     delete_local_review_comments_with_base(repo, working_dir, &cache_dir())
 }
@@ -208,9 +210,7 @@ fn delete_local_review_comments_with_base(
     if !path.exists() {
         return Ok(0);
     }
-    let count = load_local_review_comments_with_base(repo, working_dir, base)
-        .map(|c| c.len())
-        .unwrap_or(0);
+    let count = load_local_review_comments_with_base(repo, working_dir, base)?.len();
     fs::remove_file(&path)
         .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", path.display(), e))?;
     Ok(count)
@@ -564,6 +564,93 @@ mod tests {
         assert_eq!(loaded[0].comment.body, "hello");
         assert_eq!(loaded[0].comment.line, Some(42));
         assert!(!loaded[0].meta.is_resolved);
+    }
+
+    /// PR #156 が出力した v1 JSON は is_resolved / resolved_at を ReviewComment 直下に
+    /// 置いていた。LocalReviewComment::meta は serde(flatten) で受けるので、レガシー JSON の
+    /// resolved 状態がそのまま meta に反映されることをロックする。
+    #[test]
+    #[serial]
+    fn test_load_local_review_comments_reads_legacy_v1_resolved_layout() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // PR #156 wrote is_resolved / resolved_at as siblings of `id` etc.
+        fs::write(
+            &path,
+            r#"{
+              "version": 1,
+              "comments": [
+                {
+                  "id": 7,
+                  "path": "src/main.rs",
+                  "line": 12,
+                  "body": "legacy resolved",
+                  "user": { "login": "local" },
+                  "created_at": "2026-03-24T00:00:00Z",
+                  "is_resolved": true,
+                  "resolved_at": "2026-03-24T01:00:00Z"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 7);
+        assert_eq!(loaded[0].comment.body, "legacy resolved");
+        assert!(loaded[0].meta.is_resolved);
+        assert_eq!(
+            loaded[0].meta.resolved_at.as_deref(),
+            Some("2026-03-24T01:00:00Z")
+        );
+    }
+
+    /// 壊れた / 未対応 version のファイルを silent に削除しないこと。
+    #[test]
+    #[serial]
+    fn test_delete_local_review_comments_refuses_unreadable_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{not valid json").unwrap();
+
+        let result = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        );
+
+        assert!(
+            result.is_err(),
+            "purge must refuse to clobber unparsable data"
+        );
+        assert!(path.exists(), "file must remain so the user can inspect it");
     }
 
     #[test]
