@@ -78,10 +78,46 @@ pub fn cleanup_rally_sessions() {
 
 const LOCAL_REVIEW_COMMENTS_VERSION: u32 = 1;
 
+/// Local-only state attached to a review comment. Lives outside [`ReviewComment`]
+/// because GitHub never returns these fields and forcing them onto the API type
+/// pollutes every construction site.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalCommentMeta {
+    #[serde(default)]
+    pub is_resolved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
+}
+
+/// On-disk representation of a local review comment: the GitHub-shaped
+/// [`ReviewComment`] plus locally-tracked [`LocalCommentMeta`] flattened into the
+/// same JSON object. Backwards-compatible with the v1 file format that stored
+/// `is_resolved` / `resolved_at` directly on the comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalReviewComment {
+    #[serde(flatten)]
+    pub comment: ReviewComment,
+    #[serde(flatten)]
+    pub meta: LocalCommentMeta,
+}
+
+impl LocalReviewComment {
+    pub fn new(comment: ReviewComment) -> Self {
+        Self {
+            comment,
+            meta: LocalCommentMeta::default(),
+        }
+    }
+
+    pub fn with_meta(comment: ReviewComment, meta: LocalCommentMeta) -> Self {
+        Self { comment, meta }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalReviewCommentsFile {
     version: u32,
-    comments: Vec<ReviewComment>,
+    comments: Vec<LocalReviewComment>,
 }
 
 fn hash_path_for_filename(path: &str) -> u64 {
@@ -119,7 +155,7 @@ fn local_review_comments_path_with_base(
 pub fn load_local_review_comments(
     repo: &str,
     working_dir: Option<&str>,
-) -> Result<Vec<ReviewComment>> {
+) -> Result<Vec<LocalReviewComment>> {
     load_local_review_comments_with_base(repo, working_dir, &cache_dir())
 }
 
@@ -127,7 +163,7 @@ fn load_local_review_comments_with_base(
     repo: &str,
     working_dir: Option<&str>,
     base: &std::path::Path,
-) -> Result<Vec<ReviewComment>> {
+) -> Result<Vec<LocalReviewComment>> {
     let path = local_review_comments_path_with_base(repo, working_dir, base)?;
     if !path.exists() {
         return Ok(Vec::new());
@@ -151,7 +187,7 @@ fn load_local_review_comments_with_base(
 pub fn save_local_review_comments(
     repo: &str,
     working_dir: Option<&str>,
-    comments: &[ReviewComment],
+    comments: &[LocalReviewComment],
 ) -> Result<()> {
     save_local_review_comments_with_base(repo, working_dir, comments, &cache_dir())
 }
@@ -159,7 +195,7 @@ pub fn save_local_review_comments(
 fn save_local_review_comments_with_base(
     repo: &str,
     working_dir: Option<&str>,
-    comments: &[ReviewComment],
+    comments: &[LocalReviewComment],
     base: &std::path::Path,
 ) -> Result<()> {
     let path = local_review_comments_path_with_base(repo, working_dir, base)?;
@@ -473,7 +509,7 @@ mod tests {
         let workdir = tempdir.path().join("worktree");
         fs::create_dir_all(&workdir).unwrap();
 
-        let comments = vec![ReviewComment {
+        let comments = vec![LocalReviewComment::new(ReviewComment {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(42),
@@ -483,9 +519,7 @@ mod tests {
                 login: "local".to_string(),
             },
             created_at: "2026-03-24T00:00:00Z".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }];
+        })];
 
         save_local_review_comments_with_base(
             "owner/repo",
@@ -503,8 +537,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].body, "hello");
-        assert_eq!(loaded[0].line, Some(42));
+        assert_eq!(loaded[0].comment.body, "hello");
+        assert_eq!(loaded[0].comment.line, Some(42));
+        assert!(!loaded[0].meta.is_resolved);
     }
 
     #[test]

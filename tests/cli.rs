@@ -93,3 +93,23 @@ fn issue_short_flag_only_enters_issue_list() {
         .failure()
         .stdout(predicate::str::contains("Usage").not());
 }
+
+#[test]
+fn update_local_comment_missing_id_exits_non_zero() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    cargo_bin_cmd!("or")
+        .args([
+            "update-local-comment",
+            "--repo",
+            "owner/repo",
+            "--working-dir",
+            tmp.path().to_str().unwrap(),
+            "--resolve",
+            "999",
+        ])
+        .env("XDG_CACHE_HOME", tmp.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Missing IDs: 999"))
+        .stderr(predicate::str::contains("unknown local comment ID"));
+}

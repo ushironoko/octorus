@@ -14,29 +14,16 @@ async fn fetch_and_parse<T: DeserializeOwned>(
     serde_json::from_value(json).context(error_context)
 }
 
-/// Unified review comment used for both GitHub API responses and local-mode comments.
-///
-/// Fields marked "local-only" (`is_resolved`, `resolved_at`, `start_line`) are only
-/// meaningful for local comments. They default to zero-values via `#[serde(default)]`
-/// and are omitted from serialization when empty (`skip_serializing_if`), so GitHub API
-/// deserialization is unaffected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewComment {
     pub id: u64,
     pub path: String,
     pub line: Option<u32>,
-    /// Start line for multiline comments (local-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_line: Option<u32>,
     pub body: String,
     pub user: User,
     pub created_at: String,
-    /// Whether this comment has been resolved (local-only).
-    #[serde(default)]
-    pub is_resolved: bool,
-    /// Timestamp when resolved (local-only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_at: Option<String>,
 }
 
 pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<ReviewComment>> {
@@ -210,10 +197,10 @@ mod tests {
             line: Some(10),
             start_line: None,
             body: "LGTM".to_string(),
-            user: User { login: "dev".to_string() },
+            user: User {
+                login: "dev".to_string(),
+            },
             created_at: "2025-03-01T12:00:00Z".to_string(),
-            is_resolved: false,
-            resolved_at: None,
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let deserialized: ReviewComment = serde_json::from_str(&serialized).unwrap();
@@ -254,7 +241,9 @@ mod tests {
         let original = DiscussionComment {
             id: 42,
             body: "Multi\nline\nbody".to_string(),
-            user: User { login: "author".to_string() },
+            user: User {
+                login: "author".to_string(),
+            },
             created_at: "2025-06-01T00:00:00Z".to_string(),
         };
         let serialized = serde_json::to_string(&original).unwrap();
@@ -274,10 +263,16 @@ mod tests {
         });
         let review: Review = serde_json::from_value(json).unwrap();
         assert_eq!(review.id, 9999);
-        assert_eq!(review.body, Some("Approved with minor suggestions.".to_string()));
+        assert_eq!(
+            review.body,
+            Some("Approved with minor suggestions.".to_string())
+        );
         assert_eq!(review.state, "APPROVED");
         assert_eq!(review.user.login, "lead");
-        assert_eq!(review.submitted_at, Some("2025-03-10T14:00:00Z".to_string()));
+        assert_eq!(
+            review.submitted_at,
+            Some("2025-03-10T14:00:00Z".to_string())
+        );
     }
 
     #[test]
@@ -300,7 +295,9 @@ mod tests {
             id: 7,
             body: Some("Changes requested".to_string()),
             state: "CHANGES_REQUESTED".to_string(),
-            user: User { login: "reviewer".to_string() },
+            user: User {
+                login: "reviewer".to_string(),
+            },
             submitted_at: Some("2025-04-01T09:00:00Z".to_string()),
         };
         let serialized = serde_json::to_string(&original).unwrap();
@@ -322,22 +319,22 @@ mod tests {
             "created_at": "2025-01-01T00:00:00Z"
         });
         let comment: ReviewComment = serde_json::from_value(json).unwrap();
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z", is_resolved: false, resolved_at: None }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z" }"#);
     }
 
     #[test]
-    fn test_review_comment_snapshot_resolved() {
+    fn test_review_comment_snapshot_with_start_line() {
         let comment = ReviewComment {
             id: 10,
             path: "src/app.rs".to_string(),
             line: Some(50),
             start_line: Some(45),
-            body: "Resolved comment".to_string(),
-            user: User { login: "dacuna".to_string() },
+            body: "Multiline review".to_string(),
+            user: User {
+                login: "dacuna".to_string(),
+            },
             created_at: "2026-03-25T00:00:00Z".to_string(),
-            is_resolved: true,
-            resolved_at: Some("2026-03-25T01:00:00Z".to_string()),
         };
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Resolved comment", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z", is_resolved: true, resolved_at: Some("2026-03-25T01:00:00Z") }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Multiline review", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z" }"#);
     }
 }

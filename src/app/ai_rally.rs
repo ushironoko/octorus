@@ -193,8 +193,7 @@ impl App {
                         rally_state.pending_question = None;
                         rally_state.push_log(LogEntry::new(
                             LogEventType::Info,
-                            "Clarification skipped, continuing with best judgment..."
-                                .to_string(),
+                            "Clarification skipped, continuing with best judgment...".to_string(),
                         ));
                     }
                 }
@@ -587,15 +586,15 @@ impl App {
         let comments = load_local_review_comments(&self.repo, self.working_dir.as_deref())?;
         let comments: Vec<AiReviewComment> = comments
             .into_iter()
-            .filter_map(|comment| {
-                if comment.is_resolved {
+            .filter_map(|entry| {
+                if entry.meta.is_resolved {
                     return None;
                 }
-                let line = comment.line?;
+                let line = entry.comment.line?;
                 Some(AiReviewComment {
-                    path: comment.path,
+                    path: entry.comment.path,
                     line,
-                    body: comment.body,
+                    body: entry.comment.body,
                     severity: CommentSeverity::Major,
                 })
             })

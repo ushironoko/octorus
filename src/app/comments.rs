@@ -1,17 +1,33 @@
 use anyhow::Result;
 use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::collections::HashMap;
 use std::io::Stdout;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::cache::{load_local_review_comments, PrCacheKey};
+use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
 use crate::github::{self, comment::ReviewComment};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::ui;
 
 use super::types::*;
 use super::{App, AppState, CommentTab};
+
+pub(crate) fn split_local_comments(
+    entries: Vec<LocalReviewComment>,
+) -> (Vec<ReviewComment>, HashMap<u64, LocalCommentMeta>) {
+    let mut comments = Vec::with_capacity(entries.len());
+    let mut meta = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        let id = entry.comment.id;
+        comments.push(entry.comment);
+        if entry.meta.is_resolved || entry.meta.resolved_at.is_some() {
+            meta.insert(id, entry.meta);
+        }
+    }
+    (comments, meta)
+}
 
 impl App {
     pub(crate) fn enter_comment_input(&mut self) {
@@ -108,7 +124,8 @@ impl App {
                     ReviewAction::Comment => "commented",
                 };
                 tracing::debug!(action_str, "submit_review: success");
-                self.cmt.submission_result = Some((true, format!("Review submitted ({})", action_str)));
+                self.cmt.submission_result =
+                    Some((true, format!("Review submitted ({})", action_str)));
                 self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(e) => {
@@ -371,10 +388,12 @@ impl App {
 
         if self.local_mode {
             match load_local_review_comments(&self.repo, self.working_dir.as_deref()) {
-                Ok(comments) => {
+                Ok(local_comments) => {
+                    let (comments, meta) = split_local_comments(local_comments);
                     self.session_cache
                         .put_review_comments(cache_key, comments.clone());
                     self.cmt.review_comments = Some(comments);
+                    self.cmt.local_comment_meta = meta;
                     self.cmt.selected_comment = 0;
                     self.cmt.comment_list_scroll_offset = 0;
                     self.cmt.comments_loading = false;
@@ -388,6 +407,7 @@ impl App {
                 }
                 Err(e) => {
                     self.cmt.review_comments = Some(vec![]);
+                    self.cmt.local_comment_meta.clear();
                     self.cmt.comments_loading = false;
                     self.cmt.submission_result =
                         Some((false, format!("Failed to load local comments: {}", e)));
@@ -431,8 +451,6 @@ impl App {
                                 body,
                                 user: review.user,
                                 created_at: review.submitted_at.unwrap_or_default(),
-                                is_resolved: false,
-                                resolved_at: None,
                             });
                         }
                     }
@@ -516,9 +534,9 @@ impl App {
                 CommentTab::Discussion => {
                     if let Some(ref comments) = self.cmt.discussion_comments {
                         if !comments.is_empty() {
-                            self.cmt.selected_discussion_comment = (self.cmt.selected_discussion_comment
-                                + 1)
-                            .min(comments.len().saturating_sub(1));
+                            self.cmt.selected_discussion_comment =
+                                (self.cmt.selected_discussion_comment + 1)
+                                    .min(comments.len().saturating_sub(1));
                         }
                     }
                 }
@@ -571,7 +589,8 @@ impl App {
                 }
                 CommentTab::Discussion => {
                     if self
-                        .cmt.discussion_comments
+                        .cmt
+                        .discussion_comments
                         .as_ref()
                         .map(|c| !c.is_empty())
                         .unwrap_or(false)
@@ -675,8 +694,7 @@ impl App {
         visible_lines: usize,
     ) -> Result<()> {
         let kb = self.config.keybindings.clone();
-        if self.matches_single_key(&key, &kb.quit)
-            || self.matches_single_key(&key, &kb.open_panel)
+        if self.matches_single_key(&key, &kb.quit) || self.matches_single_key(&key, &kb.open_panel)
         {
             self.cmt.discussion_comment_detail_mode = false;
             self.cmt.discussion_comment_detail_scroll = 0;
@@ -688,19 +706,23 @@ impl App {
                 self.cmt.discussion_comment_detail_scroll.saturating_sub(1);
         } else if Self::is_shift_char_shortcut(&key, 'j') {
             self.cmt.discussion_comment_detail_scroll = self
-                .cmt.discussion_comment_detail_scroll
+                .cmt
+                .discussion_comment_detail_scroll
                 .saturating_add(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'k') {
             self.cmt.discussion_comment_detail_scroll = self
-                .cmt.discussion_comment_detail_scroll
+                .cmt
+                .discussion_comment_detail_scroll
                 .saturating_sub(visible_lines.max(1));
         } else if self.matches_single_key(&key, &kb.page_down) {
             self.cmt.discussion_comment_detail_scroll = self
-                .cmt.discussion_comment_detail_scroll
+                .cmt
+                .discussion_comment_detail_scroll
                 .saturating_add(visible_lines / 2);
         } else if self.matches_single_key(&key, &kb.page_up) {
             self.cmt.discussion_comment_detail_scroll = self
-                .cmt.discussion_comment_detail_scroll
+                .cmt
+                .discussion_comment_detail_scroll
                 .saturating_sub(visible_lines / 2);
         }
         Ok(())
@@ -730,7 +752,8 @@ impl App {
 
             // Find diff line index from pre-computed positions
             let diff_line_index = self
-                .cmt.file_comment_positions
+                .cmt
+                .file_comment_positions
                 .iter()
                 .find(|pos| pos.comment_index == self.cmt.selected_comment)
                 .map(|pos| pos.diff_line_index);
@@ -776,7 +799,8 @@ impl App {
                 self.cmt.file_comment_lines.insert(diff_index);
             }
         }
-        self.cmt.file_comment_positions
+        self.cmt
+            .file_comment_positions
             .sort_by_key(|pos| pos.diff_line_index);
     }
 
@@ -810,7 +834,8 @@ impl App {
     }
     /// Get comment indices at the current selected line
     pub fn get_comment_indices_at_current_line(&self) -> Vec<usize> {
-        self.cmt.file_comment_positions
+        self.cmt
+            .file_comment_positions
             .iter()
             .filter(|pos| pos.diff_line_index == self.diff_scroll.selected_line)
             .map(|pos| pos.comment_index)
@@ -819,7 +844,8 @@ impl App {
 
     /// Check if current line has any comments
     pub fn has_comment_at_current_line(&self) -> bool {
-        self.cmt.file_comment_positions
+        self.cmt
+            .file_comment_positions
             .iter()
             .any(|pos| pos.diff_line_index == self.diff_scroll.selected_line)
     }
@@ -917,7 +943,8 @@ impl App {
     }
     pub(crate) fn jump_to_next_comment(&mut self) {
         let next = self
-            .cmt.file_comment_positions
+            .cmt
+            .file_comment_positions
             .iter()
             .find(|pos| pos.diff_line_index > self.diff_scroll.selected_line);
 
@@ -930,7 +957,8 @@ impl App {
     /// Jump to previous comment in the diff (no wrap-around, scroll to top)
     pub(crate) fn jump_to_prev_comment(&mut self) {
         let prev = self
-            .cmt.file_comment_positions
+            .cmt
+            .file_comment_positions
             .iter()
             .rev()
             .find(|pos| pos.diff_line_index < self.diff_scroll.selected_line);
@@ -947,7 +975,8 @@ impl App {
         }
 
         let local_idx = self
-            .cmt.selected_inline_comment
+            .cmt
+            .selected_inline_comment
             .min(indices.len().saturating_sub(1));
         let comment_idx = indices[local_idx];
 

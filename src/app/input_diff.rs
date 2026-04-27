@@ -39,7 +39,12 @@ impl App {
                     (self.selected_file + 1).min(self.files().len().saturating_sub(1));
             }
             // File 行移動時のみ diff 同期（Dir 行ではスキップ → 直前ファイルの diff を維持）
-            if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+            if !tree_active
+                || self
+                    .file_tree_state
+                    .as_ref()
+                    .is_none_or(|t| t.selected_file_index().is_some())
+            {
                 self.sync_diff_to_selected_file();
             }
             return Ok(());
@@ -53,7 +58,12 @@ impl App {
             } else if self.selected_file > 0 {
                 self.selected_file = self.selected_file.saturating_sub(1);
             }
-            if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+            if !tree_active
+                || self
+                    .file_tree_state
+                    .as_ref()
+                    .is_none_or(|t| t.selected_file_index().is_some())
+            {
                 self.sync_diff_to_selected_file();
             }
             return Ok(());
@@ -69,7 +79,12 @@ impl App {
                     self.selected_file =
                         (self.selected_file + step).min(self.files().len().saturating_sub(1));
                 }
-                if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+                if !tree_active
+                    || self
+                        .file_tree_state
+                        .as_ref()
+                        .is_none_or(|t| t.selected_file_index().is_some())
+                {
                     self.sync_diff_to_selected_file();
                 }
             }
@@ -85,7 +100,12 @@ impl App {
                 } else {
                     self.selected_file = self.selected_file.saturating_sub(step);
                 }
-                if !tree_active || self.file_tree_state.as_ref().is_none_or(|t| t.selected_file_index().is_some()) {
+                if !tree_active
+                    || self
+                        .file_tree_state
+                        .as_ref()
+                        .is_none_or(|t| t.selected_file_index().is_some())
+                {
                     self.sync_diff_to_selected_file();
                 }
             }
@@ -162,7 +182,7 @@ impl App {
 
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
-                   {
+        {
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
@@ -252,8 +272,8 @@ impl App {
         if self.multiline_selection.is_some() {
             if self.matches_single_key(&key, &kb.move_down) {
                 if self.diff_scroll.line_count > 0 {
-                    let new_cursor =
-                        (self.diff_scroll.selected_line + 1).min(self.diff_scroll.line_count.saturating_sub(1));
+                    let new_cursor = (self.diff_scroll.selected_line + 1)
+                        .min(self.diff_scroll.line_count.saturating_sub(1));
                     self.diff_scroll.selected_line = new_cursor;
                     if let Some(ref mut sel) = self.multiline_selection {
                         sel.cursor_line = new_cursor;
@@ -294,8 +314,11 @@ impl App {
         if self.cmt.comment_panel_open {
             if self.matches_single_key(&key, &kb.move_down) {
                 let max_scroll = self.max_comment_panel_scroll(term_h, term_w);
-                self.cmt.comment_panel_scroll =
-                    self.cmt.comment_panel_scroll.saturating_add(1).min(max_scroll);
+                self.cmt.comment_panel_scroll = self
+                    .cmt
+                    .comment_panel_scroll
+                    .saturating_add(1)
+                    .min(max_scroll);
                 return Ok(());
             }
 
@@ -382,7 +405,7 @@ impl App {
 
                     if self.matches_single_key(&key, &kb.quit)
                         || self.matches_single_key(&key, &kb.move_left)
-                                                                  {
+                    {
                         self.cmt.comment_panel_open = false;
                         self.cmt.comment_panel_scroll = 0;
                         return Ok(());
@@ -501,8 +524,8 @@ impl App {
 
         if self.matches_single_key(&key, &kb.move_down) {
             if self.diff_scroll.line_count > 0 {
-                self.diff_scroll.selected_line =
-                    (self.diff_scroll.selected_line + 1).min(self.diff_scroll.line_count.saturating_sub(1));
+                self.diff_scroll.selected_line = (self.diff_scroll.selected_line + 1)
+                    .min(self.diff_scroll.line_count.saturating_sub(1));
                 self.adjust_scroll(visible_lines);
             }
             return Ok(());
@@ -529,8 +552,8 @@ impl App {
 
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if self.diff_scroll.line_count > 0 {
-                self.diff_scroll.selected_line =
-                    (self.diff_scroll.selected_line + 20).min(self.diff_scroll.line_count.saturating_sub(1));
+                self.diff_scroll.selected_line = (self.diff_scroll.selected_line + 20)
+                    .min(self.diff_scroll.line_count.saturating_sub(1));
                 self.adjust_scroll(visible_lines);
             }
             return Ok(());
@@ -558,11 +581,7 @@ impl App {
             return Ok(());
         }
 
-        // Open panel (local mode ではコメント対象の PR がないため無効)
-        if !self.local_mode && self.matches_single_key(&key, &kb.open_panel) {
-            self.cmt.comment_panel_open = true;
-            self.cmt.comment_panel_scroll = 0;
-            self.cmt.selected_inline_comment = 0;
+        if self.try_open_comment_panel(&key, &kb) {
             return Ok(());
         }
 
@@ -580,6 +599,20 @@ impl App {
 
         Ok(())
     }
+    pub(crate) fn try_open_comment_panel(
+        &mut self,
+        key: &event::KeyEvent,
+        kb: &crate::config::KeybindingsConfig,
+    ) -> bool {
+        if !self.matches_single_key(key, &kb.open_panel) {
+            return false;
+        }
+        self.cmt.comment_panel_open = true;
+        self.cmt.comment_panel_scroll = 0;
+        self.cmt.selected_inline_comment = 0;
+        true
+    }
+
     pub(crate) fn handle_fullscreen_diff_quit(&mut self) {
         if self.started_from_pr_list
             && self.diff_view_return_state == AppState::FileList
@@ -627,7 +660,8 @@ impl App {
             self.diff_scroll.scroll_offset = self.diff_scroll.selected_line.saturating_sub(margin);
         }
         // Cursor below the bottom margin
-        if self.diff_scroll.selected_line + margin >= self.diff_scroll.scroll_offset + visible_lines {
+        if self.diff_scroll.selected_line + margin >= self.diff_scroll.scroll_offset + visible_lines
+        {
             self.diff_scroll.scroll_offset = self
                 .diff_scroll
                 .selected_line

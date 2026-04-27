@@ -4,7 +4,9 @@ use crossterm::event::{self, KeyEvent};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::cache::{load_local_review_comments, save_local_review_comments, PrCacheKey};
+use crate::cache::{
+    load_local_review_comments, save_local_review_comments, LocalReviewComment, PrCacheKey,
+};
 use crate::github;
 use crate::github::comment::ReviewComment;
 use crate::loader::CommentSubmitResult;
@@ -176,8 +178,8 @@ impl App {
         });
     }
 
-    fn next_local_comment_id(comments: &[ReviewComment]) -> u64 {
-        comments.iter().map(|c| c.id).max().unwrap_or(0) + 1
+    fn next_local_comment_id(comments: &[LocalReviewComment]) -> u64 {
+        comments.iter().map(|c| c.comment.id).max().unwrap_or(0) + 1
     }
 
     fn submit_local_review_comment(&mut self, ctx: LineInputContext, body: String) {
@@ -197,7 +199,7 @@ impl App {
         };
 
         let next_id = Self::next_local_comment_id(&comments);
-        comments.push(ReviewComment {
+        comments.push(LocalReviewComment::new(ReviewComment {
             id: next_id,
             path: file.filename.clone(),
             line: Some(ctx.line_number),
@@ -207,9 +209,7 @@ impl App {
                 login: Self::local_comment_author(),
             },
             created_at: Utc::now().to_rfc3339(),
-            is_resolved: false,
-            resolved_at: None,
-        });
+        }));
 
         self.persist_local_review_comments(comments, "Saved local comment");
     }
@@ -241,9 +241,12 @@ impl App {
 
     fn submit_local_reply(&mut self, comment_id: u64, body: String) {
         let Some(parent) = self
-            .cmt.review_comments
+            .cmt
+            .review_comments
             .as_ref()
-            .and_then(|comments: &Vec<ReviewComment>| comments.iter().find(|comment| comment.id == comment_id))
+            .and_then(|comments: &Vec<ReviewComment>| {
+                comments.iter().find(|comment| comment.id == comment_id)
+            })
             .cloned()
         else {
             self.cmt.submission_result = Some((false, "Reply target not found".to_string()));
@@ -269,7 +272,7 @@ impl App {
         };
 
         let next_id = Self::next_local_comment_id(&comments);
-        comments.push(ReviewComment {
+        comments.push(LocalReviewComment::new(ReviewComment {
             id: next_id,
             path: parent.path,
             line: Some(line_number),
@@ -279,35 +282,37 @@ impl App {
                 login: Self::local_comment_author(),
             },
             created_at: Utc::now().to_rfc3339(),
-            is_resolved: false,
-            resolved_at: None,
-        });
+        }));
 
         self.persist_local_review_comments(comments, "Saved local reply");
     }
 
     fn persist_local_review_comments(
         &mut self,
-        comments: Vec<ReviewComment>,
+        comments: Vec<LocalReviewComment>,
         success_message: &str,
     ) {
         if let Err(e) =
             save_local_review_comments(&self.repo, self.working_dir.as_deref(), &comments)
         {
-            self.cmt.submission_result = Some((false, format!("Failed to save local comments: {}", e)));
+            self.cmt.submission_result =
+                Some((false, format!("Failed to save local comments: {}", e)));
             self.cmt.submission_result_time = Some(Instant::now());
             return;
         }
 
+        let (review_comments, meta) = super::comments::split_local_comments(comments);
         let cache_key = PrCacheKey {
             repo: self.repo.clone(),
             pr_number: self.pr_number(),
         };
         self.session_cache
-            .put_review_comments(cache_key, comments.clone());
-        self.cmt.review_comments = Some(comments);
+            .put_review_comments(cache_key, review_comments.clone());
+        self.cmt.review_comments = Some(review_comments);
+        self.cmt.local_comment_meta = meta;
         self.cmt.selected_comment = self
-            .cmt.review_comments
+            .cmt
+            .review_comments
             .as_ref()
             .map(|comments: &Vec<ReviewComment>| comments.len().saturating_sub(1))
             .unwrap_or(0);

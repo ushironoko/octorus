@@ -707,8 +707,6 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
-        is_resolved: false,
-        resolved_at: None,
     }]);
 
     // Pre-populate stale comment positions for the old file
@@ -1176,7 +1174,13 @@ fn test_toggle_auto_focus() {
 
     app.toggle_auto_focus();
     assert!(!app.local_auto_focus);
-    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("OFF"));
+    assert!(app
+        .cmt
+        .submission_result
+        .as_ref()
+        .unwrap()
+        .1
+        .contains("OFF"));
 }
 
 #[test]
@@ -1186,7 +1190,13 @@ fn test_toggle_local_mode_blocks_during_ai_rally() {
 
     app.toggle_local_mode();
     assert!(!app.local_mode);
-    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("Cannot"));
+    assert!(app
+        .cmt
+        .submission_result
+        .as_ref()
+        .unwrap()
+        .1
+        .contains("Cannot"));
 }
 
 // ===================================================================
@@ -1283,7 +1293,13 @@ fn test_toggle_local_mode_pr_to_local_and_back() {
     assert!(app.local_mode);
     assert_eq!(app.pr_number, Some(0));
     assert_eq!(app.selected_file, 0); // リセットされる
-    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("Local"));
+    assert!(app
+        .cmt
+        .submission_result
+        .as_ref()
+        .unwrap()
+        .1
+        .contains("Local"));
 
     // Local → PR: original_pr_number で復帰
     app.toggle_local_mode();
@@ -1397,7 +1413,12 @@ fn test_toggle_local_mode_from_local_startup_with_dummy_repo() {
     app.toggle_local_mode();
     assert!(app.local_mode, "should stay in local mode with dummy repo");
     assert!(
-        app.cmt.submission_result.as_ref().unwrap().1.contains("No PR"),
+        app.cmt
+            .submission_result
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("No PR"),
         "should show error message"
     );
 }
@@ -3714,19 +3735,19 @@ fn test_build_seed_review_from_local_comments_uses_persisted_comments() {
     crate::cache::save_local_review_comments(
         "owner/repo",
         Some(workdir.to_string_lossy().as_ref()),
-        &[crate::github::comment::ReviewComment {
-            id: 1,
-            path: "src/main.rs".to_string(),
-            line: Some(12),
-            start_line: None,
-            body: "Please simplify this branch.".to_string(),
-            user: crate::github::User {
-                login: "local".to_string(),
+        &[crate::cache::LocalReviewComment::new(
+            crate::github::comment::ReviewComment {
+                id: 1,
+                path: "src/main.rs".to_string(),
+                line: Some(12),
+                start_line: None,
+                body: "Please simplify this branch.".to_string(),
+                user: crate::github::User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-03-24T00:00:00Z".to_string(),
             },
-            created_at: "2026-03-24T00:00:00Z".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }],
+        )],
     )
     .unwrap();
 
@@ -3764,19 +3785,23 @@ fn test_build_seed_review_from_local_comments_skips_resolved_comments() {
     crate::cache::save_local_review_comments(
         "owner/repo",
         Some(workdir.to_string_lossy().as_ref()),
-        &[crate::github::comment::ReviewComment {
-            id: 1,
-            path: "src/main.rs".to_string(),
-            line: Some(12),
-            start_line: None,
-            body: "Already handled.".to_string(),
-            user: crate::github::User {
-                login: "local".to_string(),
+        &[crate::cache::LocalReviewComment::with_meta(
+            crate::github::comment::ReviewComment {
+                id: 1,
+                path: "src/main.rs".to_string(),
+                line: Some(12),
+                start_line: None,
+                body: "Already handled.".to_string(),
+                user: crate::github::User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-03-24T00:00:00Z".to_string(),
             },
-            created_at: "2026-03-24T00:00:00Z".to_string(),
-            is_resolved: true,
-            resolved_at: Some("2026-03-24T01:00:00Z".to_string()),
-        }],
+            crate::cache::LocalCommentMeta {
+                is_resolved: true,
+                resolved_at: Some("2026-03-24T01:00:00Z".to_string()),
+            },
+        )],
     )
     .unwrap();
 
@@ -3802,19 +3827,19 @@ fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
     crate::cache::save_local_review_comments(
         "owner/repo",
         Some(workdir.to_string_lossy().as_ref()),
-        &[crate::github::comment::ReviewComment {
-            id: 1,
-            path: "src/main.rs".to_string(),
-            line: Some(7),
-            start_line: None,
-            body: "Handle the error explicitly.".to_string(),
-            user: crate::github::User {
-                login: "local".to_string(),
+        &[crate::cache::LocalReviewComment::new(
+            crate::github::comment::ReviewComment {
+                id: 1,
+                path: "src/main.rs".to_string(),
+                line: Some(7),
+                start_line: None,
+                body: "Handle the error explicitly.".to_string(),
+                user: crate::github::User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-03-24T00:00:00Z".to_string(),
             },
-            created_at: "2026-03-24T00:00:00Z".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }],
+        )],
     )
     .unwrap();
 
@@ -4627,7 +4652,13 @@ fn test_submit_local_comment_persists_and_loads() {
 
     app.submit_comment(ctx, "local note".to_string());
 
-    assert_eq!(app.cmt.review_comments.as_ref().map(|c: &Vec<crate::github::comment::ReviewComment>| c.len()), Some(1));
+    assert_eq!(
+        app.cmt
+            .review_comments
+            .as_ref()
+            .map(|c: &Vec<crate::github::comment::ReviewComment>| c.len()),
+        Some(1)
+    );
     assert_eq!(
         app.cmt.review_comments.as_ref().unwrap()[0].body,
         "local note".to_string()
@@ -4687,8 +4718,6 @@ fn test_update_file_comment_positions_with_comments() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
-        is_resolved: false,
-        resolved_at: None,
     }]);
     app.update_file_comment_positions();
     assert_eq!(app.cmt.file_comment_positions.len(), 1);
@@ -4708,8 +4737,6 @@ fn test_update_file_comment_positions_stale_comment() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
-        is_resolved: false,
-        resolved_at: None,
     }]);
     app.update_file_comment_positions();
     assert!(app.cmt.file_comment_positions.is_empty());
@@ -4778,8 +4805,6 @@ fn test_enter_reply_input_sets_mode() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
-        is_resolved: false,
-        resolved_at: None,
     }]);
     app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 1,
@@ -4867,8 +4892,6 @@ async fn test_jump_to_comment_sets_file_and_line() {
             login: "r".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
-        is_resolved: false,
-        resolved_at: None,
     }]);
     app.cmt.selected_comment = 0;
 
@@ -6988,7 +7011,9 @@ fn make_loaded_app() -> App {
                 status: "modified".to_string(),
                 additions: 3,
                 deletions: 1,
-                patch: Some("@@ -1,3 +1,5 @@\n context\n-old line\n+new line\n+added\n+more".to_string()),
+                patch: Some(
+                    "@@ -1,3 +1,5 @@\n context\n-old line\n+new line\n+added\n+more".to_string(),
+                ),
                 viewed: false,
             }],
         },
@@ -7417,4 +7442,43 @@ async fn test_poll_issue_list_disconnect_recovers_from_loading_more() {
     let items = issue_state.issues.as_loaded().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].number, 20);
+}
+
+#[test]
+fn test_try_open_comment_panel_in_local_mode() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.cmt.review_comments = Some(vec![ReviewComment {
+        id: 1,
+        path: "src/main.rs".to_string(),
+        line: Some(10),
+        start_line: None,
+        body: "local note".to_string(),
+        user: crate::github::User {
+            login: "local".to_string(),
+        },
+        created_at: "2026-04-27T00:00:00Z".to_string(),
+    }]);
+
+    let kb = app.config.keybindings.clone();
+    let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+    assert!(app.try_open_comment_panel(&key, &kb));
+    assert!(app.cmt.comment_panel_open);
+    assert_eq!(app.cmt.comment_panel_scroll, 0);
+    assert_eq!(app.cmt.selected_inline_comment, 0);
+}
+
+#[test]
+fn test_try_open_comment_panel_ignores_non_matching_key() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+
+    let kb = app.config.keybindings.clone();
+    let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+
+    assert!(!app.try_open_comment_panel(&key, &kb));
+    assert!(!app.cmt.comment_panel_open);
 }
