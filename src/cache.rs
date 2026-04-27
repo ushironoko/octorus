@@ -192,6 +192,30 @@ pub fn save_local_review_comments(
     save_local_review_comments_with_base(repo, working_dir, comments, &cache_dir())
 }
 
+/// Delete the on-disk local comments file for `(repo, working_dir)` and return
+/// the number of comments that were stored before deletion. Returns Ok(0) when
+/// no file exists.
+pub fn delete_local_review_comments(repo: &str, working_dir: Option<&str>) -> Result<usize> {
+    delete_local_review_comments_with_base(repo, working_dir, &cache_dir())
+}
+
+fn delete_local_review_comments_with_base(
+    repo: &str,
+    working_dir: Option<&str>,
+    base: &std::path::Path,
+) -> Result<usize> {
+    let path = local_review_comments_path_with_base(repo, working_dir, base)?;
+    if !path.exists() {
+        return Ok(0);
+    }
+    let count = load_local_review_comments_with_base(repo, working_dir, base)
+        .map(|c| c.len())
+        .unwrap_or(0);
+    fs::remove_file(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", path.display(), e))?;
+    Ok(count)
+}
+
 fn save_local_review_comments_with_base(
     repo: &str,
     working_dir: Option<&str>,
@@ -540,6 +564,84 @@ mod tests {
         assert_eq!(loaded[0].comment.body, "hello");
         assert_eq!(loaded[0].comment.line, Some(42));
         assert!(!loaded[0].meta.is_resolved);
+    }
+
+    #[test]
+    #[serial]
+    fn test_delete_local_review_comments_returns_count_and_removes_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        // No file → Ok(0)
+        let initial = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(initial, 0);
+
+        // Save two comments
+        let comments = vec![
+            LocalReviewComment::new(ReviewComment {
+                id: 1,
+                path: "src/a.rs".to_string(),
+                line: Some(1),
+                start_line: None,
+                body: "first".to_string(),
+                user: User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-04-27T00:00:00Z".to_string(),
+            }),
+            LocalReviewComment::new(ReviewComment {
+                id: 2,
+                path: "src/b.rs".to_string(),
+                line: Some(2),
+                start_line: None,
+                body: "second".to_string(),
+                user: User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-04-27T00:01:00Z".to_string(),
+            }),
+        ];
+        save_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &comments,
+            &base,
+        )
+        .unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert!(path.exists());
+
+        // Delete returns the prior count and removes the file
+        let removed = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(removed, 2);
+        assert!(!path.exists());
+
+        // Idempotent
+        let again = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(again, 0);
     }
 
     #[test]

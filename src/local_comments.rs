@@ -100,6 +100,23 @@ pub async fn show_local_comments_command(
     Ok(())
 }
 
+pub async fn purge_local_comments_command(
+    repo: Option<String>,
+    working_dir: Option<String>,
+) -> Result<()> {
+    let repo = resolve_repo(repo).await;
+    let working_dir = cache::effective_working_dir(working_dir.as_deref())?;
+    let removed = cache::delete_local_review_comments(&repo, Some(&working_dir))?;
+    println!(
+        "Purged {} local comment{} for {} ({})",
+        removed,
+        if removed == 1 { "" } else { "s" },
+        repo,
+        working_dir,
+    );
+    Ok(())
+}
+
 pub async fn update_local_comments_command(
     repo: Option<String>,
     working_dir: Option<String>,

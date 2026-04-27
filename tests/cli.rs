@@ -113,3 +113,57 @@ fn update_local_comment_missing_id_exits_non_zero() {
         .stdout(predicate::str::contains("Missing IDs: 999"))
         .stderr(predicate::str::contains("unknown local comment ID"));
 }
+
+#[test]
+fn local_comments_purge_removes_file_and_reports_count() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    // Seed a comment so purge has something to delete.
+    let comments_dir = tmp.path().join("octorus").join("local-comments");
+    std::fs::create_dir_all(&comments_dir).unwrap();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&workdir.to_string_lossy().as_ref(), &mut hasher);
+    let workdir_hash = std::hash::Hasher::finish(&hasher);
+    let path = comments_dir.join(format!("owner_repo-{:016x}.json", workdir_hash));
+    std::fs::write(
+        &path,
+        r#"{"version":1,"comments":[{"id":1,"path":"a.rs","line":1,"body":"x","user":{"login":"u"},"created_at":"2026-04-27T00:00:00Z"}]}"#,
+    )
+    .unwrap();
+
+    cargo_bin_cmd!("or")
+        .args([
+            "local-comments",
+            "--repo",
+            "owner/repo",
+            "--working-dir",
+            workdir.to_str().unwrap(),
+            "--purge",
+        ])
+        .env("XDG_CACHE_HOME", tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Purged 1 local comment"));
+
+    assert!(!path.exists());
+}
+
+#[test]
+fn local_comments_purge_with_no_file_reports_zero() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    cargo_bin_cmd!("or")
+        .args([
+            "local-comments",
+            "--repo",
+            "owner/repo",
+            "--working-dir",
+            tmp.path().to_str().unwrap(),
+            "--purge",
+        ])
+        .env("XDG_CACHE_HOME", tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Purged 0 local comments"));
+}

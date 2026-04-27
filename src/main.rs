@@ -27,7 +27,9 @@ mod update;
 
 #[derive(Parser, Debug)]
 #[command(name = "or")]
-#[command(about = "TUI for GitHub PRs, issues, local diffs, and Git Ops. AI-powered automated review cycles.")]
+#[command(
+    about = "TUI for GitHub PRs, issues, local diffs, and Git Ops. AI-powered automated review cycles."
+)]
 #[command(version)]
 struct Args {
     #[command(subcommand)]
@@ -110,12 +112,16 @@ enum Commands {
         json: bool,
 
         /// Show all comments, including resolved ones
-        #[arg(long, conflicts_with = "resolved")]
+        #[arg(long, conflicts_with_all = ["resolved", "purge"])]
         all: bool,
 
         /// Show only resolved comments
-        #[arg(long, conflicts_with = "all")]
+        #[arg(long, conflicts_with_all = ["all", "purge"])]
         resolved: bool,
+
+        /// Delete all local comments for this (repo, working_dir) pair
+        #[arg(long, default_value = "false", conflicts_with_all = ["all", "resolved", "json", "limit"])]
+        purge: bool,
     },
     /// Update saved local comments for the current worktree
     UpdateLocalComment {
@@ -199,7 +205,10 @@ fn print_logo() {
 }
 
 fn is_root_help(raw_args: &[OsString]) -> bool {
-    raw_args.len() == 1 && raw_args[0].to_str().is_some_and(|arg| arg == "-h" || arg == "--help")
+    raw_args.len() == 1
+        && raw_args[0]
+            .to_str()
+            .is_some_and(|arg| arg == "-h" || arg == "--help")
 }
 
 /// Restore terminal to normal state
@@ -270,14 +279,38 @@ async fn main() -> Result<()> {
                 json,
                 all,
                 resolved,
-            } => local_comments::show_local_comments_command(repo, working_dir, limit, json, all, resolved).await,
+                purge,
+            } => {
+                if purge {
+                    local_comments::purge_local_comments_command(repo, working_dir).await
+                } else {
+                    local_comments::show_local_comments_command(
+                        repo,
+                        working_dir,
+                        limit,
+                        json,
+                        all,
+                        resolved,
+                    )
+                    .await
+                }
+            }
             Commands::UpdateLocalComment {
                 repo,
                 working_dir,
                 resolve,
                 reopen,
                 ids,
-            } => local_comments::update_local_comments_command(repo, working_dir, resolve, reopen, ids).await,
+            } => {
+                local_comments::update_local_comments_command(
+                    repo,
+                    working_dir,
+                    resolve,
+                    reopen,
+                    ids,
+                )
+                .await
+            }
             Commands::Update => {
                 update::run_update()?;
                 Ok(())
