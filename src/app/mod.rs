@@ -11,28 +11,26 @@ use crate::ai::prompt_loader::PromptLoader;
 use crate::ai::Context as AiContext;
 use crate::cache::SessionCache;
 use crate::config::Config;
+use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::filter::ListFilter;
 use crate::github;
 use crate::keybinding::KeyBinding;
 use crate::loader::{DataLoadResult, SingleFileDiffResult};
 use crate::ui;
 use crate::ui::text_area::TextArea;
-use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use std::time::Instant;
 
 mod types;
 pub use types::{
-    hash_string, AiRallyState, AppState, CachedDiffLine, CockpitMenuItem, CockpitState,
-    CommentPosition, CommentTab,
-    ChecksState, CommentState, CommitLogState, DataState, DiffCache, FileStatus, GitOpsState,
-    GitStatusEntry, HelpTab,
-    IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation,
-    LeftPaneFocus, LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection,
-    PauseState, DestructiveOp, PendingGitOpsConfirm, SimulationPreview, SimulationResult,
-    PermissionInfo, PrListState, RefreshRequest,
-    RepoSymbolSearchResult, ReviewAction, CachedShellLine, ShellCommandResult, ShellPhase,
-    ShellState, SymbolPopupState, SpanVec, SymbolSearchState, SymbolSearchUpdate, TreeRow,
-    UndoAction, WatcherHandle,
+    hash_string, AiRallyState, AppState, CachedDiffLine, CachedShellLine, ChecksState,
+    CockpitMenuItem, CockpitState, CommentPosition, CommentState, CommentTab, CommitLogState,
+    DataState, DestructiveOp, DiffCache, FileStatus, GitOpsState, GitStatusEntry, HelpTab,
+    IndexEntry, InputMode, InternedSpan, IssueDetailFocus, IssueState, JumpLocation, LeftPaneFocus,
+    LineInputContext, LoadState, LogEntry, LogEventType, MultilineSelection, PauseState,
+    PendingGitOpsConfirm, PermissionInfo, PrListState, RefreshRequest, RepoSymbolSearchResult,
+    ReviewAction, ShellCommandResult, ShellPhase, ShellState, SimulationPreview, SimulationResult,
+    SpanVec, SymbolPopupState, SymbolSearchState, SymbolSearchUpdate, TreeRow, UndoAction,
+    WatcherHandle,
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
@@ -138,6 +136,8 @@ pub struct App {
     pending_rally_context: Option<AiContext>,
     // PromptLoader saved while waiting for config warning confirmation
     pending_rally_prompt_loader: Option<PromptLoader>,
+    // Seed review saved while waiting for config warning confirmation
+    pending_rally_seed_review: Option<crate::ai::ReviewerOutput>,
     // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
     start_ai_rally_on_load: bool,
     // Pending AI Rally flag (set when --ai-rally is passed with PR list mode)
@@ -241,6 +241,7 @@ impl App {
             rally_command_sender: None,
             pending_rally_context: None,
             pending_rally_prompt_loader: None,
+            pending_rally_seed_review: None,
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             mark_viewed_receiver: None,

@@ -74,6 +74,8 @@ or --local
 | `or init --local` | Initialize project-local `.octorus/` config and prompts |
 | `or init --force` | Overwrite existing configuration files |
 | `or clean` | Remove AI Rally session data |
+| `or local-comments` | Show saved local comments for the current worktree |
+| `or update-local-comment` | Resolve or reopen local comments by ID |
 
 `or init` creates global config:
 - `~/.config/octorus/config.toml` - Main configuration file
@@ -146,11 +148,41 @@ Running `or` with no flags opens the Cockpit — a dashboard that serves as the 
 - Preview uncommitted changes (`git diff HEAD`) without creating a PR
 - Real-time file watching — diff refreshes automatically on save (ignoring `.git/` internals)
 - Auto-focus mode (`--auto-focus` or `F` key) — automatically selects the most recently changed file
+- **Local comments** — leave review comments on your own diff, persisted to disk across sessions
 - Header shows `[LOCAL]` or `[LOCAL AF]` when auto-focus is active
 
 ```bash
 or --local
 or --local --auto-focus
+```
+
+#### Local Comments
+
+In local mode, you can leave review comments on diff lines just like on a GitHub PR. Comments are saved to `~/.cache/octorus/local-comments/` and persist across sessions, scoped by repo and working directory.
+
+- Press `c` on a diff line to add a comment, `s` for a suggestion, `r` to reply
+- Press `C` to view all local comments in the comment list
+- Comments can be resolved and reopened
+
+Local comments can also seed AI Rally — when you start a rally in local mode, any open local comments are passed to the reviewer as a starting point, skipping the initial review step.
+
+**CLI subcommands** for managing local comments outside the TUI:
+
+```bash
+# Show open local comments (auto-detects repo)
+or local-comments
+
+# Show all comments including resolved
+or local-comments --all
+
+# Show as JSON
+or local-comments --json
+
+# Resolve a comment
+or update-local-comment --resolve 3
+
+# Reopen a comment
+or update-local-comment --reopen 3
 ```
 
 ### Git Ops

@@ -490,7 +490,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.ci_checks.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Start AI Rally",
+            "{}  Start AI Rally (local mode seeds from local comments)",
             fmt_key(&kb.ai_rally.display(), key_width)
         )),
         Line::from(format!(
@@ -595,7 +595,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Jump to first/last line",
             fmt_key(
-                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                &format!(
+                    "{}/{}",
+                    kb.jump_to_first.display(),
+                    kb.jump_to_last.display()
+                ),
                 key_width
             )
         )),
@@ -606,7 +610,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Next/prev comment",
             fmt_key(
-                &format!("{}/{}", kb.next_comment.display(), kb.prev_comment.display()),
+                &format!(
+                    "{}/{}",
+                    kb.next_comment.display(),
+                    kb.prev_comment.display()
+                ),
                 key_width
             )
         )),
@@ -655,7 +663,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Jump to first/last line",
             fmt_key(
-                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                &format!(
+                    "{}/{}",
+                    kb.jump_to_first.display(),
+                    kb.jump_to_last.display()
+                ),
                 key_width
             )
         )),
@@ -756,7 +768,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Jump to next/prev comment",
             fmt_key(
-                &format!("{}/{}", kb.next_comment.display(), kb.prev_comment.display()),
+                &format!(
+                    "{}/{}",
+                    kb.next_comment.display(),
+                    kb.prev_comment.display()
+                ),
                 key_width
             )
         )),
@@ -790,6 +806,45 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Back to file list",
             fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Local Mode",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  In local mode, you can leave review comments on your own diff.",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(vec![Span::styled(
+            "  Comments persist to disk across sessions.",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}  Add comment on diff line",
+            fmt_key(&kb.comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Add suggestion on diff line",
+            fmt_key(&kb.suggestion.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Reply to comment",
+            fmt_key(&kb.reply.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  View local comments (no Discussion tab)",
+            fmt_key(&kb.comment_list.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Start AI Rally (seeds from open local comments)",
+            fmt_key(&kb.ai_rally.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle auto-focus on changed files",
+            fmt_key(&kb.toggle_auto_focus.display(), key_width)
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -916,10 +971,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Move commit selection",
             fmt_key("j/k, Down/Up", key_width)
         )),
-        Line::from(format!(
-            "{}  Jump to first/last",
-            fmt_key("g/G", key_width)
-        )),
+        Line::from(format!("{}  Jump to first/last", fmt_key("g/G", key_width))),
         Line::from(format!(
             "{}  Undo last operation",
             fmt_key(&kb.git_ops_undo.display(), key_width)
@@ -961,7 +1013,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Jump to first/last",
             fmt_key(
-                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                &format!(
+                    "{}/{}",
+                    kb.jump_to_first.display(),
+                    kb.jump_to_last.display()
+                ),
                 key_width
             )
         )),
@@ -1053,7 +1109,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Jump to first/last",
             fmt_key(
-                &format!("{}/{}", kb.jump_to_first.display(), kb.jump_to_last.display()),
+                &format!(
+                    "{}/{}",
+                    kb.jump_to_first.display(),
+                    kb.jump_to_last.display()
+                ),
                 key_width
             )
         )),

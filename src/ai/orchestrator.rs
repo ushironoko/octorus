@@ -156,6 +156,7 @@ pub struct Orchestrator {
     reviewee_adapter: Box<dyn AgentAdapter>,
     session: RallySession,
     context: Option<Context>,
+    seed_review: Option<ReviewerOutput>,
     last_review: Option<ReviewerOutput>,
     last_fix: Option<RevieweeOutput>,
     event_sender: mpsc::Sender<RallyEvent>,
@@ -192,6 +193,7 @@ impl Orchestrator {
             reviewee_adapter,
             session,
             context: None,
+            seed_review: None,
             last_review: None,
             last_fix: None,
             event_sender,
@@ -208,6 +210,11 @@ impl Orchestrator {
         self.reviewer_adapter.set_local_mode(context.local_mode);
         self.reviewee_adapter.set_local_mode(context.local_mode);
         self.context = Some(context);
+    }
+
+    /// Seed the first review step with an existing review result.
+    pub fn set_seed_review(&mut self, review: ReviewerOutput) {
+        self.seed_review = Some(review);
     }
 
     /// Run the rally process
@@ -239,31 +246,20 @@ impl Orchestrator {
                 }
             }
 
-            // Run reviewer
-            self.session.update_state(RallyState::ReviewerReviewing);
-            self.send_event(RallyEvent::StateChanged(RallyState::ReviewerReviewing))
-                .await;
-            if let Err(e) = write_session(&self.session) {
-                warn!("Failed to write session: {}", e);
-                self.send_event(RallyEvent::Log(format!(
-                    "Warning: Failed to write session: {}",
-                    e
-                )))
-                .await;
-            }
-
-            let review_result = match self.run_reviewer_with_timeout(&context, iteration).await {
-                Ok(result) => result,
-                Err(e) => {
-                    self.session.update_state(RallyState::Error);
-                    let _ = write_session(&self.session);
-                    self.send_event(RallyEvent::Error(format!("Reviewer failed: {:#}", e)))
-                        .await;
-                    self.send_event(RallyEvent::StateChanged(RallyState::Error))
-                        .await;
-                    return Err(e);
-                }
-            };
+            let (review_result, seeded_review) =
+                if iteration == 1 && self.seed_review.is_some() {
+                    let review = self.seed_review.take().unwrap();
+                    self.send_event(RallyEvent::Log(format!(
+                        "Using {} local comment{} as the initial review seed",
+                        review.comments.len(),
+                        if review.comments.len() == 1 { "" } else { "s" }
+                    )))
+                    .await;
+                    (review, true)
+                } else {
+                    let review = self.run_reviewer_step(&context, iteration).await?;
+                    (review, false)
+                };
 
             // Store the review for later use
             if let Err(e) = write_history_entry(
@@ -284,26 +280,28 @@ impl Orchestrator {
                 .await;
             self.last_review = Some(review_result.clone());
 
-            // Update head_sha before posting review (ensure we have the latest commit)
-            if let Err(e) = self.update_head_sha().await {
-                warn!("Failed to update head_sha before posting review: {}", e);
-            }
-
-            // Post review to PR (with confirmation if auto_post is false)
-            if let Err(e) = self.maybe_post_review_to_pr(&review_result).await {
-                // Check if abort was triggered during post confirmation
-                if self.session.state == RallyState::Aborted {
-                    return Ok(RallyResult::Aborted {
-                        iteration,
-                        reason: e.to_string(),
-                    });
+            if !seeded_review {
+                // Update head_sha before posting review (ensure we have the latest commit)
+                if let Err(e) = self.update_head_sha().await {
+                    warn!("Failed to update head_sha before posting review: {}", e);
                 }
-                warn!("Failed to post review to PR: {}", e);
-                self.send_event(RallyEvent::Log(format!(
-                    "Warning: Failed to post review to PR: {}",
-                    e
-                )))
-                .await;
+
+                // Post review to PR (with confirmation if auto_post is false)
+                if let Err(e) = self.maybe_post_review_to_pr(&review_result).await {
+                    // Check if abort was triggered during post confirmation
+                    if self.session.state == RallyState::Aborted {
+                        return Ok(RallyResult::Aborted {
+                            iteration,
+                            reason: e.to_string(),
+                        });
+                    }
+                    warn!("Failed to post review to PR: {}", e);
+                    self.send_event(RallyEvent::Log(format!(
+                        "Warning: Failed to post review to PR: {}",
+                        e
+                    )))
+                    .await;
+                }
             }
 
             // Check for approval
@@ -879,6 +877,37 @@ impl Orchestrator {
     #[allow(dead_code)]
     pub async fn continue_with_permission(&mut self, action: &str) -> Result<()> {
         self.handle_permission_granted(action).await
+    }
+
+    async fn run_reviewer_step(
+        &mut self,
+        context: &Context,
+        iteration: u32,
+    ) -> Result<ReviewerOutput> {
+        self.session.update_state(RallyState::ReviewerReviewing);
+        self.send_event(RallyEvent::StateChanged(RallyState::ReviewerReviewing))
+            .await;
+        if let Err(e) = write_session(&self.session) {
+            warn!("Failed to write session: {}", e);
+            self.send_event(RallyEvent::Log(format!(
+                "Warning: Failed to write session: {}",
+                e
+            )))
+            .await;
+        }
+
+        match self.run_reviewer_with_timeout(context, iteration).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.session.update_state(RallyState::Error);
+                let _ = write_session(&self.session);
+                self.send_event(RallyEvent::Error(format!("Reviewer failed: {:#}", e)))
+                    .await;
+                self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                    .await;
+                Err(e)
+            }
+        }
     }
 
     async fn run_reviewer_with_timeout(

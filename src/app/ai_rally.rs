@@ -4,9 +4,13 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use tokio::sync::mpsc;
 
+use crate::ai::adapter::{CommentSeverity, ReviewComment as AiReviewComment};
 use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
 use crate::ai::prompt_loader::{PromptLoader, PromptSource};
-use crate::ai::{Context, Orchestrator, RallyState};
+use crate::ai::{
+    Context, Orchestrator, RallyState, ReviewAction as AiReviewAction, ReviewerOutput,
+};
+use crate::cache::load_local_review_comments;
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::ui;
 
@@ -107,7 +111,7 @@ impl App {
                 }
                 if let Some(context) = self.pending_rally_context.take() {
                     if let Some(prompt_loader) = self.pending_rally_prompt_loader.take() {
-                        self.spawn_rally_orchestrator(context, prompt_loader);
+                        self.spawn_rally_orchestrator(context, prompt_loader, None);
                     }
                 }
                 return Ok(());
@@ -375,6 +379,7 @@ impl App {
         self.rally_event_receiver = None;
         self.pending_rally_context = None;
         self.pending_rally_prompt_loader = None;
+        self.pending_rally_seed_review = None;
         if let Some(handle) = self.rally_abort_handle.take() {
             handle.abort();
         }
@@ -467,6 +472,18 @@ impl App {
             return;
         };
 
+        let seed_review = match self.build_seed_review_from_local_comments() {
+            Ok(seed_review) => seed_review,
+            Err(e) => {
+                self.cmt.submission_result = Some((
+                    false,
+                    format!("Failed to load local comments for AI Rally: {}", e),
+                ));
+                self.cmt.submission_result_time = Some(std::time::Instant::now());
+                return;
+            }
+        };
+
         let file_patches: Vec<(String, String)> = self
             .files()
             .iter()
@@ -553,10 +570,53 @@ impl App {
             // Save context and prompt_loader for later use after user confirmation
             self.pending_rally_context = Some(context);
             self.pending_rally_prompt_loader = Some(prompt_loader);
+            self.pending_rally_seed_review = seed_review;
             return;
         }
 
-        self.spawn_rally_orchestrator(context, prompt_loader);
+        self.spawn_rally_orchestrator(context, prompt_loader, seed_review);
+    }
+
+    pub(crate) fn build_seed_review_from_local_comments(
+        &self,
+    ) -> anyhow::Result<Option<ReviewerOutput>> {
+        if !self.local_mode {
+            return Ok(None);
+        }
+
+        let comments = load_local_review_comments(&self.repo, self.working_dir.as_deref())?;
+        let comments: Vec<AiReviewComment> = comments
+            .into_iter()
+            .filter_map(|comment| {
+                if comment.is_resolved {
+                    return None;
+                }
+                let line = comment.line?;
+                Some(AiReviewComment {
+                    path: comment.path,
+                    line,
+                    body: comment.body,
+                    severity: CommentSeverity::Major,
+                })
+            })
+            .collect();
+
+        if comments.is_empty() {
+            return Ok(None);
+        }
+
+        let summary = format!(
+            "Address {} local comment{} from the user before re-reviewing.",
+            comments.len(),
+            if comments.len() == 1 { "" } else { "s" }
+        );
+
+        Ok(Some(ReviewerOutput {
+            action: AiReviewAction::RequestChanges,
+            summary,
+            blocking_issues: vec!["Resolve the user-provided local comments.".to_string()],
+            comments,
+        }))
     }
 
     /// Spawn the orchestrator task. Called after user confirms config warnings
@@ -565,6 +625,7 @@ impl App {
         &mut self,
         context: Context,
         prompt_loader: PromptLoader,
+        seed_review: Option<ReviewerOutput>,
     ) {
         let (event_tx, event_rx) = mpsc::channel(100);
         let (cmd_tx, cmd_rx) = mpsc::channel(10);
@@ -590,6 +651,9 @@ impl App {
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);
+                    if let Some(seed_review) = seed_review {
+                        orchestrator.set_seed_review(seed_review);
+                    }
                     let _ = orchestrator.run().await;
                 }
                 Err(e) => {

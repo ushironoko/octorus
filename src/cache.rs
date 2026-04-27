@@ -1,7 +1,11 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
 
 use crate::github::comment::{DiscussionComment, ReviewComment};
@@ -70,6 +74,118 @@ pub fn cleanup_rally_sessions() {
             let _ = std::fs::remove_dir_all(path);
         }
     }
+}
+
+const LOCAL_REVIEW_COMMENTS_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalReviewCommentsFile {
+    version: u32,
+    comments: Vec<ReviewComment>,
+}
+
+fn hash_path_for_filename(path: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn effective_working_dir(working_dir: Option<&str>) -> Result<String> {
+    if let Some(dir) = working_dir {
+        return Ok(dir.to_owned());
+    }
+    std::env::current_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to determine working directory: {}", e))
+}
+
+pub fn local_review_comments_path(repo: &str, working_dir: Option<&str>) -> Result<PathBuf> {
+    local_review_comments_path_with_base(repo, working_dir, &cache_dir())
+}
+
+fn local_review_comments_path_with_base(
+    repo: &str,
+    working_dir: Option<&str>,
+    base: &std::path::Path,
+) -> Result<PathBuf> {
+    let repo = sanitize_repo_name(repo)?;
+    let workdir = effective_working_dir(working_dir)?;
+    let workdir_hash = hash_path_for_filename(&workdir);
+    Ok(base
+        .join("local-comments")
+        .join(format!("{}-{:016x}.json", repo, workdir_hash)))
+}
+
+pub fn load_local_review_comments(
+    repo: &str,
+    working_dir: Option<&str>,
+) -> Result<Vec<ReviewComment>> {
+    load_local_review_comments_with_base(repo, working_dir, &cache_dir())
+}
+
+fn load_local_review_comments_with_base(
+    repo: &str,
+    working_dir: Option<&str>,
+    base: &std::path::Path,
+) -> Result<Vec<ReviewComment>> {
+    let path = local_review_comments_path_with_base(repo, working_dir, base)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
+    let file: LocalReviewCommentsFile = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))?;
+
+    if file.version != LOCAL_REVIEW_COMMENTS_VERSION {
+        return Err(anyhow::anyhow!(
+            "Unsupported local comments version: {}",
+            file.version
+        ));
+    }
+
+    Ok(file.comments)
+}
+
+pub fn save_local_review_comments(
+    repo: &str,
+    working_dir: Option<&str>,
+    comments: &[ReviewComment],
+) -> Result<()> {
+    save_local_review_comments_with_base(repo, working_dir, comments, &cache_dir())
+}
+
+fn save_local_review_comments_with_base(
+    repo: &str,
+    working_dir: Option<&str>,
+    comments: &[ReviewComment],
+    base: &std::path::Path,
+) -> Result<()> {
+    let path = local_review_comments_path_with_base(repo, working_dir, base)?;
+
+    if comments.is_empty() {
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", path.display(), e))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", parent.display(), e))?;
+    }
+
+    let payload = LocalReviewCommentsFile {
+        version: LOCAL_REVIEW_COMMENTS_VERSION,
+        comments: comments.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize local review comments: {}", e))?;
+    fs::write(&path, json)
+        .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -217,6 +333,8 @@ impl SessionCache {
 mod tests {
     use super::*;
     use crate::github::{Branch, User};
+    use serial_test::serial;
+    use tempfile::tempdir;
 
     fn make_test_pr(title: &str, updated_at: &str) -> PullRequest {
         PullRequest {
@@ -345,6 +463,62 @@ mod tests {
             sanitize_repo_name("simple-repo").unwrap(),
             "simple-repo".to_string()
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_local_review_comments_roundtrip() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let comments = vec![ReviewComment {
+            id: 1,
+            path: "src/main.rs".to_string(),
+            line: Some(42),
+            start_line: None,
+            body: "hello".to_string(),
+            user: User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+            is_resolved: false,
+            resolved_at: None,
+        }];
+
+        save_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &comments,
+            &base,
+        )
+        .unwrap();
+
+        let loaded = load_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].body, "hello");
+        assert_eq!(loaded[0].line, Some(42));
+    }
+
+    #[test]
+    #[serial]
+    fn test_local_review_comments_path_changes_with_workdir() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path();
+
+        let path_a =
+            local_review_comments_path_with_base("owner/repo", Some("/tmp/a"), base).unwrap();
+        let path_b =
+            local_review_comments_path_with_base("owner/repo", Some("/tmp/b"), base).unwrap();
+
+        assert_ne!(path_a, path_b);
     }
 
     #[test]
