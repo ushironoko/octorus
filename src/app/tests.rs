@@ -4696,6 +4696,107 @@ fn test_submit_local_comment_persists_and_loads() {
     let _ = std::fs::remove_file(path);
 }
 
+/// CLI `update-local-comment` などでディスク上の resolved 状態が更新された後、
+/// load_review_comments を再呼び出しすると最新の LocalCommentMeta が反映される。
+/// session_cache に古い ReviewComment が残っていても meta は捨てない。
+#[test]
+#[serial]
+fn test_load_review_comments_local_mode_refreshes_meta_from_disk() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    let initial = vec![crate::cache::LocalReviewComment::new(
+        crate::github::comment::ReviewComment {
+            id: 7,
+            path: "src/main.rs".to_string(),
+            line: Some(3),
+            start_line: None,
+            body: "needs follow-up".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+        },
+    )];
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &initial,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.repo = "owner/repo".to_string();
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+
+    app.load_review_comments();
+    assert!(app.cmt.local_comment_meta.is_empty());
+
+    // 別プロセス（CLI 等）からディスク上の状態を resolved に書き換える
+    let resolved = vec![crate::cache::LocalReviewComment::with_meta(
+        initial[0].comment.clone(),
+        crate::cache::LocalCommentMeta {
+            is_resolved: true,
+            resolved_at: Some("2026-03-24T01:00:00Z".to_string()),
+        },
+    )];
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &resolved,
+    )
+    .unwrap();
+
+    // session_cache に古い comments が残っているが、meta は再取得される
+    app.load_review_comments();
+    let meta = app
+        .cmt
+        .local_comment_meta
+        .get(&7)
+        .expect("local meta should reflect disk state");
+    assert!(meta.is_resolved);
+    assert_eq!(meta.resolved_at.as_deref(), Some("2026-03-24T01:00:00Z"));
+
+    let path = crate::cache::local_review_comments_path(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let _ = std::fs::remove_file(path);
+}
+
+/// Local → PR モード切替時に local_comment_meta がクリアされる。
+/// クリアしないと PR モードのコメント描画でローカル限定の resolved ID が
+/// GitHub コメントに誤適用される。
+#[test]
+fn test_toggle_local_mode_clears_local_comment_meta_on_exit() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    app.original_pr_number = Some(42);
+    app.pr_number = Some(0);
+    app.local_mode = true;
+    app.cmt.local_comment_meta.insert(
+        99,
+        crate::cache::LocalCommentMeta {
+            is_resolved: true,
+            resolved_at: Some("2026-03-25T00:00:00Z".to_string()),
+        },
+    );
+
+    app.toggle_local_mode();
+
+    assert!(!app.local_mode);
+    assert!(app.cmt.local_comment_meta.is_empty());
+}
+
 #[test]
 fn test_update_file_comment_positions_empty_comments() {
     let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");

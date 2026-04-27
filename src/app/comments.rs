@@ -378,14 +378,10 @@ impl App {
             pr_number: self.pr_number(),
         };
 
-        if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
-            self.cmt.review_comments = Some(comments.to_vec());
-            self.cmt.selected_comment = 0;
-            self.cmt.comment_list_scroll_offset = 0;
-            self.cmt.comments_loading = false;
-            return;
-        }
-
+        // ローカルモードはディスクから毎回読み直す。session_cache は
+        // ReviewComment しか保持できず LocalCommentMeta を捨ててしまうため、
+        // CLI `update-local-comment` で resolved 状態が変わると TUI 表示が
+        // 古いままになる。
         if self.local_mode {
             match load_local_review_comments(&self.repo, self.working_dir.as_deref()) {
                 Ok(local_comments) => {
@@ -417,6 +413,16 @@ impl App {
             return;
         }
 
+        if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
+            self.cmt.review_comments = Some(comments.to_vec());
+            self.cmt.local_comment_meta.clear();
+            self.cmt.selected_comment = 0;
+            self.cmt.comment_list_scroll_offset = 0;
+            self.cmt.comments_loading = false;
+            return;
+        }
+
+        self.cmt.local_comment_meta.clear();
         self.cmt.comments_loading = true;
         let (tx, rx) = mpsc::channel(1);
         let pr_number = self.pr_number();

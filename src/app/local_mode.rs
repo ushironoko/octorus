@@ -122,6 +122,7 @@ impl App {
         self.diff_store.clear();
         self.file_list_filter = None;
         self.cmt.review_comments = None;
+        self.cmt.local_comment_meta.clear();
         self.cmt.discussion_comments = None;
         self.cmt.comment_receiver = None;
         self.cmt.discussion_comment_receiver = None;
