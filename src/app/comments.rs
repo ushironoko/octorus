@@ -496,7 +496,9 @@ impl App {
                     let indices: Vec<usize> = std::iter::once(thread.root)
                         .chain(thread.replies.iter().copied())
                         .collect();
-                    let comments = self.cmt.review_comments.as_deref().unwrap();
+                    let Some(comments) = self.cmt.review_comments.as_deref() else {
+                        return;
+                    };
                     match indices.iter().position(|&ci| comments[ci].id == target_id) {
                         Some(pos) => self.cmt.expanded_selected = pos,
                         None => {
@@ -532,11 +534,8 @@ impl App {
                     let (comments, meta) = split_local_comments(local_comments);
                     self.session_cache
                         .put_review_comments(cache_key, comments.clone());
-                    self.cmt.review_comments = Some(comments);
                     self.cmt.local_comment_meta = meta;
-                    self.cmt.selected_comment = 0;
-                    self.cmt.comment_list_scroll_offset = 0;
-                    self.cmt.comments_loading = false;
+                    self.apply_review_comments(comments);
                     if matches!(
                         self.state,
                         AppState::DiffView | AppState::SplitViewDiff | AppState::SplitViewFileList

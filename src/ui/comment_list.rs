@@ -280,13 +280,18 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     use crate::app::CommentThread;
     use std::collections::HashSet;
 
-    let resolved_ids: HashSet<u64> = app
-        .cmt
-        .local_comment_meta
-        .iter()
-        .filter(|(_, meta)| meta.is_resolved)
-        .map(|(id, _)| *id)
-        .collect();
+    // Resolved-state badges only apply in local mode; ignore any stale meta
+    // that might persist from a prior mode switch.
+    let resolved_ids: HashSet<u64> = if app.is_local_mode() {
+        app.cmt
+            .local_comment_meta
+            .iter()
+            .filter(|(_, meta)| meta.is_resolved)
+            .map(|(id, _)| *id)
+            .collect()
+    } else {
+        HashSet::new()
+    };
 
     let threads = &app.cmt.review_threads;
     let comments = app.cmt.review_comments.as_deref();
