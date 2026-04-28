@@ -110,6 +110,7 @@ Running `or` with no flags opens the Cockpit — a dashboard that serves as the 
 - Split view: file list (35%) + diff preview (65%), focused pane highlighted
 - Syntax highlighting powered by tree-sitter
 - Inline comments and code suggestions on specific lines
+- Readline-style editing keys (`Ctrl-A/E/B/F/P/N/D/H/K/U/W`) inside the comment / reply / suggestion text input
 - Multiline selection mode (`Shift+Enter`) for range comments and suggestions
 - Show Comment List for Review Comments and Discussions
 - Review submission (Approve / Request Changes / Comment)

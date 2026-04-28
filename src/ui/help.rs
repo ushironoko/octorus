@@ -858,6 +858,18 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.submit.display(), key_width)
         )),
         Line::from("  Esc             Cancel input"),
+        Line::from(vec![Span::styled(
+            "  Readline-style editing keys:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from("  Ctrl-A / Ctrl-E    Jump to line start / end"),
+        Line::from("  Ctrl-B / Ctrl-F    Move cursor back / forward one char"),
+        Line::from("  Ctrl-P / Ctrl-N    Move cursor up / down one line"),
+        Line::from("  Ctrl-D             Delete char under cursor"),
+        Line::from("  Ctrl-H             Backspace"),
+        Line::from("  Ctrl-K             Kill to end of line"),
+        Line::from("  Ctrl-U             Kill to start of line"),
+        Line::from("  Ctrl-W             Delete previous word"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "AI Rally View",
@@ -1327,6 +1339,24 @@ mod tests {
         assert!(joined.contains("Editor"));
         assert!(joined.contains("AI Rally Settings"));
         assert!(joined.contains("Prompt Resolution"));
+    }
+
+    #[test]
+    fn test_build_help_lines_lists_readline_editing_keys() {
+        // The text-input section in the help screen documents the emacs-style
+        // editing bindings. Anchor on a few of them so a future refactor of
+        // help.rs that drops the section is caught.
+        let kb = KeybindingsConfig::default();
+        let lines = build_help_lines(&kb);
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("Readline-style editing keys"));
+        for key in ["Ctrl-A", "Ctrl-E", "Ctrl-W", "Ctrl-K", "Ctrl-U"] {
+            assert!(joined.contains(key), "help missing binding: {key}");
+        }
     }
 
     #[test]
