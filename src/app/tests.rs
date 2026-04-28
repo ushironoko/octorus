@@ -4775,6 +4775,90 @@ fn test_load_review_comments_local_mode_refreshes_meta_from_disk() {
     let _ = std::fs::remove_file(path);
 }
 
+/// In local mode, `load_review_comments` must route through
+/// `apply_review_comments` so the threaded renderer and the file-list
+/// per-file count badges both work. A regression that goes back to
+/// assigning `review_comments` directly leaves `review_threads` empty
+/// and `file_comment_counts` un-populated, which the unit-level test
+/// of `apply_review_comments` does not catch.
+#[test]
+#[serial]
+fn test_load_review_comments_local_mode_builds_threads_and_counts() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    let local_comments = vec![
+        crate::cache::LocalReviewComment::new(crate::github::comment::ReviewComment {
+            id: 1,
+            path: "src/a.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "root on a".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-04-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
+        }),
+        crate::cache::LocalReviewComment::new(crate::github::comment::ReviewComment {
+            id: 2,
+            path: "src/a.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "reply on a".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-04-01T01:00:00Z".to_string(),
+            in_reply_to_id: Some(1),
+        }),
+        crate::cache::LocalReviewComment::new(crate::github::comment::ReviewComment {
+            id: 3,
+            path: "src/b.rs".to_string(),
+            line: Some(7),
+            start_line: None,
+            body: "independent".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-04-01T02:00:00Z".to_string(),
+            in_reply_to_id: None,
+        }),
+    ];
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &local_comments,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.repo = "owner/repo".to_string();
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+
+    app.load_review_comments();
+
+    assert_eq!(
+        app.cmt.review_threads.len(),
+        2,
+        "two threads should exist: the root+reply on a.rs and the independent on b.rs"
+    );
+    assert_eq!(app.cmt.file_comment_counts.get("src/a.rs"), Some(&2));
+    assert_eq!(app.cmt.file_comment_counts.get("src/b.rs"), Some(&1));
+
+    let path = crate::cache::local_review_comments_path(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let _ = std::fs::remove_file(path);
+}
+
 /// Local → PR モード切替時に local_comment_meta がクリアされる。
 /// クリアしないと PR モードのコメント描画でローカル限定の resolved ID が
 /// GitHub コメントに誤適用される。

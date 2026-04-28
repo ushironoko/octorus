@@ -408,6 +408,8 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
 }
 
 fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    use std::collections::HashSet;
+
     let Some(thread_idx) = app.cmt.expanded_thread else {
         return;
     };
@@ -416,6 +418,20 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
     };
     let Some(ref all_comments) = app.cmt.review_comments else {
         return;
+    };
+
+    // Mirror the collapsed view: only display resolved-state badges in
+    // local mode, and key them on each comment's id (so a resolved reply
+    // is also flagged in the expanded conversation).
+    let resolved_ids: HashSet<u64> = if app.is_local_mode() {
+        app.cmt
+            .local_comment_meta
+            .iter()
+            .filter(|(_, meta)| meta.is_resolved)
+            .map(|(id, _)| *id)
+            .collect()
+    } else {
+        HashSet::new()
     };
 
     let available_width = area.width.saturating_sub(4) as usize;
@@ -434,6 +450,12 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
             let is_selected = i == app.cmt.expanded_selected;
             let prefix = if is_selected { "> " } else { "  " };
             let is_root = i == 0;
+            let resolved = resolved_ids.contains(&comment.id);
+            let resolved_badge = if resolved {
+                Span::styled(" [resolved]", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            };
 
             let header_line = if is_root {
                 let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
@@ -443,6 +465,7 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
                         format!("@{}", comment.user.login),
                         Style::default().fg(Color::Cyan),
                     ),
+                    resolved_badge,
                     Span::raw(" on "),
                     Span::styled(
                         format!("{}{}", comment.path, line_info),
@@ -462,6 +485,7 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
                         format!("@{}", comment.user.login),
                         Style::default().fg(Color::Cyan),
                     ),
+                    resolved_badge,
                     Span::raw("  "),
                     Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
                 ])
@@ -1182,6 +1206,84 @@ mod tests {
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    /// In local mode, the expanded conversation view must surface the
+    /// `[resolved]` badge on each comment whose meta is resolved — both
+    /// roots and replies. The collapsed view only shows the root, so
+    /// without this the user has no way to see that an individual reply
+    /// has been resolved.
+    #[test]
+    fn test_expanded_thread_renders_resolved_on_root_and_reply() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.set_local_mode(true);
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 400,
+                path: "src/main.rs".to_string(),
+                line: Some(40),
+                start_line: None,
+                body: "root".to_string(),
+                user: User {
+                    login: "alice".to_string(),
+                },
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+            ReviewComment {
+                id: 401,
+                path: "src/main.rs".to_string(),
+                line: Some(40),
+                start_line: None,
+                body: "reply-resolved".to_string(),
+                user: User {
+                    login: "bob".to_string(),
+                },
+                created_at: "2025-01-01T01:00:00Z".to_string(),
+                in_reply_to_id: Some(400),
+            },
+            ReviewComment {
+                id: 402,
+                path: "src/main.rs".to_string(),
+                line: Some(40),
+                start_line: None,
+                body: "reply-open".to_string(),
+                user: User {
+                    login: "carol".to_string(),
+                },
+                created_at: "2025-01-01T02:00:00Z".to_string(),
+                in_reply_to_id: Some(400),
+            },
+        ]);
+        // Root resolved, first reply resolved, second reply open.
+        for id in [400, 401] {
+            app.cmt.local_comment_meta.insert(
+                id,
+                crate::cache::LocalCommentMeta {
+                    is_resolved: true,
+                    resolved_at: Some("2025-01-02T00:00:00Z".to_string()),
+                },
+            );
+        }
+        app.build_review_threads();
+        app.cmt.expanded_thread = Some(0);
+        app.cmt.expanded_selected = 0;
+
+        let rendered = render_full(&mut app);
+        assert!(
+            rendered.contains("@alice [resolved] on src/main.rs:40"),
+            "expanded root must show [resolved]:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("@bob [resolved]"),
+            "expanded resolved reply must show [resolved]:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("@carol [resolved]"),
+            "open reply must not show [resolved]:\n{rendered}"
+        );
     }
 
     /// A thread whose root is resolved should show `[resolved]` in the
