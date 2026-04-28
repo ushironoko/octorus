@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::DateTime;
 use serde::Serialize;
 
+use octorus::cache::LocalReviewComment;
 use octorus::{cache, github};
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,7 +14,7 @@ struct LocalCommentsOutput {
     resolved_comments: usize,
     shown_comments: usize,
     filter: LocalCommentsFilter,
-    comments: Vec<github::comment::ReviewComment>,
+    comments: Vec<LocalReviewComment>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,7 +66,7 @@ pub async fn show_local_comments_command(
     let total_comments = comments.len();
     let open_comments = comments
         .iter()
-        .filter(|comment| !comment.is_resolved)
+        .filter(|comment| !comment.meta.is_resolved)
         .count();
     let resolved_comments = total_comments.saturating_sub(open_comments);
     let comments = select_latest_local_comments(filter_local_comments(comments, filter), limit);
@@ -99,6 +100,23 @@ pub async fn show_local_comments_command(
     Ok(())
 }
 
+pub async fn purge_local_comments_command(
+    repo: Option<String>,
+    working_dir: Option<String>,
+) -> Result<()> {
+    let repo = resolve_repo(repo).await;
+    let working_dir = cache::effective_working_dir(working_dir.as_deref())?;
+    let removed = cache::delete_local_review_comments(&repo, Some(&working_dir))?;
+    println!(
+        "Purged {} local comment{} for {} ({})",
+        removed,
+        if removed == 1 { "" } else { "s" },
+        repo,
+        working_dir,
+    );
+    Ok(())
+}
+
 pub async fn update_local_comments_command(
     repo: Option<String>,
     working_dir: Option<String>,
@@ -127,6 +145,18 @@ pub async fn update_local_comments_command(
         missing_ids: result.missing_ids,
     };
     print!("{}", format_update_local_comments_text(&payload));
+    if !payload.missing_ids.is_empty() {
+        anyhow::bail!(
+            "{} unknown local comment ID{}: {}",
+            payload.missing_ids.len(),
+            if payload.missing_ids.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            join_ids(&payload.missing_ids),
+        );
+    }
     Ok(())
 }
 
@@ -150,27 +180,27 @@ fn local_comments_filter(all: bool, resolved: bool) -> LocalCommentsFilter {
 }
 
 fn filter_local_comments(
-    comments: Vec<github::comment::ReviewComment>,
+    comments: Vec<LocalReviewComment>,
     filter: LocalCommentsFilter,
-) -> Vec<github::comment::ReviewComment> {
+) -> Vec<LocalReviewComment> {
     comments
         .into_iter()
         .filter(|comment| match filter {
-            LocalCommentsFilter::Open => !comment.is_resolved,
-            LocalCommentsFilter::Resolved => comment.is_resolved,
+            LocalCommentsFilter::Open => !comment.meta.is_resolved,
+            LocalCommentsFilter::Resolved => comment.meta.is_resolved,
             LocalCommentsFilter::All => true,
         })
         .collect()
 }
 
 fn select_latest_local_comments(
-    mut comments: Vec<github::comment::ReviewComment>,
+    mut comments: Vec<LocalReviewComment>,
     limit: usize,
-) -> Vec<github::comment::ReviewComment> {
+) -> Vec<LocalReviewComment> {
     comments.sort_by(|a, b| {
-        parse_comment_timestamp(&b.created_at)
-            .cmp(&parse_comment_timestamp(&a.created_at))
-            .then_with(|| b.id.cmp(&a.id))
+        parse_comment_timestamp(&b.comment.created_at)
+            .cmp(&parse_comment_timestamp(&a.comment.created_at))
+            .then_with(|| b.comment.id.cmp(&a.comment.id))
     });
     comments.truncate(limit);
     comments
@@ -186,7 +216,7 @@ fn format_local_comments_text(
     total_comments: usize,
     open_comments: usize,
     filter: LocalCommentsFilter,
-    comments: &[github::comment::ReviewComment],
+    comments: &[LocalReviewComment],
 ) -> String {
     if total_comments == 0 {
         return format!("No local comments found for {} ({})\n", repo, working_dir);
@@ -218,12 +248,13 @@ fn format_local_comments_text(
         total_comments,
     );
 
-    for comment in comments {
+    for entry in comments {
+        let comment = &entry.comment;
         let line = comment
             .line
             .map(|line| line.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let status = if comment.is_resolved {
+        let status = if entry.meta.is_resolved {
             "resolved"
         } else {
             "open"
@@ -253,7 +284,7 @@ struct LocalCommentUpdateResult {
 }
 
 fn update_local_comments(
-    comments: &mut [github::comment::ReviewComment],
+    comments: &mut [LocalReviewComment],
     ids: &[u64],
     action: LocalCommentAction,
 ) -> LocalCommentUpdateResult {
@@ -261,19 +292,19 @@ fn update_local_comments(
     let mut missing_ids = Vec::new();
 
     for id in ids {
-        let Some(comment) = comments.iter_mut().find(|comment| comment.id == *id) else {
+        let Some(entry) = comments.iter_mut().find(|entry| entry.comment.id == *id) else {
             missing_ids.push(*id);
             continue;
         };
 
         match action {
             LocalCommentAction::Resolve => {
-                comment.is_resolved = true;
-                comment.resolved_at = Some(chrono::Utc::now().to_rfc3339());
+                entry.meta.is_resolved = true;
+                entry.meta.resolved_at = Some(chrono::Utc::now().to_rfc3339());
             }
             LocalCommentAction::Reopen => {
-                comment.is_resolved = false;
-                comment.resolved_at = None;
+                entry.meta.is_resolved = false;
+                entry.meta.resolved_at = None;
             }
         }
         updated_ids.push(*id);
@@ -326,99 +357,124 @@ fn join_ids(ids: &[u64]) -> String {
 mod tests {
     use super::*;
     use insta::assert_snapshot;
+    use octorus::cache::{LocalCommentMeta, LocalReviewComment};
     use octorus::github::comment::ReviewComment;
     use octorus::github::User;
+
+    fn open_comment(
+        id: u64,
+        path: &str,
+        line: u32,
+        body: &str,
+        user: &str,
+        created_at: &str,
+    ) -> LocalReviewComment {
+        LocalReviewComment::new(ReviewComment {
+            id,
+            path: path.to_string(),
+            line: Some(line),
+            start_line: None,
+            body: body.to_string(),
+            user: User {
+                login: user.to_string(),
+            },
+            created_at: created_at.to_string(),
+        })
+    }
+
+    fn resolved_comment(
+        id: u64,
+        path: &str,
+        line: u32,
+        body: &str,
+        user: &str,
+        created_at: &str,
+        resolved_at: &str,
+    ) -> LocalReviewComment {
+        LocalReviewComment::with_meta(
+            ReviewComment {
+                id,
+                path: path.to_string(),
+                line: Some(line),
+                start_line: None,
+                body: body.to_string(),
+                user: User {
+                    login: user.to_string(),
+                },
+                created_at: created_at.to_string(),
+            },
+            LocalCommentMeta {
+                is_resolved: true,
+                resolved_at: Some(resolved_at.to_string()),
+            },
+        )
+    }
 
     #[test]
     fn test_select_latest_local_comments_orders_newest_first() {
         let comments = vec![
-            ReviewComment {
-                id: 1,
-                path: "src/a.rs".to_string(),
-                line: Some(10),
-                start_line: None,
-                body: "older".to_string(),
-                user: User {
-                    login: "alice".to_string(),
-                },
-                created_at: "2026-03-25T01:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
-            },
-            ReviewComment {
-                id: 2,
-                path: "src/b.rs".to_string(),
-                line: Some(20),
-                start_line: None,
-                body: "newer".to_string(),
-                user: User {
-                    login: "bob".to_string(),
-                },
-                created_at: "2026-03-25T02:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
-            },
+            open_comment(
+                1,
+                "src/a.rs",
+                10,
+                "older",
+                "alice",
+                "2026-03-25T01:00:00+00:00",
+            ),
+            open_comment(
+                2,
+                "src/b.rs",
+                20,
+                "newer",
+                "bob",
+                "2026-03-25T02:00:00+00:00",
+            ),
         ];
 
         let selected = select_latest_local_comments(comments, 10);
 
         assert_eq!(selected.len(), 2);
-        assert_eq!(selected[0].id, 2);
-        assert_eq!(selected[1].id, 1);
+        assert_eq!(selected[0].comment.id, 2);
+        assert_eq!(selected[1].comment.id, 1);
     }
 
     #[test]
     fn test_select_latest_local_comments_applies_limit() {
         let comments = vec![
-            ReviewComment {
-                id: 1,
-                path: "src/a.rs".to_string(),
-                line: Some(10),
-                start_line: None,
-                body: "first".to_string(),
-                user: User {
-                    login: "alice".to_string(),
-                },
-                created_at: "2026-03-25T01:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
-            },
-            ReviewComment {
-                id: 2,
-                path: "src/b.rs".to_string(),
-                line: Some(20),
-                start_line: None,
-                body: "second".to_string(),
-                user: User {
-                    login: "bob".to_string(),
-                },
-                created_at: "2026-03-25T02:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
-            },
+            open_comment(
+                1,
+                "src/a.rs",
+                10,
+                "first",
+                "alice",
+                "2026-03-25T01:00:00+00:00",
+            ),
+            open_comment(
+                2,
+                "src/b.rs",
+                20,
+                "second",
+                "bob",
+                "2026-03-25T02:00:00+00:00",
+            ),
         ];
 
         let selected = select_latest_local_comments(comments, 1);
 
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].id, 2);
+        assert_eq!(selected[0].comment.id, 2);
     }
 
     #[test]
     fn test_format_local_comments_text_includes_comment_details() {
-        let comments = vec![ReviewComment {
-            id: 7,
-            path: "src/main.rs".to_string(),
-            line: Some(42),
-            start_line: None,
-            body: "why is this here?".to_string(),
-            user: User {
-                login: "dacuna".to_string(),
-            },
-            created_at: "2026-03-25T02:00:00+00:00".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }];
+        let comments = vec![open_comment(
+            7,
+            "src/main.rs",
+            42,
+            "why is this here?",
+            "dacuna",
+            "2026-03-25T02:00:00+00:00",
+        )];
 
         let output = format_local_comments_text(
             "owner/repo",
@@ -472,48 +528,38 @@ mod tests {
 
     #[test]
     fn test_update_local_comments_resolves_and_reopens() {
-        let mut comments = vec![ReviewComment {
-            id: 7,
-            path: "src/main.rs".to_string(),
-            line: Some(42),
-            start_line: None,
-            body: "why is this here?".to_string(),
-            user: User {
-                login: "dacuna".to_string(),
-            },
-            created_at: "2026-03-25T02:00:00+00:00".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }];
+        let mut comments = vec![open_comment(
+            7,
+            "src/main.rs",
+            42,
+            "why is this here?",
+            "dacuna",
+            "2026-03-25T02:00:00+00:00",
+        )];
 
         let resolved = update_local_comments(&mut comments, &[7], LocalCommentAction::Resolve);
         assert_eq!(resolved.updated_ids, vec![7]);
         assert!(resolved.missing_ids.is_empty());
-        assert!(comments[0].is_resolved);
-        assert!(comments[0].resolved_at.is_some());
+        assert!(comments[0].meta.is_resolved);
+        assert!(comments[0].meta.resolved_at.is_some());
 
         let reopened = update_local_comments(&mut comments, &[7], LocalCommentAction::Reopen);
         assert_eq!(reopened.updated_ids, vec![7]);
         assert!(reopened.missing_ids.is_empty());
-        assert!(!comments[0].is_resolved);
-        assert!(comments[0].resolved_at.is_none());
+        assert!(!comments[0].meta.is_resolved);
+        assert!(comments[0].meta.resolved_at.is_none());
     }
 
     #[test]
     fn test_update_local_comments_reports_missing_ids() {
-        let mut comments = vec![ReviewComment {
-            id: 1,
-            path: "src/main.rs".to_string(),
-            line: Some(1),
-            start_line: None,
-            body: "hello".to_string(),
-            user: User {
-                login: "dacuna".to_string(),
-            },
-            created_at: "2026-03-25T02:00:00+00:00".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }];
+        let mut comments = vec![open_comment(
+            1,
+            "src/main.rs",
+            1,
+            "hello",
+            "dacuna",
+            "2026-03-25T02:00:00+00:00",
+        )];
 
         let result = update_local_comments(&mut comments, &[1, 2], LocalCommentAction::Resolve);
 
@@ -524,92 +570,69 @@ mod tests {
     #[test]
     fn test_filter_local_comments_defaults_to_open() {
         let comments = vec![
-            ReviewComment {
-                id: 1,
-                path: "src/main.rs".to_string(),
-                line: Some(1),
-                start_line: None,
-                body: "open".to_string(),
-                user: User {
-                    login: "dacuna".to_string(),
-                },
-                created_at: "2026-03-25T01:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
-            },
-            ReviewComment {
-                id: 2,
-                path: "src/main.rs".to_string(),
-                line: Some(2),
-                start_line: None,
-                body: "resolved".to_string(),
-                user: User {
-                    login: "dacuna".to_string(),
-                },
-                created_at: "2026-03-25T02:00:00+00:00".to_string(),
-                is_resolved: true,
-                resolved_at: Some("2026-03-25T03:00:00+00:00".to_string()),
-            },
+            open_comment(
+                1,
+                "src/main.rs",
+                1,
+                "open",
+                "dacuna",
+                "2026-03-25T01:00:00+00:00",
+            ),
+            resolved_comment(
+                2,
+                "src/main.rs",
+                2,
+                "resolved",
+                "dacuna",
+                "2026-03-25T02:00:00+00:00",
+                "2026-03-25T03:00:00+00:00",
+            ),
         ];
 
         let filtered = filter_local_comments(comments, LocalCommentsFilter::Open);
 
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, 1);
+        assert_eq!(filtered[0].comment.id, 1);
     }
 
     #[test]
     fn test_filter_local_comments_resolved_only() {
         let comments = vec![
-            ReviewComment {
-                id: 1,
-                path: "src/main.rs".to_string(),
-                line: Some(1),
-                start_line: None,
-                body: "open".to_string(),
-                user: User {
-                    login: "dacuna".to_string(),
-                },
-                created_at: "2026-03-25T01:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
-            },
-            ReviewComment {
-                id: 2,
-                path: "src/main.rs".to_string(),
-                line: Some(2),
-                start_line: None,
-                body: "resolved".to_string(),
-                user: User {
-                    login: "dacuna".to_string(),
-                },
-                created_at: "2026-03-25T02:00:00+00:00".to_string(),
-                is_resolved: true,
-                resolved_at: Some("2026-03-25T03:00:00+00:00".to_string()),
-            },
+            open_comment(
+                1,
+                "src/main.rs",
+                1,
+                "open",
+                "dacuna",
+                "2026-03-25T01:00:00+00:00",
+            ),
+            resolved_comment(
+                2,
+                "src/main.rs",
+                2,
+                "resolved",
+                "dacuna",
+                "2026-03-25T02:00:00+00:00",
+                "2026-03-25T03:00:00+00:00",
+            ),
         ];
 
         let filtered = filter_local_comments(comments, LocalCommentsFilter::Resolved);
 
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, 2);
+        assert_eq!(filtered[0].comment.id, 2);
     }
 
     #[test]
     fn test_snapshot_format_local_comments_text_with_comments() {
-        let comments = vec![ReviewComment {
-            id: 7,
-            path: "src/main.rs".to_string(),
-            line: Some(42),
-            start_line: None,
-            body: "why is this here?".to_string(),
-            user: User {
-                login: "dacuna".to_string(),
-            },
-            created_at: "2026-03-25T02:00:00+00:00".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }];
+        let comments = vec![open_comment(
+            7,
+            "src/main.rs",
+            42,
+            "why is this here?",
+            "dacuna",
+            "2026-03-25T02:00:00+00:00",
+        )];
 
         assert_snapshot!(
             format_local_comments_text(

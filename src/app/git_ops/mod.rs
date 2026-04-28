@@ -2572,7 +2572,7 @@ mod tests {
             crossterm::event::KeyModifiers::empty(),
         );
         let kb = app.config.keybindings.clone();
-        if app.git_ops_state.as_ref().map_or(false, |o| o.pending_confirm.is_some()) {
+        if app.git_ops_state.as_ref().is_some_and(|o| o.pending_confirm.is_some()) {
             app.handle_tree_confirm_input(&key, &kb);
         }
     }

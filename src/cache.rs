@@ -78,10 +78,46 @@ pub fn cleanup_rally_sessions() {
 
 const LOCAL_REVIEW_COMMENTS_VERSION: u32 = 1;
 
+/// Local-only state attached to a review comment. Lives outside [`ReviewComment`]
+/// because GitHub never returns these fields and forcing them onto the API type
+/// pollutes every construction site.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalCommentMeta {
+    #[serde(default)]
+    pub is_resolved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
+}
+
+/// On-disk representation of a local review comment: the GitHub-shaped
+/// [`ReviewComment`] plus locally-tracked [`LocalCommentMeta`] flattened into the
+/// same JSON object. Backwards-compatible with the v1 file format that stored
+/// `is_resolved` / `resolved_at` directly on the comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalReviewComment {
+    #[serde(flatten)]
+    pub comment: ReviewComment,
+    #[serde(flatten)]
+    pub meta: LocalCommentMeta,
+}
+
+impl LocalReviewComment {
+    pub fn new(comment: ReviewComment) -> Self {
+        Self {
+            comment,
+            meta: LocalCommentMeta::default(),
+        }
+    }
+
+    pub fn with_meta(comment: ReviewComment, meta: LocalCommentMeta) -> Self {
+        Self { comment, meta }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalReviewCommentsFile {
     version: u32,
-    comments: Vec<ReviewComment>,
+    comments: Vec<LocalReviewComment>,
 }
 
 fn hash_path_for_filename(path: &str) -> u64 {
@@ -119,7 +155,7 @@ fn local_review_comments_path_with_base(
 pub fn load_local_review_comments(
     repo: &str,
     working_dir: Option<&str>,
-) -> Result<Vec<ReviewComment>> {
+) -> Result<Vec<LocalReviewComment>> {
     load_local_review_comments_with_base(repo, working_dir, &cache_dir())
 }
 
@@ -127,7 +163,7 @@ fn load_local_review_comments_with_base(
     repo: &str,
     working_dir: Option<&str>,
     base: &std::path::Path,
-) -> Result<Vec<ReviewComment>> {
+) -> Result<Vec<LocalReviewComment>> {
     let path = local_review_comments_path_with_base(repo, working_dir, base)?;
     if !path.exists() {
         return Ok(Vec::new());
@@ -151,15 +187,39 @@ fn load_local_review_comments_with_base(
 pub fn save_local_review_comments(
     repo: &str,
     working_dir: Option<&str>,
-    comments: &[ReviewComment],
+    comments: &[LocalReviewComment],
 ) -> Result<()> {
     save_local_review_comments_with_base(repo, working_dir, comments, &cache_dir())
+}
+
+/// Delete the on-disk local comments file for `(repo, working_dir)` and return
+/// the number of comments that were stored before deletion. Returns Ok(0) when
+/// no file exists. Returns an error when the file exists but cannot be parsed,
+/// so callers can distinguish "nothing to delete" from "refused to clobber
+/// unreadable data" (corrupt or future-version files).
+pub fn delete_local_review_comments(repo: &str, working_dir: Option<&str>) -> Result<usize> {
+    delete_local_review_comments_with_base(repo, working_dir, &cache_dir())
+}
+
+fn delete_local_review_comments_with_base(
+    repo: &str,
+    working_dir: Option<&str>,
+    base: &std::path::Path,
+) -> Result<usize> {
+    let path = local_review_comments_path_with_base(repo, working_dir, base)?;
+    if !path.exists() {
+        return Ok(0);
+    }
+    let count = load_local_review_comments_with_base(repo, working_dir, base)?.len();
+    fs::remove_file(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", path.display(), e))?;
+    Ok(count)
 }
 
 fn save_local_review_comments_with_base(
     repo: &str,
     working_dir: Option<&str>,
-    comments: &[ReviewComment],
+    comments: &[LocalReviewComment],
     base: &std::path::Path,
 ) -> Result<()> {
     let path = local_review_comments_path_with_base(repo, working_dir, base)?;
@@ -473,7 +533,7 @@ mod tests {
         let workdir = tempdir.path().join("worktree");
         fs::create_dir_all(&workdir).unwrap();
 
-        let comments = vec![ReviewComment {
+        let comments = vec![LocalReviewComment::new(ReviewComment {
             id: 1,
             path: "src/main.rs".to_string(),
             line: Some(42),
@@ -483,9 +543,7 @@ mod tests {
                 login: "local".to_string(),
             },
             created_at: "2026-03-24T00:00:00Z".to_string(),
-            is_resolved: false,
-            resolved_at: None,
-        }];
+        })];
 
         save_local_review_comments_with_base(
             "owner/repo",
@@ -503,8 +561,174 @@ mod tests {
         .unwrap();
 
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].body, "hello");
-        assert_eq!(loaded[0].line, Some(42));
+        assert_eq!(loaded[0].comment.body, "hello");
+        assert_eq!(loaded[0].comment.line, Some(42));
+        assert!(!loaded[0].meta.is_resolved);
+    }
+
+    /// PR #156 が出力した v1 JSON は is_resolved / resolved_at を ReviewComment 直下に
+    /// 置いていた。LocalReviewComment::meta は serde(flatten) で受けるので、レガシー JSON の
+    /// resolved 状態がそのまま meta に反映されることをロックする。
+    #[test]
+    #[serial]
+    fn test_load_local_review_comments_reads_legacy_v1_resolved_layout() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // PR #156 wrote is_resolved / resolved_at as siblings of `id` etc.
+        fs::write(
+            &path,
+            r#"{
+              "version": 1,
+              "comments": [
+                {
+                  "id": 7,
+                  "path": "src/main.rs",
+                  "line": 12,
+                  "body": "legacy resolved",
+                  "user": { "login": "local" },
+                  "created_at": "2026-03-24T00:00:00Z",
+                  "is_resolved": true,
+                  "resolved_at": "2026-03-24T01:00:00Z"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 7);
+        assert_eq!(loaded[0].comment.body, "legacy resolved");
+        assert!(loaded[0].meta.is_resolved);
+        assert_eq!(
+            loaded[0].meta.resolved_at.as_deref(),
+            Some("2026-03-24T01:00:00Z")
+        );
+    }
+
+    /// 壊れた / 未対応 version のファイルを silent に削除しないこと。
+    #[test]
+    #[serial]
+    fn test_delete_local_review_comments_refuses_unreadable_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{not valid json").unwrap();
+
+        let result = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        );
+
+        assert!(
+            result.is_err(),
+            "purge must refuse to clobber unparsable data"
+        );
+        assert!(path.exists(), "file must remain so the user can inspect it");
+    }
+
+    #[test]
+    #[serial]
+    fn test_delete_local_review_comments_returns_count_and_removes_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        // No file → Ok(0)
+        let initial = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(initial, 0);
+
+        // Save two comments
+        let comments = vec![
+            LocalReviewComment::new(ReviewComment {
+                id: 1,
+                path: "src/a.rs".to_string(),
+                line: Some(1),
+                start_line: None,
+                body: "first".to_string(),
+                user: User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-04-27T00:00:00Z".to_string(),
+            }),
+            LocalReviewComment::new(ReviewComment {
+                id: 2,
+                path: "src/b.rs".to_string(),
+                line: Some(2),
+                start_line: None,
+                body: "second".to_string(),
+                user: User {
+                    login: "local".to_string(),
+                },
+                created_at: "2026-04-27T00:01:00Z".to_string(),
+            }),
+        ];
+        save_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &comments,
+            &base,
+        )
+        .unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert!(path.exists());
+
+        // Delete returns the prior count and removes the file
+        let removed = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(removed, 2);
+        assert!(!path.exists());
+
+        // Idempotent
+        let again = delete_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(again, 0);
     }
 
     #[test]

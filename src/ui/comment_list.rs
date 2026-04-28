@@ -82,7 +82,12 @@ fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(frame.area());
 
-    let count = app.cmt.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
+    let count = app
+        .cmt
+        .review_comments
+        .as_ref()
+        .map(|c| c.len())
+        .unwrap_or(0);
     let loading = if app.cmt.comments_loading {
         format!(" {}", app.spinner_char())
     } else {
@@ -109,8 +114,7 @@ fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let help_text = super::footer::footer_hint_back(&app.config.keybindings);
     let footer_line = super::footer::build_footer_line(app, &help_text);
-    let footer =
-        Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
@@ -209,9 +213,15 @@ fn render_comment_list_generic<T, F>(
 }
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let review_count = app.cmt.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
+    let review_count = app
+        .cmt
+        .review_comments
+        .as_ref()
+        .map(|c| c.len())
+        .unwrap_or(0);
     let discussion_count = app
-        .cmt.discussion_comments
+        .cmt
+        .discussion_comments
         .as_ref()
         .map(|c| c.len())
         .unwrap_or(0);
@@ -268,6 +278,15 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 
 fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     use crate::github::comment::ReviewComment;
+    use std::collections::HashSet;
+
+    let resolved_ids: HashSet<u64> = app
+        .cmt
+        .local_comment_meta
+        .iter()
+        .filter(|(_, meta)| meta.is_resolved)
+        .map(|(id, _)| *id)
+        .collect();
 
     render_comment_list_generic(
         frame,
@@ -280,18 +299,19 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         |comment: &ReviewComment, _i: usize, is_selected: bool, body_width: usize| {
             let prefix = if is_selected { "> " } else { "  " };
             let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
+            let resolved = resolved_ids.contains(&comment.id);
             let header_line = Line::from(vec![
                 Span::raw(prefix),
                 Span::styled(
                     format!("@{}", comment.user.login),
                     Style::default().fg(Color::Cyan),
                 ),
-                if comment.is_resolved {
+                if resolved {
                     Span::raw(" ")
                 } else {
                     Span::raw("")
                 },
-                if comment.is_resolved {
+                if resolved {
                     Span::styled("[resolved]", Style::default().fg(Color::DarkGray))
                 } else {
                     Span::raw("")
@@ -565,19 +585,17 @@ mod tests {
         let mut app = App::new_for_test();
         app.state = crate::app::AppState::CommentList;
         app.cmt.comment_tab = CommentTab::Review;
-        app.cmt.review_comments = Some(vec![
-            ReviewComment {
-                id: 1,
-                path: "src/main.rs".to_string(),
-                line: Some(10),
-                start_line: None,
-                body: "This looks good.".to_string(),
-                user: User { login: "reviewer1".to_string() },
-                created_at: "2025-01-01T00:00:00Z".to_string(),
-                is_resolved: false,
-                resolved_at: None,
+        app.cmt.review_comments = Some(vec![ReviewComment {
+            id: 1,
+            path: "src/main.rs".to_string(),
+            line: Some(10),
+            start_line: None,
+            body: "This looks good.".to_string(),
+            user: User {
+                login: "reviewer1".to_string(),
             },
-        ]);
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        }]);
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
@@ -647,14 +665,14 @@ mod tests {
         let mut app = App::new_for_test();
         app.state = crate::app::AppState::CommentList;
         app.cmt.comment_tab = CommentTab::Discussion;
-        app.cmt.discussion_comments = Some(vec![
-            DiscussionComment {
-                id: 100,
-                body: "Thanks for the fix!".to_string(),
-                user: User { login: "commenter".to_string() },
-                created_at: "2025-03-01T12:00:00Z".to_string(),
+        app.cmt.discussion_comments = Some(vec![DiscussionComment {
+            id: 100,
+            body: "Thanks for the fix!".to_string(),
+            user: User {
+                login: "commenter".to_string(),
             },
-        ]);
+            created_at: "2025-03-01T12:00:00Z".to_string(),
+        }]);
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
@@ -697,10 +715,10 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Fix this variable naming".to_string(),
-                user: User { login: "dacuna".to_string() },
+                user: User {
+                    login: "dacuna".to_string(),
+                },
                 created_at: "2026-03-25T02:00:00+00:00".to_string(),
-                is_resolved: false,
-                resolved_at: None,
             },
             ReviewComment {
                 id: 2,
@@ -708,12 +726,19 @@ mod tests {
                 line: Some(42),
                 start_line: None,
                 body: "Consider error handling".to_string(),
-                user: User { login: "dacuna".to_string() },
+                user: User {
+                    login: "dacuna".to_string(),
+                },
                 created_at: "2026-03-25T03:00:00+00:00".to_string(),
+            },
+        ]);
+        app.cmt.local_comment_meta.insert(
+            2,
+            crate::cache::LocalCommentMeta {
                 is_resolved: true,
                 resolved_at: Some("2026-03-25T04:00:00+00:00".to_string()),
             },
-        ]);
+        );
 
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐

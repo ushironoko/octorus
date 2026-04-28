@@ -10,12 +10,12 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::diff::LineType;
-use crate::loader::SingleFileDiffResult;
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
     ChangedFile, CommitListPage, IssueComment, IssueDetail, IssueListPage, IssueStateFilter,
     IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
+use crate::loader::SingleFileDiffResult;
 
 /// Position of a comment within the diff.
 #[derive(Debug, Clone)]
@@ -151,7 +151,7 @@ pub enum AppState {
     SplitViewDiff,
     PrDescription,
     ChecksList,
-IssueList,
+    IssueList,
     IssueDetail,
     IssueCommentList,
     GitOpsSplitTree,
@@ -867,8 +867,10 @@ pub struct GitOpsState {
     pub commit_log: CommitLogState,
     /// Cached gitfilm binary path (resolved once at init).
     pub gitfilm_path: Option<std::path::PathBuf>,
-    pub(crate) simulate_receiver:
-        Option<(u64, mpsc::Receiver<Result<crate::gitfilm::GitfilmSimOutput, String>>)>,
+    pub(crate) simulate_receiver: Option<(
+        u64,
+        mpsc::Receiver<Result<crate::gitfilm::GitfilmSimOutput, String>>,
+    )>,
 }
 
 /// Single row in the tree view.
@@ -881,10 +883,7 @@ pub enum TreeRow {
         expanded: bool,
     },
     /// File row.
-    File {
-        index: usize,
-        depth: usize,
-    },
+    File { index: usize, depth: usize },
 }
 
 impl GitOpsState {
@@ -1015,6 +1014,10 @@ impl IssueState {
 #[derive(Default)]
 pub struct CommentState {
     pub review_comments: Option<Vec<crate::github::comment::ReviewComment>>,
+    /// Local-only metadata (resolved state) keyed by comment id. Populated from
+    /// the on-disk [`crate::cache::LocalReviewComment`] records when in local
+    /// mode; empty otherwise.
+    pub local_comment_meta: std::collections::HashMap<u64, crate::cache::LocalCommentMeta>,
     pub selected_comment: usize,
     pub comment_list_scroll_offset: usize,
     pub comments_loading: bool,
@@ -1061,8 +1064,7 @@ pub struct ChecksState {
     pub checks_target_pr: Option<u32>,
     pub checks_return_state: AppState,
     pub ci_status: Option<crate::github::CiStatus>,
-    pub(crate) checks_receiver:
-        super::PrReceiver<Result<Vec<crate::github::CheckItem>, String>>,
+    pub(crate) checks_receiver: super::PrReceiver<Result<Vec<crate::github::CheckItem>, String>>,
     pub(crate) ci_status_receiver: Option<tokio::sync::mpsc::Receiver<crate::github::CiStatus>>,
 }
 
@@ -1166,7 +1168,10 @@ mod tests {
     #[test]
     fn cockpit_menu_item_next_clamps_at_last() {
         assert_eq!(CockpitMenuItem::PrList.next(), CockpitMenuItem::IssueList);
-        assert_eq!(CockpitMenuItem::IssueList.next(), CockpitMenuItem::LocalDiff);
+        assert_eq!(
+            CockpitMenuItem::IssueList.next(),
+            CockpitMenuItem::LocalDiff
+        );
         assert_eq!(CockpitMenuItem::LocalDiff.next(), CockpitMenuItem::GitOps);
         assert_eq!(CockpitMenuItem::GitOps.next(), CockpitMenuItem::GitOps);
     }
@@ -1174,7 +1179,10 @@ mod tests {
     #[test]
     fn cockpit_menu_item_prev_clamps_at_first() {
         assert_eq!(CockpitMenuItem::GitOps.prev(), CockpitMenuItem::LocalDiff);
-        assert_eq!(CockpitMenuItem::LocalDiff.prev(), CockpitMenuItem::IssueList);
+        assert_eq!(
+            CockpitMenuItem::LocalDiff.prev(),
+            CockpitMenuItem::IssueList
+        );
         assert_eq!(CockpitMenuItem::IssueList.prev(), CockpitMenuItem::PrList);
         assert_eq!(CockpitMenuItem::PrList.prev(), CockpitMenuItem::PrList);
     }
