@@ -1183,4 +1183,79 @@ mod tests {
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
+
+    /// A thread whose root is resolved should show `[resolved]` in the
+    /// collapsed view; a thread whose only resolved comment is a *reply*
+    /// must not — the badge is keyed on the root's id, not any reply's.
+    #[test]
+    fn test_threaded_review_resolved_keyed_on_root() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.set_local_mode(true);
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![
+            ReviewComment {
+                id: 200,
+                path: "src/main.rs".to_string(),
+                line: Some(20),
+                start_line: None,
+                body: "Root resolved".to_string(),
+                user: User {
+                    login: "alice".to_string(),
+                },
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+            ReviewComment {
+                id: 300,
+                path: "src/main.rs".to_string(),
+                line: Some(30),
+                start_line: None,
+                body: "Root unresolved".to_string(),
+                user: User {
+                    login: "alice".to_string(),
+                },
+                created_at: "2025-01-01T01:00:00Z".to_string(),
+                in_reply_to_id: None,
+            },
+            ReviewComment {
+                id: 301,
+                path: "src/main.rs".to_string(),
+                line: Some(30),
+                start_line: None,
+                body: "Reply resolved".to_string(),
+                user: User {
+                    login: "bob".to_string(),
+                },
+                created_at: "2025-01-01T02:00:00Z".to_string(),
+                in_reply_to_id: Some(300),
+            },
+        ]);
+        // Root of thread 1 is resolved; only the reply of thread 2 is resolved.
+        app.cmt.local_comment_meta.insert(
+            200,
+            crate::cache::LocalCommentMeta {
+                is_resolved: true,
+                resolved_at: Some("2025-01-02T00:00:00Z".to_string()),
+            },
+        );
+        app.cmt.local_comment_meta.insert(
+            301,
+            crate::cache::LocalCommentMeta {
+                is_resolved: true,
+                resolved_at: Some("2025-01-02T00:00:00Z".to_string()),
+            },
+        );
+        app.build_review_threads();
+
+        let rendered = render_full(&mut app);
+        assert!(
+            rendered.contains("@alice [resolved] on src/main.rs:20"),
+            "thread with resolved root should display [resolved] badge:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("@alice [resolved] on src/main.rs:30"),
+            "thread whose only resolved comment is a reply must not display [resolved] on the root:\n{rendered}"
+        );
+    }
 }

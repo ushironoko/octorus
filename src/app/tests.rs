@@ -7593,3 +7593,111 @@ fn test_try_open_comment_panel_ignores_non_matching_key() {
     assert!(!app.try_open_comment_panel(&key, &kb));
     assert!(!app.cmt.comment_panel_open);
 }
+
+/// Re-applying a comment set with the same thread roots plus a new reply
+/// must preserve the user's expanded-thread selection by comment ID, not by
+/// positional index. This is the central correctness claim of the merged
+/// per-file-counts + threading features: a background poll that returns
+/// identical roots with new replies should not silently shift the user
+/// to a different comment.
+#[test]
+fn test_apply_review_comments_preserves_expanded_selection_by_id() {
+    fn comment(id: u64, parent: Option<u64>, created_at: &str) -> ReviewComment {
+        ReviewComment {
+            id,
+            path: "src/main.rs".to_string(),
+            line: Some(10),
+            start_line: None,
+            body: format!("comment {id}"),
+            user: crate::github::User {
+                login: "alice".to_string(),
+            },
+            created_at: created_at.to_string(),
+            in_reply_to_id: parent,
+        }
+    }
+
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+    // Initial poll: one thread, root + 1 reply.
+    app.apply_review_comments(vec![
+        comment(100, None, "2025-01-01T00:00:00Z"),
+        comment(101, Some(100), "2025-01-01T01:00:00Z"),
+    ]);
+    assert_eq!(app.cmt.review_threads.len(), 1);
+
+    // User expands the thread and selects the reply.
+    app.cmt.expanded_thread = Some(0);
+    app.cmt.expanded_selected = 1;
+    app.cmt.expanded_selected_comment_id = Some(101);
+
+    // Background poll returns the same root with an additional newer reply
+    // sorted ahead of the previously-selected reply by created_at order.
+    app.apply_review_comments(vec![
+        comment(100, None, "2025-01-01T00:00:00Z"),
+        comment(102, Some(100), "2025-01-01T00:30:00Z"),
+        comment(101, Some(100), "2025-01-01T01:00:00Z"),
+    ]);
+
+    // Expansion must still resolve to comment id 101, even though its
+    // positional index within the thread shifted from 1 to 2.
+    assert_eq!(app.cmt.expanded_thread, Some(0));
+    assert_eq!(app.cmt.expanded_selected_comment_id, Some(101));
+    assert_eq!(
+        app.cmt.expanded_selected, 2,
+        "expanded_selected should be re-derived from the comment id"
+    );
+}
+
+/// Per-file comment counts must be populated whenever review_comments
+/// is applied — including from the cache-hit path through
+/// apply_review_comments. Without this, the file-list badge feature
+/// silently degrades after the first load.
+#[test]
+fn test_apply_review_comments_populates_file_counts() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+    app.apply_review_comments(vec![
+        ReviewComment {
+            id: 1,
+            path: "src/a.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "x".to_string(),
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
+        },
+        ReviewComment {
+            id: 2,
+            path: "src/a.rs".to_string(),
+            line: Some(2),
+            start_line: None,
+            body: "y".to_string(),
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: "2025-01-01T01:00:00Z".to_string(),
+            in_reply_to_id: None,
+        },
+        ReviewComment {
+            id: 3,
+            path: "src/b.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "z".to_string(),
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: "2025-01-01T02:00:00Z".to_string(),
+            in_reply_to_id: None,
+        },
+    ]);
+
+    assert_eq!(app.cmt.file_comment_counts.get("src/a.rs"), Some(&2));
+    assert_eq!(app.cmt.file_comment_counts.get("src/b.rs"), Some(&1));
+}
