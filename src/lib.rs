@@ -6,8 +6,8 @@ pub mod ai;
 pub mod app;
 pub mod cache;
 pub mod config;
-pub mod diff_store;
 pub mod diff;
+pub mod diff_store;
 pub mod editor;
 pub mod filter;
 pub mod gitfilm;
@@ -19,6 +19,7 @@ pub mod loader;
 pub mod symbol;
 pub mod syntax;
 pub mod ui;
+pub mod url_parse;
 
 // Re-export commonly used types for benchmarks
 pub use app::{CachedDiffLine, DiffCache, InternedSpan};

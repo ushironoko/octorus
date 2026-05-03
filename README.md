@@ -44,8 +44,9 @@ or init
 # 2. Open the Cockpit dashboard (default when no flags are given)
 or
 
-# 3. Open a specific PR directly
+# 3. Open a specific PR directly (number or full GitHub URL)
 or --pr 123
+or --pr https://github.com/owner/repo/pull/123
 
 # 4. Preview local changes
 or --local
@@ -56,8 +57,8 @@ or --local
 | Option | Description |
 |--------|-------------|
 | `-r, --repo <REPO>` | Repository name (e.g., `owner/repo`). Auto-detected from current directory if omitted |
-| `-p, --pr [<PR>]` | Open PR list (flag only), or open a specific PR directly if number is provided |
-| `-i, --issue [<ISSUE>]` | Open issue list (flag only), or open a specific issue directly if number is provided |
+| `-p, --pr [<PR>]` | Open PR list (flag only), or open a specific PR directly if number or full GitHub URL is provided |
+| `-i, --issue [<ISSUE>]` | Open issue list (flag only), or open a specific issue directly if number or full GitHub URL is provided |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--ai-rally` | Start AI Rally mode directly. Runs in headless mode when combined with `--pr <number>` or `--local` |
 | `--git-ops` | Open Git Ops view directly on startup |
