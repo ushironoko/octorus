@@ -238,6 +238,31 @@ impl TextArea {
             }
         }
 
+        // Emacs-style readline bindings. Handled before the generic Char arm
+        // so Ctrl-<key> doesn't fall through and get inserted as plain text.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let KeyCode::Char(c) = key.code {
+                match c {
+                    'a' => self.cursor_col = 0,
+                    'e' => self.cursor_col = self.current_line_len(),
+                    'b' => self.move_left(),
+                    'f' => self.move_right(),
+                    'p' => self.move_up(),
+                    'n' => self.move_down(),
+                    'd' => self.delete(),
+                    'h' => self.backspace(),
+                    'k' => self.kill_to_line_end(),
+                    'u' => self.kill_to_line_start(),
+                    'w' => self.delete_word_backward(),
+                    // Unhandled Ctrl combos are swallowed rather than inserted
+                    // as raw characters.
+                    _ => {}
+                }
+                self.adjust_scroll();
+                return TextAreaAction::Continue;
+            }
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.sequence_state.clear();
@@ -484,6 +509,54 @@ impl TextArea {
             let next_line = self.lines.remove(self.cursor_row + 1);
             self.lines[self.cursor_row].push_str(&next_line);
         }
+    }
+
+    /// Kill from cursor to end of current line (emacs Ctrl-K). Joins with
+    /// the next line when the cursor is already at end-of-line.
+    fn kill_to_line_end(&mut self) {
+        let line_len = self.current_line_len();
+        if self.cursor_col < line_len {
+            let line = &mut self.lines[self.cursor_row];
+            let byte_idx = char_to_byte_index(line, self.cursor_col);
+            line.truncate(byte_idx);
+        } else if self.cursor_row + 1 < self.lines.len() {
+            let next_line = self.lines.remove(self.cursor_row + 1);
+            self.lines[self.cursor_row].push_str(&next_line);
+        }
+    }
+
+    /// Kill from start of current line up to cursor (emacs Ctrl-U).
+    fn kill_to_line_start(&mut self) {
+        if self.cursor_col == 0 {
+            return;
+        }
+        let line = &mut self.lines[self.cursor_row];
+        let byte_idx = char_to_byte_index(line, self.cursor_col);
+        line.drain(..byte_idx);
+        self.cursor_col = 0;
+    }
+
+    /// Delete the word before the cursor (emacs Ctrl-W). Skips trailing
+    /// whitespace, then deletes back to the previous whitespace boundary.
+    /// At column 0 falls back to a regular backspace (joins previous line).
+    fn delete_word_backward(&mut self) {
+        if self.cursor_col == 0 {
+            self.backspace();
+            return;
+        }
+        let chars: Vec<char> = self.lines[self.cursor_row].chars().collect();
+        let mut i = self.cursor_col;
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        let line = &mut self.lines[self.cursor_row];
+        let start_byte = char_to_byte_index(line, i);
+        let end_byte = char_to_byte_index(line, self.cursor_col);
+        line.drain(start_byte..end_byte);
+        self.cursor_col = i;
     }
 
     fn move_left(&mut self) {
@@ -870,6 +943,218 @@ mod tests {
         assert!(matches!(action, TextAreaAction::Continue));
         assert_eq!(ta.content(), "abg"); // 'g' was inserted
         assert_eq!(ta.cursor_col, 2); // cursor moved left from position 3 to 2
+    }
+
+    #[test]
+    fn test_emacs_ctrl_a_jumps_to_line_start() {
+        let mut ta = TextArea::new();
+        ta.set_content("hello world");
+        ta.input(key_event(KeyCode::End));
+        assert_eq!(ta.cursor_col, 11);
+        ta.input(ctrl_key_event(KeyCode::Char('a')));
+        assert_eq!(ta.cursor_col, 0);
+        assert_eq!(ta.content(), "hello world");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_e_jumps_to_line_end() {
+        let mut ta = TextArea::new();
+        ta.set_content("hello world");
+        ta.input(ctrl_key_event(KeyCode::Char('e')));
+        assert_eq!(ta.cursor_col, 11);
+    }
+
+    #[test]
+    fn test_emacs_ctrl_b_f_move_chars() {
+        let mut ta = TextArea::new();
+        ta.set_content("abc");
+        ta.input(ctrl_key_event(KeyCode::Char('e')));
+        ta.input(ctrl_key_event(KeyCode::Char('b')));
+        assert_eq!(ta.cursor_col, 2);
+        ta.input(ctrl_key_event(KeyCode::Char('f')));
+        assert_eq!(ta.cursor_col, 3);
+    }
+
+    #[test]
+    fn test_emacs_ctrl_p_n_move_lines() {
+        let mut ta = TextArea::new();
+        ta.set_content("a\nb\nc");
+        ta.input(ctrl_key_event(KeyCode::Char('n')));
+        assert_eq!(ta.cursor_row, 1);
+        ta.input(ctrl_key_event(KeyCode::Char('p')));
+        assert_eq!(ta.cursor_row, 0);
+    }
+
+    #[test]
+    fn test_emacs_ctrl_d_deletes_forward() {
+        let mut ta = TextArea::new();
+        ta.set_content("abc");
+        ta.input(ctrl_key_event(KeyCode::Char('d')));
+        assert_eq!(ta.content(), "bc");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_h_backspaces() {
+        let mut ta = TextArea::new();
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Char('b')));
+        ta.input(ctrl_key_event(KeyCode::Char('h')));
+        assert_eq!(ta.content(), "a");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_k_kills_to_line_end() {
+        let mut ta = TextArea::new();
+        ta.set_content("hello world");
+        for _ in 0..5 {
+            ta.input(key_event(KeyCode::Right));
+        }
+        ta.input(ctrl_key_event(KeyCode::Char('k')));
+        assert_eq!(ta.content(), "hello");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_k_at_eol_joins_next_line() {
+        let mut ta = TextArea::new();
+        ta.set_content("ab\ncd");
+        ta.input(key_event(KeyCode::End));
+        ta.input(ctrl_key_event(KeyCode::Char('k')));
+        assert_eq!(ta.content(), "abcd");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_u_kills_to_line_start() {
+        let mut ta = TextArea::new();
+        ta.set_content("hello world");
+        for _ in 0..6 {
+            ta.input(key_event(KeyCode::Right));
+        }
+        ta.input(ctrl_key_event(KeyCode::Char('u')));
+        assert_eq!(ta.content(), "world");
+        assert_eq!(ta.cursor_col, 0);
+    }
+
+    #[test]
+    fn test_emacs_ctrl_w_deletes_previous_word() {
+        let mut ta = TextArea::new();
+        ta.set_content("hello world foo");
+        ta.input(ctrl_key_event(KeyCode::Char('e')));
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "hello world ");
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "hello ");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_w_at_line_start_joins() {
+        let mut ta = TextArea::new();
+        ta.set_content("ab\ncd");
+        ta.input(key_event(KeyCode::Down));
+        assert_eq!(ta.cursor_row, 1);
+        assert_eq!(ta.cursor_col, 0);
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "abcd");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_d_at_eol_joins_lines() {
+        let mut ta = TextArea::new();
+        ta.set_content("ab\ncd");
+        ta.input(key_event(KeyCode::End));
+        assert_eq!(ta.cursor_col, 2);
+        ta.input(ctrl_key_event(KeyCode::Char('d')));
+        assert_eq!(ta.content(), "abcd");
+        assert_eq!(ta.cursor_row, 0);
+        assert_eq!(ta.cursor_col, 2);
+    }
+
+    #[test]
+    fn test_emacs_ctrl_k_at_end_of_buffer_is_noop() {
+        let mut ta = TextArea::new();
+        ta.set_content("abc");
+        ta.input(key_event(KeyCode::End));
+        ta.input(ctrl_key_event(KeyCode::Char('k')));
+        assert_eq!(ta.content(), "abc");
+        assert_eq!(ta.cursor_col, 3);
+    }
+
+    #[test]
+    fn test_emacs_ctrl_w_handles_consecutive_whitespace() {
+        // Readline-style Ctrl-W (matches bash unix-word-rubout): from inside
+        // a word, delete only the word; from inside trailing whitespace,
+        // delete the whitespace then back to the previous word boundary.
+        let mut ta = TextArea::new();
+        ta.set_content("foo   bar");
+        ta.input(ctrl_key_event(KeyCode::Char('e')));
+        // First C-w from end-of-line: cursor sits past 'r', no trailing
+        // whitespace to skip, deletes only "bar".
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "foo   ");
+        assert_eq!(ta.cursor_col, 6);
+        // Second C-w: cursor sits in trailing whitespace, skip the spaces
+        // then delete the word "foo".
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_w_treats_punctuation_as_part_of_word() {
+        // Readline-style semantics (matches bash unix-word-rubout): only
+        // whitespace bounds a word, so Ctrl-W on a dotted path takes the
+        // entire path. Diverges intentionally from GNU emacs
+        // backward-kill-word, which would only delete "baz".
+        let mut ta = TextArea::new();
+        ta.set_content("hello foo.bar.baz");
+        ta.input(ctrl_key_event(KeyCode::Char('e')));
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "hello ");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_w_with_multibyte_word() {
+        let mut ta = TextArea::new();
+        ta.set_content("hello あいう");
+        ta.input(ctrl_key_event(KeyCode::Char('e')));
+        // cursor_col should be 9 (5 ascii + 1 space + 3 CJK chars).
+        assert_eq!(ta.cursor_col, 9);
+        ta.input(ctrl_key_event(KeyCode::Char('w')));
+        assert_eq!(ta.content(), "hello ");
+        assert_eq!(ta.cursor_col, 6);
+    }
+
+    #[test]
+    fn test_default_ctrl_s_still_submits_after_emacs_handler() {
+        // Regression guard: the new Ctrl-handler must not swallow the default
+        // Ctrl-S submit binding. check_single_key_submit fires first.
+        let mut ta = TextArea::new();
+        let action = ta.input(ctrl_key_event(KeyCode::Char('s')));
+        assert!(matches!(action, TextAreaAction::Submit));
+        // And Ctrl-S did not also insert 's' as a side effect.
+        assert_eq!(ta.content(), "");
+    }
+
+    #[test]
+    fn test_emacs_ctrl_a_returns_to_logical_line_start_when_wrapped() {
+        // Ctrl-A is a logical-line operation, not a visual-row operation.
+        // With wrapping enabled (commit 1), a long line spans multiple display
+        // rows; Ctrl-A must still snap to col 0 of the logical line.
+        let mut ta = TextArea::new();
+        ta.set_content("abcdefghijklmnopqrstuvwxyz"); // 26 chars
+        ta.input(key_event(KeyCode::End));
+        assert_eq!(ta.cursor_col, 26);
+        ta.input(ctrl_key_event(KeyCode::Char('a')));
+        assert_eq!(ta.cursor_col, 0);
+        assert_eq!(ta.cursor_row, 0);
+    }
+
+    #[test]
+    fn test_ctrl_unhandled_does_not_insert() {
+        let mut ta = TextArea::new();
+        // Ctrl-X is not bound; previously fell through to insert_char and
+        // would have inserted 'x'. After the emacs binding refactor it is
+        // swallowed.
+        ta.input(ctrl_key_event(KeyCode::Char('x')));
+        assert_eq!(ta.content(), "");
     }
 
     #[test]
