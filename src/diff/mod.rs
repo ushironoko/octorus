@@ -49,8 +49,8 @@ impl LineType {
     #[inline]
     pub fn bg_color(&self) -> Option<ratatui::style::Color> {
         match self {
-            Self::Added => Some(ratatui::style::Color::Rgb(0, 60, 0)),
-            Self::Removed => Some(ratatui::style::Color::Rgb(60, 0, 0)),
+            Self::Added => Some(ratatui::style::Color::Rgb(0, 40, 0)),
+            Self::Removed => Some(ratatui::style::Color::Rgb(40, 0, 0)),
             _ => None,
         }
     }

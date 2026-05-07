@@ -1082,13 +1082,17 @@ pub fn render_cached_lines<'a>(
     comment_lines: &HashSet<usize>,
     bg_color: bool,
     multiline_range: Option<(usize, usize)>,
+    content_width: u16,
 ) -> Vec<Line<'a>> {
+    use unicode_width::UnicodeWidthStr;
+
     // Clamp range to valid bounds to prevent out-of-bounds panic
     let len = cache.lines.len();
     let safe_start = range.start.min(len);
     let safe_end = range.end.min(len);
     // Handle case where start > end after clamping (produces empty slice)
     let safe_range = safe_start..safe_start.max(safe_end);
+    let cw = content_width as usize;
 
     cache.lines[safe_range.clone()]
         .iter()
@@ -1109,7 +1113,24 @@ pub fn render_cached_lines<'a>(
                 .spans
                 .iter()
                 .map(|s| Span::styled(cache.resolve(s.content), s.style));
-            let all_spans: Vec<Span<'_>> = marker.into_iter().chain(base).collect();
+            let mut all_spans: Vec<Span<'_>> = marker.into_iter().chain(base).collect();
+
+            // Pad trailing spaces so a line-level background color extends to the
+            // visible width. Only pad when a bg will actually be applied — the
+            // padded spaces inherit the line's bg via Style merging, so they
+            // become the colored fill.
+            let line_bg_will_be_set = is_in_multiline
+                || (!is_selected && bg_color && cached.line_type.bg_color().is_some());
+            if line_bg_will_be_set && cw > 0 {
+                let display_width: usize = all_spans
+                    .iter()
+                    .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum();
+                let pad_len = (cw - (display_width % cw)) % cw;
+                if pad_len > 0 {
+                    all_spans.push(Span::raw(" ".repeat(pad_len)));
+                }
+            }
 
             let line = Line::from(all_spans);
             if is_in_multiline {
@@ -1249,6 +1270,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
             &app.cmt.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
+            area.width.saturating_sub(2),
         );
         (rendered, 0u16)
     } else {
@@ -2284,8 +2306,15 @@ mod tests {
         );
 
         // render_cached_lines でコメントマーカーが挿入されること
-        let plain_rendered =
-            render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines, false, None);
+        let plain_rendered = render_cached_lines(
+            &plain,
+            0..plain.lines.len(),
+            0,
+            &comment_lines,
+            false,
+            None,
+            0,
+        );
         let hl_rendered = render_cached_lines(
             &highlighted,
             0..highlighted.lines.len(),
@@ -2293,6 +2322,7 @@ mod tests {
             &comment_lines,
             false,
             None,
+            0,
         );
 
         for &line_idx in &[4usize, 6] {
@@ -2467,7 +2497,7 @@ mod tests {
         assert_eq!(cache.lines.len(), 4);
 
         // range が完全に範囲外 → 空の Vec
-        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new(), false, None);
+        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new(), false, None, 0);
         assert!(
             result.is_empty(),
             "Out-of-bounds range should return empty Vec"
@@ -2479,7 +2509,7 @@ mod tests {
         let cache = build_plain_diff_cache("", 4);
         assert!(cache.lines.is_empty());
 
-        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new(), false, None);
+        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new(), false, None, 0);
         assert!(result.is_empty(), "Empty cache should return empty Vec");
     }
 }
