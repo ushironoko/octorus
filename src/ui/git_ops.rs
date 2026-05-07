@@ -313,6 +313,7 @@ fn render_diff_body(
             &empty_comments,
             bg_color,
             None,
+            area.width.saturating_sub(2),
         )
     } else {
         vec![Line::from(Span::styled(
@@ -393,6 +394,7 @@ fn render_commit_diff_body(
             &empty_comments,
             bg_color,
             None,
+            area.width.saturating_sub(2),
         )
     } else {
         vec![Line::from(Span::styled(

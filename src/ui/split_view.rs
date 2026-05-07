@@ -542,6 +542,7 @@ fn render_diff_body(
             &app.cmt.file_comment_lines,
             app.config.diff.bg_color,
             multiline_range,
+            area.width.saturating_sub(2),
         );
         (rendered, 0u16)
     } else {
