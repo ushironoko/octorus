@@ -516,11 +516,7 @@ pub fn apply_line_highlights(
         }];
     }
 
-    events.sort_by(|a, b| {
-        a.0.cmp(&b.0).then_with(|| {
-            a.1.cmp(&b.1)
-        })
-    });
+    events.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
     let mut spans = SpanVec::new();
     let mut active_captures: Vec<usize> = Vec::new();

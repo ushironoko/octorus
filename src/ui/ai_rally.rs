@@ -23,7 +23,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(10), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(10),
+            Constraint::Length(3),
+        ])
         .split(frame.area());
 
     let kb = &app.config.keybindings;
@@ -98,7 +102,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
     frame.render_widget(header, area);
 }
 
-fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, kb: &KeybindingsConfig) {
+fn render_main_content(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut AiRallyState,
+    kb: &KeybindingsConfig,
+) {
     if state.pending_config_warning.is_some() {
         render_config_warning(frame, area, state, kb);
         return;
@@ -123,10 +132,7 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, 
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area)
     };
 
@@ -140,7 +146,12 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, 
     }
 }
 
-fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+fn render_config_warning(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiRallyState,
+    kb: &KeybindingsConfig,
+) {
     let warnings = match &state.pending_config_warning {
         Some(w) => w,
         None => return,
@@ -169,7 +180,12 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
         Style::default().fg(Color::Yellow),
     )]));
     lines.push(Line::from(""));
-    let help_text = format!("Press '{}' to accept and continue, '{}'/'{}' to cancel", kb.confirm_yes.display(), kb.confirm_no.display(), kb.quit.display());
+    let help_text = format!(
+        "Press '{}' to accept and continue, '{}'/'{}' to cancel",
+        kb.confirm_yes.display(),
+        kb.confirm_no.display(),
+        kb.quit.display()
+    );
     lines.push(Line::from(vec![Span::styled(
         help_text,
         Style::default()
@@ -187,7 +203,12 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
     frame.render_widget(warning, area);
 }
 
-fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+fn render_waiting_prompt(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiRallyState,
+    kb: &KeybindingsConfig,
+) {
     let yes = kb.confirm_yes.display();
     let no = kb.confirm_no.display();
     let quit = kb.quit.display();
@@ -200,7 +221,10 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
             (
                 " Clarification Required ",
                 format!("Question: {}", question),
-                format!("Press '{}' to open editor and respond, '{}' to skip, '{}' to abort", yes, no, quit),
+                format!(
+                    "Press '{}' to open editor and respond, '{}' to skip, '{}' to abort",
+                    yes, no, quit
+                ),
             )
         }
         RallyState::WaitingForPermission => {
@@ -212,7 +236,10 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
             (
                 " Permission Required ",
                 format!("Action: {}\nReason: {}", action, reason),
-                format!("Press '{}' to approve, '{}' to deny, '{}' to abort", yes, no, quit),
+                format!(
+                    "Press '{}' to approve, '{}' to deny, '{}' to abort",
+                    yes, no, quit
+                ),
             )
         }
         RallyState::WaitingForPostConfirmation => {
@@ -224,7 +251,10 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
                         "Action: {}\nSummary: {}\nComments: {}",
                         info.action, summary, info.comment_count
                     ),
-                    format!("Press '{}' to post to PR, '{}' to skip, '{}' to abort", yes, no, quit),
+                    format!(
+                        "Press '{}' to post to PR, '{}' to skip, '{}' to abort",
+                        yes, no, quit
+                    ),
                 )
             } else if let Some(ref info) = state.pending_fix_post {
                 let summary = truncate_with_width(&info.summary, 120);
@@ -246,7 +276,10 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
                 (
                     " Fix Post Confirmation ",
                     format!("Summary: {}\nFiles: {}", summary, files_display),
-                    format!("Press '{}' to post to PR, '{}' to skip, '{}' to abort", yes, no, quit),
+                    format!(
+                        "Press '{}' to post to PR, '{}' to skip, '{}' to abort",
+                        yes, no, quit
+                    ),
                 )
             } else {
                 return;
@@ -339,9 +372,11 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                     truncate_with_width(summary, 60).into_owned(),
                     Color::Green,
                 ),
-                crate::ai::orchestrator::RallyEvent::Error(e) => {
-                    ("ERROR".to_string(), truncate_with_width(e, 60).into_owned(), Color::Red)
-                }
+                crate::ai::orchestrator::RallyEvent::Error(e) => (
+                    "ERROR".to_string(),
+                    truncate_with_width(e, 60).into_owned(),
+                    Color::Red,
+                ),
                 _ => return None,
             };
 
@@ -540,7 +575,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &K
     } else if state.showing_log_detail {
         format!("{quit}/{enter}: Close detail")
     } else if state.pause_state == PauseState::Paused {
-        format!("{pause}: Resume | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort")
+        format!(
+            "{pause}: Resume | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort"
+        )
     } else if state.pause_state == PauseState::PauseRequested {
         format!("{pause}: Cancel pause | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort")
     } else {
@@ -667,7 +704,10 @@ mod tests {
         app.ai_rally_state = None;
 
         let output = render_full(&mut app);
-        assert!(!output.contains("AI Rally"), "should render empty when no state");
+        assert!(
+            !output.contains("AI Rally"),
+            "should render empty when no state"
+        );
     }
 
     #[test]
@@ -680,7 +720,10 @@ mod tests {
         app.ai_rally_state = Some(rally);
 
         let output = render_full(&mut app);
-        assert!(output.contains("Completed!"), "should show completed status");
+        assert!(
+            output.contains("Completed!"),
+            "should show completed status"
+        );
     }
 
     #[test]
@@ -702,7 +745,10 @@ mod tests {
 
         let output = render_full(&mut app);
         assert!(output.contains("Rally started"), "should show log messages");
-        assert!(output.contains("Analyzing code..."), "should show thinking log");
+        assert!(
+            output.contains("Analyzing code..."),
+            "should show thinking log"
+        );
     }
 
     #[test]

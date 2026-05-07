@@ -24,7 +24,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     let pr_label = app
-        .chk.checks_target_pr
+        .chk
+        .checks_target_pr
         .map(|n| format!("PR #{}", n))
         .unwrap_or_else(|| "PR".to_string());
     let header_text = format!("CI Checks: {}", pr_label);
@@ -99,16 +100,14 @@ fn check_status_icon(check: &CheckItem) -> (char, Color) {
         Some("pending") => ('○', Color::Yellow),
         Some("skipping") => ('-', Color::DarkGray),
         Some("cancel") => ('✕', Color::DarkGray),
-        _ => {
-            match check.state.as_str() {
-                "SUCCESS" | "PASS" => ('✓', Color::Green),
-                "FAILURE" | "FAIL" | "STARTUP_FAILURE" | "ERROR" => ('✕', Color::Red),
-                "PENDING" | "QUEUED" | "IN_PROGRESS" => ('○', Color::Yellow),
-                "SKIPPING" | "NEUTRAL" => ('-', Color::DarkGray),
-                "CANCELLED" => ('✕', Color::DarkGray),
-                _ => ('?', Color::White),
-            }
-        }
+        _ => match check.state.as_str() {
+            "SUCCESS" | "PASS" => ('✓', Color::Green),
+            "FAILURE" | "FAIL" | "STARTUP_FAILURE" | "ERROR" => ('✕', Color::Red),
+            "PENDING" | "QUEUED" | "IN_PROGRESS" => ('○', Color::Yellow),
+            "SKIPPING" | "NEUTRAL" => ('-', Color::DarkGray),
+            "CANCELLED" => ('✕', Color::DarkGray),
+            _ => ('?', Color::White),
+        },
     }
 }
 

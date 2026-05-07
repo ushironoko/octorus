@@ -617,8 +617,7 @@ fn write_json_file(output: &HeadlessJsonOutput, path: &str) {
     let temp_path = target.with_file_name(format!(".{}.{}.tmp", file_name, std::process::id()));
     let result = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&temp_path)?;
-        serde_json::to_writer_pretty(&mut file, output)
-            .map_err(std::io::Error::other)?;
+        serde_json::to_writer_pretty(&mut file, output).map_err(std::io::Error::other)?;
         writeln!(file)?;
         file.flush()?;
         std::fs::rename(&temp_path, target)?;

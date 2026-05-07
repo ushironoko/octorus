@@ -24,7 +24,11 @@ fn fmt_label(label: &str, width: usize) -> String {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     render_tab_header(frame, app, chunks[0]);
@@ -763,7 +767,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Select reply target (multiple)",
-            fmt_key(&format!("{}/Shift-{}", kb.tab_switch.display(), kb.tab_switch.display()), key_width)
+            fmt_key(
+                &format!(
+                    "{}/Shift-{}",
+                    kb.tab_switch.display(),
+                    kb.tab_switch.display()
+                ),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Jump to next/prev comment",
@@ -786,7 +797,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Switch tab (Review/Discussion)",
-            fmt_key(&format!("{}, {}", kb.tab_prev.display(), kb.tab_next.display()), key_width)
+            fmt_key(
+                &format!("{}, {}", kb.tab_prev.display(), kb.tab_next.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Move selection",
@@ -1146,7 +1160,15 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Filter: open/closed/all",
-            fmt_key(&format!("{}/{}/{}", kb.filter_open.display(), kb.filter_closed.display(), kb.filter_all.display()), key_width)
+            fmt_key(
+                &format!(
+                    "{}/{}/{}",
+                    kb.filter_open.display(),
+                    kb.filter_closed.display(),
+                    kb.filter_all.display()
+                ),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open in browser",
@@ -1185,7 +1207,15 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Filter: open/closed/all",
-            fmt_key(&format!("{}/{}/{}", kb.filter_open.display(), kb.filter_closed.display(), kb.filter_all.display()), key_width)
+            fmt_key(
+                &format!(
+                    "{}/{}/{}",
+                    kb.filter_open.display(),
+                    kb.filter_closed.display(),
+                    kb.filter_all.display()
+                ),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open in browser",

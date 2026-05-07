@@ -46,7 +46,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     render_header(frame, app, chunks[0]);
-    render_menu(frame, cockpit.selected_item, cockpit.repo_available, chunks[1]);
+    render_menu(
+        frame,
+        cockpit.selected_item,
+        cockpit.repo_available,
+        chunks[1],
+    );
 
     let help_text = "q: quit  ?: help  r: refresh";
     let footer_line = footer::build_footer_line(app, help_text);
@@ -85,11 +90,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let header = Paragraph::new(lines)
         .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("octorus"),
-        );
+        .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, area);
 }
 
@@ -140,11 +141,7 @@ fn render_menu(
     list_state.select(Some(selected.index()));
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Navigation"),
-        )
+        .block(Block::default().borders(Borders::ALL).title("Navigation"))
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)

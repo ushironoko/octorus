@@ -84,11 +84,7 @@ fn bench_is_import_line(c: &mut Criterion) {
     let mut group = c.benchmark_group("symbol_search/is_import_line");
 
     let test_cases = [
-        (
-            "rust_use",
-            "use std::process::Command;",
-            "Command",
-        ),
+        ("rust_use", "use std::process::Command;", "Command"),
         (
             "rust_grouped",
             "use std::io::{Read, Write, BufRead};",
@@ -99,16 +95,8 @@ fn bench_is_import_line(c: &mut Criterion) {
             "import { useState, useEffect } from 'react';",
             "useEffect",
         ),
-        (
-            "js_default",
-            "import React from 'react';",
-            "React",
-        ),
-        (
-            "python",
-            "from os.path import join, exists",
-            "join",
-        ),
+        ("js_default", "import React from 'react';", "React"),
+        ("python", "from os.path import join, exists", "join"),
         ("no_match", "let cmd = Command::new(\"ls\");", "Command"),
     ];
 

@@ -137,8 +137,7 @@ impl DiffScrollState {
 
     pub fn page_down(&mut self, step: usize) {
         if self.line_count > 0 {
-            self.selected_line =
-                (self.selected_line + step).min(self.line_count.saturating_sub(1));
+            self.selected_line = (self.selected_line + step).min(self.line_count.saturating_sub(1));
         }
         self.adjust_scroll(self.visible_lines);
     }
@@ -293,10 +292,7 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
             match rx.try_recv() {
                 Ok((key, cache)) => {
                     // 現在表示中でハイライト済みならスキップ
-                    if self
-                        .current
-                        .as_ref()
-                        .is_some_and(|c| c.highlighted)
+                    if self.current.as_ref().is_some_and(|c| c.highlighted)
                         && self.current_key.as_ref() == Some(&key)
                     {
                         continue;
@@ -307,11 +303,7 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
                     }
                     // サイズ上限チェック: 超過時は最も遠いエントリを削除
                     if self.store.len() >= self.max_store_entries {
-                        let evict_key = self
-                            .store
-                            .keys()
-                            .max_by_key(|k| distance_fn(k))
-                            .cloned();
+                        let evict_key = self.store.keys().max_by_key(|k| distance_fn(k)).cloned();
                         if let Some(k) = evict_key {
                             self.store.remove(&k);
                         }
@@ -554,12 +546,20 @@ mod tests {
                         assert!(
                             s.selected_line >= s.scroll_offset,
                             "cursor above: sel={}, scroll={}, vis={}, count={}, init={}",
-                            s.selected_line, s.scroll_offset, visible_lines, line_count, initial_scroll,
+                            s.selected_line,
+                            s.scroll_offset,
+                            visible_lines,
+                            line_count,
+                            initial_scroll,
                         );
                         assert!(
                             s.selected_line < s.scroll_offset + visible_lines,
                             "cursor below: sel={}, scroll={}, vis={}, count={}, init={}",
-                            s.selected_line, s.scroll_offset, visible_lines, line_count, initial_scroll,
+                            s.selected_line,
+                            s.scroll_offset,
+                            visible_lines,
+                            line_count,
+                            initial_scroll,
                         );
                     }
                 }
@@ -587,7 +587,9 @@ mod tests {
             assert!(
                 s.scroll_offset <= prev_scroll + 1,
                 "scroll jumped at line={}: prev={}, now={}",
-                line, prev_scroll, s.scroll_offset,
+                line,
+                prev_scroll,
+                s.scroll_offset,
             );
             prev_scroll = s.scroll_offset;
         }
@@ -616,7 +618,9 @@ mod tests {
             assert!(
                 prev_scroll <= s.scroll_offset + 1,
                 "scroll jumped at line={}: prev={}, now={}",
-                line, prev_scroll, s.scroll_offset,
+                line,
+                prev_scroll,
+                s.scroll_offset,
             );
             prev_scroll = s.scroll_offset;
         }
@@ -967,7 +971,7 @@ mod tests {
 
         assert!(store.store_contains_key(&5));
         assert_eq!(store.store_len(), 3); // eviction されて3件維持
-        // key=0 が最も遠い（距離5）
+                                          // key=0 が最も遠い（距離5）
         assert!(!store.store_contains_key(&0));
     }
 

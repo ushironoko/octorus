@@ -270,9 +270,16 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
     );
     println!("     Or add .octorus/ to .gitignore for personal-only configuration.");
     println!();
-    println!("{} .octorus/config.toml can override {} settings including editor,", "Warning:".yellow(), "ALL".bold());
+    println!(
+        "{} .octorus/config.toml can override {} settings including editor,",
+        "Warning:".yellow(),
+        "ALL".bold()
+    );
     println!("         AI tool permissions, and auto_post. If you commit .octorus/ to a");
-    println!("         public repository, cloners will inherit these settings when running {}.", "or".bold());
+    println!(
+        "         public repository, cloners will inherit these settings when running {}.",
+        "or".bold()
+    );
     println!("         Review the config carefully before committing.");
 
     Ok(())

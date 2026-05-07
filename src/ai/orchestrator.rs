@@ -246,20 +246,19 @@ impl Orchestrator {
                 }
             }
 
-            let (review_result, seeded_review) =
-                if iteration == 1 && self.seed_review.is_some() {
-                    let review = self.seed_review.take().unwrap();
-                    self.send_event(RallyEvent::Log(format!(
-                        "Using {} local comment{} as the initial review seed",
-                        review.comments.len(),
-                        if review.comments.len() == 1 { "" } else { "s" }
-                    )))
-                    .await;
-                    (review, true)
-                } else {
-                    let review = self.run_reviewer_step(&context, iteration).await?;
-                    (review, false)
-                };
+            let (review_result, seeded_review) = if iteration == 1 && self.seed_review.is_some() {
+                let review = self.seed_review.take().unwrap();
+                self.send_event(RallyEvent::Log(format!(
+                    "Using {} local comment{} as the initial review seed",
+                    review.comments.len(),
+                    if review.comments.len() == 1 { "" } else { "s" }
+                )))
+                .await;
+                (review, true)
+            } else {
+                let review = self.run_reviewer_step(&context, iteration).await?;
+                (review, false)
+            };
 
             // Store the review for later use
             if let Err(e) = write_history_entry(

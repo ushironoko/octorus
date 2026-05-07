@@ -211,7 +211,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(footer, chunks[next_chunk]);
 }
 
-
 pub fn render_loading(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -354,13 +353,14 @@ pub(crate) fn build_tree_row_item<'a>(
     is_selected: bool,
 ) -> ListItem<'a> {
     match row {
-        TreeRow::Dir { ref path, depth, expanded } => {
+        TreeRow::Dir {
+            ref path,
+            depth,
+            expanded,
+        } => {
             let indent = "  ".repeat(*depth);
             let icon = if *expanded { "▼" } else { "▶" };
-            let dir_name = path
-                .rsplit_once('/')
-                .map(|(_, name)| name)
-                .unwrap_or(path);
+            let dir_name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
 
             let style = if is_selected {
                 Style::default()
