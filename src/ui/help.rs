@@ -553,6 +553,17 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
+            "{}  Scroll diff page (regardless of focus)",
+            fmt_key(
+                &format!(
+                    "{}/{}",
+                    kb.diff_page_down.display(),
+                    kb.diff_page_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
         )),
@@ -585,6 +596,17 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Page scroll (also J/K)",
             fmt_key(
                 &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Scroll diff page (regardless of focus)",
+            fmt_key(
+                &format!(
+                    "{}/{}",
+                    kb.diff_page_down.display(),
+                    kb.diff_page_up.display()
+                ),
                 key_width
             )
         )),
@@ -698,6 +720,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(format!(
             "{}  Page up (also K)",
             fmt_key(&kb.page_up.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Scroll diff page down",
+            fmt_key(&kb.diff_page_down.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Scroll diff page up",
+            fmt_key(&kb.diff_page_up.display(), key_width)
         )),
         Line::from(format!(
             "{}  Add comment at line",
