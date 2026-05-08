@@ -348,7 +348,9 @@ mod tests {
         app.handle_cockpit_input(press(KeyCode::Enter)).unwrap();
         assert_eq!(app.state, AppState::PullRequestList);
         // PR List → q → Cockpit
-        app.handle_pr_list_input(press(KeyCode::Char('q'))).await.unwrap();
+        app.handle_pr_list_input(press(KeyCode::Char('q')))
+            .await
+            .unwrap();
         assert_eq!(app.state, AppState::Cockpit);
     }
 
@@ -360,7 +362,9 @@ mod tests {
         app.handle_cockpit_input(press(KeyCode::Enter)).unwrap();
         assert_eq!(app.state, AppState::IssueList);
         // Issue List → q → Cockpit
-        app.handle_issue_list_input(press(KeyCode::Char('q'))).await.unwrap();
+        app.handle_issue_list_input(press(KeyCode::Char('q')))
+            .await
+            .unwrap();
         assert_eq!(app.state, AppState::Cockpit);
     }
 

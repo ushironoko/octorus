@@ -146,11 +146,7 @@ pub fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-pub fn render_filter_bar(
-    frame: &mut Frame,
-    area: Rect,
-    filter: &crate::filter::ListFilter,
-) {
+pub fn render_filter_bar(frame: &mut Frame, area: Rect, filter: &crate::filter::ListFilter) {
     let cursor_display = format!("/{}", filter.query);
     let filter_bar = Paragraph::new(Line::from(vec![
         Span::styled("Filter: ", Style::default().fg(Color::Cyan)),

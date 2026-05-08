@@ -55,7 +55,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let diff_visible_lines = h_chunks[1].height.saturating_sub(8) as usize;
     if let Some(ref mut ops) = app.git_ops_state {
         ops.diff_scroll.set_visible_lines(diff_visible_lines);
-        ops.commit_log.diff_scroll.set_visible_lines(diff_visible_lines);
+        ops.commit_log
+            .diff_scroll
+            .set_visible_lines(diff_visible_lines);
     }
 
     render_tree_pane(frame, app, left_chunks[0], is_tree_focused);
@@ -88,7 +90,11 @@ fn render_tree_pane(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
         .split(area);
 
     let Some(ref ops) = app.git_ops_state else {
@@ -183,9 +189,7 @@ fn render_tree_pane(
                 confirm_text = format!("{} Simulating...", spinner);
                 confirm_text.as_str()
             }
-            crate::app::PendingGitOpsConfirm::Previewing { .. } => {
-                ""
-            }
+            crate::app::PendingGitOpsConfirm::Previewing { .. } => "",
         }
     } else {
         let Some(ref ops) = app.git_ops_state else {
@@ -218,8 +222,7 @@ fn render_tree_pane(
         );
         frame.render_widget(footer, chunks[2]);
     } else {
-        let footer_line =
-            super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+        let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
         let footer =
             Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
                 app,
@@ -239,7 +242,11 @@ fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, i
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
         .split(area);
 
     let bg_color = app.config.diff.bg_color;
@@ -302,7 +309,11 @@ fn render_diff_body(
     let lines: Vec<Line> = if let Some(ref cache) = ops.diff_store.current {
         let visible_height = area.height.saturating_sub(2) as usize;
         let line_count = cache.lines.len();
-        let visible_start = ops.diff_scroll.scroll_offset.saturating_sub(2).min(line_count);
+        let visible_start = ops
+            .diff_scroll
+            .scroll_offset
+            .saturating_sub(2)
+            .min(line_count);
         let visible_end = (ops.diff_scroll.scroll_offset + visible_height + 5).min(line_count);
 
         let empty_comments = HashSet::new();
@@ -383,7 +394,11 @@ fn render_commit_diff_body(
     } else if let Some(ref cache) = cl.diff_store.current {
         let visible_height = area.height.saturating_sub(2) as usize;
         let line_count = cache.lines.len();
-        let visible_start = cl.diff_scroll.scroll_offset.saturating_sub(2).min(line_count);
+        let visible_start = cl
+            .diff_scroll
+            .scroll_offset
+            .saturating_sub(2)
+            .min(line_count);
         let visible_end = (cl.diff_scroll.scroll_offset + visible_height + 5).min(line_count);
 
         let empty_comments = HashSet::new();
@@ -597,19 +612,16 @@ fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
     ListItem::new(line)
 }
 
-fn build_tree_row_item<'a>(
-    ops: &GitOpsState,
-    row: &TreeRow,
-    is_selected: bool,
-) -> ListItem<'a> {
+fn build_tree_row_item<'a>(ops: &GitOpsState, row: &TreeRow, is_selected: bool) -> ListItem<'a> {
     match row {
-        TreeRow::Dir { ref path, depth, expanded } => {
+        TreeRow::Dir {
+            ref path,
+            depth,
+            expanded,
+        } => {
             let indent = "  ".repeat(*depth);
             let icon = if *expanded { "▼" } else { "▶" };
-            let dir_name = path
-                .rsplit_once('/')
-                .map(|(_, name)| name)
-                .unwrap_or(path);
+            let dir_name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
 
             let style = if is_selected {
                 Style::default()
@@ -706,14 +718,19 @@ fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{DestructiveOp, FileStatus, GitOpsState, GitStatusEntry, PendingGitOpsConfirm};
+    use crate::app::{
+        DestructiveOp, FileStatus, GitOpsState, GitStatusEntry, PendingGitOpsConfirm,
+    };
     use crate::config::Config;
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
 
-    fn make_app() -> (App, tokio::sync::mpsc::Sender<crate::loader::DataLoadResult>) {
+    fn make_app() -> (
+        App,
+        tokio::sync::mpsc::Sender<crate::loader::DataLoadResult>,
+    ) {
         let config = Config::default();
         App::new_loading("owner/repo", 1, config)
     }
@@ -782,11 +799,17 @@ mod tests {
     #[test]
     fn test_footer_discard_confirm_focused() {
         let (mut app, _tx) = make_app();
-        let entries = vec![entry("src/main.rs", FileStatus::Unmodified, FileStatus::Modified)];
+        let entries = vec![entry(
+            "src/main.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::Discard { path: "src/main.rs".to_string() },
+            op: DestructiveOp::Discard {
+                path: "src/main.rs".to_string(),
+            },
         });
         app.git_ops_state = Some(ops);
 
@@ -804,7 +827,9 @@ mod tests {
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::Discard { path: "a.rs".to_string() },
+            op: DestructiveOp::Discard {
+                path: "a.rs".to_string(),
+            },
         });
         app.git_ops_state = Some(ops);
 
@@ -818,12 +843,16 @@ mod tests {
     #[test]
     fn test_footer_undo_confirm_focused() {
         let (mut app, _tx) = make_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::UndoStage { paths: vec!["a.rs".to_string()] },
+            op: DestructiveOp::UndoStage {
+                paths: vec!["a.rs".to_string()],
+            },
         });
         app.git_ops_state = Some(ops);
 
@@ -837,12 +866,17 @@ mod tests {
     #[test]
     fn test_footer_undo_confirm_unfocused() {
         let (mut app, _tx) = make_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::ResetSoft { sha: "abc1234".to_string(), head_offset: 1 },
+            op: DestructiveOp::ResetSoft {
+                sha: "abc1234".to_string(),
+                head_offset: 1,
+            },
         });
         app.git_ops_state = Some(ops);
 
@@ -905,10 +939,7 @@ mod tests {
         rebuild_tree(&mut ops);
         app.git_ops_state = Some(ops);
 
-        assert_eq!(
-            render_tree_pane_border_color(&mut app, true),
-            Color::Yellow
-        );
+        assert_eq!(render_tree_pane_border_color(&mut app, true), Color::Yellow);
         assert_eq!(
             render_tree_pane_border_color(&mut app, false),
             Color::DarkGray
@@ -921,7 +952,10 @@ mod tests {
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.op_message = Some(("Pushed to origin/main".to_string(), std::time::Instant::now()));
+        ops.op_message = Some((
+            "Pushed to origin/main".to_string(),
+            std::time::Instant::now(),
+        ));
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @r"
@@ -937,7 +971,10 @@ mod tests {
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.op_message = Some(("Pushed to origin/main".to_string(), std::time::Instant::now()));
+        ops.op_message = Some((
+            "Pushed to origin/main".to_string(),
+            std::time::Instant::now(),
+        ));
         app.git_ops_state = Some(ops);
 
         // unfocused 時に op_message が見えるかどうか
@@ -952,7 +989,10 @@ mod tests {
     fn test_footer_op_message_empty_entries_focused() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.op_message = Some(("Pushed to origin/main".to_string(), std::time::Instant::now()));
+        ops.op_message = Some((
+            "Pushed to origin/main".to_string(),
+            std::time::Instant::now(),
+        ));
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @r"
@@ -1006,7 +1046,9 @@ mod tests {
     fn test_diff_pane_commit_loading() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.commit_log.commits.push(make_commit("abc1234", "test commit"));
+        ops.commit_log
+            .commits
+            .push(make_commit("abc1234", "test commit"));
         ops.commit_log.selected = 0;
         ops.commit_log.diff_loading = true;
         ops.left_return_focus = LeftPaneFocus::Commits;
@@ -1029,7 +1071,9 @@ mod tests {
     fn test_diff_pane_commit_error() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.commit_log.commits.push(make_commit("abc1234", "test commit"));
+        ops.commit_log
+            .commits
+            .push(make_commit("abc1234", "test commit"));
         ops.commit_log.selected = 0;
         ops.commit_log.diff_error = Some("gh: Not Found (HTTP 404)".to_string());
         ops.left_return_focus = LeftPaneFocus::Commits;
@@ -1115,9 +1159,11 @@ mod tests {
     #[test]
     fn test_footer_pushing_spinner() {
         let (mut app, _tx) = make_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         rebuild_tree(&mut ops);
         ops.pushing = true;
         app.git_ops_state = Some(ops);
@@ -1133,9 +1179,11 @@ mod tests {
     #[test]
     fn test_footer_pushing_spinner_unfocused() {
         let (mut app, _tx) = make_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         rebuild_tree(&mut ops);
         ops.pushing = true;
         app.git_ops_state = Some(ops);
@@ -1175,7 +1223,9 @@ mod tests {
     fn test_commits_pane_title_with_ahead_count() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.commit_log.commits.push(make_commit("abc123", "test commit"));
+        ops.commit_log
+            .commits
+            .push(make_commit("abc123", "test commit"));
         ops.commit_log.initialized = true;
         ops.ahead_count = 3;
         app.git_ops_state = Some(ops);
@@ -1192,7 +1242,9 @@ mod tests {
     fn test_commits_pane_title_without_ahead() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.commit_log.commits.push(make_commit("abc123", "test commit"));
+        ops.commit_log
+            .commits
+            .push(make_commit("abc123", "test commit"));
         ops.commit_log.initialized = true;
         ops.ahead_count = 0;
         app.git_ops_state = Some(ops);
@@ -1223,7 +1275,11 @@ mod tests {
 
         // ahead=0 の時点ではタイトルに ↑ がない
         let before = render_commits_pane_text(&mut app, false);
-        assert!(!before.contains("\u{2191}"), "before poll: no arrow, got: {}", before);
+        assert!(
+            !before.contains("\u{2191}"),
+            "before poll: no arrow, got: {}",
+            before
+        );
 
         // ahead_count が到着
         ahead_tx.send(2).await.unwrap();
@@ -1259,7 +1315,10 @@ mod tests {
         assert!(before.contains("\u{2191}3"), "before push: got: {}", before);
 
         // push 成功
-        op_tx.send(Ok("Pushed to origin/main".to_string())).await.unwrap();
+        op_tx
+            .send(Ok("Pushed to origin/main".to_string()))
+            .await
+            .unwrap();
         app.poll_git_ops_updates();
 
         // push 後: ahead_count=0 にリセット → ↑ 消える
@@ -1275,9 +1334,7 @@ mod tests {
     #[tokio::test]
     async fn test_status_refresh_does_not_flash_diff_pane() {
         let (mut app, _tx) = make_app();
-        let entries = vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ];
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
 
@@ -1298,9 +1355,7 @@ mod tests {
         app.git_ops_state = Some(ops);
         app.state = AppState::GitOpsSplitTree;
 
-        let new_entries = vec![
-            entry("a.rs", FileStatus::Modified, FileStatus::Unmodified),
-        ];
+        let new_entries = vec![entry("a.rs", FileStatus::Modified, FileStatus::Unmodified)];
         tx.send(Ok(new_entries)).await.unwrap();
 
         app.poll_git_ops_updates();

@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
-use crate::diff_store::{MAX_PREFETCH_FILES, PrefetchItem};
+use crate::diff_store::{PrefetchItem, MAX_PREFETCH_FILES};
 use crate::github::{ChangedFile, CiStatus};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
 
@@ -34,7 +34,12 @@ impl App {
                 self.prs.pr_list_has_more = page.has_more;
                 self.prs.pr_list_receiver = None;
 
-                if self.prs.pr_list_filter.as_ref().is_some_and(|f| f.has_query()) {
+                if self
+                    .prs
+                    .pr_list_filter
+                    .as_ref()
+                    .is_some_and(|f| f.has_query())
+                {
                     self.reapply_filter("pr");
                 }
             }
@@ -893,7 +898,9 @@ impl App {
                     self.start_prefetch_all_files();
                 }
                 // CLI 直接指定時: ci_status をバックグラウンドで取得
-                if !self.local_mode && self.chk.ci_status.is_none() && self.chk.ci_status_receiver.is_none()
+                if !self.local_mode
+                    && self.chk.ci_status.is_none()
+                    && self.chk.ci_status_receiver.is_none()
                 {
                     let (tx, rx) = mpsc::channel(1);
                     self.chk.ci_status_receiver = Some(rx);

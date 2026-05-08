@@ -80,10 +80,9 @@ impl App {
             let working_dir = self.working_dir.clone();
             let offset = (page - 1) * per_page;
             tokio::spawn(async move {
-                let result =
-                    github::fetch_local_commits(working_dir.as_deref(), offset, per_page)
-                        .await
-                        .map_err(|e| e.to_string());
+                let result = github::fetch_local_commits(working_dir.as_deref(), offset, per_page)
+                    .await
+                    .map_err(|e| e.to_string());
                 let _ = tx.send(result).await;
             });
         } else {
@@ -262,12 +261,10 @@ impl App {
                 .output()
                 .await;
             let count = match output {
-                Ok(o) if o.status.success() => {
-                    String::from_utf8_lossy(&o.stdout)
-                        .trim()
-                        .parse::<u32>()
-                        .unwrap_or(0)
-                }
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or(0),
                 _ => 0,
             };
             let _ = tx.send(count).await;
@@ -372,8 +369,7 @@ impl App {
                                 scroll_offset: 0,
                             });
                         } else {
-                            ops.op_message =
-                                Some((format!("Error: {}", msg), Instant::now()));
+                            ops.op_message = Some((format!("Error: {}", msg), Instant::now()));
                             // Re-fetch status on error to rollback optimistic updates
                             op_succeeded = true;
                         }
@@ -745,8 +741,7 @@ impl App {
         let count = paths.len();
 
         // Capture index entries before the operation for undo support
-        let previous_index_entries =
-            capture_index_entries(self.working_dir.as_deref(), &paths);
+        let previous_index_entries = capture_index_entries(self.working_dir.as_deref(), &paths);
 
         let working_dir = self.working_dir.clone();
         let (tx, rx) = mpsc::channel(1);
@@ -763,9 +758,7 @@ impl App {
             let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             match run_git_op(working_dir.as_deref(), &arg_refs).await {
                 Ok(_) => {
-                    let _ = tx
-                        .send(Ok(format!("Unstaged {} file(s)", count)))
-                        .await;
+                    let _ = tx.send(Ok(format!("Unstaged {} file(s)", count))).await;
                 }
                 Err(e) => {
                     let _ = tx.send(Err(e.to_string())).await;
@@ -860,9 +853,7 @@ impl App {
 
             match result {
                 Ok(_) => {
-                    let _ = tx
-                        .send(Ok(format!("Discarded changes: {}", path)))
-                        .await;
+                    let _ = tx.send(Ok(format!("Discarded changes: {}", path))).await;
                 }
                 Err(e) => {
                     let _ = tx.send(Err(e.to_string())).await;
@@ -889,8 +880,10 @@ impl App {
 
         if ops.has_unmerged_files() {
             if let Some(ref mut ops) = self.git_ops_state {
-                ops.op_message =
-                    Some(("Cannot commit with unmerged files".to_string(), Instant::now()));
+                ops.op_message = Some((
+                    "Cannot commit with unmerged files".to_string(),
+                    Instant::now(),
+                ));
             }
             return Ok(());
         }
@@ -939,8 +932,7 @@ impl App {
             match ops.undo_stack.pop() {
                 Some(action) => action,
                 None => {
-                    ops.op_message =
-                        Some(("Nothing to undo".to_string(), Instant::now()));
+                    ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
                     return;
                 }
             }
@@ -999,7 +991,11 @@ impl App {
                     ops.commit_log.initialized = false;
                 }
                 self.run_git_op_silent(
-                    vec!["reset".to_string(), "--soft".to_string(), "HEAD~1".to_string()],
+                    vec![
+                        "reset".to_string(),
+                        "--soft".to_string(),
+                        "HEAD~1".to_string(),
+                    ],
                     "Undo commit (changes are staged)".to_string(),
                 );
             }
@@ -1031,9 +1027,7 @@ impl App {
             // 1. Restore index entries to their pre-operation state
             for entry in &previous_entries {
                 let cacheinfo = format!("{},{},{}", entry.mode, entry.hash, entry.path);
-                if let Err(e) =
-                    run_git_op(wd, &["update-index", "--cacheinfo", &cacheinfo]).await
-                {
+                if let Err(e) = run_git_op(wd, &["update-index", "--cacheinfo", &cacheinfo]).await {
                     errors.push(e.to_string());
                 }
             }
@@ -1054,9 +1048,7 @@ impl App {
             }
 
             if errors.is_empty() {
-                let _ = tx
-                    .send(Ok(format!("Undo stage ({} file(s))", count)))
-                    .await;
+                let _ = tx.send(Ok(format!("Undo stage ({} file(s))", count))).await;
             } else {
                 let _ = tx.send(Err(errors.join("; "))).await;
             }
@@ -1109,7 +1101,9 @@ impl App {
                     String::from_utf8_lossy(&o.stdout).trim().to_string()
                 }
                 _ => {
-                    let _ = tx.send(Err("Failed to get current branch".to_string())).await;
+                    let _ = tx
+                        .send(Err("Failed to get current branch".to_string()))
+                        .await;
                     return;
                 }
             };
@@ -1136,13 +1130,9 @@ impl App {
                         || stderr.contains("failed to push");
                     if is_rejected {
                         // Signal a force-pushable rejection via "FORCE_PUSH:<branch>" prefix
-                        let _ = tx
-                            .send(Err(format!("FORCE_PUSH:{}", branch)))
-                            .await;
+                        let _ = tx.send(Err(format!("FORCE_PUSH:{}", branch))).await;
                     } else {
-                        let _ = tx
-                            .send(Err(format!("Push failed: {}", stderr)))
-                            .await;
+                        let _ = tx.send(Err(format!("Push failed: {}", stderr))).await;
                     }
                 }
                 Err(e) => {
@@ -1168,7 +1158,11 @@ impl App {
     ) {
         let kb = self.config.keybindings.clone();
 
-        if self.git_ops_state.as_ref().is_some_and(|o| o.pending_confirm.is_some()) {
+        if self
+            .git_ops_state
+            .as_ref()
+            .is_some_and(|o| o.pending_confirm.is_some())
+        {
             self.handle_tree_confirm_input(&key, &kb);
             return;
         }
@@ -1285,7 +1279,11 @@ impl App {
     pub(crate) fn handle_git_ops_commits_input(&mut self, key: event::KeyEvent) {
         let kb = self.config.keybindings.clone();
 
-        if self.git_ops_state.as_ref().is_some_and(|o| o.pending_confirm.is_some()) {
+        if self
+            .git_ops_state
+            .as_ref()
+            .is_some_and(|o| o.pending_confirm.is_some())
+        {
             self.handle_commits_confirm_input(&key, &kb);
             return;
         }
@@ -1392,7 +1390,10 @@ impl App {
                 let (target, offset) = if selected == 0 {
                     // HEAD selected: reset to parent to undo the latest commit
                     (
-                        ops.commit_log.commits.first().map(|c| format!("{}~1", c.sha)),
+                        ops.commit_log
+                            .commits
+                            .first()
+                            .map(|c| format!("{}~1", c.sha)),
                         1,
                     )
                 } else {
@@ -1403,7 +1404,10 @@ impl App {
                     )
                 };
                 if let Some(sha) = target {
-                    let op = DestructiveOp::ResetSoft { sha, head_offset: offset };
+                    let op = DestructiveOp::ResetSoft {
+                        sha,
+                        head_offset: offset,
+                    };
                     self.start_confirm_with_simulation(op);
                 }
             }
@@ -1412,7 +1416,7 @@ impl App {
 
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
-                   {
+        {
             if let Some(ref mut ops) = self.git_ops_state {
                 ops.left_return_focus = LeftPaneFocus::Commits;
             }
@@ -1453,14 +1457,10 @@ impl App {
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    let _ = tx
-                        .send(Err(format!("Force push failed: {}", stderr)))
-                        .await;
+                    let _ = tx.send(Err(format!("Force push failed: {}", stderr))).await;
                 }
                 Err(e) => {
-                    let _ = tx
-                        .send(Err(format!("Force push failed: {}", e)))
-                        .await;
+                    let _ = tx.send(Err(format!("Force push failed: {}", e))).await;
                 }
             }
         });
@@ -1491,8 +1491,7 @@ impl App {
         if let Some(ref gitfilm_path) = ops.gitfilm_path {
             static ABORT_COUNTER: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
-            let abort_id =
-                ABORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let abort_id = ABORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             let gitfilm = gitfilm_path.clone();
@@ -1619,10 +1618,12 @@ impl App {
 
     /// Return the active diff_scroll based on left_return_focus
     fn active_git_ops_diff_scroll(&mut self) -> Option<&mut crate::diff_store::DiffScrollState> {
-        self.git_ops_state.as_mut().map(|ops| match ops.left_return_focus {
-            LeftPaneFocus::Commits => &mut ops.commit_log.diff_scroll,
-            LeftPaneFocus::Tree => &mut ops.diff_scroll,
-        })
+        self.git_ops_state
+            .as_mut()
+            .map(|ops| match ops.left_return_focus {
+                LeftPaneFocus::Commits => &mut ops.commit_log.diff_scroll,
+                LeftPaneFocus::Tree => &mut ops.diff_scroll,
+            })
     }
 
     /// Handle input for GitOpsSplitDiff state
@@ -1655,25 +1656,19 @@ impl App {
             }
         }
 
-        if self.matches_single_key(&key, &kb.quit)
-                       || self.matches_single_key(&key, &kb.move_left)
-                   {
+        if self.matches_single_key(&key, &kb.quit) || self.matches_single_key(&key, &kb.move_left) {
             self.return_from_git_ops_diff();
             return;
         }
 
-        if self.matches_single_key(&key, &kb.page_down)
-            || Self::is_shift_char_shortcut(&key, 'j')
-        {
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if let Some(scroll) = self.active_git_ops_diff_scroll() {
                 scroll.page_down(20);
             }
             return;
         }
 
-        if self.matches_single_key(&key, &kb.page_up)
-            || Self::is_shift_char_shortcut(&key, 'k')
-        {
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             if let Some(scroll) = self.active_git_ops_diff_scroll() {
                 scroll.page_up(20);
             }
@@ -2050,19 +2045,34 @@ mod tests {
     }
 
     fn dump_visible_rows(ops: &GitOpsState) -> String {
-        ops.tree.visible_rows
+        ops.tree
+            .visible_rows
             .iter()
             .map(|row| match row {
-                TreeRow::Dir { ref path, depth, expanded } => {
+                TreeRow::Dir {
+                    ref path,
+                    depth,
+                    expanded,
+                } => {
                     let indent = "  ".repeat(*depth);
                     let icon = if *expanded { "▼" } else { "▶" };
-                    format!("{}{} {}/", indent, icon, path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path))
+                    format!(
+                        "{}{} {}/",
+                        indent,
+                        icon,
+                        path.rsplit_once('/').map(|(_, n)| n).unwrap_or(path)
+                    )
                 }
                 TreeRow::File { index, depth } => {
                     let indent = "  ".repeat(*depth);
                     let e = &ops.entries[*index];
                     let label = e.change_type_label();
-                    format!("{}{} {}", indent, label, e.path.rsplit_once('/').map(|(_, n)| n).unwrap_or(&e.path))
+                    format!(
+                        "{}{} {}",
+                        indent,
+                        label,
+                        e.path.rsplit_once('/').map(|(_, n)| n).unwrap_or(&e.path)
+                    )
                 }
             })
             .collect::<Vec<_>>()
@@ -2130,7 +2140,10 @@ mod tests {
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
         assert_eq!(ops.tree.visible_rows.len(), 1);
-        assert!(matches!(ops.tree.visible_rows[0], TreeRow::File { index: 0, depth: 0 }));
+        assert!(matches!(
+            ops.tree.visible_rows[0],
+            TreeRow::File { index: 0, depth: 0 }
+        ));
     }
 
     #[test]
@@ -2206,8 +2219,7 @@ mod tests {
             highlighted: true,
             markdown_rich: false,
         };
-        ops.diff_store
-            .set_current("a.rs".to_string(), highlighted);
+        ops.diff_store.set_current("a.rs".to_string(), highlighted);
 
         let plain_b = DiffCache {
             file_index: 1,
@@ -2217,8 +2229,7 @@ mod tests {
             highlighted: false,
             markdown_rich: false,
         };
-        ops.diff_store
-            .set_current("b.rs".to_string(), plain_b);
+        ops.diff_store.set_current("b.rs".to_string(), plain_b);
 
         // a.rs should have been evicted to the store because it was highlighted
         assert!(ops.diff_store.store_contains_key(&"a.rs".to_string()));
@@ -2286,10 +2297,22 @@ mod tests {
     fn test_tree_structure_mixed() {
         let entries = vec![
             entry("README.md", FileStatus::Unmodified, FileStatus::Modified),
-            entry("src/app/mod.rs", FileStatus::Modified, FileStatus::Unmodified),
-            entry("src/app/types.rs", FileStatus::Unmodified, FileStatus::Modified),
+            entry(
+                "src/app/mod.rs",
+                FileStatus::Modified,
+                FileStatus::Unmodified,
+            ),
+            entry(
+                "src/app/types.rs",
+                FileStatus::Unmodified,
+                FileStatus::Modified,
+            ),
             entry("src/lib.rs", FileStatus::Modified, FileStatus::Unmodified),
-            entry("tests/integration.rs", FileStatus::Untracked, FileStatus::Untracked),
+            entry(
+                "tests/integration.rs",
+                FileStatus::Untracked,
+                FileStatus::Untracked,
+            ),
         ];
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
@@ -2309,8 +2332,16 @@ mod tests {
     #[test]
     fn test_tree_structure_collapsed() {
         let entries = vec![
-            entry("src/app/mod.rs", FileStatus::Modified, FileStatus::Unmodified),
-            entry("src/app/types.rs", FileStatus::Unmodified, FileStatus::Modified),
+            entry(
+                "src/app/mod.rs",
+                FileStatus::Modified,
+                FileStatus::Unmodified,
+            ),
+            entry(
+                "src/app/types.rs",
+                FileStatus::Unmodified,
+                FileStatus::Modified,
+            ),
             entry("src/lib.rs", FileStatus::Modified, FileStatus::Unmodified),
         ];
         let mut ops = GitOpsState::new(entries);
@@ -2333,28 +2364,55 @@ mod tests {
         let label_before = e.change_type_label();
         optimistic_stage(&mut e);
         let label_after = e.change_type_label();
-        assert_eq!(label_before, label_after, "M file label must not change on stage");
+        assert_eq!(
+            label_before, label_after,
+            "M file label must not change on stage"
+        );
 
         // staged modified → unstaged modified
         optimistic_unstage(&mut e);
         let label_roundtrip = e.change_type_label();
-        assert_eq!(label_before, label_roundtrip, "M file label must survive roundtrip");
+        assert_eq!(
+            label_before, label_roundtrip,
+            "M file label must survive roundtrip"
+        );
 
         // untracked → staged added
         let mut u = entry("b.rs", FileStatus::Untracked, FileStatus::Untracked);
         let label_before = u.change_type_label();
         optimistic_stage(&mut u);
         let label_after = u.change_type_label();
-        assert_eq!(label_before, label_after, "?? file label must not change on stage");
+        assert_eq!(
+            label_before, label_after,
+            "?? file label must not change on stage"
+        );
     }
 
     #[test]
     fn test_optimistic_stage_transitions() {
         let cases = vec![
             // (initial_index, initial_worktree, expected_index, expected_worktree)
-            ("·M → staged", FileStatus::Unmodified, FileStatus::Modified, FileStatus::Modified, FileStatus::Unmodified),
-            ("?? → staged", FileStatus::Untracked, FileStatus::Untracked, FileStatus::Added, FileStatus::Unmodified),
-            ("·D → staged", FileStatus::Unmodified, FileStatus::Deleted, FileStatus::Deleted, FileStatus::Unmodified),
+            (
+                "·M → staged",
+                FileStatus::Unmodified,
+                FileStatus::Modified,
+                FileStatus::Modified,
+                FileStatus::Unmodified,
+            ),
+            (
+                "?? → staged",
+                FileStatus::Untracked,
+                FileStatus::Untracked,
+                FileStatus::Added,
+                FileStatus::Unmodified,
+            ),
+            (
+                "·D → staged",
+                FileStatus::Unmodified,
+                FileStatus::Deleted,
+                FileStatus::Deleted,
+                FileStatus::Unmodified,
+            ),
         ];
         let mut result = String::new();
         for (label, idx, wt, exp_idx, exp_wt) in &cases {
@@ -2363,8 +2421,10 @@ mod tests {
             result.push_str(&format!(
                 "{}: {}{}→{}{}\n",
                 label,
-                vis(*idx), vis(*wt),
-                vis(e.index_status), vis(e.worktree_status),
+                vis(*idx),
+                vis(*wt),
+                vis(e.index_status),
+                vis(e.worktree_status),
             ));
             assert_eq!(e.index_status, *exp_idx);
             assert_eq!(e.worktree_status, *exp_wt);
@@ -2379,9 +2439,27 @@ mod tests {
     #[test]
     fn test_optimistic_unstage_transitions() {
         let cases = vec![
-            ("M· → unstaged", FileStatus::Modified, FileStatus::Unmodified, FileStatus::Unmodified, FileStatus::Modified),
-            ("A· → unstaged", FileStatus::Added, FileStatus::Unmodified, FileStatus::Untracked, FileStatus::Untracked),
-            ("D· → unstaged", FileStatus::Deleted, FileStatus::Unmodified, FileStatus::Unmodified, FileStatus::Deleted),
+            (
+                "M· → unstaged",
+                FileStatus::Modified,
+                FileStatus::Unmodified,
+                FileStatus::Unmodified,
+                FileStatus::Modified,
+            ),
+            (
+                "A· → unstaged",
+                FileStatus::Added,
+                FileStatus::Unmodified,
+                FileStatus::Untracked,
+                FileStatus::Untracked,
+            ),
+            (
+                "D· → unstaged",
+                FileStatus::Deleted,
+                FileStatus::Unmodified,
+                FileStatus::Unmodified,
+                FileStatus::Deleted,
+            ),
         ];
         let mut result = String::new();
         for (label, idx, wt, exp_idx, exp_wt) in &cases {
@@ -2390,8 +2468,10 @@ mod tests {
             result.push_str(&format!(
                 "{}: {}{}→{}{}\n",
                 label,
-                vis(*idx), vis(*wt),
-                vis(e.index_status), vis(e.worktree_status),
+                vis(*idx),
+                vis(*wt),
+                vis(e.index_status),
+                vis(e.worktree_status),
             ));
             assert_eq!(e.index_status, *exp_idx);
             assert_eq!(e.worktree_status, *exp_wt);
@@ -2406,7 +2486,8 @@ mod tests {
     #[test]
     fn test_parse_porcelain_status_complex() {
         // MM (staged + worktree modified), UU (unmerged), R (rename), A (added), D (deleted)
-        let output = "MM src/both.rs\0UU conflict.rs\0A  new.rs\0 D deleted.rs\0R  old.rs\0renamed.rs\0";
+        let output =
+            "MM src/both.rs\0UU conflict.rs\0A  new.rs\0 D deleted.rs\0R  old.rs\0renamed.rs\0";
         let entries = parse_porcelain_status(output);
         let mut result = String::new();
         for e in &entries {
@@ -2441,7 +2522,10 @@ mod tests {
 
     use crate::config::Config;
 
-    fn make_git_ops_app() -> (super::super::App, tokio::sync::mpsc::Sender<crate::loader::DataLoadResult>) {
+    fn make_git_ops_app() -> (
+        super::super::App,
+        tokio::sync::mpsc::Sender<crate::loader::DataLoadResult>,
+    ) {
         let config = Config::default();
         super::super::App::new_loading("owner/repo", 1, config)
     }
@@ -2449,9 +2533,7 @@ mod tests {
     #[tokio::test]
     async fn test_undo_stage_pops_from_stack() {
         let (mut app, _tx) = make_git_ops_app();
-        let entries = vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ];
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         ops.undo_stack.push(UndoAction::Stage {
             paths: vec!["a.rs".to_string()],
@@ -2477,7 +2559,10 @@ mod tests {
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert_eq!(ops.undo_stack.len(), 0, "Commit should be popped");
-        assert!(ops.op_receiver.is_some(), "git reset --soft HEAD~1 should be running");
+        assert!(
+            ops.op_receiver.is_some(),
+            "git reset --soft HEAD~1 should be running"
+        );
     }
 
     #[test]
@@ -2490,15 +2575,22 @@ mod tests {
         app.execute_undo();
 
         let ops = app.git_ops_state.as_ref().unwrap();
-        assert!(ops.op_message.as_ref().unwrap().0.contains("Nothing to undo"));
+        assert!(ops
+            .op_message
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("Nothing to undo"));
     }
 
     #[tokio::test]
     async fn test_undo_commit_behind_stage_both_execute() {
         let (mut app, _tx) = make_git_ops_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         // Push Commit then Stage so that Stage is popped first
         ops.undo_stack.push(UndoAction::Commit);
         ops.undo_stack.push(UndoAction::Stage {
@@ -2548,11 +2640,10 @@ mod tests {
     #[tokio::test]
     async fn test_stage_all_undo_not_blocked_from_tree() {
         let (mut app, _tx) = make_git_ops_app();
-        let entries = vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ];
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
-        ops.undo_stack.push(UndoAction::StageAll { tree_hash: None });
+        ops.undo_stack
+            .push(UndoAction::StageAll { tree_hash: None });
         app.git_ops_state = Some(ops);
         app.state = AppState::GitOpsSplitTree;
 
@@ -2567,12 +2658,13 @@ mod tests {
 
     /// Simulate confirmation dialog input without requiring a terminal
     fn simulate_tree_confirm(app: &mut super::super::App, code: KeyCode) {
-        let key = crossterm::event::KeyEvent::new(
-            code,
-            crossterm::event::KeyModifiers::empty(),
-        );
+        let key = crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::empty());
         let kb = app.config.keybindings.clone();
-        if app.git_ops_state.as_ref().is_some_and(|o| o.pending_confirm.is_some()) {
+        if app
+            .git_ops_state
+            .as_ref()
+            .is_some_and(|o| o.pending_confirm.is_some())
+        {
             app.handle_tree_confirm_input(&key, &kb);
         }
     }
@@ -2580,9 +2672,7 @@ mod tests {
     #[test]
     fn test_discard_key_sets_pending_confirm() {
         let (mut app, _tx) = make_git_ops_app();
-        let entries = vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ];
+        let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
         if let Some(row) = ops.tree.find_row_for_file(0) {
@@ -2591,12 +2681,14 @@ mod tests {
         app.git_ops_state = Some(ops);
 
         if let Some(ref mut ops) = app.git_ops_state {
-            if let Some(entry) = ops.selected_path().and_then(|p| {
-                ops.entries.iter().find(|e| e.path == p)
-            }) {
+            if let Some(entry) = ops
+                .selected_path()
+                .and_then(|p| ops.entries.iter().find(|e| e.path == p))
+            {
                 let path = entry.path.clone();
-                ops.pending_confirm =
-                    Some(PendingGitOpsConfirm::Simple { op: DestructiveOp::Discard { path } });
+                ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+                    op: DestructiveOp::Discard { path },
+                });
             }
         }
 
@@ -2612,12 +2704,19 @@ mod tests {
         let (mut app, _tx) = make_git_ops_app();
         let mut ops = GitOpsState::new(Vec::new());
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::Discard { path: "a.rs".to_string() },
+            op: DestructiveOp::Discard {
+                path: "a.rs".to_string(),
+            },
         });
         app.git_ops_state = Some(ops);
 
         simulate_tree_confirm(&mut app, KeyCode::Char('n'));
-        assert!(app.git_ops_state.as_ref().unwrap().pending_confirm.is_none());
+        assert!(app
+            .git_ops_state
+            .as_ref()
+            .unwrap()
+            .pending_confirm
+            .is_none());
     }
 
     #[test]
@@ -2630,7 +2729,12 @@ mod tests {
         app.git_ops_state = Some(ops);
 
         simulate_tree_confirm(&mut app, KeyCode::Esc);
-        assert!(app.git_ops_state.as_ref().unwrap().pending_confirm.is_none());
+        assert!(app
+            .git_ops_state
+            .as_ref()
+            .unwrap()
+            .pending_confirm
+            .is_none());
     }
 
     #[test]
@@ -2643,15 +2747,19 @@ mod tests {
         let ops_ref = app.git_ops_state.as_mut().unwrap();
         if let Some(action) = ops_ref.undo_stack.last() {
             let op = action.to_destructive_op();
-            ops_ref.pending_confirm =
-                Some(PendingGitOpsConfirm::Simple { op });
+            ops_ref.pending_confirm = Some(PendingGitOpsConfirm::Simple { op });
         } else {
             ops_ref.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
         }
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(ops.pending_confirm.is_none());
-        assert!(ops.op_message.as_ref().unwrap().0.contains("Nothing to undo"));
+        assert!(ops
+            .op_message
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("Nothing to undo"));
     }
 
     #[test]
@@ -2664,7 +2772,9 @@ mod tests {
         let mut ops = GitOpsState::new(entries);
         rebuild_git_ops_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::Discard { path: "a.rs".to_string() },
+            op: DestructiveOp::Discard {
+                path: "a.rs".to_string(),
+            },
         });
         let initial_row = ops.tree.selected_row;
         app.git_ops_state = Some(ops);
@@ -2681,15 +2791,19 @@ mod tests {
     #[tokio::test]
     async fn test_confirm_y_executes_undo() {
         let (mut app, _tx) = make_git_ops_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         ops.undo_stack.push(UndoAction::Stage {
             paths: vec!["a.rs".to_string()],
             previous_index_entries: vec![],
         });
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-            op: DestructiveOp::UndoStage { paths: vec!["a.rs".to_string()] },
+            op: DestructiveOp::UndoStage {
+                paths: vec!["a.rs".to_string()],
+            },
         });
         app.git_ops_state = Some(ops);
 
@@ -2714,21 +2828,29 @@ mod tests {
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(ops.pending_confirm.is_none());
-        assert_eq!(ops.undo_stack.len(), 0, "Commit should be popped and executed");
+        assert_eq!(
+            ops.undo_stack.len(),
+            0,
+            "Commit should be popped and executed"
+        );
     }
 
     #[tokio::test]
     async fn test_confirm_y_executes_undo_previewing() {
         let (mut app, _tx) = make_git_ops_app();
-        let mut ops = GitOpsState::new(vec![
-            entry("a.rs", FileStatus::Unmodified, FileStatus::Modified),
-        ]);
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
         ops.undo_stack.push(UndoAction::Stage {
             paths: vec!["a.rs".to_string()],
             previous_index_entries: vec![],
         });
         ops.pending_confirm = Some(PendingGitOpsConfirm::Previewing {
-            op: DestructiveOp::UndoStage { paths: vec!["a.rs".to_string()] },
+            op: DestructiveOp::UndoStage {
+                paths: vec!["a.rs".to_string()],
+            },
             result: SimulationResult::Success(SimulationPreview {
                 before: crate::gitfilm::GitfilmAreaSnapshot {
                     working_tree: vec![],
@@ -2754,8 +2876,14 @@ mod tests {
         simulate_tree_confirm(&mut app, KeyCode::Char('y'));
 
         let ops = app.git_ops_state.as_ref().unwrap();
-        assert!(ops.pending_confirm.is_none(), "pending_confirm should be cleared after Y");
-        assert_eq!(ops.undo_stack.len(), 0, "undo_stack should be empty after execute");
+        assert!(
+            ops.pending_confirm.is_none(),
+            "pending_confirm should be cleared after Y"
+        );
+        assert_eq!(
+            ops.undo_stack.len(),
+            0,
+            "undo_stack should be empty after execute"
+        );
     }
-
 }

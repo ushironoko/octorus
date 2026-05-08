@@ -100,9 +100,7 @@ impl App {
                             .as_ref()
                             .is_some_and(|f| f.input_active)
                         || self.issue_state.as_ref().is_some_and(|s| {
-                            s.issue_list_filter
-                                .as_ref()
-                                .is_some_and(|f| f.input_active)
+                            s.issue_list_filter.as_ref().is_some_and(|f| f.input_active)
                         });
                     let has_modal = self.multiline_selection.is_some()
                         || self.symbol_popup.is_some()
@@ -141,7 +139,7 @@ impl App {
                     }
                     AppState::PrDescription => self.handle_pr_description_input(key, terminal)?,
                     AppState::ChecksList => self.handle_checks_list_input(key)?,
-AppState::IssueList => self.handle_issue_list_input(key).await?,
+                    AppState::IssueList => self.handle_issue_list_input(key).await?,
                     AppState::IssueDetail => self.handle_issue_detail_input(key, terminal)?,
                     AppState::IssueCommentList => self.handle_issue_comment_list_input(key)?,
                     AppState::GitOpsSplitTree => {
@@ -347,7 +345,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         // Open split view (Enter, Right arrow, or l)
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
-                   {
+        {
             if self.is_filter_selection_empty("file") {
                 return Ok(());
             }
@@ -530,7 +528,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
         }
 
         if self.mark_viewed_receiver.is_some() {
-            self.cmt.submission_result = Some((false, "Mark viewed already in progress".to_string()));
+            self.cmt.submission_result =
+                Some((false, "Mark viewed already in progress".to_string()));
             self.cmt.submission_result_time = Some(Instant::now());
             return true;
         }
@@ -602,8 +601,7 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
             let mut error = None;
 
             for path in paths {
-                let result =
-                    github::set_file_viewed(&repo, &pr_node_id, &path, set_viewed).await;
+                let result = github::set_file_viewed(&repo, &pr_node_id, &path, set_viewed).await;
                 match result {
                     Ok(()) => marked_paths.push(path),
                     Err(e) => {
@@ -714,7 +712,8 @@ AppState::IssueList => self.handle_issue_list_input(key).await?,
 
         if self.matches_single_key(&key, &kb.move_down) {
             if check_count > 0 {
-                self.chk.selected_check = (self.chk.selected_check + 1).min(check_count.saturating_sub(1));
+                self.chk.selected_check =
+                    (self.chk.selected_check + 1).min(check_count.saturating_sub(1));
             }
             return Ok(());
         }

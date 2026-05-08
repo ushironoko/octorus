@@ -237,10 +237,7 @@ impl App {
         };
         let max = result.total_lines.saturating_sub(1);
         if delta > 0 {
-            shell.scroll_offset = shell
-                .scroll_offset
-                .saturating_add(delta as usize)
-                .min(max);
+            shell.scroll_offset = shell.scroll_offset.saturating_add(delta as usize).min(max);
         } else {
             shell.scroll_offset = shell.scroll_offset.saturating_sub((-delta) as usize);
         }
@@ -255,8 +252,7 @@ impl App {
                 .is_some_and(|s| matches!(s.phase, ShellPhase::Cancelling))
             {
                 self.shell_state = None;
-                self.cmt.submission_result =
-                    Some((false, "Shell command cancelled".to_string()));
+                self.cmt.submission_result = Some((false, "Shell command cancelled".to_string()));
                 self.cmt.submission_result_time = Some(std::time::Instant::now());
             }
             return;
@@ -574,9 +570,18 @@ mod tests {
             stderr: String::new(),
             exit_code: Some(0),
             cached_lines: vec![
-                CachedShellLine { text: "a".into(), is_stderr: false },
-                CachedShellLine { text: "b".into(), is_stderr: false },
-                CachedShellLine { text: "c".into(), is_stderr: false },
+                CachedShellLine {
+                    text: "a".into(),
+                    is_stderr: false,
+                },
+                CachedShellLine {
+                    text: "b".into(),
+                    is_stderr: false,
+                },
+                CachedShellLine {
+                    text: "c".into(),
+                    is_stderr: false,
+                },
             ],
             total_lines: 3,
         };

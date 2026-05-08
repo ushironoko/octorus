@@ -47,7 +47,9 @@ pub(crate) enum FileRecordStatus {
 #[derive(Debug, PartialEq)]
 enum FileStatus {
     UpToDate,
-    MatchesPreviousDefault { version: String },
+    MatchesPreviousDefault {
+        version: String,
+    },
     Customized,
     // check_file_status never returns Missing (file-not-found handled before calling it),
     // but the variant keeps the match exhaustive for safety

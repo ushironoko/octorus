@@ -105,17 +105,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::SplitViewFileList | AppState::SplitViewDiff => split_view::render(frame, app),
         AppState::PrDescription => pr_description::render(frame, app),
         AppState::ChecksList => checks_list::render(frame, app),
-AppState::IssueList => issue_list::render(frame, app),
+        AppState::IssueList => issue_list::render(frame, app),
         AppState::IssueDetail => issue_detail::render(frame, app),
         AppState::IssueCommentList => issue_comment_list::render(frame, app),
-        AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff => {
-            git_ops::render(frame, app)
-        }
+        AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff => git_ops::render(frame, app),
         AppState::Cockpit => cockpit::render(frame, app),
     }
 
     // GitOps シミュレーションモーダル
-    if matches!(app.state, AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff) {
+    if matches!(
+        app.state,
+        AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff
+    ) {
         if let Some(ref ops) = app.git_ops_state {
             match &ops.pending_confirm {
                 Some(crate::app::PendingGitOpsConfirm::Simulating { .. }) => {
@@ -204,34 +205,24 @@ fn render_shell_running_indicator(frame: &mut Frame, app: &App, cancelling: bool
     frame.render_widget(Clear, popup_area);
 
     let (text, color) = if cancelling {
-        (
-            format!("{} Cancelling...", app.spinner_char()),
-            Color::Red,
-        )
+        (format!("{} Cancelling...", app.spinner_char()), Color::Red)
     } else {
         (
             format!("{} Running... (Ctrl+C: cancel)", app.spinner_char()),
             Color::Yellow,
         )
     };
-    let paragraph = Paragraph::new(Line::from(Span::styled(
-        text,
-        Style::default().fg(color),
-    )))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(color))
-            .title("Shell"),
-    );
+    let paragraph = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(color))
+                .title("Shell"),
+        );
     frame.render_widget(paragraph, popup_area);
 }
 
-fn render_shell_output_popup(
-    frame: &mut Frame,
-    result: &ShellCommandResult,
-    scroll_offset: usize,
-) {
+fn render_shell_output_popup(frame: &mut Frame, result: &ShellCommandResult, scroll_offset: usize) {
     let area = frame.area();
     let width = (area.width * 80 / 100).max(40).min(area.width);
     let height = (area.height * 70 / 100).max(10).min(area.height);
@@ -297,8 +288,7 @@ fn render_shell_output_popup(
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
-        let mut scrollbar_state =
-            ScrollbarState::new(max_scroll).position(clamped_scroll);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(clamped_scroll);
         frame.render_stateful_widget(
             scrollbar,
             popup_area.inner(Margin {

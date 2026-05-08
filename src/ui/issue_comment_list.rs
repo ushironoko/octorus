@@ -26,11 +26,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     let comment_count = state.issue_comments.as_ref().map(|c| c.len()).unwrap_or(0);
-    let issue_number = state.issue_detail.as_loaded().map(|d| d.number).unwrap_or(0);
+    let issue_number = state
+        .issue_detail
+        .as_loaded()
+        .map(|d| d.number)
+        .unwrap_or(0);
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" Issue #{} ", issue_number),
@@ -187,7 +195,11 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     let date = comment

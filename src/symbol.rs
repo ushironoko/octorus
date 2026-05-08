@@ -462,11 +462,7 @@ async fn find_definition_in_repo_grep(
 /// Output format: `file:line:content` (rg) or `./file:line:content` (grep).
 /// When `definition` is true, matches against `is_definition_line`;
 /// otherwise matches against `is_import_line`.
-fn parse_search_results(
-    stdout: &str,
-    symbol: &str,
-    definition: bool,
-) -> Option<(String, usize)> {
+fn parse_search_results(stdout: &str, symbol: &str, definition: bool) -> Option<(String, usize)> {
     for result_line in stdout.lines() {
         let parts: Vec<&str> = result_line.splitn(3, ':').collect();
         if parts.len() >= 3 {

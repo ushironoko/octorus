@@ -937,7 +937,10 @@ timeout_secs = 3600
             })
             .collect();
 
-        assert!(config.validate().is_ok(), "Default keybindings should validate without errors");
+        assert!(
+            config.validate().is_ok(),
+            "Default keybindings should validate without errors"
+        );
 
         assert!(
             !serialized_keys.is_empty(),
@@ -1077,8 +1080,7 @@ left_panel_width = 25
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.layout.left_panel_width, 25);
     }
 
@@ -1105,8 +1107,7 @@ left_panel_width = 0
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.layout.left_panel_width, 10);
     }
 
@@ -1127,8 +1128,7 @@ zen_mode = true
         )
         .unwrap();
 
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert!(
             config.local_overrides.contains("layout.left_panel_width"),
             "layout.left_panel_width should be tracked as local override"
