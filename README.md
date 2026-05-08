@@ -568,6 +568,8 @@ The split view shows the file list (left) and a diff preview (right). The defaul
 |-----|--------|
 | `j` / `↓` | Move file selection (diff follows) |
 | `k` / `↑` | Move file selection (diff follows) |
+| `PageDown` | Scroll diff page down (regardless of focused pane) |
+| `PageUp` | Scroll diff page up (regardless of focused pane) |
 | `t` | Toggle file tree view |
 | `Enter` / `→` / `l` | Focus diff pane |
 | `Z` | Toggle zen mode |
@@ -583,8 +585,10 @@ The split view shows the file list (left) and a diff preview (right). The defaul
 | `gf` | Open file in $EDITOR |
 | `gg` / `G` | Jump to first/last line |
 | `Ctrl-o` | Jump back |
-| `Ctrl-d` | Page down |
-| `Ctrl-u` | Page up |
+| `Ctrl-d` | Page down (focus-aware) |
+| `Ctrl-u` | Page up (focus-aware) |
+| `PageDown` | Scroll diff page down (regardless of focused pane) |
+| `PageUp` | Scroll diff page up (regardless of focused pane) |
 | `n` | Jump to next comment |
 | `N` | Jump to previous comment |
 | `c` | Add comment at line |
@@ -609,6 +613,8 @@ The split view shows the file list (left) and a diff preview (right). The defaul
 | `N` | Jump to previous comment |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
+| `PageDown` | Scroll diff page down |
+| `PageUp` | Scroll diff page up |
 | `c` | Add comment at line |
 | `s` | Add suggestion at line |
 | `Shift+Enter` / `V` | Enter multiline selection mode |
@@ -836,6 +842,10 @@ move_down = "j"
 # Key with modifiers
 page_down = { key = "d", ctrl = true }
 
+# Named key (PageDown / PageUp / etc.)
+diff_page_down = "PageDown"
+diff_page_up = "PageUp"
+
 # Two-key sequence
 go_to_definition = ["g", "d"]
 ```
@@ -849,8 +859,10 @@ go_to_definition = ["g", "d"]
 | `move_up` | `k` | Move up |
 | `move_left` | `h` | Move left / back |
 | `move_right` | `l` | Move right / select |
-| `page_down` | `Ctrl+d` | Page down |
-| `page_up` | `Ctrl+u` | Page up |
+| `page_down` | `Ctrl+d` | Page down (focus-aware: file list moves selection, diff scrolls) |
+| `page_up` | `Ctrl+u` | Page up (focus-aware) |
+| `diff_page_down` | `PageDown` | Scroll diff page down (works from any pane in split view) |
+| `diff_page_up` | `PageUp` | Scroll diff page up (works from any pane in split view) |
 | `jump_to_first` | `gg` | Jump to first line |
 | `jump_to_last` | `G` | Jump to last line |
 | `jump_back` | `Ctrl+o` | Jump to previous position |

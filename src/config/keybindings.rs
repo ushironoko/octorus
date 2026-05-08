@@ -18,6 +18,8 @@ pub struct KeybindingsConfig {
     pub move_right: KeySequence,
     pub page_down: KeySequence,
     pub page_up: KeySequence,
+    pub diff_page_down: KeySequence,
+    pub diff_page_up: KeySequence,
     pub jump_to_first: KeySequence,
     pub jump_to_last: KeySequence,
     pub jump_back: KeySequence,
@@ -93,6 +95,8 @@ impl Default for KeybindingsConfig {
                 .with_alt(vec![KeyBinding::named(crate::keybinding::NamedKey::Right)]),
             page_down: KeySequence::single(KeyBinding::ctrl('d')),
             page_up: KeySequence::single(KeyBinding::ctrl('u')),
+            diff_page_down: KeySequence::single(KeyBinding::named(NamedKey::PageDown)),
+            diff_page_up: KeySequence::single(KeyBinding::named(NamedKey::PageUp)),
             jump_to_first: KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g')),
             jump_to_last: KeySequence::single(KeyBinding::char('G')),
             jump_back: KeySequence::single(KeyBinding::ctrl('o')),
@@ -177,6 +181,8 @@ impl KeybindingsConfig {
             ("move_right", &self.move_right),
             ("page_down", &self.page_down),
             ("page_up", &self.page_up),
+            ("diff_page_down", &self.diff_page_down),
+            ("diff_page_up", &self.diff_page_up),
             ("jump_to_first", &self.jump_to_first),
             ("jump_to_last", &self.jump_to_last),
             ("jump_back", &self.jump_back),
@@ -378,6 +384,8 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("move_right", &seq_to_value(&self.move_right))?;
         map.serialize_entry("page_down", &seq_to_value(&self.page_down))?;
         map.serialize_entry("page_up", &seq_to_value(&self.page_up))?;
+        map.serialize_entry("diff_page_down", &seq_to_value(&self.diff_page_down))?;
+        map.serialize_entry("diff_page_up", &seq_to_value(&self.diff_page_up))?;
         map.serialize_entry("jump_to_first", &seq_to_value(&self.jump_to_first))?;
         map.serialize_entry("jump_to_last", &seq_to_value(&self.jump_to_last))?;
         map.serialize_entry("jump_back", &seq_to_value(&self.jump_back))?;
