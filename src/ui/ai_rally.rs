@@ -75,10 +75,14 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         }
     };
 
-    let title = format!(
-        " AI Rally - Iteration {}/{} ",
-        state.iteration, state.max_iterations
-    );
+    let title = if state.review_only {
+        format!(" AI Rally [Review Only] - Iteration {} ", state.iteration)
+    } else {
+        format!(
+            " AI Rally - Iteration {}/{} ",
+            state.iteration, state.max_iterations
+        )
+    };
 
     let header = Paragraph::new(vec![
         Line::from(Span::styled(pr_info, Style::default().fg(Color::White))),
@@ -623,9 +627,14 @@ mod tests {
     use ratatui::Terminal;
 
     fn make_rally_state() -> AiRallyState {
+        make_rally_state_with(false)
+    }
+
+    fn make_rally_state_with(review_only: bool) -> AiRallyState {
         AiRallyState {
             iteration: 1,
             max_iterations: 3,
+            review_only,
             state: RallyState::Initializing,
             history: vec![],
             logs: vec![],
@@ -762,5 +771,36 @@ mod tests {
 
         let output = render_full(&mut app);
         assert!(output.contains("PAUSED"), "should show paused indicator");
+    }
+
+    #[test]
+    fn test_review_only_badge_in_header() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = Some(make_rally_state_with(true));
+
+        let output = render_full(&mut app);
+        assert!(
+            output.contains("[Review Only]"),
+            "header should show [Review Only] badge when review_only is set:\n{}",
+            output
+        );
+        assert!(
+            !output.contains("Iteration 1/3"),
+            "iteration counter should hide max when review_only (single iteration)"
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_no_review_only_badge() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = Some(make_rally_state_with(false));
+
+        let output = render_full(&mut app);
+        assert!(
+            !output.contains("[Review Only]"),
+            "header should not show [Review Only] badge when review_only is false"
+        );
     }
 }

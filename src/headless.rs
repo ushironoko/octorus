@@ -408,6 +408,24 @@ async fn run_headless_event_loop(
                     last_fix,
                 };
             }
+            RallyEvent::ReviewOnlyCompleted(output) => {
+                let action = format!("{:?}", output.action);
+                eprintln!(
+                    "\n[Review-only completed] action={} summary={}",
+                    action, output.summary
+                );
+                let summary = output.summary.clone();
+                last_review = Some(output);
+                return HeadlessOutcome {
+                    result: HeadlessResult::NotApproved(format!(
+                        "Review-only mode: action={}; {}",
+                        action, summary
+                    )),
+                    iterations: current_iteration,
+                    last_review,
+                    last_fix,
+                };
+            }
             RallyEvent::Error(msg) => {
                 eprintln!("\n[Error] {}", msg);
                 last_error = Some(msg);

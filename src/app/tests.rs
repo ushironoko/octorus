@@ -1722,6 +1722,7 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -2659,6 +2660,7 @@ fn test_ai_rally_state_push_log_auto_follow() {
     let mut state = AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -2688,6 +2690,7 @@ fn test_ai_rally_state_push_log_no_auto_follow() {
     let mut state = AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![
@@ -2718,6 +2721,7 @@ fn test_ai_rally_state_is_selection_at_tail() {
     let mut state = AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![
@@ -3671,6 +3675,7 @@ fn test_cleanup_rally_state() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3884,6 +3889,7 @@ fn test_is_rally_running_in_background_not_in_rally() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3908,6 +3914,7 @@ fn test_is_rally_running_in_background_in_rally() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3940,6 +3947,7 @@ fn test_is_rally_running_in_background_finished() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::Completed,
         history: vec![],
         logs: vec![],
@@ -3964,6 +3972,7 @@ fn test_has_background_rally_true() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3988,6 +3997,7 @@ fn test_has_background_rally_false_in_rally() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4020,6 +4030,7 @@ fn test_is_background_rally_finished_completed() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::Completed,
         history: vec![],
         logs: vec![],
@@ -4044,6 +4055,7 @@ fn test_is_background_rally_finished_running() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4067,6 +4079,7 @@ fn test_adjust_log_scroll_selection_above() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: (0..20)
@@ -4096,6 +4109,7 @@ fn test_adjust_log_scroll_selection_below() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: (0..20)
@@ -4136,6 +4150,7 @@ fn test_pause_state_reset_on_approve_state_change() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4181,6 +4196,7 @@ fn test_pause_state_reset_on_waiting_for_clarification() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::RevieweeFix,
         history: vec![],
         logs: vec![],
@@ -4226,6 +4242,7 @@ fn test_pause_state_reset_on_waiting_for_permission() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::RevieweeFix,
         history: vec![],
         logs: vec![],
@@ -4269,6 +4286,7 @@ fn test_pause_state_reset_on_waiting_for_post_confirmation() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::RevieweeFix,
         history: vec![],
         logs: vec![],
@@ -4314,6 +4332,7 @@ fn test_pause_state_preserved_on_active_state_change() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],

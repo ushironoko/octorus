@@ -338,6 +338,12 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
             overrides,
         ),
         config_value_line(
+            "Review only",
+            &config.ai.review_only.to_string(),
+            "ai.review_only",
+            overrides,
+        ),
+        config_value_line(
             "Prompt dir",
             &prompt_dir_display,
             "ai.prompt_dir",

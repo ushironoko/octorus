@@ -251,6 +251,8 @@ pub enum PauseState {
 pub struct AiRallyState {
     pub iteration: u32,
     pub max_iterations: u32,
+    /// Whether the rally was started in review-only mode (reviewee phase skipped).
+    pub review_only: bool,
     pub state: RallyState,
     pub history: Vec<RallyEvent>,
     pub logs: Vec<LogEntry>,

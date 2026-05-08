@@ -85,6 +85,9 @@ pub enum RallyEvent {
     ClarificationNeeded(String),
     PermissionNeeded(String, String), // action, reason
     Approved(String),                 // summary
+    /// Rally completed in review-only mode with a non-approve verdict.
+    /// Carries the reviewer output so consumers can inspect the action and summary.
+    ReviewOnlyCompleted(ReviewerOutput),
     ReviewPostConfirmNeeded(ReviewPostInfo),
     FixPostConfirmNeeded(FixPostInfo),
     Error(String),
@@ -107,10 +110,29 @@ pub enum RallyEvent {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum RallyResult {
-    Approved { iteration: u32, summary: String },
-    MaxIterationsReached { iteration: u32 },
-    Aborted { iteration: u32, reason: String },
-    Error { iteration: u32, error: String },
+    Approved {
+        iteration: u32,
+        summary: String,
+    },
+    /// Rally finished in review-only mode. Preserves the reviewer's verdict
+    /// so callers can distinguish approve from request-changes/comment without
+    /// inspecting events.
+    ReviewOnlyCompleted {
+        iteration: u32,
+        action: ReviewAction,
+        summary: String,
+    },
+    MaxIterationsReached {
+        iteration: u32,
+    },
+    Aborted {
+        iteration: u32,
+        reason: String,
+    },
+    Error {
+        iteration: u32,
+        error: String,
+    },
 }
 
 /// Lightweight DTO for review post confirmation (sent via RallyEvent)
@@ -321,6 +343,30 @@ impl Orchestrator {
                 return Ok(RallyResult::Approved {
                     iteration,
                     summary: review_result.summary,
+                });
+            }
+
+            // Review-only mode: terminate after reviewer step regardless of action.
+            // The reviewee phase is bypassed entirely so no Edit/Write tools are exposed.
+            if self.config.review_only {
+                self.paused = false;
+
+                self.session.update_state(RallyState::Completed);
+                if let Err(e) = write_session(&self.session) {
+                    warn!("Failed to write session: {}", e);
+                }
+
+                let action = review_result.action;
+                let summary = review_result.summary.clone();
+                self.send_event(RallyEvent::ReviewOnlyCompleted(review_result))
+                    .await;
+                self.send_event(RallyEvent::StateChanged(RallyState::Completed))
+                    .await;
+
+                return Ok(RallyResult::ReviewOnlyCompleted {
+                    iteration,
+                    action,
+                    summary,
                 });
             }
 
@@ -1820,6 +1866,222 @@ mod tests {
         };
         assert_eq!(info.summary, "Fixed issues");
         assert_eq!(info.files_modified.len(), 2);
+    }
+
+    /// Mock adapter for orchestrator integration tests. Counts invocations
+    /// so tests can assert which phases ran.
+    struct MockAdapter {
+        name: &'static str,
+        reviewer_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        reviewee_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        reviewer_action: ReviewAction,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentAdapter for MockAdapter {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn set_event_sender(&mut self, _sender: mpsc::Sender<RallyEvent>) {}
+        async fn run_reviewer(
+            &mut self,
+            _prompt: &str,
+            _context: &Context,
+        ) -> Result<ReviewerOutput> {
+            self.reviewer_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ReviewerOutput {
+                action: self.reviewer_action,
+                summary: "mock review summary".to_string(),
+                comments: vec![],
+                blocking_issues: vec![],
+            })
+        }
+        async fn run_reviewee(
+            &mut self,
+            _prompt: &str,
+            _context: &Context,
+        ) -> Result<RevieweeOutput> {
+            self.reviewee_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(RevieweeOutput {
+                status: RevieweeStatus::Completed,
+                summary: "mock fix summary".to_string(),
+                files_modified: vec![],
+                question: None,
+                permission_request: None,
+                error_details: None,
+            })
+        }
+        async fn continue_reviewer(&mut self, _msg: &str) -> Result<ReviewerOutput> {
+            unreachable!("continue_reviewer is not exercised in these tests")
+        }
+        async fn continue_reviewee(&mut self, _msg: &str) -> Result<RevieweeOutput> {
+            unreachable!("continue_reviewee is not exercised in these tests")
+        }
+        fn add_reviewee_allowed_tool(&mut self, _tool: &str) {}
+        fn set_local_mode(&mut self, _local_mode: bool) {}
+    }
+
+    fn make_orchestrator_with_mocks(
+        review_only: bool,
+        reviewer_action: ReviewAction,
+    ) -> (
+        Orchestrator,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        mpsc::Receiver<RallyEvent>,
+    ) {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let reviewer_calls = Arc::new(AtomicUsize::new(0));
+        let reviewee_calls = Arc::new(AtomicUsize::new(0));
+
+        let reviewer = MockAdapter {
+            name: "mock-reviewer",
+            reviewer_calls: reviewer_calls.clone(),
+            reviewee_calls: reviewee_calls.clone(),
+            reviewer_action,
+        };
+        let reviewee = MockAdapter {
+            name: "mock-reviewee",
+            reviewer_calls: reviewer_calls.clone(),
+            reviewee_calls: reviewee_calls.clone(),
+            reviewer_action,
+        };
+
+        let (event_tx, event_rx) = mpsc::channel(256);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+
+        let config = AiConfig {
+            review_only,
+            max_iterations: 3,
+            ..Default::default()
+        };
+
+        let prompt_loader = PromptLoader::new(&config, std::path::Path::new("."));
+        let session = RallySession::new("owner/repo", 1);
+
+        let orchestrator = Orchestrator {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+            config,
+            reviewer_adapter: Box::new(reviewer),
+            reviewee_adapter: Box::new(reviewee),
+            session,
+            context: None,
+            seed_review: None,
+            last_review: None,
+            last_fix: None,
+            event_sender: event_tx,
+            prompt_loader,
+            command_receiver: Some(cmd_rx),
+            paused: false,
+        };
+
+        (orchestrator, reviewer_calls, reviewee_calls, event_rx)
+    }
+
+    fn make_local_context() -> Context {
+        Context {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+            pr_title: "test".to_string(),
+            pr_body: None,
+            diff: String::new(),
+            working_dir: None,
+            head_sha: "deadbeef".to_string(),
+            base_branch: "main".to_string(),
+            external_comments: vec![],
+            local_mode: true,
+            file_patches: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_review_only_skips_reviewee_on_request_changes() {
+        // When review_only is true and reviewer requests changes,
+        // the reviewee phase MUST NOT run.
+        let (mut orchestrator, reviewer_calls, reviewee_calls, mut event_rx) =
+            make_orchestrator_with_mocks(true, ReviewAction::RequestChanges);
+        orchestrator.set_context(make_local_context());
+
+        let result = orchestrator.run().await.unwrap();
+
+        assert_eq!(
+            reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "reviewer must be called exactly once"
+        );
+        assert_eq!(
+            reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "reviewee must NOT be called in review_only mode"
+        );
+        match result {
+            RallyResult::ReviewOnlyCompleted {
+                iteration, action, ..
+            } => {
+                assert_eq!(iteration, 1);
+                assert_eq!(action, ReviewAction::RequestChanges);
+            }
+            other => panic!("expected ReviewOnlyCompleted, got {:?}", other),
+        }
+
+        // Confirm a ReviewOnlyCompleted event was emitted.
+        let mut saw_review_only_event = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, RallyEvent::ReviewOnlyCompleted(_)) {
+                saw_review_only_event = true;
+            }
+        }
+        assert!(
+            saw_review_only_event,
+            "ReviewOnlyCompleted event must be emitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_with_approve_uses_normal_approved_path() {
+        // When review_only is true and reviewer approves, the existing
+        // Approve path handles it (emits Approved event, not ReviewOnlyCompleted).
+        let (mut orchestrator, reviewer_calls, reviewee_calls, mut event_rx) =
+            make_orchestrator_with_mocks(true, ReviewAction::Approve);
+        orchestrator.set_context(make_local_context());
+
+        let _ = orchestrator.run().await.unwrap();
+
+        assert_eq!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "reviewee must NOT be called when reviewer approves"
+        );
+
+        let mut saw_approved = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, RallyEvent::Approved(_)) {
+                saw_approved = true;
+            }
+        }
+        assert!(saw_approved, "Approved event must be emitted on approve");
+    }
+
+    #[tokio::test]
+    async fn test_normal_mode_invokes_reviewee_on_request_changes() {
+        // Sanity check: without review_only, reviewee runs as expected.
+        let (mut orchestrator, reviewer_calls, reviewee_calls, _event_rx) =
+            make_orchestrator_with_mocks(false, ReviewAction::RequestChanges);
+        orchestrator.set_context(make_local_context());
+
+        let _ = orchestrator.run().await.unwrap();
+
+        assert!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert!(
+            reviewee_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "reviewee must run in normal mode when reviewer requests changes"
+        );
     }
 
     #[test]

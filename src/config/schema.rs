@@ -21,6 +21,18 @@ pub struct AiConfig {
     /// Default is false (confirmation prompt before posting).
     #[serde(default)]
     pub auto_post: bool,
+    /// If true, AI Rally runs only the reviewer phase and skips the reviewee.
+    /// No code edits will be made. The rally completes after a single iteration.
+    ///
+    /// Result mapping:
+    /// - reviewer Approve → emits `RallyEvent::Approved` and returns
+    ///   `RallyResult::Approved` (same path as a normal rally that converged).
+    /// - reviewer RequestChanges/Comment → emits
+    ///   `RallyEvent::ReviewOnlyCompleted(output)` and returns
+    ///   `RallyResult::ReviewOnlyCompleted { action, .. }` so callers can
+    ///   distinguish the verdict without inspecting events.
+    #[serde(default)]
+    pub review_only: bool,
 }
 
 impl Default for AiConfig {
@@ -34,6 +46,7 @@ impl Default for AiConfig {
             reviewer_additional_tools: Vec::new(),
             reviewee_additional_tools: Vec::new(),
             auto_post: false,
+            review_only: false,
         }
     }
 }

@@ -126,7 +126,8 @@ mod tests {
           "prompt_dir": null,
           "reviewer_additional_tools": [],
           "reviewee_additional_tools": [],
-          "auto_post": false
+          "auto_post": false,
+          "review_only": false
         }
         "#);
     }
@@ -150,7 +151,8 @@ mod tests {
           "prompt_dir": null,
           "reviewer_additional_tools": [],
           "reviewee_additional_tools": [],
-          "auto_post": false
+          "auto_post": false,
+          "review_only": false
         }
         "#);
     }
@@ -177,7 +179,8 @@ mod tests {
           "reviewee_additional_tools": [
             "Bash(git push:*)"
           ],
-          "auto_post": false
+          "auto_post": false,
+          "review_only": false
         }
         "#);
     }
@@ -196,6 +199,22 @@ mod tests {
     fn test_parse_ai_config_auto_post_default() {
         let config: Config = toml::from_str("").unwrap();
         assert!(!config.ai.auto_post);
+    }
+
+    #[test]
+    fn test_parse_ai_config_review_only_true() {
+        let toml_str = r#"
+            [ai]
+            review_only = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.ai.review_only);
+    }
+
+    #[test]
+    fn test_parse_ai_config_review_only_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.ai.review_only);
     }
 
     #[test]

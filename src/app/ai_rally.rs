@@ -539,6 +539,7 @@ impl App {
         self.ai_rally_state = Some(AiRallyState {
             iteration: 0,
             max_iterations: self.config.ai.max_iterations,
+            review_only: self.config.ai.review_only,
             state: RallyState::Initializing,
             history: Vec::new(),
             logs: Vec::new(),
