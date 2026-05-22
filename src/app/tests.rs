@@ -7583,3 +7583,178 @@ fn test_try_open_comment_panel_ignores_non_matching_key() {
     assert!(!app.try_open_comment_panel(&key, &kb));
     assert!(!app.cmt.comment_panel_open);
 }
+
+// ========================================
+// Diff page-scroll pure functions (issue #161)
+// ========================================
+
+#[test]
+fn test_scroll_diff_page_down_advances_by_step() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 0;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        super::input_diff::DIFF_PAGE_STEP
+    );
+}
+
+#[test]
+fn test_scroll_diff_page_down_clamps_at_end() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 10;
+    app.diff_scroll.selected_line = 5;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(app.diff_scroll.selected_line, 9);
+}
+
+#[test]
+fn test_scroll_diff_page_down_no_op_on_empty_diff() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 0;
+    app.diff_scroll.selected_line = 0;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(app.diff_scroll.selected_line, 0);
+}
+
+#[test]
+fn test_scroll_diff_page_up_saturates_at_zero() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 5;
+
+    app.scroll_diff_page_up(40);
+
+    assert_eq!(app.diff_scroll.selected_line, 0);
+}
+
+#[test]
+fn test_scroll_diff_page_up_full_step_when_room() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 50;
+
+    app.scroll_diff_page_up(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        50 - super::input_diff::DIFF_PAGE_STEP
+    );
+}
+
+#[test]
+fn test_diff_visible_lines_panel_closed_uses_term_minus_8() {
+    let config = Config::default();
+    let (app, _tx) = App::new_loading("owner/repo", 1, config);
+    assert!(!app.cmt.comment_panel_open);
+
+    let lines = app.diff_visible_lines(50, super::types::DiffViewVariant::SplitPane);
+    assert_eq!(lines, 50 - 8);
+}
+
+#[test]
+fn test_diff_visible_lines_tiny_terminal_does_not_panic() {
+    let config = Config::default();
+    let (app, _tx) = App::new_loading("owner/repo", 1, config);
+
+    let lines = app.diff_visible_lines(4, super::types::DiffViewVariant::SplitPane);
+    assert_eq!(lines, 0);
+}
+
+#[test]
+fn test_diff_visible_lines_panel_open_split_pane_pct() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.cmt.comment_panel_open = true;
+
+    let term_h = 50usize;
+    let lines = app.diff_visible_lines(term_h, super::types::DiffViewVariant::SplitPane);
+    let fixed = 6;
+    let expected = (term_h.saturating_sub(fixed) * 50 / 90).saturating_sub(2);
+    assert_eq!(lines, expected);
+}
+
+// ========================================
+// Scenario: diff_page_down/up in split view contexts (issue #161)
+// ========================================
+
+#[test]
+fn test_diff_page_down_in_split_file_list_advances_only_diff() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewFileList;
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 0;
+    app.selected_file = 1;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        super::input_diff::DIFF_PAGE_STEP
+    );
+    assert_eq!(app.selected_file, 1, "file selection must not change");
+}
+
+#[test]
+fn test_diff_page_up_in_split_file_list_does_not_change_file_selection() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewFileList;
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 60;
+    app.selected_file = 2;
+
+    app.scroll_diff_page_up(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        60 - super::input_diff::DIFF_PAGE_STEP
+    );
+    assert_eq!(app.selected_file, 2);
+}
+
+#[test]
+fn test_diff_page_down_works_with_filter_active() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewFileList;
+    app.file_list_filter = Some(crate::filter::ListFilter::new());
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 0;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        super::input_diff::DIFF_PAGE_STEP
+    );
+}
+
+#[test]
+fn test_diff_page_down_in_diff_focus_matches_page_down_step() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewDiff;
+    app.diff_scroll.line_count = 200;
+    app.diff_scroll.selected_line = 30;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        30 + super::input_diff::DIFF_PAGE_STEP
+    );
+}

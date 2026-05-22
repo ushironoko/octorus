@@ -24,6 +24,21 @@ impl App {
         let has_filter = self.file_list_filter.is_some();
         let tree_active = self.is_file_tree_active();
 
+        // diff_page_down / diff_page_up: scroll the diff regardless of focused pane.
+        if self.matches_single_key(&key, &kb.diff_page_down) {
+            let term_h = terminal.size()?.height as usize;
+            let visible_lines = self.diff_visible_lines(term_h, DiffViewVariant::SplitPane);
+            self.scroll_diff_page_down(visible_lines);
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &kb.diff_page_up) {
+            let term_h = terminal.size()?.height as usize;
+            let visible_lines = self.diff_visible_lines(term_h, DiffViewVariant::SplitPane);
+            self.scroll_diff_page_up(visible_lines);
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.tree_toggle) && !has_filter {
             self.toggle_file_tree();
             return Ok(());
@@ -550,6 +565,16 @@ impl App {
             return Ok(());
         }
 
+        if self.matches_single_key(&key, &kb.diff_page_down) {
+            self.scroll_diff_page_down(visible_lines);
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &kb.diff_page_up) {
+            self.scroll_diff_page_up(visible_lines);
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if self.diff_scroll.line_count > 0 {
                 self.diff_scroll.selected_line = (self.diff_scroll.selected_line + 20)
@@ -668,4 +693,40 @@ impl App {
                 .saturating_sub(visible_lines.saturating_sub(margin + 1));
         }
     }
+
+    pub(crate) fn scroll_diff_page_down(&mut self, visible_lines: usize) {
+        if self.diff_scroll.line_count == 0 {
+            return;
+        }
+        self.diff_scroll.selected_line = (self.diff_scroll.selected_line + DIFF_PAGE_STEP)
+            .min(self.diff_scroll.line_count.saturating_sub(1));
+        self.adjust_scroll(visible_lines);
+    }
+
+    pub(crate) fn scroll_diff_page_up(&mut self, visible_lines: usize) {
+        self.diff_scroll.selected_line = self
+            .diff_scroll
+            .selected_line
+            .saturating_sub(DIFF_PAGE_STEP);
+        self.adjust_scroll(visible_lines);
+    }
+
+    pub(super) fn diff_visible_lines(&self, term_h: usize, variant: DiffViewVariant) -> usize {
+        if self.cmt.comment_panel_open {
+            let has_rally = self.has_background_rally();
+            let fixed = if has_rally { 7 } else { 6 };
+            let remaining = term_h.saturating_sub(fixed);
+            let (diff_pct, total_pct) = match variant {
+                DiffViewVariant::Fullscreen if !has_rally => (55usize, 95usize),
+                _ => (50, 90),
+            };
+            (remaining * diff_pct / total_pct).saturating_sub(2)
+        } else {
+            term_h.saturating_sub(8)
+        }
+    }
 }
+
+/// Diff page-scroll step, in lines. Shared by `kb.page_down` (focus-aware) and
+/// `kb.diff_page_down` (focus-independent).
+pub(crate) const DIFF_PAGE_STEP: usize = 20;

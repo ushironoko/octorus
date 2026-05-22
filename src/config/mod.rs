@@ -64,6 +64,13 @@ mod tests {
     }
 
     #[test]
+    fn test_default_diff_page_keybindings() {
+        let config = KeybindingsConfig::default();
+        assert_eq!(config.diff_page_down.display(), "PageDown");
+        assert_eq!(config.diff_page_up.display(), "PageUp");
+    }
+
+    #[test]
     fn test_parse_simple_keybinding() {
         let toml_str = r#"
             [keybindings]
@@ -861,6 +868,8 @@ timeout_secs = 3600
             "move_right",
             "page_down",
             "page_up",
+            "diff_page_down",
+            "diff_page_up",
             "jump_to_first",
             "jump_to_last",
             "jump_back",
