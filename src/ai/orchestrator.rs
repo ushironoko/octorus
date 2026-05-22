@@ -79,6 +79,12 @@ impl RallyState {
 #[allow(dead_code)]
 pub enum RallyEvent {
     StateChanged(RallyState),
+    /// Rally has just started. Emitted exactly once at the beginning of `run()`,
+    /// before any iteration begins. Consumers use this to surface startup-time
+    /// context such as review-only mode without polling config.
+    RallyStarted {
+        review_only: bool,
+    },
     IterationStarted(u32),
     ReviewCompleted(ReviewerOutput),
     FixCompleted(RevieweeOutput),
@@ -247,6 +253,10 @@ impl Orchestrator {
             .ok_or_else(|| anyhow!("Context not set"))?
             .clone();
 
+        self.send_event(RallyEvent::RallyStarted {
+            review_only: self.config.review_only,
+        })
+        .await;
         self.send_event(RallyEvent::StateChanged(RallyState::Initializing))
             .await;
 
@@ -1996,6 +2006,31 @@ mod tests {
             external_comments: vec![],
             local_mode: true,
             file_patches: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rally_started_event_emitted_first_with_review_only_flag() {
+        // The orchestrator must emit RallyStarted as its very first event,
+        // carrying the configured review_only flag so consumers can show a
+        // startup banner. Verified for both review_only=true and false.
+        for review_only in [true, false] {
+            let (mut orchestrator, _reviewer_calls, _reviewee_calls, mut event_rx) =
+                make_orchestrator_with_mocks(review_only, ReviewAction::Approve);
+            orchestrator.set_context(make_local_context());
+
+            let _ = orchestrator.run().await.unwrap();
+
+            let first = event_rx.try_recv().expect("expected at least one event");
+            match first {
+                RallyEvent::RallyStarted { review_only: flag } => {
+                    assert_eq!(
+                        flag, review_only,
+                        "RallyStarted must carry the configured review_only flag"
+                    );
+                }
+                other => panic!("expected RallyStarted first, got {:?}", other),
+            }
         }
     }
 

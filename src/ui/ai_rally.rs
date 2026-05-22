@@ -319,6 +319,15 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         .iter()
         .filter_map(|event| {
             let (prefix, content, color) = match event {
+                crate::ai::orchestrator::RallyEvent::RallyStarted { review_only }
+                    if *review_only =>
+                {
+                    (
+                        "Mode".to_string(),
+                        "Review Only — reviewee (fix) phase will be skipped".to_string(),
+                        Color::Cyan,
+                    )
+                }
                 crate::ai::orchestrator::RallyEvent::IterationStarted(i) => (
                     format!("[{}]", i),
                     "Iteration started".to_string(),
@@ -805,6 +814,47 @@ mod tests {
         assert!(
             !output.contains("Iteration 1/3"),
             "iteration counter should hide max when review_only (single iteration)"
+        );
+    }
+
+    #[test]
+    fn test_review_only_startup_banner_in_history() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state_with(true);
+        rally
+            .history
+            .push(crate::ai::orchestrator::RallyEvent::RallyStarted { review_only: true });
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(
+            output.contains("Mode:"),
+            "history should show Mode: prefix when RallyStarted with review_only=true:\n{}",
+            output
+        );
+        assert!(
+            output.contains("Review Only"),
+            "history should show Review Only label:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_rally_started_hidden_from_history() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state_with(false);
+        rally
+            .history
+            .push(crate::ai::orchestrator::RallyEvent::RallyStarted { review_only: false });
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(
+            !output.contains("Mode:"),
+            "history should not show Mode: entry when review_only is false:\n{}",
+            output
         );
     }
 

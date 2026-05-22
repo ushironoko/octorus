@@ -661,6 +661,15 @@ impl App {
                                     rally_state.pause_state = PauseState::Running;
                                 }
                             }
+                            RallyEvent::RallyStarted { review_only } => {
+                                let msg = if *review_only {
+                                    "AI Rally started in Review Only mode — reviewee (fix) phase will be skipped"
+                                        .to_string()
+                                } else {
+                                    "AI Rally started".to_string()
+                                };
+                                rally_state.push_log(LogEntry::new(LogEventType::Info, msg));
+                            }
                             RallyEvent::IterationStarted(i) => {
                                 rally_state.iteration = *i;
                                 rally_state.push_log(LogEntry::new(

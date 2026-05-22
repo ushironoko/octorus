@@ -355,6 +355,13 @@ async fn run_headless_event_loop(
 
     while let Some(event) = event_rx.recv().await {
         match event {
+            RallyEvent::RallyStarted { review_only } => {
+                if review_only {
+                    eprintln!("\n[Mode] Review Only — reviewee (fix) phase will be skipped");
+                } else {
+                    eprintln!("\n[Mode] Standard (review + fix)");
+                }
+            }
             RallyEvent::IterationStarted(n) => {
                 current_iteration = n;
                 eprintln!("\n=== Iteration {} ===", n);
@@ -1160,6 +1167,39 @@ mod tests {
         let temp_path = path.with_file_name(format!(".result.json.{}.tmp", std::process::id()));
         assert!(!temp_path.exists());
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_rally_started_then_approved() {
+        // Ensure the new RallyStarted arm in the headless event loop:
+        // (a) does not return early, and (b) lets the loop reach Approved.
+        let (tx, mut rx) = mpsc::channel(8);
+        let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+
+        tx.send(RallyEvent::RallyStarted { review_only: true })
+            .await
+            .unwrap();
+        tx.send(RallyEvent::IterationStarted(1)).await.unwrap();
+        tx.send(RallyEvent::Approved("Looks good".to_string()))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let outcome = run_headless_event_loop(&mut rx, &cmd_tx, false).await;
+        match outcome.result {
+            HeadlessResult::Approved(summary) => {
+                assert_eq!(summary, "Looks good");
+            }
+            other => panic!(
+                "expected Approved after RallyStarted+Approved sequence, got {:?}",
+                match other {
+                    HeadlessResult::NotApproved(s) => format!("NotApproved({})", s),
+                    HeadlessResult::Error(s) => format!("Error({})", s),
+                    HeadlessResult::Approved(_) => unreachable!(),
+                }
+            ),
+        }
+        assert_eq!(outcome.iterations, 1);
     }
 
     #[test]
