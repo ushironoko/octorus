@@ -376,6 +376,23 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                     truncate_with_width(summary, 60).into_owned(),
                     Color::Green,
                 ),
+                crate::ai::orchestrator::RallyEvent::ReviewOnlyCompleted(review) => {
+                    let action_text = match review.action {
+                        ReviewAction::Approve => "APPROVE",
+                        ReviewAction::RequestChanges => "REQUEST_CHANGES",
+                        ReviewAction::Comment => "COMMENT",
+                    };
+                    let color = match review.action {
+                        ReviewAction::Approve => Color::Green,
+                        ReviewAction::RequestChanges => Color::Red,
+                        ReviewAction::Comment => Color::Yellow,
+                    };
+                    (
+                        format!("Review Only: {}", action_text),
+                        truncate_with_width(&review.summary, 60).into_owned(),
+                        color,
+                    )
+                }
                 crate::ai::orchestrator::RallyEvent::Error(e) => (
                     "ERROR".to_string(),
                     truncate_with_width(e, 60).into_owned(),

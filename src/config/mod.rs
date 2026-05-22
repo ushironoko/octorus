@@ -20,6 +20,7 @@ pub const SENSITIVE_AI_KEYS: &[&str] = &[
     "ai.reviewer",
     "ai.reviewee",
     "ai.prompt_dir",
+    "ai.review_only",
 ];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -667,6 +668,34 @@ auto_post = true
             .local_overrides
             .contains("ai.reviewee_additional_tools"));
         assert!(config.local_overrides.contains("ai.auto_post"));
+    }
+
+    #[test]
+    fn test_review_only_is_sensitive_ai_key() {
+        assert!(
+            SENSITIVE_AI_KEYS.contains(&"ai.review_only"),
+            "ai.review_only must be sensitive — it materially changes rally behavior"
+        );
+    }
+
+    #[test]
+    fn test_local_overrides_tracks_review_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+review_only = true
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(config.local_overrides.contains("ai.review_only"));
     }
 
     #[test]

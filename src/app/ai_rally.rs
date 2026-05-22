@@ -681,6 +681,7 @@ impl App {
                 format!("{:?}", self.config.ai.reviewee_additional_tools)
             }
             "ai.auto_post" => format!("{}", self.config.ai.auto_post),
+            "ai.review_only" => format!("{}", self.config.ai.review_only),
             "ai.reviewer" => self.config.ai.reviewer.clone(),
             "ai.reviewee" => self.config.ai.reviewee.clone(),
             "ai.prompt_dir" => self
