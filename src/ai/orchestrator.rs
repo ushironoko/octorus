@@ -390,9 +390,13 @@ impl Orchestrator {
 
                 // In review_only Final mode, flush any buffered proposal so the
                 // last accepted plan is posted to the PR before the Approved
-                // event terminates the rally.
+                // event terminates the rally. If the user aborts the
+                // confirmation dialog, propagate Aborted instead of marking
+                // the rally Approved.
                 if self.config.review_only {
-                    self.flush_final_proposal_if_buffered().await;
+                    if let Some(result) = self.flush_final_proposal_if_buffered(iteration).await {
+                        return Ok(result);
+                    }
                 }
 
                 self.session.update_state(RallyState::Completed);
@@ -1123,8 +1127,12 @@ impl Orchestrator {
             self.paused = false;
 
             // Flush any buffered Final proposal before terminating so the
-            // best plan reached is posted to the PR.
-            self.flush_final_proposal_if_buffered().await;
+            // best plan reached is posted to the PR. If the user aborts the
+            // confirmation dialog, propagate Aborted instead of marking the
+            // rally ReviewOnlyCompleted.
+            if let Some(result) = self.flush_final_proposal_if_buffered(iteration).await {
+                return Ok(ReviewOnlyOutcome::Terminate(result));
+            }
 
             self.session.update_state(RallyState::Completed);
             if let Err(e) = write_session(&self.session) {
@@ -1261,18 +1269,27 @@ impl Orchestrator {
     }
 
     /// Flush a buffered proposal (Final strategy) at rally termination.
-    /// Best-effort: failures are logged but do not change the terminal result.
-    async fn flush_final_proposal_if_buffered(&mut self) {
+    ///
+    /// Returns `Some(RallyResult::Aborted)` only if the user explicitly aborted
+    /// during the post-confirmation dialog (detected via `session.state ==
+    /// Aborted` after `maybe_post_proposal_comment` returns Err). Non-abort
+    /// errors (network failure, gh missing, etc.) remain best-effort: logged
+    /// and dropped so the rally still terminates with its prior verdict.
+    async fn flush_final_proposal_if_buffered(&mut self, iteration: u32) -> Option<RallyResult> {
         if !matches!(
             self.config.post_reviewee_proposals,
             ProposalPostStrategy::Final
         ) {
-            return;
+            return None;
         }
-        let Some(proposal) = self.last_unposted_proposal.take() else {
-            return;
-        };
+        let proposal = self.last_unposted_proposal.take()?;
         if let Err(e) = self.maybe_post_proposal_comment(&proposal).await {
+            if self.session.state == RallyState::Aborted {
+                return Some(RallyResult::Aborted {
+                    iteration,
+                    reason: e.to_string(),
+                });
+            }
             warn!("Failed to flush final proposal at termination: {}", e);
             self.send_event(RallyEvent::Log(format!(
                 "Warning: failed to post final proposal: {}",
@@ -1280,6 +1297,7 @@ impl Orchestrator {
             )))
             .await;
         }
+        None
     }
 
     async fn run_reviewee_with_timeout(
@@ -2961,6 +2979,195 @@ mod tests {
             0,
             "None strategy must never post proposals"
         );
+    }
+
+    /// Builds an orchestrator for tests that need to drive the
+    /// post-confirmation flow from outside via the command channel.
+    /// Returns the same shape as `make_with_strategy` plus the command
+    /// sender so the test can deliver `Abort` while the orchestrator is
+    /// blocked on `WaitingForPostConfirmation`.
+    fn make_with_strategy_and_cmd_tx(
+        review_only: bool,
+        reviewer_actions: Vec<ReviewAction>,
+        max_iterations: u32,
+        strategy: crate::config::ProposalPostStrategy,
+    ) -> (
+        Orchestrator,
+        mpsc::Receiver<RallyEvent>,
+        mpsc::Sender<OrchestratorCommand>,
+    ) {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let reviewer_calls = Arc::new(AtomicUsize::new(0));
+        let reviewee_calls = Arc::new(AtomicUsize::new(0));
+        let proposal_calls = Arc::new(AtomicUsize::new(0));
+
+        let reviewer = MockAdapter {
+            name: "mock-reviewer",
+            reviewer_calls: reviewer_calls.clone(),
+            reviewee_calls: reviewee_calls.clone(),
+            proposal_calls: proposal_calls.clone(),
+            reviewer_actions: reviewer_actions.clone(),
+            proposal_statuses: vec![],
+            proposal_adapter_errors: vec![],
+        };
+        let reviewee = MockAdapter {
+            name: "mock-reviewee",
+            reviewer_calls,
+            reviewee_calls,
+            proposal_calls,
+            reviewer_actions,
+            proposal_statuses: vec![],
+            proposal_adapter_errors: vec![],
+        };
+
+        let (event_tx, event_rx) = mpsc::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+
+        let config = AiConfig {
+            review_only,
+            max_iterations,
+            post_reviewee_proposals: strategy,
+            ..Default::default()
+        };
+
+        let prompt_loader = PromptLoader::new(&config, std::path::Path::new("."));
+        let session = RallySession::new("owner/repo", 1);
+
+        let orchestrator = Orchestrator {
+            repo: "owner/repo".to_string(),
+            pr_number: 1,
+            config,
+            reviewer_adapter: Box::new(reviewer),
+            reviewee_adapter: Box::new(reviewee),
+            session,
+            context: None,
+            seed_review: None,
+            last_review: None,
+            last_fix: None,
+            last_proposal: None,
+            last_unposted_proposal: None,
+            event_sender: event_tx,
+            prompt_loader,
+            command_receiver: Some(cmd_rx),
+            paused: false,
+        };
+
+        (orchestrator, event_rx, cmd_tx)
+    }
+
+    /// Drive the run task in non-local mode: auto-approve any preceding
+    /// Review/Fix post-confirmation events (the actual `gh` call fails
+    /// silently with no network access — which is the desired warn-and-
+    /// continue path), and send `Abort` on the *proposal* confirmation.
+    /// Returns the orchestrator's final result, propagating panic/timeout
+    /// as test failure.
+    async fn run_and_abort_on_proposal_post_confirm(
+        mut orch: Orchestrator,
+        mut event_rx: mpsc::Receiver<RallyEvent>,
+        cmd_tx: mpsc::Sender<OrchestratorCommand>,
+    ) -> RallyResult {
+        let run_handle = tokio::spawn(async move { orch.run().await });
+
+        let saw_confirm = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    RallyEvent::ReviewPostConfirmNeeded(_)
+                    | RallyEvent::FixPostConfirmNeeded(_) => {
+                        cmd_tx
+                            .send(OrchestratorCommand::PostConfirmResponse(true))
+                            .await
+                            .expect("cmd channel closed");
+                    }
+                    RallyEvent::ProposalPostConfirmNeeded(_) => {
+                        cmd_tx
+                            .send(OrchestratorCommand::Abort)
+                            .await
+                            .expect("cmd channel closed");
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            false
+        })
+        .await
+        .expect("timed out waiting for ProposalPostConfirmNeeded");
+        assert!(
+            saw_confirm,
+            "ProposalPostConfirmNeeded must be emitted before rally terminates"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), run_handle)
+            .await
+            .expect("rally did not terminate within 5s after abort")
+            .expect("run task panicked")
+            .expect("run returned Err")
+    }
+
+    /// Override the test context to non-local mode so
+    /// `maybe_post_proposal_comment` runs the user-confirmation flow
+    /// (which is where the abort path is exercised). Stays in-memory: no
+    /// real network call happens because the test sends `Abort` before
+    /// the orchestrator can dispatch `post_proposal_comment`.
+    fn make_remote_context() -> Context {
+        let mut ctx = make_local_context();
+        ctx.local_mode = false;
+        ctx
+    }
+
+    #[tokio::test]
+    async fn test_review_only_final_abort_at_approve_flush_returns_aborted() {
+        // Regression: Final strategy buffers a proposal during iteration 1
+        // (RC). On iteration 2 the reviewer approves; the Approve path then
+        // calls `flush_final_proposal_if_buffered`, which enters the
+        // user-confirmation flow because local_mode=false and auto_post=false.
+        // When the user aborts, the rally must terminate with `Aborted`, not
+        // `Approved` — otherwise the abort signal is silently swallowed.
+        let (mut orch, event_rx, cmd_tx) = make_with_strategy_and_cmd_tx(
+            true,
+            vec![ReviewAction::RequestChanges, ReviewAction::Approve],
+            5,
+            crate::config::ProposalPostStrategy::Final,
+        );
+        orch.set_context(make_remote_context());
+
+        let result = run_and_abort_on_proposal_post_confirm(orch, event_rx, cmd_tx).await;
+
+        match result {
+            RallyResult::Aborted { .. } => {}
+            other => panic!(
+                "expected Aborted when user aborts during terminal Approve-path flush, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_review_only_final_abort_at_max_iterations_flush_returns_aborted() {
+        // Same regression as above, on the other terminal flush site:
+        // when max_iterations is reached the orchestrator also calls
+        // `flush_final_proposal_if_buffered` before emitting
+        // `ReviewOnlyCompleted`. A user abort during that flush must
+        // terminate with `Aborted`, not `ReviewOnlyCompleted`.
+        let (mut orch, event_rx, cmd_tx) = make_with_strategy_and_cmd_tx(
+            true,
+            vec![ReviewAction::RequestChanges; 4],
+            3,
+            crate::config::ProposalPostStrategy::Final,
+        );
+        orch.set_context(make_remote_context());
+
+        let result = run_and_abort_on_proposal_post_confirm(orch, event_rx, cmd_tx).await;
+
+        match result {
+            RallyResult::Aborted { .. } => {}
+            other => panic!(
+                "expected Aborted when user aborts during max_iterations flush, got {:?}",
+                other
+            ),
+        }
     }
 
     #[tokio::test]
