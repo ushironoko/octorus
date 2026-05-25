@@ -17,8 +17,19 @@ pub struct AiConfig {
     /// Use Claude Code's --allowedTools format (e.g., "Skill", "Bash(git push:*)").
     #[serde(default)]
     pub reviewee_additional_tools: Vec<String>,
-    /// Additional read-only tools for reviewee in proposal mode (Claude adapter only).
-    /// MUST NOT include Edit/Write or git-mutating commands.
+    /// Additional read-only tools to layer on top of the proposal-mode
+    /// allowlist (Claude adapter only).
+    ///
+    /// Proposal mode is a hard no-shell / no-mutation boundary. The base
+    /// allowlist is `Read,Glob,Grep` and a separate `--disallowedTools`
+    /// layer denies `Bash,Edit,Write,NotebookEdit` at the agent layer.
+    ///
+    /// To preserve that boundary, this field is validated **fail-closed** at
+    /// `ClaudeAdapter::new`: any entry that equals `Bash`, `Edit`, `Write`,
+    /// or `NotebookEdit`, or that matches the pattern `Bash(...)`, causes
+    /// adapter construction (and therefore orchestrator construction) to
+    /// return an error. Only purely read-only tool keys (e.g. `WebSearch`,
+    /// `Skill`) should be added here.
     #[serde(default)]
     pub reviewee_proposal_additional_tools: Vec<String>,
     /// If true, AI Rally posts reviews/fix comments to PR without confirmation.
@@ -42,7 +53,12 @@ pub struct AiConfig {
     pub review_only: bool,
     /// Controls when reviewee proposals are posted to the PR as comments.
     ///
-    /// - `Final` (default): only post the final proposal once the loop terminates.
+    /// Proposals are always produced under the same fail-closed boundary as
+    /// `reviewee_proposal_additional_tools` (no shell, no Edit/Write); this
+    /// setting only governs *when* the resulting plans are visible on the PR.
+    ///
+    /// - `Final` (default): only post the final proposal once the loop terminates
+    ///   (either at reviewer Approve or at `max_iterations`).
     /// - `Each`: post every proposal as it is produced.
     /// - `None`: never post proposals; they remain in session history only.
     #[serde(default)]

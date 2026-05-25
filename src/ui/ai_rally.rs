@@ -304,7 +304,11 @@ fn render_waiting_prompt(
                         .take(5)
                         .map(|s| s.as_str())
                         .collect();
-                    format!("{} (+{} more)", shown.join(", "), info.target_files.len() - 5)
+                    format!(
+                        "{} (+{} more)",
+                        shown.join(", "),
+                        info.target_files.len() - 5
+                    )
                 };
                 (
                     " Reviewee Proposal Post Confirmation ",

@@ -768,7 +768,9 @@ post_reviewee_proposals = "each"
         .unwrap();
 
         let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
-        assert!(config.local_overrides.contains("ai.post_reviewee_proposals"));
+        assert!(config
+            .local_overrides
+            .contains("ai.post_reviewee_proposals"));
     }
 
     #[test]

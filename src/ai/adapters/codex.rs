@@ -9,9 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::ai::adapter::{
-    AgentAdapter, Context, RevieweeOutput, RevieweeProposal, ReviewerOutput,
-};
+use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, RevieweeProposal, ReviewerOutput};
 use crate::ai::orchestrator::RallyEvent;
 
 // Codex requires additionalProperties: false for all objects in the schema

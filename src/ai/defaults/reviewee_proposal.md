@@ -22,13 +22,15 @@ PR #{{pr_number}}: {{pr_title}}
 
 ## STRICT CONSTRAINTS
 
-- You have ONLY read-only tools: Read, Glob, Grep, `git status`, `git diff`,
-  `git log`, `git show`, `git branch` (list only), `gh pr view`, `gh pr diff`,
-  `gh pr checks`, `gh api --method GET`.
-- You CANNOT use Edit or Write. You CANNOT run any git command that mutates
-  state (add, commit, push, stash, switch, branch -d, merge, rebase, reset,
-  cherry-pick, revert, checkout, restore, tag, rm, clean).
-- Do NOT propose changes you have not verified by reading the actual files.
+- You have ONLY these tools: Read, Glob, Grep. There is no shell access.
+- You CANNOT execute any command. Edit, Write, NotebookEdit, and every Bash
+  invocation are denied at the agent layer. Do not attempt them.
+- You CANNOT inspect git state, branches, or remote PRs through tools. Reason
+  exclusively from the file contents you can Read and from the review
+  feedback above. The diff context the reviewer is working from has been
+  provided to them; do not try to refetch it.
+- Do NOT propose changes you have not verified by reading the actual files
+  with the Read tool.
 - Your job is to design and justify a fix plan — not to implement it.
 
 ## Your Task

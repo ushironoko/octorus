@@ -740,9 +740,7 @@ impl App {
                             }
                             RallyEvent::ReviewPostConfirmNeeded(info) => {
                                 rally_state.pending_post_confirmation =
-                                    crate::app::PendingPostConfirmation::Review(
-                                        info.clone(),
-                                    );
+                                    crate::app::PendingPostConfirmation::Review(info.clone());
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!(
@@ -764,9 +762,7 @@ impl App {
                             }
                             RallyEvent::ProposalPostConfirmNeeded(info) => {
                                 rally_state.pending_post_confirmation =
-                                    crate::app::PendingPostConfirmation::Proposal(
-                                        info.clone(),
-                                    );
+                                    crate::app::PendingPostConfirmation::Proposal(info.clone());
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!(

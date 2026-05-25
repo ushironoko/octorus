@@ -1026,9 +1026,10 @@ impl Orchestrator {
             let previous_review = self.last_review.as_ref().ok_or_else(|| {
                 anyhow!("review_only re-review: missing previous reviewer output")
             })?;
-            let proposal = self.last_proposal.as_ref().ok_or_else(|| {
-                anyhow!("review_only re-review: missing previous proposal")
-            })?;
+            let proposal = self
+                .last_proposal
+                .as_ref()
+                .ok_or_else(|| anyhow!("review_only re-review: missing previous proposal"))?;
             self.prompt_loader.load_rereview_proposal_prompt(
                 context,
                 iteration,
@@ -1091,7 +1092,8 @@ impl Orchestrator {
 
         timeout(
             duration,
-            self.reviewee_adapter.run_reviewee_proposal(&prompt, context),
+            self.reviewee_adapter
+                .run_reviewee_proposal(&prompt, context),
         )
         .await
         .map_err(|_| {
@@ -1214,12 +1216,10 @@ impl Orchestrator {
                     ProposalPostStrategy::Each => {
                         if let Err(e) = self.maybe_post_proposal_comment(&proposal).await {
                             if self.session.state == RallyState::Aborted {
-                                return Ok(ReviewOnlyOutcome::Terminate(
-                                    RallyResult::Aborted {
-                                        iteration,
-                                        reason: e.to_string(),
-                                    },
-                                ));
+                                return Ok(ReviewOnlyOutcome::Terminate(RallyResult::Aborted {
+                                    iteration,
+                                    reason: e.to_string(),
+                                }));
                             }
                             warn!("Failed to post proposal comment: {}", e);
                         }
@@ -1525,10 +1525,7 @@ impl Orchestrator {
 
     /// Wrapper that optionally asks for user confirmation before posting
     /// a reviewee proposal as a PR comment. Mirrors `maybe_post_fix_comment`.
-    async fn maybe_post_proposal_comment(
-        &mut self,
-        proposal: &RevieweeProposal,
-    ) -> Result<()> {
+    async fn maybe_post_proposal_comment(&mut self, proposal: &RevieweeProposal) -> Result<()> {
         if self.context.as_ref().is_some_and(|c| c.local_mode) {
             return self.post_proposal_comment(proposal).await;
         }
@@ -2364,11 +2361,8 @@ mod tests {
                 .get(n)
                 .copied()
                 .unwrap_or(crate::ai::adapter::RevieweeProposalStatus::Proposed);
-            let error_details = matches!(
-                status,
-                crate::ai::adapter::RevieweeProposalStatus::Error
-            )
-            .then(|| "mock error".to_string());
+            let error_details = matches!(status, crate::ai::adapter::RevieweeProposalStatus::Error)
+                .then(|| "mock error".to_string());
             Ok(crate::ai::adapter::RevieweeProposal {
                 status,
                 summary: "mock proposal summary".to_string(),
@@ -2569,17 +2563,23 @@ mod tests {
         let result = orchestrator.run().await.unwrap();
 
         assert_eq!(
-            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewee_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "reviewee fix phase must NEVER be called in review_only mode"
         );
         assert_eq!(
-            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             3,
             "reviewer runs max_iterations times"
         );
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             2,
             "proposal runs max_iterations-1 times (last iteration terminates without proposal)"
         );
@@ -2623,17 +2623,23 @@ mod tests {
         let _ = orchestrator.run().await.unwrap();
 
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             1,
             "proposal runs exactly once with max_iterations=2"
         );
         assert_eq!(
-            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewee_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "reviewee fix phase must not run"
         );
         assert_eq!(
-            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             2,
             "reviewer runs twice (once per iteration)"
         );
@@ -2689,27 +2695,29 @@ mod tests {
         // When review_only is true and reviewer approves, the existing
         // Approve path handles it (emits Approved event, not ReviewOnlyCompleted),
         // and no proposal is generated.
-        let (mut orchestrator, counters, mut event_rx) = make_orchestrator_with_mocks_full(
-            true,
-            vec![ReviewAction::Approve],
-            vec![],
-            3,
-        );
+        let (mut orchestrator, counters, mut event_rx) =
+            make_orchestrator_with_mocks_full(true, vec![ReviewAction::Approve], vec![], 3);
         orchestrator.set_context(make_local_context());
 
         let _ = orchestrator.run().await.unwrap();
 
         assert_eq!(
-            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
         assert_eq!(
-            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewee_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "reviewee fix phase must NOT be called when reviewer approves"
         );
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "proposal must NOT be called when reviewer approves"
         );
@@ -2743,17 +2751,23 @@ mod tests {
         let result = orchestrator.run().await.unwrap();
 
         assert_eq!(
-            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             3,
             "reviewer runs three times: RC, RC, Approve"
         );
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             2,
             "proposal runs twice: after the two RC verdicts"
         );
         assert_eq!(
-            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewee_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "reviewee fix phase never runs in review_only mode"
         );
@@ -2784,22 +2798,22 @@ mod tests {
         // on the first reviewer cycle without ever invoking proposal. This
         // preserves backward compatibility with the old single-shot review_only
         // behavior for users who deliberately set max_iterations=1.
-        let (mut orchestrator, counters, _event_rx) = make_orchestrator_with_mocks_full(
-            true,
-            vec![ReviewAction::RequestChanges],
-            vec![],
-            1,
-        );
+        let (mut orchestrator, counters, _event_rx) =
+            make_orchestrator_with_mocks_full(true, vec![ReviewAction::RequestChanges], vec![], 1);
         orchestrator.set_context(make_local_context());
 
         let result = orchestrator.run().await.unwrap();
 
         assert_eq!(
-            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "proposal must NOT run when max_iterations=1"
         );
@@ -2913,7 +2927,9 @@ mod tests {
         let _ = orch.run().await.unwrap();
 
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             2
         );
         assert_eq!(
@@ -2963,7 +2979,10 @@ mod tests {
 
         let mut saw_proposing = false;
         while let Ok(event) = event_rx.try_recv() {
-            if matches!(event, RallyEvent::StateChanged(RallyState::RevieweeProposing)) {
+            if matches!(
+                event,
+                RallyEvent::StateChanged(RallyState::RevieweeProposing)
+            ) {
                 saw_proposing = true;
             }
         }
@@ -3000,12 +3019,16 @@ mod tests {
         }
 
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             1,
             "exactly one proposal call before termination"
         );
         assert_eq!(
-            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             1,
             "only the first reviewer cycle ran"
         );
@@ -3046,7 +3069,9 @@ mod tests {
         );
 
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
     }
@@ -3064,13 +3089,23 @@ mod tests {
 
         let _ = orchestrator.run().await.unwrap();
 
-        assert!(counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
         assert!(
-            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            counters
+                .reviewer_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1
+        );
+        assert!(
+            counters
+                .reviewee_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1,
             "reviewee must run in normal mode when reviewer requests changes"
         );
         assert_eq!(
-            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters
+                .proposal_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             0,
             "proposal must NOT be called in normal mode"
         );

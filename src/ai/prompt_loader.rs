@@ -318,8 +318,7 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
         review: &ReviewerOutput,
         iteration: u32,
     ) -> String {
-        let template =
-            self.load_template("reviewee_proposal.md", defaults::REVIEWEE_PROPOSAL);
+        let template = self.load_template("reviewee_proposal.md", defaults::REVIEWEE_PROPOSAL);
 
         let comments_text = if review.comments.is_empty() {
             "None".to_string()
@@ -410,8 +409,7 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
         proposal: &RevieweeProposal,
         current_diff: &str,
     ) -> String {
-        let template =
-            self.load_template("rereview_proposal.md", defaults::REREVIEW_PROPOSAL);
+        let template = self.load_template("rereview_proposal.md", defaults::REREVIEW_PROPOSAL);
 
         let previous_blocking = if previous_review.blocking_issues.is_empty() {
             "None".to_string()
@@ -764,15 +762,33 @@ mod tests {
         assert!(rendered.contains("Extract helper"));
         assert!(rendered.contains("STRICT CONSTRAINTS"));
         assert!(rendered.contains("FIX PROPOSAL"));
+        assert!(
+            rendered.contains("Read, Glob, Grep"),
+            "proposal prompt must advertise read-only tool set explicitly:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no shell access"),
+            "proposal prompt must state the no-shell boundary:\n{rendered}"
+        );
 
-        // Defensive: no mutating language in the body. These keywords were
-        // present in the reviewee.md prompt (fix mode); their absence here
-        // means we did not accidentally include git_operations.
+        // Defensive: the prompt must not advertise any shell-backed tool
+        // pattern. `Bash(` (any allowlist-style pattern) and bare git/gh
+        // subcommand references would mislead the agent into trying commands
+        // it will get denied for. Edit/Write/NotebookEdit are intentionally
+        // named in the deny clause, so we don't bare-string check them here.
         for forbidden in &[
+            "Bash(",
             "git add",
             "git commit",
             "git push",
             "git stash",
+            "git status",
+            "git diff",
+            "git log",
+            "git show",
+            "git branch",
+            "gh pr ",
+            "gh api",
             "Stage files",
             "Commit your changes",
         ] {
