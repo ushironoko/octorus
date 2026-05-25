@@ -357,7 +357,9 @@ async fn run_headless_event_loop(
         match event {
             RallyEvent::RallyStarted { review_only } => {
                 if review_only {
-                    eprintln!("\n[Mode] Review Only — reviewee (fix) phase will be skipped");
+                    eprintln!(
+                        "\n[Mode] Review Only — proposal iteration mode (reviewee designs fix plans, no code changes)"
+                    );
                 } else {
                     eprintln!("\n[Mode] Standard (review + fix)");
                 }
@@ -372,6 +374,9 @@ async fn run_headless_event_loop(
                 }
                 RallyState::RevieweeFix => {
                     eprintln!("[Reviewee] Fixing...");
+                }
+                RallyState::RevieweeProposing => {
+                    eprintln!("[Reviewee] Designing fix proposal...");
                 }
                 RallyState::Completed => {
                     // Will be handled by Approved event
@@ -418,15 +423,15 @@ async fn run_headless_event_loop(
             RallyEvent::ReviewOnlyCompleted(output) => {
                 let action = format!("{:?}", output.action);
                 eprintln!(
-                    "\n[Review-only completed] action={} summary={}",
-                    action, output.summary
+                    "\n[Review-only completed] Terminated without approval after {} iteration(s). final_action={} summary={}",
+                    current_iteration, action, output.summary
                 );
                 let summary = output.summary.clone();
                 last_review = Some(output);
                 return HeadlessOutcome {
                     result: HeadlessResult::NotApproved(format!(
-                        "Review-only mode: action={}; {}",
-                        action, summary
+                        "Review-only mode: terminated without approval after {} iterations (final action={}; {})",
+                        current_iteration, action, summary
                     )),
                     iterations: current_iteration,
                     last_review,
@@ -494,6 +499,34 @@ async fn run_headless_event_loop(
                     "  [Post fix] {} (files: {})",
                     info.summary,
                     info.files_modified.join(", ")
+                );
+                if local_mode {
+                    eprintln!("  -> Skipping (local mode, no PR to post to)");
+                    let _ = cmd_tx
+                        .send(OrchestratorCommand::PostConfirmResponse(false))
+                        .await;
+                } else {
+                    eprintln!("  -> Auto-approving post (headless mode)");
+                    let _ = cmd_tx
+                        .send(OrchestratorCommand::PostConfirmResponse(true))
+                        .await;
+                }
+            }
+            RallyEvent::ProposalCompleted(p) => {
+                eprintln!(
+                    "[Proposal][iter {}] {} ({} plan item(s), files: {})",
+                    current_iteration,
+                    p.summary,
+                    p.plan.len(),
+                    p.target_files().join(", ")
+                );
+            }
+            RallyEvent::ProposalPostConfirmNeeded(info) => {
+                eprintln!(
+                    "  [Post proposal] {} ({} plan item(s), files: {})",
+                    info.summary,
+                    info.plan_item_count,
+                    info.target_files.join(", ")
                 );
                 if local_mode {
                     eprintln!("  -> Skipping (local mode, no PR to post to)");

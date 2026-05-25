@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use xdg::BaseDirectories;
 
-use super::{RallyState, RevieweeOutput, ReviewerOutput};
+use super::{RallyState, RevieweeOutput, RevieweeProposal, ReviewerOutput};
 use crate::cache::sanitize_repo_name;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +28,7 @@ pub struct RallyHistoryEntry {
 pub enum HistoryEntryType {
     Review(ReviewerOutput),
     Fix(RevieweeOutput),
+    Proposal(RevieweeProposal),
 }
 
 fn rally_dir(repo: &str, pr_number: u32) -> Result<PathBuf> {
@@ -98,6 +99,7 @@ pub fn write_history_entry(
     let filename = match entry {
         HistoryEntryType::Review(_) => format!("{:03}_review.json", iteration),
         HistoryEntryType::Fix(_) => format!("{:03}_fix.json", iteration),
+        HistoryEntryType::Proposal(_) => format!("{:03}_proposal.json", iteration),
     };
 
     let path = dir.join(filename);
@@ -266,6 +268,53 @@ mod tests {
               "blocking_issues": [
                 "Error handling"
               ]
+            }
+          },
+          "timestamp": "2024-01-01T00:00:00Z"
+        }
+        "#);
+    }
+
+    #[test]
+    fn test_history_entry_proposal_serialization() {
+        use crate::ai::adapter::{ProposalItem, RevieweeProposal, RevieweeProposalStatus};
+        let entry = RallyHistoryEntry {
+            iteration: 2,
+            entry_type: HistoryEntryType::Proposal(RevieweeProposal {
+                status: RevieweeProposalStatus::Proposed,
+                summary: "Refactor auth flow".to_string(),
+                plan: vec![ProposalItem {
+                    target_files: vec!["src/auth.rs".to_string()],
+                    description: "Extract token validation into a helper".to_string(),
+                    rationale: "Reduces duplication and clarifies error paths".to_string(),
+                    addresses_comments: vec!["src/auth.rs:42".to_string()],
+                }],
+                rationale: "Plan addresses all blocking issues".to_string(),
+                open_questions: None,
+                error_details: None,
+            }),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        assert_json_snapshot!(entry, @r#"
+        {
+          "iteration": 2,
+          "entry_type": {
+            "Proposal": {
+              "status": "proposed",
+              "summary": "Refactor auth flow",
+              "plan": [
+                {
+                  "target_files": [
+                    "src/auth.rs"
+                  ],
+                  "description": "Extract token validation into a helper",
+                  "rationale": "Reduces duplication and clarifies error paths",
+                  "addresses_comments": [
+                    "src/auth.rs:42"
+                  ]
+                }
+              ],
+              "rationale": "Plan addresses all blocking issues"
             }
           },
           "timestamp": "2024-01-01T00:00:00Z"

@@ -146,8 +146,8 @@ impl App {
                 RallyState::WaitingForPostConfirmation => {
                     self.send_rally_command(OrchestratorCommand::PostConfirmResponse(true));
                     if let Some(ref mut rally_state) = self.ai_rally_state {
-                        rally_state.pending_review_post = None;
-                        rally_state.pending_fix_post = None;
+                        rally_state.pending_post_confirmation =
+                            crate::app::PendingPostConfirmation::None;
                         rally_state.state = RallyState::RevieweeFix;
                         rally_state.push_log(LogEntry::new(
                             LogEventType::Info,
@@ -200,8 +200,8 @@ impl App {
                 RallyState::WaitingForPostConfirmation => {
                     self.send_rally_command(OrchestratorCommand::PostConfirmResponse(false));
                     if let Some(ref mut rally_state) = self.ai_rally_state {
-                        rally_state.pending_review_post = None;
-                        rally_state.pending_fix_post = None;
+                        rally_state.pending_post_confirmation =
+                            crate::app::PendingPostConfirmation::None;
                         rally_state.state = RallyState::RevieweeFix;
                         rally_state.push_log(LogEntry::new(
                             LogEventType::Info,
@@ -548,8 +548,7 @@ impl App {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
-            pending_review_post: None,
-            pending_fix_post: None,
+            pending_post_confirmation: crate::app::PendingPostConfirmation::None,
             last_visible_log_height: 10,
             pending_config_warning: if warnings.is_empty() {
                 None

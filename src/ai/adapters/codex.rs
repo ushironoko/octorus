@@ -9,7 +9,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, ReviewerOutput};
+use crate::ai::adapter::{
+    AgentAdapter, Context, RevieweeOutput, RevieweeProposal, ReviewerOutput,
+};
 use crate::ai::orchestrator::RallyEvent;
 
 // Codex requires additionalProperties: false for all objects in the schema
@@ -84,6 +86,49 @@ const REVIEWEE_SCHEMA: &str = r#"{
   "required": ["status", "summary", "files_modified"]
 }"#;
 
+const REVIEWEE_PROPOSAL_SCHEMA: &str = r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RevieweeProposal",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "error"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target_files": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "description": {"type": "string"},
+          "rationale": {"type": "string"},
+          "addresses_comments": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "required": ["target_files", "description", "rationale"]
+      }
+    },
+    "rationale": {"type": "string"},
+    "open_questions": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "error_details": {"type": "string"}
+  },
+  "required": ["status", "summary", "plan", "rationale"]
+}"#;
+
 /// Codex-specific errors
 // Error variants for completeness; not all are currently triggered
 #[derive(Debug, Error)]
@@ -115,6 +160,9 @@ are permitted. Edit files directly without staging or committing.\n\n";
 pub struct CodexAdapter {
     reviewer_session_id: Option<String>,
     reviewee_session_id: Option<String>,
+    /// Separate session id for proposal mode so its read-only sandbox is not
+    /// accidentally resumed into a write-capable reviewee session.
+    reviewee_proposal_session_id: Option<String>,
     event_sender: Option<mpsc::Sender<RallyEvent>>,
     /// When true, git write prohibition is prepended to prompts (best-effort)
     local_mode: bool,
@@ -125,6 +173,7 @@ impl CodexAdapter {
         Self {
             reviewer_session_id: None,
             reviewee_session_id: None,
+            reviewee_proposal_session_id: None,
             event_sender: None,
             local_mode: false,
         }
@@ -503,6 +552,36 @@ impl AgentAdapter for CodexAdapter {
         parse_reviewee_output(response.result.as_ref(), "codex")
     }
 
+    async fn run_reviewee_proposal(
+        &mut self,
+        prompt: &str,
+        context: &Context,
+    ) -> Result<RevieweeProposal> {
+        // Proposal mode runs in the same read-only sandbox as the reviewer
+        // (full_auto=false). The OS-level sandbox blocks file writes and any
+        // git/network mutation; the prompt also explicitly forbids mutations.
+        // In local_mode the existing git-write constraint prefix is still
+        // prepended as additional belt-and-suspenders.
+        let effective_prompt = if self.local_mode {
+            format!("{}{}", LOCAL_MODE_GIT_CONSTRAINT, prompt)
+        } else {
+            prompt.to_string()
+        };
+        let response = self
+            .run_codex_streaming(
+                &effective_prompt,
+                REVIEWEE_PROPOSAL_SCHEMA,
+                false, // read-only sandbox
+                context.working_dir.as_deref(),
+                None,
+            )
+            .await?;
+
+        self.reviewee_proposal_session_id = Some(response.session_id.clone());
+
+        parse_reviewee_proposal(response.result.as_ref(), "codex")
+    }
+
     async fn continue_reviewer(&mut self, message: &str) -> Result<ReviewerOutput> {
         let session_id = self
             .reviewer_session_id
@@ -614,7 +693,7 @@ struct CodexResponse {
     result: Option<serde_json::Value>,
 }
 
-use super::common::{parse_reviewee_output, parse_reviewer_output};
+use super::common::{parse_reviewee_output, parse_reviewee_proposal, parse_reviewer_output};
 
 #[cfg(test)]
 mod tests {
@@ -705,5 +784,45 @@ mod tests {
         let json = r#"{"type": "some.unknown.event", "data": "whatever"}"#;
         let event: CodexEvent = serde_json::from_str(json).unwrap();
         assert!(matches!(event, CodexEvent::Unknown));
+    }
+
+    /// Drift detection: the Codex-inline `REVIEWEE_PROPOSAL_SCHEMA` must keep
+    /// the same shape as `src/ai/schemas/reviewee_proposal.json`. They differ
+    /// only in `additionalProperties` (Codex requires it false on every object).
+    /// If a new field is added to one, this test fails until the other catches up.
+    #[test]
+    fn test_proposal_schema_inline_matches_json_file() {
+        let file_schema: serde_json::Value =
+            serde_json::from_str(include_str!("../schemas/reviewee_proposal.json"))
+                .expect("reviewee_proposal.json must be valid JSON");
+        let inline_schema: serde_json::Value = serde_json::from_str(REVIEWEE_PROPOSAL_SCHEMA)
+            .expect("REVIEWEE_PROPOSAL_SCHEMA must be valid JSON");
+
+        // Strip additionalProperties keys recursively so the comparison only
+        // cares about the structural shape.
+        fn strip_additional_properties(v: &mut serde_json::Value) {
+            if let Some(obj) = v.as_object_mut() {
+                obj.remove("additionalProperties");
+                obj.remove("description");
+                for (_, child) in obj.iter_mut() {
+                    strip_additional_properties(child);
+                }
+            } else if let Some(arr) = v.as_array_mut() {
+                for child in arr.iter_mut() {
+                    strip_additional_properties(child);
+                }
+            }
+        }
+
+        let mut a = file_schema;
+        let mut b = inline_schema;
+        strip_additional_properties(&mut a);
+        strip_additional_properties(&mut b);
+
+        assert_eq!(
+            a, b,
+            "REVIEWEE_PROPOSAL_SCHEMA (Codex inline) has drifted from src/ai/schemas/reviewee_proposal.json. \
+             Update both together to keep the schemas aligned."
+        );
     }
 }

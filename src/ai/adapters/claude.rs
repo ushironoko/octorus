@@ -6,12 +6,15 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, ReviewerOutput};
+use crate::ai::adapter::{
+    AgentAdapter, Context, RevieweeOutput, RevieweeProposal, ReviewerOutput,
+};
 use crate::ai::orchestrator::RallyEvent;
 use crate::config::AiConfig;
 
 const REVIEWER_SCHEMA: &str = include_str!("../schemas/reviewer.json");
 const REVIEWEE_SCHEMA: &str = include_str!("../schemas/reviewee.json");
+const REVIEWEE_PROPOSAL_SCHEMA: &str = include_str!("../schemas/reviewee_proposal.json");
 
 /// Git commands to disallow in local mode.
 /// --disallowedTools overrides --allowedTools and settings.local.json.
@@ -29,8 +32,13 @@ pub struct ClaudeAdapter {
     reviewer_allowed_tools: String,
     /// Cached allowed tools string for reviewee (built once at initialization)
     reviewee_allowed_tools: String,
+    /// Cached allowed tools string for reviewee in proposal mode (read-only).
+    reviewee_proposal_allowed_tools: String,
     reviewer_session_id: Option<String>,
     reviewee_session_id: Option<String>,
+    /// Separate session id for proposal mode so its read-only tool set is not
+    /// accidentally resumed from a write-capable reviewee session.
+    reviewee_proposal_session_id: Option<String>,
     event_sender: Option<mpsc::Sender<RallyEvent>>,
     /// When true, git write operations are blocked via --disallowedTools
     local_mode: bool,
@@ -41,8 +49,10 @@ impl ClaudeAdapter {
         Self {
             reviewer_allowed_tools: Self::build_reviewer_allowed_tools(config),
             reviewee_allowed_tools: Self::build_reviewee_allowed_tools(config),
+            reviewee_proposal_allowed_tools: Self::build_reviewee_proposal_allowed_tools(config),
             reviewer_session_id: None,
             reviewee_session_id: None,
+            reviewee_proposal_session_id: None,
             event_sender: None,
             local_mode: false,
         }
@@ -94,6 +104,33 @@ impl ClaudeAdapter {
             base.to_string()
         } else {
             format!("{},{}", base, config.reviewee_additional_tools.join(","))
+        }
+    }
+
+    /// Build allowed tools string for reviewee in proposal mode.
+    /// Strictly read-only: NO Edit, NO Write, NO git mutation, NO build/test.
+    pub(crate) fn build_reviewee_proposal_allowed_tools(config: &AiConfig) -> String {
+        let base = concat!(
+            "Read,Glob,Grep,",
+            // Git: read-only only. git branch listing is allowed but with no -d/-D flag
+            // (subcommand level: `git branch:*` matches both list and delete; we accept this
+            // because the prompt explicitly forbids mutations and Edit/Write are absent).
+            "Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),",
+            "Bash(git branch:*),",
+            // GitHub CLI: read-only PR operations
+            "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),",
+            // GitHub API: only GET requests
+            "Bash(gh api --method GET:*),Bash(gh api -X GET:*)"
+        );
+
+        if config.reviewee_proposal_additional_tools.is_empty() {
+            base.to_string()
+        } else {
+            format!(
+                "{},{}",
+                base,
+                config.reviewee_proposal_additional_tools.join(",")
+            )
         }
     }
 
@@ -411,6 +448,28 @@ impl AgentAdapter for ClaudeAdapter {
         parse_reviewee_output(response.result.as_ref(), "claude")
     }
 
+    async fn run_reviewee_proposal(
+        &mut self,
+        prompt: &str,
+        context: &Context,
+    ) -> Result<RevieweeProposal> {
+        // Read-only proposal session: Edit/Write are not in allowed_tools,
+        // and `local_mode` independently blocks git mutators via --disallowedTools.
+        let response = self
+            .run_claude_streaming(
+                prompt,
+                REVIEWEE_PROPOSAL_SCHEMA,
+                Some(&self.reviewee_proposal_allowed_tools),
+                context.working_dir.as_deref(),
+                None,
+            )
+            .await?;
+
+        self.reviewee_proposal_session_id = Some(response.session_id.clone());
+
+        parse_reviewee_proposal(response.result.as_ref(), "claude")
+    }
+
     async fn continue_reviewer(&mut self, message: &str) -> Result<ReviewerOutput> {
         let session_id = self
             .reviewer_session_id
@@ -544,7 +603,10 @@ struct ClaudeResponse {
     duration_ms: Option<u64>,
 }
 
-use super::common::{parse_reviewee_output, parse_reviewer_output, summarize_json, summarize_text};
+use super::common::{
+    parse_reviewee_output, parse_reviewee_proposal, parse_reviewer_output, summarize_json,
+    summarize_text,
+};
 
 #[cfg(test)]
 mod tests {
@@ -621,6 +683,109 @@ mod tests {
         };
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Bash(gh api --method POST:*)"));
+    }
+
+    #[test]
+    fn test_build_reviewee_proposal_allowed_tools_default_snapshot() {
+        let config = AiConfig::default();
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+        assert_snapshot!(
+            tools,
+            @"Read,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*)"
+        );
+    }
+
+    #[test]
+    fn test_reviewee_proposal_allowed_tools_denylist() {
+        // The proposal tool set is the security boundary for "no code change"
+        // promise of review_only mode. None of these mutating tools may appear.
+        let config = AiConfig::default();
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+
+        let denied = [
+            "Edit",
+            "Write",
+            "NotebookEdit",
+            "Bash(git add",
+            "Bash(git commit",
+            "Bash(git push",
+            "Bash(git stash",
+            "Bash(git switch",
+            "Bash(git merge",
+            "Bash(git rebase",
+            "Bash(git reset",
+            "Bash(git cherry-pick",
+            "Bash(git revert",
+            "Bash(git checkout",
+            "Bash(git restore",
+            "Bash(git rm",
+            "Bash(git clean",
+            "Bash(cargo build",
+            "Bash(cargo test",
+            "Bash(cargo run",
+            "Bash(cargo publish",
+            "Bash(npm install",
+            "Bash(npm run",
+            "Bash(npm publish",
+            "Bash(pnpm install",
+            "Bash(bun install",
+            "Bash(gh pr review",
+            "Bash(gh pr comment",
+            "Bash(gh pr close",
+            "Bash(gh pr merge",
+            "Bash(gh api --method POST",
+            "Bash(gh api -X POST",
+            "Bash(gh api --method PUT",
+            "Bash(gh api --method DELETE",
+        ];
+
+        for d in &denied {
+            assert!(
+                !tools.contains(d),
+                "denied tool '{}' must NOT appear in proposal allowed_tools:\n{}",
+                d,
+                tools
+            );
+        }
+    }
+
+    #[test]
+    fn test_reviewee_proposal_allowed_tools_required() {
+        // Positive: the read-only tools needed to inspect code must be present.
+        let config = AiConfig::default();
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+
+        let required = [
+            "Read",
+            "Glob",
+            "Grep",
+            "Bash(git status:*)",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git show:*)",
+            "Bash(gh pr view:*)",
+            "Bash(gh pr diff:*)",
+            "Bash(gh pr checks:*)",
+            "Bash(gh api --method GET:*)",
+        ];
+        for r in &required {
+            assert!(
+                tools.contains(r),
+                "required tool '{}' must appear in proposal allowed_tools:\n{}",
+                r,
+                tools
+            );
+        }
+    }
+
+    #[test]
+    fn test_reviewee_proposal_with_additional_tools() {
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["Bash(rg:*)".to_string()],
+            ..Default::default()
+        };
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+        assert!(tools.ends_with(",Bash(rg:*)"));
     }
 
     #[test]

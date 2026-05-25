@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::AiConfig;
 
-use super::adapter::{Context, ReviewAction, ReviewerOutput};
+use super::adapter::{Context, ReviewAction, RevieweeProposal, ReviewerOutput};
 
 /// Source of a resolved prompt template
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +24,8 @@ mod defaults {
     pub const REVIEWER: &str = include_str!("defaults/reviewer.md");
     pub const REVIEWEE: &str = include_str!("defaults/reviewee.md");
     pub const REREVIEW: &str = include_str!("defaults/rereview.md");
+    pub const REVIEWEE_PROPOSAL: &str = include_str!("defaults/reviewee_proposal.md");
+    pub const REREVIEW_PROPOSAL: &str = include_str!("defaults/rereview_proposal.md");
 }
 
 /// Prompt loader that reads templates from files or uses defaults.
@@ -165,10 +167,16 @@ impl PromptLoader {
 
     /// Resolve sources for all standard prompt files.
     pub fn resolve_all_sources(&self) -> Vec<(String, PromptSource)> {
-        ["reviewer.md", "reviewee.md", "rereview.md"]
-            .iter()
-            .map(|f| (f.to_string(), self.resolve_source(f)))
-            .collect()
+        [
+            "reviewer.md",
+            "reviewee.md",
+            "rereview.md",
+            "reviewee_proposal.md",
+            "rereview_proposal.md",
+        ]
+        .iter()
+        .map(|f| (f.to_string(), self.resolve_source(f)))
+        .collect()
     }
 
     /// Load the reviewer prompt with variable substitution
@@ -295,6 +303,190 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
         vars.insert("blocking_issues", blocking_text);
         vars.insert("external_comments", external_section);
         vars.insert("git_operations", git_operations.to_string());
+
+        render_template(&template, &vars)
+    }
+
+    /// Load the reviewee proposal prompt with variable substitution.
+    ///
+    /// Unlike `load_reviewee_prompt`, this does NOT inject any `git_operations`
+    /// instruction — proposal mode is strictly read-only and must not even hint
+    /// at git mutating commands.
+    pub fn load_reviewee_proposal_prompt(
+        &self,
+        context: &Context,
+        review: &ReviewerOutput,
+        iteration: u32,
+    ) -> String {
+        let template =
+            self.load_template("reviewee_proposal.md", defaults::REVIEWEE_PROPOSAL);
+
+        let comments_text = if review.comments.is_empty() {
+            "None".to_string()
+        } else {
+            review
+                .comments
+                .iter()
+                .map(|c| {
+                    format!(
+                        "- [{severity:?}] {path}:{line}: {body}",
+                        severity = c.severity,
+                        path = c.path,
+                        line = c.line,
+                        body = c.body
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let blocking_text = if review.blocking_issues.is_empty() {
+            "None".to_string()
+        } else {
+            review
+                .blocking_issues
+                .iter()
+                .map(|i| format!("- {}", i))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let external_section = if context.external_comments.is_empty() {
+            String::new()
+        } else {
+            let text = context
+                .external_comments
+                .iter()
+                .map(|c| {
+                    let location = c
+                        .path
+                        .as_ref()
+                        .map(|p| {
+                            c.line
+                                .map(|l| format!("{}:{}", p, l))
+                                .unwrap_or_else(|| p.clone())
+                        })
+                        .unwrap_or_else(|| "general".to_string());
+                    format!("- [{}] {}: {}", c.source, location, truncate(&c.body, 200))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "\n\n## External Tool Feedback\n\nThe following comments are from external code review tools (Copilot, CodeRabbit, etc.):\n\n{}\n\nNote: Address these comments if they are relevant and valid.\n",
+                text
+            )
+        };
+
+        let review_action = match review.action {
+            ReviewAction::Approve => "Approve",
+            ReviewAction::RequestChanges => "RequestChanges",
+            ReviewAction::Comment => "Comment",
+        };
+
+        let mut vars = HashMap::new();
+        vars.insert("repo", context.repo.clone());
+        vars.insert("pr_number", context.pr_number.to_string());
+        vars.insert("pr_title", context.pr_title.clone());
+        vars.insert("iteration", iteration.to_string());
+        vars.insert("review_summary", review.summary.clone());
+        vars.insert("review_action", review_action.to_string());
+        vars.insert("review_comments", comments_text);
+        vars.insert("blocking_issues", blocking_text);
+        vars.insert("external_comments", external_section);
+
+        render_template(&template, &vars)
+    }
+
+    /// Load the re-review prompt for proposal mode with variable substitution.
+    ///
+    /// Used when the reviewer evaluates a previously-produced `RevieweeProposal`.
+    /// The current diff is passed as-is (no recomputation) because proposal
+    /// mode does not modify code.
+    pub fn load_rereview_proposal_prompt(
+        &self,
+        context: &Context,
+        iteration: u32,
+        previous_review: &ReviewerOutput,
+        proposal: &RevieweeProposal,
+        current_diff: &str,
+    ) -> String {
+        let template =
+            self.load_template("rereview_proposal.md", defaults::REREVIEW_PROPOSAL);
+
+        let previous_blocking = if previous_review.blocking_issues.is_empty() {
+            "None".to_string()
+        } else {
+            previous_review
+                .blocking_issues
+                .iter()
+                .map(|i| format!("- {}", i))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let proposal_items = if proposal.plan.is_empty() {
+            "(no plan items)".to_string()
+        } else {
+            proposal
+                .plan
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let files = item.target_files.join(", ");
+                    let addresses = if item.addresses_comments.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n   addresses: {}", item.addresses_comments.join(", "))
+                    };
+                    format!(
+                        "#{idx}. files: {files}\n   description: {desc}\n   rationale: {rationale}{addresses}",
+                        idx = i + 1,
+                        files = files,
+                        desc = item.description,
+                        rationale = item.rationale,
+                        addresses = addresses,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+
+        let target_files = proposal.target_files();
+        let proposal_target_files = if target_files.is_empty() {
+            "(none)".to_string()
+        } else {
+            target_files
+                .iter()
+                .map(|f| format!("- {}", f))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let proposal_open_questions = match &proposal.open_questions {
+            Some(qs) if !qs.is_empty() => {
+                let body = qs
+                    .iter()
+                    .map(|q| format!("- {}", q))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("\n\n### Open Questions Raised by Reviewee\n{}", body)
+            }
+            _ => String::new(),
+        };
+
+        let mut vars = HashMap::new();
+        vars.insert("repo", context.repo.clone());
+        vars.insert("pr_number", context.pr_number.to_string());
+        vars.insert("pr_title", context.pr_title.clone());
+        vars.insert("iteration", iteration.to_string());
+        vars.insert("previous_review_summary", previous_review.summary.clone());
+        vars.insert("previous_blocking_issues", previous_blocking);
+        vars.insert("proposal_summary", proposal.summary.clone());
+        vars.insert("proposal_rationale", proposal.rationale.clone());
+        vars.insert("proposal_items", proposal_items);
+        vars.insert("proposal_target_files", proposal_target_files);
+        vars.insert("proposal_open_questions", proposal_open_questions);
+        vars.insert("current_diff", current_diff.to_string());
 
         render_template(&template, &vars)
     }
@@ -541,6 +733,116 @@ mod tests {
         assert!(prompt.contains("+new code"));
     }
 
+    #[test]
+    fn test_load_reviewee_proposal_prompt_contains_strict_constraints() {
+        // The proposal prompt must never mention git mutating commands or
+        // Edit/Write tools, even indirectly. This is the security invariant
+        // we promise to the user about review_only mode.
+        let config = AiConfig::default();
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
+        let context = create_test_context();
+        let review = ReviewerOutput {
+            action: ReviewAction::RequestChanges,
+            summary: "Please refactor".to_string(),
+            comments: vec![ReviewComment {
+                path: "src/auth.rs".to_string(),
+                line: 42,
+                body: "Extract helper".to_string(),
+                severity: CommentSeverity::Major,
+            }],
+            blocking_issues: vec!["Reduce duplication".to_string()],
+        };
+
+        let rendered = loader.load_reviewee_proposal_prompt(&context, &review, 2);
+
+        // Positive checks
+        assert!(rendered.contains("owner/repo"));
+        assert!(rendered.contains("PR #123"));
+        assert!(rendered.contains("Iteration 2"));
+        assert!(rendered.contains("Please refactor"));
+        assert!(rendered.contains("src/auth.rs:42"));
+        assert!(rendered.contains("Extract helper"));
+        assert!(rendered.contains("STRICT CONSTRAINTS"));
+        assert!(rendered.contains("FIX PROPOSAL"));
+
+        // Defensive: no mutating language in the body. These keywords were
+        // present in the reviewee.md prompt (fix mode); their absence here
+        // means we did not accidentally include git_operations.
+        for forbidden in &[
+            "git add",
+            "git commit",
+            "git push",
+            "git stash",
+            "Stage files",
+            "Commit your changes",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "proposal prompt must not contain '{}':\n{}",
+                forbidden,
+                rendered
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_rereview_proposal_prompt_renders_plan_items() {
+        use crate::ai::adapter::{ProposalItem, RevieweeProposal, RevieweeProposalStatus};
+        let config = AiConfig::default();
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
+        let context = create_test_context();
+        let prev_review = ReviewerOutput {
+            action: ReviewAction::RequestChanges,
+            summary: "Refactor auth flow".to_string(),
+            comments: vec![],
+            blocking_issues: vec!["Reduce duplication".to_string()],
+        };
+        let proposal = RevieweeProposal {
+            status: RevieweeProposalStatus::Proposed,
+            summary: "Extract token helper".to_string(),
+            plan: vec![
+                ProposalItem {
+                    target_files: vec!["src/auth.rs".to_string()],
+                    description: "Pull token validation into validate_token()".to_string(),
+                    rationale: "Removes the duplicated branches".to_string(),
+                    addresses_comments: vec!["src/auth.rs:42".to_string()],
+                },
+                ProposalItem {
+                    target_files: vec!["src/auth.rs".to_string(), "src/handler.rs".to_string()],
+                    description: "Update call sites".to_string(),
+                    rationale: "Apply the new helper".to_string(),
+                    addresses_comments: vec![],
+                },
+            ],
+            rationale: "Plan addresses all blocking issues".to_string(),
+            open_questions: Some(vec!["Should we also memoize?".to_string()]),
+            error_details: None,
+        };
+
+        let rendered = loader.load_rereview_proposal_prompt(
+            &context,
+            3,
+            &prev_review,
+            &proposal,
+            "+context diff",
+        );
+
+        // Plan items enumerated 1-based
+        assert!(rendered.contains("#1."));
+        assert!(rendered.contains("#2."));
+        // Target files union deduped (src/auth.rs appears once in union)
+        assert!(rendered.contains("- src/auth.rs"));
+        assert!(rendered.contains("- src/handler.rs"));
+        // Open questions section appears when non-empty
+        assert!(rendered.contains("Open Questions Raised by Reviewee"));
+        assert!(rendered.contains("Should we also memoize?"));
+        // Previous review summary
+        assert!(rendered.contains("Refactor auth flow"));
+        assert!(rendered.contains("Reduce duplication"));
+        // Diff embedded
+        assert!(rendered.contains("+context diff"));
+    }
+
     /// Create a PromptLoader that always uses default templates (ignoring custom prompt dir)
     fn create_default_loader() -> PromptLoader {
         PromptLoader {
@@ -657,13 +959,15 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_all_sources_returns_three_files() {
+    fn test_resolve_all_sources_returns_five_files() {
         let loader = create_default_loader();
         let sources = loader.resolve_all_sources();
-        assert_eq!(sources.len(), 3);
+        assert_eq!(sources.len(), 5);
         assert_eq!(sources[0].0, "reviewer.md");
         assert_eq!(sources[1].0, "reviewee.md");
         assert_eq!(sources[2].0, "rereview.md");
+        assert_eq!(sources[3].0, "reviewee_proposal.md");
+        assert_eq!(sources[4].0, "rereview_proposal.md");
         // All should be Embedded since no dirs configured
         for (_, source) in &sources {
             assert_eq!(*source, PromptSource::Embedded);

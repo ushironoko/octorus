@@ -5,13 +5,13 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::warn;
 
-use crate::config::AiConfig;
+use crate::config::{AiConfig, ProposalPostStrategy};
 use crate::github;
 use crate::github::comment::{fetch_discussion_comments, fetch_review_comments};
 
 use super::adapter::{
-    AgentAdapter, Context, ExternalComment, ReviewAction, RevieweeOutput, RevieweeStatus,
-    ReviewerOutput,
+    AgentAdapter, Context, ExternalComment, ReviewAction, RevieweeOutput, RevieweeProposal,
+    RevieweeStatus, ReviewerOutput,
 };
 use super::adapters::create_adapter;
 use super::prompt_loader::PromptLoader;
@@ -41,6 +41,9 @@ pub enum RallyState {
     Initializing,
     ReviewerReviewing,
     RevieweeFix,
+    /// Reviewee is designing a fix proposal (review_only / proposal iteration mode).
+    /// No code mutation is performed in this state.
+    RevieweeProposing,
     WaitingForClarification,
     WaitingForPermission,
     WaitingForPostConfirmation,
@@ -54,20 +57,32 @@ impl RallyState {
     // Kept for state inspection in tests and future multi-agent coordination
     #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
-        !matches!(
-            self,
-            RallyState::Completed | RallyState::Aborted | RallyState::Error
-        )
+        match self {
+            Self::Initializing
+            | Self::ReviewerReviewing
+            | Self::RevieweeFix
+            | Self::RevieweeProposing
+            | Self::WaitingForClarification
+            | Self::WaitingForPermission
+            | Self::WaitingForPostConfirmation => true,
+            Self::Completed | Self::Aborted | Self::Error => false,
+        }
     }
 
     /// Rally が完了、中断、またはエラーで終了したかどうか
     // Kept for state inspection in tests and future multi-agent coordination
     #[allow(dead_code)]
     pub fn is_finished(&self) -> bool {
-        matches!(
-            self,
-            RallyState::Completed | RallyState::Aborted | RallyState::Error
-        )
+        match self {
+            Self::Completed | Self::Aborted | Self::Error => true,
+            Self::Initializing
+            | Self::ReviewerReviewing
+            | Self::RevieweeFix
+            | Self::RevieweeProposing
+            | Self::WaitingForClarification
+            | Self::WaitingForPermission
+            | Self::WaitingForPostConfirmation => false,
+        }
     }
 }
 
@@ -91,11 +106,17 @@ pub enum RallyEvent {
     ClarificationNeeded(String),
     PermissionNeeded(String, String), // action, reason
     Approved(String),                 // summary
-    /// Rally completed in review-only mode with a non-approve verdict.
-    /// Carries the reviewer output so consumers can inspect the action and summary.
+    /// Rally finished review-only proposal iteration mode without reaching Approve.
+    /// Emitted when `max_iterations` is hit. Carries the final reviewer verdict so
+    /// consumers can inspect the last action and summary.
     ReviewOnlyCompleted(ReviewerOutput),
+    /// Reviewee produced a fix proposal in review_only mode.
+    /// Emitted once per iteration after the reviewee proposal step completes.
+    ProposalCompleted(RevieweeProposal),
     ReviewPostConfirmNeeded(ReviewPostInfo),
     FixPostConfirmNeeded(FixPostInfo),
+    /// Post confirmation needed before posting a reviewee proposal to the PR.
+    ProposalPostConfirmNeeded(ProposalPostInfo),
     Error(String),
     Log(String),
     /// Orchestrator has paused at a checkpoint
@@ -120,9 +141,9 @@ pub enum RallyResult {
         iteration: u32,
         summary: String,
     },
-    /// Rally finished in review-only mode. Preserves the reviewer's verdict
-    /// so callers can distinguish approve from request-changes/comment without
-    /// inspecting events.
+    /// Review-only proposal-iteration mode terminated without reaching Approve.
+    /// `iteration` is the total number of reviewer cycles executed (1..=max_iterations).
+    /// `action` and `summary` come from the final reviewer verdict.
     ReviewOnlyCompleted {
         iteration: u32,
         action: ReviewAction,
@@ -156,6 +177,16 @@ pub struct FixPostInfo {
     pub files_modified: Vec<String>,
 }
 
+/// Lightweight DTO for reviewee proposal post confirmation (sent via RallyEvent).
+/// Carries enough info for the UI to render a confirmation dialog without owning
+/// the full proposal payload.
+#[derive(Debug, Clone)]
+pub struct ProposalPostInfo {
+    pub summary: String,
+    pub target_files: Vec<String>,
+    pub plan_item_count: usize,
+}
+
 /// Command sent from TUI to Orchestrator
 #[derive(Debug)]
 pub enum OrchestratorCommand {
@@ -187,12 +218,27 @@ pub struct Orchestrator {
     seed_review: Option<ReviewerOutput>,
     last_review: Option<ReviewerOutput>,
     last_fix: Option<RevieweeOutput>,
+    /// Last reviewee proposal (review_only mode). Used to feed back into the
+    /// next reviewer iteration as the re-review subject.
+    last_proposal: Option<RevieweeProposal>,
+    /// Buffered proposal for `ProposalPostStrategy::Final`. Holds the most
+    /// recent proposal so it can be posted exactly once at rally termination
+    /// (either on Approve or on max_iterations).
+    last_unposted_proposal: Option<RevieweeProposal>,
     event_sender: mpsc::Sender<RallyEvent>,
     prompt_loader: PromptLoader,
     /// Command receiver for TUI commands
     command_receiver: Option<mpsc::Receiver<OrchestratorCommand>>,
     /// Whether a pause has been requested (checked at checkpoints)
     paused: bool,
+}
+
+/// Result of running a single iteration in review_only proposal-iteration mode.
+enum ReviewOnlyOutcome {
+    /// Continue to the next reviewer cycle.
+    Continue,
+    /// Terminate the rally with this result.
+    Terminate(RallyResult),
 }
 
 impl Orchestrator {
@@ -224,6 +270,8 @@ impl Orchestrator {
             seed_review: None,
             last_review: None,
             last_fix: None,
+            last_proposal: None,
+            last_unposted_proposal: None,
             event_sender,
             prompt_loader,
             command_receiver,
@@ -340,6 +388,13 @@ impl Orchestrator {
                 // Clear any pending pause before entering terminal state
                 self.paused = false;
 
+                // In review_only Final mode, flush any buffered proposal so the
+                // last accepted plan is posted to the PR before the Approved
+                // event terminates the rally.
+                if self.config.review_only {
+                    self.flush_final_proposal_if_buffered().await;
+                }
+
                 self.session.update_state(RallyState::Completed);
                 if let Err(e) = write_session(&self.session) {
                     warn!("Failed to write session: {}", e);
@@ -356,28 +411,18 @@ impl Orchestrator {
                 });
             }
 
-            // Review-only mode: terminate after reviewer step regardless of action.
-            // The reviewee phase is bypassed entirely so no Edit/Write tools are exposed.
+            // Review-only mode: enter the proposal iteration sub-flow.
+            // The reviewee fix phase is never entered; instead the reviewee
+            // produces a RevieweeProposal that the reviewer re-evaluates on
+            // the next iteration.
             if self.config.review_only {
-                self.paused = false;
-
-                self.session.update_state(RallyState::Completed);
-                if let Err(e) = write_session(&self.session) {
-                    warn!("Failed to write session: {}", e);
+                match self
+                    .run_review_only_iteration(iteration, &review_result)
+                    .await?
+                {
+                    ReviewOnlyOutcome::Continue => continue,
+                    ReviewOnlyOutcome::Terminate(result) => return Ok(result),
                 }
-
-                let action = review_result.action;
-                let summary = review_result.summary.clone();
-                self.send_event(RallyEvent::ReviewOnlyCompleted(review_result))
-                    .await;
-                self.send_event(RallyEvent::StateChanged(RallyState::Completed))
-                    .await;
-
-                return Ok(RallyResult::ReviewOnlyCompleted {
-                    iteration,
-                    action,
-                    summary,
-                });
             }
 
             // Checkpoint: pause before starting reviewee if requested
@@ -972,8 +1017,27 @@ impl Orchestrator {
     ) -> Result<ReviewerOutput> {
         let prompt = if iteration == 1 {
             self.prompt_loader.load_reviewer_prompt(context, iteration)
+        } else if self.config.review_only {
+            // Proposal-iteration mode: code is unchanged, the reviewer
+            // evaluates the previously produced RevieweeProposal. We pass
+            // `context.diff` (frozen at session start) as `current_diff`
+            // because proposal mode never mutates code, so re-fetching the
+            // diff would only introduce drift from external pushes.
+            let previous_review = self.last_review.as_ref().ok_or_else(|| {
+                anyhow!("review_only re-review: missing previous reviewer output")
+            })?;
+            let proposal = self.last_proposal.as_ref().ok_or_else(|| {
+                anyhow!("review_only re-review: missing previous proposal")
+            })?;
+            self.prompt_loader.load_rereview_proposal_prompt(
+                context,
+                iteration,
+                previous_review,
+                proposal,
+                &context.diff,
+            )
         } else {
-            // Re-review after fixes - fetch updated diff and include fix summary
+            // Normal re-review after fixes - fetch updated diff and include fix summary
             let updated_diff = self.fetch_current_diff().await.unwrap_or_else(|e| {
                 warn!("Failed to fetch updated diff: {}", e);
                 context.diff.clone()
@@ -1012,6 +1076,210 @@ impl Orchestrator {
                 self.config.timeout_secs
             )
         })?
+    }
+
+    async fn run_reviewee_proposal_with_timeout(
+        &mut self,
+        context: &Context,
+        review: &ReviewerOutput,
+        iteration: u32,
+    ) -> Result<RevieweeProposal> {
+        let prompt = self
+            .prompt_loader
+            .load_reviewee_proposal_prompt(context, review, iteration);
+        let duration = Duration::from_secs(self.config.timeout_secs);
+
+        timeout(
+            duration,
+            self.reviewee_adapter.run_reviewee_proposal(&prompt, context),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "Reviewee proposal timeout after {} seconds",
+                self.config.timeout_secs
+            )
+        })?
+    }
+
+    /// One iteration of the review_only proposal flow. Called after the
+    /// reviewer has produced a non-Approve verdict for `iteration`.
+    ///
+    /// - On `iteration >= max_iterations`, terminate with `ReviewOnlyCompleted`
+    ///   carrying the final reviewer verdict.
+    /// - Otherwise, run the reviewee in proposal mode, write its output to
+    ///   history, emit `ProposalCompleted`, store as `last_proposal`, and
+    ///   return `Continue` so the main loop moves to the next reviewer cycle.
+    /// - On `proposal.status == Error` or adapter `Err`, terminate the rally.
+    async fn run_review_only_iteration(
+        &mut self,
+        iteration: u32,
+        review: &ReviewerOutput,
+    ) -> Result<ReviewOnlyOutcome> {
+        // max_iterations reached: no further proposal, terminate now.
+        if iteration >= self.config.max_iterations {
+            self.paused = false;
+
+            // Flush any buffered Final proposal before terminating so the
+            // best plan reached is posted to the PR.
+            self.flush_final_proposal_if_buffered().await;
+
+            self.session.update_state(RallyState::Completed);
+            if let Err(e) = write_session(&self.session) {
+                warn!("Failed to write session: {}", e);
+            }
+
+            let action = review.action;
+            let summary = review.summary.clone();
+            self.send_event(RallyEvent::ReviewOnlyCompleted(review.clone()))
+                .await;
+            self.send_event(RallyEvent::StateChanged(RallyState::Completed))
+                .await;
+
+            return Ok(ReviewOnlyOutcome::Terminate(
+                RallyResult::ReviewOnlyCompleted {
+                    iteration,
+                    action,
+                    summary,
+                },
+            ));
+        }
+
+        // Checkpoint: pause before proposal if requested.
+        if let Some(result) = self.check_pause_at_checkpoint(iteration).await {
+            return Ok(ReviewOnlyOutcome::Terminate(result));
+        }
+
+        // Reviewee designs a fix proposal.
+        self.session.update_state(RallyState::RevieweeProposing);
+        self.send_event(RallyEvent::StateChanged(RallyState::RevieweeProposing))
+            .await;
+        if let Err(e) = write_session(&self.session) {
+            warn!("Failed to write session: {}", e);
+        }
+
+        let external_comments = self.fetch_external_comments().await;
+        if let Some(ref mut ctx) = self.context {
+            ctx.external_comments = external_comments;
+        }
+        let context = self
+            .context
+            .as_ref()
+            .ok_or_else(|| anyhow!("Context not set"))?
+            .clone();
+
+        let proposal = match self
+            .run_reviewee_proposal_with_timeout(&context, review, iteration)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                self.session.update_state(RallyState::Error);
+                let _ = write_session(&self.session);
+                self.send_event(RallyEvent::Error(format!(
+                    "Reviewee proposal failed: {:#}",
+                    e
+                )))
+                .await;
+                self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                    .await;
+                return Err(e);
+            }
+        };
+
+        if let Err(e) = write_history_entry(
+            &self.repo,
+            self.pr_number,
+            iteration,
+            &HistoryEntryType::Proposal(proposal.clone()),
+        ) {
+            warn!("Failed to write proposal history: {}", e);
+            self.send_event(RallyEvent::Log(format!(
+                "Warning: Failed to write proposal history: {}",
+                e
+            )))
+            .await;
+        }
+
+        self.send_event(RallyEvent::ProposalCompleted(proposal.clone()))
+            .await;
+
+        // Branch on proposal status. Error short-circuits the rally; Proposed
+        // proceeds to the next reviewer cycle.
+        match proposal.status {
+            crate::ai::adapter::RevieweeProposalStatus::Proposed => {
+                self.last_proposal = Some(proposal.clone());
+                // Apply post strategy.
+                match self.config.post_reviewee_proposals {
+                    ProposalPostStrategy::Each => {
+                        if let Err(e) = self.maybe_post_proposal_comment(&proposal).await {
+                            if self.session.state == RallyState::Aborted {
+                                return Ok(ReviewOnlyOutcome::Terminate(
+                                    RallyResult::Aborted {
+                                        iteration,
+                                        reason: e.to_string(),
+                                    },
+                                ));
+                            }
+                            warn!("Failed to post proposal comment: {}", e);
+                        }
+                    }
+                    ProposalPostStrategy::Final => {
+                        // Buffer for end-of-rally flush. Overwrites any prior
+                        // unposted proposal because only the most recent plan
+                        // is relevant when the rally terminates.
+                        self.last_unposted_proposal = Some(proposal);
+                    }
+                    ProposalPostStrategy::None => {
+                        // Drop the proposal (kept in history only).
+                    }
+                }
+            }
+            crate::ai::adapter::RevieweeProposalStatus::Error => {
+                self.session.update_state(RallyState::Error);
+                let _ = write_session(&self.session);
+                let error = proposal
+                    .error_details
+                    .clone()
+                    .unwrap_or_else(|| "Reviewee proposal returned error status".to_string());
+                self.send_event(RallyEvent::Error(error.clone())).await;
+                self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                    .await;
+                return Ok(ReviewOnlyOutcome::Terminate(RallyResult::Error {
+                    iteration,
+                    error,
+                }));
+            }
+        }
+
+        // Checkpoint: pause before next reviewer cycle if requested.
+        if let Some(result) = self.check_pause_at_checkpoint(iteration).await {
+            return Ok(ReviewOnlyOutcome::Terminate(result));
+        }
+
+        Ok(ReviewOnlyOutcome::Continue)
+    }
+
+    /// Flush a buffered proposal (Final strategy) at rally termination.
+    /// Best-effort: failures are logged but do not change the terminal result.
+    async fn flush_final_proposal_if_buffered(&mut self) {
+        if !matches!(
+            self.config.post_reviewee_proposals,
+            ProposalPostStrategy::Final
+        ) {
+            return;
+        }
+        let Some(proposal) = self.last_unposted_proposal.take() else {
+            return;
+        };
+        if let Err(e) = self.maybe_post_proposal_comment(&proposal).await {
+            warn!("Failed to flush final proposal at termination: {}", e);
+            self.send_event(RallyEvent::Log(format!(
+                "Warning: failed to post final proposal: {}",
+                e
+            )))
+            .await;
+        }
     }
 
     async fn run_reviewee_with_timeout(
@@ -1251,6 +1519,136 @@ impl Orchestrator {
             // Rate limit mitigation: small delay between API calls
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+
+        Ok(())
+    }
+
+    /// Wrapper that optionally asks for user confirmation before posting
+    /// a reviewee proposal as a PR comment. Mirrors `maybe_post_fix_comment`.
+    async fn maybe_post_proposal_comment(
+        &mut self,
+        proposal: &RevieweeProposal,
+    ) -> Result<()> {
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            return self.post_proposal_comment(proposal).await;
+        }
+
+        if self.config.auto_post {
+            return self.post_proposal_comment(proposal).await;
+        }
+
+        let info = ProposalPostInfo {
+            summary: proposal.summary.clone(),
+            target_files: proposal
+                .target_files()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            plan_item_count: proposal.plan.len(),
+        };
+
+        self.session
+            .update_state(RallyState::WaitingForPostConfirmation);
+        let _ = write_session(&self.session);
+        self.send_event(RallyEvent::ProposalPostConfirmNeeded(info))
+            .await;
+        self.send_event(RallyEvent::StateChanged(
+            RallyState::WaitingForPostConfirmation,
+        ))
+        .await;
+
+        loop {
+            match self.wait_for_command().await {
+                Some(OrchestratorCommand::PostConfirmResponse(true)) => {
+                    self.send_event(RallyEvent::Log(
+                        "User approved proposal comment posting".to_string(),
+                    ))
+                    .await;
+                    return self.post_proposal_comment(proposal).await;
+                }
+                Some(OrchestratorCommand::PostConfirmResponse(false)) => {
+                    self.send_event(RallyEvent::Log(
+                        "User skipped proposal comment posting".to_string(),
+                    ))
+                    .await;
+                    return Ok(());
+                }
+                Some(OrchestratorCommand::Abort) | None => {
+                    self.session.update_state(RallyState::Aborted);
+                    let _ = write_session(&self.session);
+                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                        .await;
+                    return Err(anyhow!("Proposal comment posting aborted by user"));
+                }
+                _ => {
+                    warn!(
+                        "Received invalid command during WaitingForPostConfirmation (proposal), ignoring"
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Post a reviewee proposal as a single PR comment.
+    /// In local_mode this is a no-op (only a Log event is emitted).
+    async fn post_proposal_comment(&self, proposal: &RevieweeProposal) -> Result<()> {
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            self.send_event(RallyEvent::Log(
+                "Local mode: skipping proposal comment posting".to_string(),
+            ))
+            .await;
+            return Ok(());
+        }
+
+        let plan_md = if proposal.plan.is_empty() {
+            "(no plan items)".to_string()
+        } else {
+            proposal
+                .plan
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let files = if item.target_files.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        item.target_files
+                            .iter()
+                            .map(|f| format!("`{}`", f))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    format!(
+                        "### Plan {}\n\n**Files:** {}\n\n**Description:** {}\n\n**Rationale:** {}",
+                        i + 1,
+                        files,
+                        item.description,
+                        item.rationale,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+
+        let body = format!(
+            "[AI Rally - Reviewee Proposal]\n\n{}\n\n## Plan\n\n{}\n\n## Overall Rationale\n\n{}",
+            proposal.summary, plan_md, proposal.rationale,
+        );
+
+        github::submit_review(
+            &self.repo,
+            self.pr_number,
+            crate::app::ReviewAction::Comment,
+            &body,
+        )
+        .await?;
+
+        self.send_event(RallyEvent::Log(format!(
+            "Posted proposal comment to PR #{} ({} plan item(s))",
+            self.pr_number,
+            proposal.plan.len()
+        )))
+        .await;
 
         Ok(())
     }
@@ -1880,11 +2278,25 @@ mod tests {
 
     /// Mock adapter for orchestrator integration tests. Counts invocations
     /// so tests can assert which phases ran.
+    ///
+    /// `reviewer_actions` is consumed by index: the Nth `run_reviewer` call
+    /// returns `reviewer_actions[N]` (0-indexed). Exhausting it is a test bug,
+    /// so the mock panics with the call index for diagnosis.
+    ///
+    /// `proposal_statuses` is consumed similarly. If exhausted, it falls back
+    /// to `Proposed` so tests that don't care about the status don't have to
+    /// pre-populate it.
     struct MockAdapter {
         name: &'static str,
         reviewer_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         reviewee_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        reviewer_action: ReviewAction,
+        proposal_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        reviewer_actions: Vec<ReviewAction>,
+        proposal_statuses: Vec<crate::ai::adapter::RevieweeProposalStatus>,
+        /// When the Nth `run_reviewee_proposal` call is true, the adapter
+        /// returns `Err(...)` instead of an Ok proposal. Used to test the
+        /// adapter-failure path independently from `RevieweeProposalStatus::Error`.
+        proposal_adapter_errors: Vec<bool>,
     }
 
     #[async_trait::async_trait]
@@ -1898,10 +2310,18 @@ mod tests {
             _prompt: &str,
             _context: &Context,
         ) -> Result<ReviewerOutput> {
-            self.reviewer_calls
+            let n = self
+                .reviewer_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let action = *self.reviewer_actions.get(n).unwrap_or_else(|| {
+                panic!(
+                    "MockAdapter: reviewer_actions exhausted at call #{} (len={})",
+                    n,
+                    self.reviewer_actions.len()
+                )
+            });
             Ok(ReviewerOutput {
-                action: self.reviewer_action,
+                action,
                 summary: "mock review summary".to_string(),
                 comments: vec![],
                 blocking_issues: vec![],
@@ -1923,6 +2343,41 @@ mod tests {
                 error_details: None,
             })
         }
+        async fn run_reviewee_proposal(
+            &mut self,
+            _prompt: &str,
+            _context: &Context,
+        ) -> Result<crate::ai::adapter::RevieweeProposal> {
+            let n = self
+                .proposal_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .proposal_adapter_errors
+                .get(n)
+                .copied()
+                .unwrap_or(false)
+            {
+                return Err(anyhow!("simulated proposal adapter failure at call #{}", n));
+            }
+            let status = self
+                .proposal_statuses
+                .get(n)
+                .copied()
+                .unwrap_or(crate::ai::adapter::RevieweeProposalStatus::Proposed);
+            let error_details = matches!(
+                status,
+                crate::ai::adapter::RevieweeProposalStatus::Error
+            )
+            .then(|| "mock error".to_string());
+            Ok(crate::ai::adapter::RevieweeProposal {
+                status,
+                summary: "mock proposal summary".to_string(),
+                plan: vec![],
+                rationale: "mock rationale".to_string(),
+                open_questions: None,
+                error_details,
+            })
+        }
         async fn continue_reviewer(&mut self, _msg: &str) -> Result<ReviewerOutput> {
             unreachable!("continue_reviewer is not exercised in these tests")
         }
@@ -1933,32 +2388,63 @@ mod tests {
         fn set_local_mode(&mut self, _local_mode: bool) {}
     }
 
-    fn make_orchestrator_with_mocks(
+    /// Counters returned by `make_orchestrator_with_mocks`.
+    struct MockCounters {
+        reviewer_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        reviewee_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        proposal_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// Build orchestrator with mock adapters configurable per test.
+    /// `reviewer_actions` cycles through each `run_reviewer` invocation.
+    /// `proposal_statuses` does the same for `run_reviewee_proposal`; if empty
+    /// or exhausted, defaults to `Proposed`.
+    fn make_orchestrator_with_mocks_full(
         review_only: bool,
-        reviewer_action: ReviewAction,
-    ) -> (
-        Orchestrator,
-        std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        mpsc::Receiver<RallyEvent>,
-    ) {
+        reviewer_actions: Vec<ReviewAction>,
+        proposal_statuses: Vec<crate::ai::adapter::RevieweeProposalStatus>,
+        max_iterations: u32,
+    ) -> (Orchestrator, MockCounters, mpsc::Receiver<RallyEvent>) {
+        make_orchestrator_with_mocks_extended(
+            review_only,
+            reviewer_actions,
+            proposal_statuses,
+            vec![],
+            max_iterations,
+        )
+    }
+
+    fn make_orchestrator_with_mocks_extended(
+        review_only: bool,
+        reviewer_actions: Vec<ReviewAction>,
+        proposal_statuses: Vec<crate::ai::adapter::RevieweeProposalStatus>,
+        proposal_adapter_errors: Vec<bool>,
+        max_iterations: u32,
+    ) -> (Orchestrator, MockCounters, mpsc::Receiver<RallyEvent>) {
         use std::sync::atomic::AtomicUsize;
         use std::sync::Arc;
 
         let reviewer_calls = Arc::new(AtomicUsize::new(0));
         let reviewee_calls = Arc::new(AtomicUsize::new(0));
+        let proposal_calls = Arc::new(AtomicUsize::new(0));
 
         let reviewer = MockAdapter {
             name: "mock-reviewer",
             reviewer_calls: reviewer_calls.clone(),
             reviewee_calls: reviewee_calls.clone(),
-            reviewer_action,
+            proposal_calls: proposal_calls.clone(),
+            reviewer_actions: reviewer_actions.clone(),
+            proposal_statuses: proposal_statuses.clone(),
+            proposal_adapter_errors: proposal_adapter_errors.clone(),
         };
         let reviewee = MockAdapter {
             name: "mock-reviewee",
             reviewer_calls: reviewer_calls.clone(),
             reviewee_calls: reviewee_calls.clone(),
-            reviewer_action,
+            proposal_calls: proposal_calls.clone(),
+            reviewer_actions,
+            proposal_statuses,
+            proposal_adapter_errors,
         };
 
         let (event_tx, event_rx) = mpsc::channel(256);
@@ -1966,7 +2452,7 @@ mod tests {
 
         let config = AiConfig {
             review_only,
-            max_iterations: 3,
+            max_iterations,
             ..Default::default()
         };
 
@@ -1984,13 +2470,44 @@ mod tests {
             seed_review: None,
             last_review: None,
             last_fix: None,
+            last_proposal: None,
+            last_unposted_proposal: None,
             event_sender: event_tx,
             prompt_loader,
             command_receiver: Some(cmd_rx),
             paused: false,
         };
 
-        (orchestrator, reviewer_calls, reviewee_calls, event_rx)
+        (
+            orchestrator,
+            MockCounters {
+                reviewer_calls,
+                reviewee_calls,
+                proposal_calls,
+            },
+            event_rx,
+        )
+    }
+
+    /// Convenience wrapper preserving the original signature for tests that
+    /// don't need fine-grained control. Defaults `max_iterations=3` and a
+    /// single reviewer action (which is reused across all reviewer calls by
+    /// padding the Vec).
+    fn make_orchestrator_with_mocks(
+        review_only: bool,
+        reviewer_action: ReviewAction,
+    ) -> (
+        Orchestrator,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        mpsc::Receiver<RallyEvent>,
+    ) {
+        // Repeat the single action enough times to cover max_iterations cycles,
+        // so existing tests that loop until termination don't panic.
+        let actions = vec![reviewer_action; 8];
+        let (orch, counters, rx) =
+            make_orchestrator_with_mocks_full(review_only, actions, vec![], 3);
+        (orch, counters.reviewer_calls, counters.reviewee_calls, rx)
     }
 
     fn make_local_context() -> Context {
@@ -2036,35 +2553,47 @@ mod tests {
 
     #[tokio::test]
     async fn test_review_only_skips_reviewee_on_request_changes() {
-        // When review_only is true and reviewer requests changes,
-        // the reviewee phase MUST NOT run.
-        let (mut orchestrator, reviewer_calls, reviewee_calls, mut event_rx) =
-            make_orchestrator_with_mocks(true, ReviewAction::RequestChanges);
+        // Safety invariant: in review_only mode the reviewee fix phase MUST
+        // NEVER run, regardless of how many proposal iterations happen.
+        // Under the new proposal-iteration spec, reviewer is called up to
+        // max_iterations times and proposal up to max_iterations-1 times;
+        // run_reviewee (Edit/Write-capable) must stay at 0.
+        let (mut orchestrator, counters, mut event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::RequestChanges; 8],
+            vec![],
+            3,
+        );
         orchestrator.set_context(make_local_context());
 
         let result = orchestrator.run().await.unwrap();
 
         assert_eq!(
-            reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "reviewer must be called exactly once"
+            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "reviewee fix phase must NEVER be called in review_only mode"
         );
         assert_eq!(
-            reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "reviewee must NOT be called in review_only mode"
+            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "reviewer runs max_iterations times"
+        );
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "proposal runs max_iterations-1 times (last iteration terminates without proposal)"
         );
         match result {
             RallyResult::ReviewOnlyCompleted {
                 iteration, action, ..
             } => {
-                assert_eq!(iteration, 1);
+                assert_eq!(iteration, 3);
                 assert_eq!(action, ReviewAction::RequestChanges);
             }
             other => panic!("expected ReviewOnlyCompleted, got {:?}", other),
         }
 
-        // Confirm a ReviewOnlyCompleted event was emitted.
+        // Confirm a ReviewOnlyCompleted event was emitted at termination.
         let mut saw_review_only_event = false;
         while let Ok(event) = event_rx.try_recv() {
             if matches!(event, RallyEvent::ReviewOnlyCompleted(_)) {
@@ -2073,25 +2602,116 @@ mod tests {
         }
         assert!(
             saw_review_only_event,
-            "ReviewOnlyCompleted event must be emitted"
+            "ReviewOnlyCompleted event must be emitted at max_iterations"
         );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_runs_proposal_once_after_reviewer_request_changes() {
+        // Slice 1 minimum-flow guarantee: when the reviewer requests changes
+        // on the first iteration and max_iterations=2, the reviewee proposal
+        // phase runs exactly once, then the second reviewer cycle hits
+        // max_iterations and terminates.
+        let (mut orchestrator, counters, _event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::RequestChanges, ReviewAction::RequestChanges],
+            vec![],
+            2,
+        );
+        orchestrator.set_context(make_local_context());
+
+        let _ = orchestrator.run().await.unwrap();
+
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "proposal runs exactly once with max_iterations=2"
+        );
+        assert_eq!(
+            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "reviewee fix phase must not run"
+        );
+        assert_eq!(
+            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "reviewer runs twice (once per iteration)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_proposal_history_written() {
+        // The reviewee proposal must be persisted to session history as
+        // `HistoryEntryType::Proposal`.
+        use crate::ai::session::{history_dir, read_history, HistoryEntryType};
+
+        let pr_number = 8_017_001; // unlikely to collide with other tests
+        let repo = "owner/proposal-history-test";
+
+        // Clean leftover history from previous runs
+        if let Ok(dir) = history_dir(repo, pr_number) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        let (mut orchestrator, _counters, _event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::RequestChanges; 4],
+            vec![],
+            2,
+        );
+        // Override repo/pr_number on the orchestrator
+        orchestrator.repo = repo.to_string();
+        orchestrator.pr_number = pr_number;
+        orchestrator.session = crate::ai::session::RallySession::new(repo, pr_number);
+        orchestrator.set_context(make_local_context());
+
+        let _ = orchestrator.run().await.unwrap();
+
+        let history = read_history(repo, pr_number).expect("history must be readable");
+        let proposal_entries: Vec<_> = history
+            .iter()
+            .filter(|e| matches!(e.entry_type, HistoryEntryType::Proposal(_)))
+            .collect();
+        assert_eq!(
+            proposal_entries.len(),
+            1,
+            "exactly one Proposal entry must be written for max_iterations=2"
+        );
+
+        // Cleanup
+        if let Ok(dir) = history_dir(repo, pr_number) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[tokio::test]
     async fn test_review_only_with_approve_uses_normal_approved_path() {
         // When review_only is true and reviewer approves, the existing
-        // Approve path handles it (emits Approved event, not ReviewOnlyCompleted).
-        let (mut orchestrator, reviewer_calls, reviewee_calls, mut event_rx) =
-            make_orchestrator_with_mocks(true, ReviewAction::Approve);
+        // Approve path handles it (emits Approved event, not ReviewOnlyCompleted),
+        // and no proposal is generated.
+        let (mut orchestrator, counters, mut event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::Approve],
+            vec![],
+            3,
+        );
         orchestrator.set_context(make_local_context());
 
         let _ = orchestrator.run().await.unwrap();
 
-        assert_eq!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
-            reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "reviewee must NOT be called when reviewer approves"
+            "reviewee fix phase must NOT be called when reviewer approves"
+        );
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "proposal must NOT be called when reviewer approves"
         );
 
         let mut saw_approved = false;
@@ -2104,18 +2724,355 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_normal_mode_invokes_reviewee_on_request_changes() {
-        // Sanity check: without review_only, reviewee runs as expected.
-        let (mut orchestrator, reviewer_calls, reviewee_calls, _event_rx) =
-            make_orchestrator_with_mocks(false, ReviewAction::RequestChanges);
+    async fn test_review_only_loops_until_approve() {
+        // reviewer returns RC, RC, Approve in sequence. With max_iterations=5,
+        // the loop terminates at iteration 3 via the Approve path, having run
+        // proposal exactly twice.
+        let (mut orchestrator, counters, mut event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![
+                ReviewAction::RequestChanges,
+                ReviewAction::RequestChanges,
+                ReviewAction::Approve,
+            ],
+            vec![],
+            5,
+        );
+        orchestrator.set_context(make_local_context());
+
+        let result = orchestrator.run().await.unwrap();
+
+        assert_eq!(
+            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "reviewer runs three times: RC, RC, Approve"
+        );
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "proposal runs twice: after the two RC verdicts"
+        );
+        assert_eq!(
+            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "reviewee fix phase never runs in review_only mode"
+        );
+        match result {
+            RallyResult::Approved { iteration, .. } => assert_eq!(iteration, 3),
+            other => panic!("expected Approved at iteration 3, got {:?}", other),
+        }
+
+        let mut saw_approved = false;
+        let mut saw_proposal_completed_count = 0;
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                RallyEvent::Approved(_) => saw_approved = true,
+                RallyEvent::ProposalCompleted(_) => saw_proposal_completed_count += 1,
+                _ => {}
+            }
+        }
+        assert!(saw_approved, "Approved event must be emitted");
+        assert_eq!(
+            saw_proposal_completed_count, 2,
+            "ProposalCompleted must be emitted twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_max_iterations_one_terminates_without_proposal() {
+        // max_iterations=1 with reviewer returning RC: the loop must terminate
+        // on the first reviewer cycle without ever invoking proposal. This
+        // preserves backward compatibility with the old single-shot review_only
+        // behavior for users who deliberately set max_iterations=1.
+        let (mut orchestrator, counters, _event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::RequestChanges],
+            vec![],
+            1,
+        );
+        orchestrator.set_context(make_local_context());
+
+        let result = orchestrator.run().await.unwrap();
+
+        assert_eq!(
+            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "proposal must NOT run when max_iterations=1"
+        );
+        match result {
+            RallyResult::ReviewOnlyCompleted {
+                iteration, action, ..
+            } => {
+                assert_eq!(iteration, 1);
+                assert_eq!(action, ReviewAction::RequestChanges);
+            }
+            other => panic!("expected ReviewOnlyCompleted, got {:?}", other),
+        }
+    }
+
+    /// Helper: build orchestrator with explicit post strategy.
+    fn make_with_strategy(
+        review_only: bool,
+        reviewer_actions: Vec<ReviewAction>,
+        max_iterations: u32,
+        strategy: crate::config::ProposalPostStrategy,
+    ) -> (Orchestrator, MockCounters, mpsc::Receiver<RallyEvent>) {
+        let (mut orch, counters, rx) = make_orchestrator_with_mocks_full(
+            review_only,
+            reviewer_actions,
+            vec![],
+            max_iterations,
+        );
+        orch.config.post_reviewee_proposals = strategy;
+        (orch, counters, rx)
+    }
+
+    /// Count occurrences of the local-mode "skipping proposal comment posting"
+    /// log in the event stream. This is the test proxy for "post was attempted"
+    /// because in local_mode `post_proposal_comment` short-circuits with this
+    /// log line.
+    fn count_proposal_post_attempts(rx: &mut mpsc::Receiver<RallyEvent>) -> usize {
+        let mut n = 0;
+        while let Ok(event) = rx.try_recv() {
+            if let RallyEvent::Log(msg) = event {
+                if msg.contains("Local mode: skipping proposal comment posting") {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    #[tokio::test]
+    async fn test_review_only_post_strategy_final_posts_only_last_proposal() {
+        // Final strategy: proposals are buffered, and only the most recent one
+        // is posted when the rally terminates via Approve. Two RC iterations
+        // produce two proposals; only the latest is flushed at Approve.
+        let (mut orch, _counters, mut rx) = make_with_strategy(
+            true,
+            vec![
+                ReviewAction::RequestChanges,
+                ReviewAction::RequestChanges,
+                ReviewAction::Approve,
+            ],
+            5,
+            crate::config::ProposalPostStrategy::Final,
+        );
+        orch.set_context(make_local_context());
+
+        let _ = orch.run().await.unwrap();
+
+        assert_eq!(
+            count_proposal_post_attempts(&mut rx),
+            1,
+            "Final strategy must post exactly once (at Approve)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_post_strategy_final_on_max_iterations_posts_last() {
+        // Final strategy at max_iterations: the buffered proposal is flushed
+        // even when terminating via ReviewOnlyCompleted (no Approve).
+        let (mut orch, _counters, mut rx) = make_with_strategy(
+            true,
+            vec![ReviewAction::RequestChanges; 4],
+            3,
+            crate::config::ProposalPostStrategy::Final,
+        );
+        orch.set_context(make_local_context());
+
+        let _ = orch.run().await.unwrap();
+
+        assert_eq!(
+            count_proposal_post_attempts(&mut rx),
+            1,
+            "Final strategy must post the last buffered proposal at max_iterations"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_post_strategy_each_posts_every_iteration() {
+        // Each strategy: every proposal is posted immediately after it is
+        // produced. With two RC iterations followed by Approve, two posts.
+        let (mut orch, counters, mut rx) = make_with_strategy(
+            true,
+            vec![
+                ReviewAction::RequestChanges,
+                ReviewAction::RequestChanges,
+                ReviewAction::Approve,
+            ],
+            5,
+            crate::config::ProposalPostStrategy::Each,
+        );
+        orch.set_context(make_local_context());
+
+        let _ = orch.run().await.unwrap();
+
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(
+            count_proposal_post_attempts(&mut rx),
+            2,
+            "Each strategy must post every proposal as it is produced"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_post_strategy_none_skips_all() {
+        // None strategy: proposals are kept in history only; no PR posts.
+        let (mut orch, _counters, mut rx) = make_with_strategy(
+            true,
+            vec![
+                ReviewAction::RequestChanges,
+                ReviewAction::RequestChanges,
+                ReviewAction::Approve,
+            ],
+            5,
+            crate::config::ProposalPostStrategy::None,
+        );
+        orch.set_context(make_local_context());
+
+        let _ = orch.run().await.unwrap();
+
+        assert_eq!(
+            count_proposal_post_attempts(&mut rx),
+            0,
+            "None strategy must never post proposals"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_state_transitions_include_proposing() {
+        // The orchestrator must transition through RevieweeProposing while
+        // designing the proposal so the UI can render the correct status.
+        let (mut orchestrator, _counters, mut event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::RequestChanges, ReviewAction::RequestChanges],
+            vec![],
+            2,
+        );
         orchestrator.set_context(make_local_context());
 
         let _ = orchestrator.run().await.unwrap();
 
-        assert!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        let mut saw_proposing = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, RallyEvent::StateChanged(RallyState::RevieweeProposing)) {
+                saw_proposing = true;
+            }
+        }
         assert!(
-            reviewee_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            saw_proposing,
+            "StateChanged(RevieweeProposing) must appear in the event stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_proposal_error_status_terminates_with_error() {
+        // When the reviewee proposal returns status=error, the rally must
+        // terminate immediately with RallyResult::Error and emit a
+        // RallyEvent::Error so the UI/headless can surface it.
+        let (mut orchestrator, counters, mut event_rx) = make_orchestrator_with_mocks_full(
+            true,
+            vec![ReviewAction::RequestChanges, ReviewAction::RequestChanges],
+            vec![crate::ai::adapter::RevieweeProposalStatus::Error],
+            5,
+        );
+        orchestrator.set_context(make_local_context());
+
+        let result = orchestrator.run().await.unwrap();
+
+        match result {
+            RallyResult::Error { iteration, error } => {
+                assert_eq!(iteration, 1);
+                assert!(
+                    !error.is_empty(),
+                    "error message must be propagated from proposal.error_details"
+                );
+            }
+            other => panic!("expected RallyResult::Error, got {:?}", other),
+        }
+
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "exactly one proposal call before termination"
+        );
+        assert_eq!(
+            counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the first reviewer cycle ran"
+        );
+
+        let mut saw_error = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, RallyEvent::Error(_)) {
+                saw_error = true;
+            }
+        }
+        assert!(
+            saw_error,
+            "RallyEvent::Error must be emitted when proposal status is Error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_only_proposal_adapter_failure_returns_err() {
+        // When the proposal adapter itself errors (timeout, transport, etc.),
+        // run() propagates the Err so callers know it was a hard failure
+        // rather than a model-reported one.
+        let (mut orchestrator, counters, _event_rx) = make_orchestrator_with_mocks_extended(
+            true,
+            vec![ReviewAction::RequestChanges, ReviewAction::RequestChanges],
+            vec![],
+            vec![true],
+            5,
+        );
+        orchestrator.set_context(make_local_context());
+
+        let result = orchestrator.run().await;
+        let err = result.expect_err("run() must return Err on adapter failure");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("simulated proposal adapter failure"),
+            "error must propagate adapter failure message, got: {}",
+            msg
+        );
+
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_normal_mode_invokes_reviewee_on_request_changes() {
+        // Sanity check: without review_only, reviewee fix runs and proposal does not.
+        let (mut orchestrator, counters, _event_rx) = make_orchestrator_with_mocks_full(
+            false,
+            vec![ReviewAction::RequestChanges; 8],
+            vec![],
+            3,
+        );
+        orchestrator.set_context(make_local_context());
+
+        let _ = orchestrator.run().await.unwrap();
+
+        assert!(counters.reviewer_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert!(
+            counters.reviewee_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
             "reviewee must run in normal mode when reviewer requests changes"
+        );
+        assert_eq!(
+            counters.proposal_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "proposal must NOT be called in normal mode"
         );
     }
 

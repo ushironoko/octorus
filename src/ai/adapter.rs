@@ -106,6 +106,52 @@ pub struct RevieweeOutput {
     pub error_details: Option<String>,
 }
 
+/// Status from reviewee agent in proposal-only mode (review_only)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevieweeProposalStatus {
+    Proposed,
+    Error,
+}
+
+/// A single concrete change the reviewee plans to make (no code mutation yet).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalItem {
+    pub target_files: Vec<String>,
+    pub description: String,
+    pub rationale: String,
+    #[serde(default)]
+    pub addresses_comments: Vec<String>,
+}
+
+/// Output from reviewee agent in proposal mode (no code mutation).
+///
+/// Used only when `ai.review_only = true`. The reviewee designs a fix plan
+/// without modifying any files; the reviewer then evaluates the plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevieweeProposal {
+    pub status: RevieweeProposalStatus,
+    pub summary: String,
+    pub plan: Vec<ProposalItem>,
+    pub rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_questions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<String>,
+}
+
+impl RevieweeProposal {
+    /// Deduplicated union of all `plan[*].target_files`, preserving first-occurrence order.
+    pub fn target_files(&self) -> Vec<&str> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.plan
+            .iter()
+            .flat_map(|p| p.target_files.iter().map(String::as_str))
+            .filter(|f| seen.insert(*f))
+            .collect()
+    }
+}
+
 /// Trait for agent adapters
 ///
 /// NOTE: async-trait is required because native async fn in traits are not dyn-compatible
@@ -129,6 +175,15 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Run as reviewee
     async fn run_reviewee(&mut self, prompt: &str, context: &Context) -> Result<RevieweeOutput>;
+
+    /// Run as reviewee in proposal-only mode (no code mutation).
+    ///
+    /// Adapter implementations MUST restrict execution to read-only tools/sandbox.
+    async fn run_reviewee_proposal(
+        &mut self,
+        prompt: &str,
+        context: &Context,
+    ) -> Result<RevieweeProposal>;
 
     /// Continue reviewer session (for clarification answers)
     ///

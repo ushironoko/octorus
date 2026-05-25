@@ -53,6 +53,7 @@ pub fn render_rally_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         RallyState::Initializing => ("Initializing...", Color::Blue),
         RallyState::ReviewerReviewing => ("Reviewer reviewing...", Color::Yellow),
         RallyState::RevieweeFix => ("Reviewee fixing...", Color::Cyan),
+        RallyState::RevieweeProposing => ("Reviewee proposing...", Color::Cyan),
         RallyState::WaitingForClarification => ("Waiting for clarification", Color::Magenta),
         RallyState::WaitingForPermission => ("Waiting for permission", Color::Magenta),
         RallyState::WaitingForPostConfirmation => ("Waiting for post confirmation", Color::Magenta),

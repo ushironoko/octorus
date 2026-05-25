@@ -644,8 +644,8 @@ impl App {
                                     state,
                                     RallyState::Completed | RallyState::Aborted | RallyState::Error
                                 ) {
-                                    rally_state.pending_review_post = None;
-                                    rally_state.pending_fix_post = None;
+                                    rally_state.pending_post_confirmation =
+                                        crate::app::PendingPostConfirmation::None;
                                 }
                                 // Reset pause state on non-active or waiting states
                                 // to prevent stale "Pausing..." / pause controls
@@ -739,8 +739,10 @@ impl App {
                                 ));
                             }
                             RallyEvent::ReviewPostConfirmNeeded(info) => {
-                                rally_state.pending_review_post = Some(info.clone());
-                                rally_state.pending_fix_post = None; // exclusive
+                                rally_state.pending_post_confirmation =
+                                    crate::app::PendingPostConfirmation::Review(
+                                        info.clone(),
+                                    );
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!(
@@ -750,13 +752,38 @@ impl App {
                                 ));
                             }
                             RallyEvent::FixPostConfirmNeeded(info) => {
-                                rally_state.pending_fix_post = Some(info.clone());
-                                rally_state.pending_review_post = None; // exclusive
+                                rally_state.pending_post_confirmation =
+                                    crate::app::PendingPostConfirmation::Fix(info.clone());
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!(
                                         "Fix post confirmation needed: {} file(s) modified",
                                         info.files_modified.len()
+                                    ),
+                                ));
+                            }
+                            RallyEvent::ProposalPostConfirmNeeded(info) => {
+                                rally_state.pending_post_confirmation =
+                                    crate::app::PendingPostConfirmation::Proposal(
+                                        info.clone(),
+                                    );
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!(
+                                        "Proposal post confirmation needed: {} plan item(s), {} file(s)",
+                                        info.plan_item_count,
+                                        info.target_files.len()
+                                    ),
+                                ));
+                            }
+                            RallyEvent::ProposalCompleted(p) => {
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Fix,
+                                    format!(
+                                        "Proposal completed: {} ({} plan item(s), files: {})",
+                                        p.summary,
+                                        p.plan.len(),
+                                        p.target_files().join(", ")
                                     ),
                                 ));
                             }

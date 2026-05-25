@@ -45,6 +45,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         RallyState::Initializing => "Initializing...",
         RallyState::ReviewerReviewing => "Reviewer reviewing...",
         RallyState::RevieweeFix => "Reviewee fixing...",
+        RallyState::RevieweeProposing => "Reviewee designing fix proposal...",
         RallyState::WaitingForClarification => "Waiting for clarification",
         RallyState::WaitingForPermission => "Waiting for permission",
         RallyState::WaitingForPostConfirmation => "Waiting for post confirmation",
@@ -65,7 +66,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         match state.state {
             RallyState::Initializing => Color::Blue,
             RallyState::ReviewerReviewing => Color::Yellow,
-            RallyState::RevieweeFix => Color::Cyan,
+            RallyState::RevieweeFix | RallyState::RevieweeProposing => Color::Cyan,
             RallyState::WaitingForClarification
             | RallyState::WaitingForPermission
             | RallyState::WaitingForPostConfirmation => Color::Magenta,
@@ -76,7 +77,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
     };
 
     let title = if state.review_only {
-        format!(" AI Rally [Review Only] - Iteration {} ", state.iteration)
+        // Proposal-iteration mode also has a finite max_iterations; show n/max
+        // so the user can track progress like normal mode.
+        format!(
+            " AI Rally [Review Only] - Iteration {}/{} ",
+            state.iteration, state.max_iterations
+        )
     } else {
         format!(
             " AI Rally - Iteration {}/{} ",
@@ -246,8 +252,8 @@ fn render_waiting_prompt(
                 ),
             )
         }
-        RallyState::WaitingForPostConfirmation => {
-            if let Some(ref info) = state.pending_review_post {
+        RallyState::WaitingForPostConfirmation => match &state.pending_post_confirmation {
+            crate::app::PendingPostConfirmation::Review(info) => {
                 let summary = truncate_with_width(&info.summary, 120);
                 (
                     " Review Post Confirmation ",
@@ -260,7 +266,8 @@ fn render_waiting_prompt(
                         yes, no, quit
                     ),
                 )
-            } else if let Some(ref info) = state.pending_fix_post {
+            }
+            crate::app::PendingPostConfirmation::Fix(info) => {
                 let summary = truncate_with_width(&info.summary, 120);
                 let files_display = if info.files_modified.len() <= 5 {
                     info.files_modified.join(", ")
@@ -285,10 +292,34 @@ fn render_waiting_prompt(
                         yes, no, quit
                     ),
                 )
-            } else {
-                return;
             }
-        }
+            crate::app::PendingPostConfirmation::Proposal(info) => {
+                let summary = truncate_with_width(&info.summary, 120);
+                let files_display = if info.target_files.len() <= 5 {
+                    info.target_files.join(", ")
+                } else {
+                    let shown: Vec<&str> = info
+                        .target_files
+                        .iter()
+                        .take(5)
+                        .map(|s| s.as_str())
+                        .collect();
+                    format!("{} (+{} more)", shown.join(", "), info.target_files.len() - 5)
+                };
+                (
+                    " Reviewee Proposal Post Confirmation ",
+                    format!(
+                        "Summary: {}\nPlan items: {}\nFiles: {}",
+                        summary, info.plan_item_count, files_display
+                    ),
+                    format!(
+                        "Press '{}' to post to PR, '{}' to skip, '{}' to abort",
+                        yes, no, quit
+                    ),
+                )
+            }
+            crate::app::PendingPostConfirmation::None => return,
+        },
         _ => return,
     };
 
@@ -669,8 +700,7 @@ mod tests {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
-            pending_review_post: None,
-            pending_fix_post: None,
+            pending_post_confirmation: crate::app::PendingPostConfirmation::None,
             last_visible_log_height: 0,
             pending_config_warning: None,
             pause_state: PauseState::Running,
@@ -812,8 +842,9 @@ mod tests {
             output
         );
         assert!(
-            !output.contains("Iteration 1/3"),
-            "iteration counter should hide max when review_only (single iteration)"
+            output.contains("Iteration 1/3"),
+            "review_only is now a proposal-iteration mode and should display Iteration n/max like normal mode:\n{}",
+            output
         );
     }
 

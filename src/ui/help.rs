@@ -377,6 +377,32 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         overrides,
     ));
 
+    // Reviewee proposal additional tools (read-only mode)
+    let proposal_tools_display = if config.ai.reviewee_proposal_additional_tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        config.ai.reviewee_proposal_additional_tools.join(", ")
+    };
+    lines.push(config_value_line(
+        "Proposal tools",
+        &proposal_tools_display,
+        "ai.reviewee_proposal_additional_tools",
+        overrides,
+    ));
+
+    // Post strategy for reviewee proposals
+    let post_strategy_display = match config.ai.post_reviewee_proposals {
+        crate::config::ProposalPostStrategy::Final => "final",
+        crate::config::ProposalPostStrategy::Each => "each",
+        crate::config::ProposalPostStrategy::None => "none",
+    };
+    lines.push(config_value_line(
+        "Post proposals",
+        post_strategy_display,
+        "ai.post_reviewee_proposals",
+        overrides,
+    ));
+
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         "Shell Settings",
