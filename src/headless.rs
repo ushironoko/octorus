@@ -257,6 +257,7 @@ async fn run_headless_with_context(
     let (cmd_tx, cmd_rx) = mpsc::channel(10);
 
     let local_mode = context.local_mode;
+    let auto_post = config.ai.auto_post;
 
     let mut orchestrator = Orchestrator::new(
         repo,
@@ -272,7 +273,7 @@ async fn run_headless_with_context(
     let orchestrator_handle = tokio::spawn(async move { orchestrator.run().await });
 
     // Event loop: receive events and auto-respond to interactive requests
-    let outcome = run_headless_event_loop(&mut event_rx, &cmd_tx, local_mode).await;
+    let outcome = run_headless_event_loop(&mut event_rx, &cmd_tx, local_mode, auto_post).await;
 
     // Wait for orchestrator to finish
     let _ = orchestrator_handle.await;
@@ -337,16 +338,39 @@ struct HeadlessJsonOutput {
 
 /// Event loop that processes RallyEvents and auto-responds to interactive requests.
 ///
+/// Headless decision for any `*PostConfirmNeeded` event. Returns
+/// `true` (approve, will be posted) only when running against a real PR
+/// (`!local_mode`) **and** the user opted in via `ai.auto_post = true`.
+/// Otherwise the post is skipped — the proposal/review/fix is still
+/// printed to stderr by the caller, matching local-mode behavior and
+/// the TUI's confirm-dialog semantics.
+fn headless_post_decision(local_mode: bool, auto_post: bool) -> bool {
+    if local_mode {
+        eprintln!("  -> Skipping (local mode, no PR to post to)");
+        return false;
+    }
+    if !auto_post {
+        eprintln!("  -> Skipping post (ai.auto_post=false in headless mode)");
+        return false;
+    }
+    eprintln!("  -> Auto-approving post (ai.auto_post=true, headless mode)");
+    true
+}
+
 /// Headless policy:
 /// - Clarification: auto-skip (continue with best judgment)
 /// - Permission: auto-deny (prevents dynamic tool expansion without human review)
-/// - PostConfirmation: respect auto_post config; if auto_post=false, auto-approve
+/// - PostConfirmation: respect `auto_post`. If `auto_post=false`, skip the
+///   PR post (PostConfirmResponse(false)) — same behavior as `local_mode`,
+///   for parity with the TUI confirm-dialog semantics. Only `auto_post=true`
+///   in non-local mode actually pushes to the PR.
 /// - AgentText: suppressed (prevents structured output JSON leakage)
 /// - AgentThinking: suppressed (noise reduction)
 async fn run_headless_event_loop(
     event_rx: &mut mpsc::Receiver<RallyEvent>,
     cmd_tx: &mpsc::Sender<OrchestratorCommand>,
     local_mode: bool,
+    auto_post: bool,
 ) -> HeadlessOutcome {
     let mut last_error: Option<String> = None;
     let mut current_iteration: u32 = 0;
@@ -355,6 +379,15 @@ async fn run_headless_event_loop(
 
     while let Some(event) = event_rx.recv().await {
         match event {
+            RallyEvent::RallyStarted { review_only } => {
+                if review_only {
+                    eprintln!(
+                        "\n[Mode] Review Only — proposal iteration mode (reviewee designs fix plans, no code changes)"
+                    );
+                } else {
+                    eprintln!("\n[Mode] Standard (review + fix)");
+                }
+            }
             RallyEvent::IterationStarted(n) => {
                 current_iteration = n;
                 eprintln!("\n=== Iteration {} ===", n);
@@ -365,6 +398,9 @@ async fn run_headless_event_loop(
                 }
                 RallyState::RevieweeFix => {
                     eprintln!("[Reviewee] Fixing...");
+                }
+                RallyState::RevieweeProposing => {
+                    eprintln!("[Reviewee] Designing fix proposal...");
                 }
                 RallyState::Completed => {
                     // Will be handled by Approved event
@@ -403,6 +439,24 @@ async fn run_headless_event_loop(
                 eprintln!("\n[Approved] {}", summary);
                 return HeadlessOutcome {
                     result: HeadlessResult::Approved(summary),
+                    iterations: current_iteration,
+                    last_review,
+                    last_fix,
+                };
+            }
+            RallyEvent::ReviewOnlyCompleted(output) => {
+                let action = format!("{:?}", output.action);
+                eprintln!(
+                    "\n[Review-only completed] Terminated without approval after {} iteration(s). final_action={} summary={}",
+                    current_iteration, action, output.summary
+                );
+                let summary = output.summary.clone();
+                last_review = Some(output);
+                return HeadlessOutcome {
+                    result: HeadlessResult::NotApproved(format!(
+                        "Review-only mode: terminated without approval after {} iterations (final action={}; {})",
+                        current_iteration, action, summary
+                    )),
                     iterations: current_iteration,
                     last_review,
                     last_fix,
@@ -452,17 +506,10 @@ async fn run_headless_event_loop(
                     "  [Post review] {}: {} ({} comments)",
                     info.action, info.summary, info.comment_count
                 );
-                if local_mode {
-                    eprintln!("  -> Skipping (local mode, no PR to post to)");
-                    let _ = cmd_tx
-                        .send(OrchestratorCommand::PostConfirmResponse(false))
-                        .await;
-                } else {
-                    eprintln!("  -> Auto-approving post (headless mode)");
-                    let _ = cmd_tx
-                        .send(OrchestratorCommand::PostConfirmResponse(true))
-                        .await;
-                }
+                let approved = headless_post_decision(local_mode, auto_post);
+                let _ = cmd_tx
+                    .send(OrchestratorCommand::PostConfirmResponse(approved))
+                    .await;
             }
             RallyEvent::FixPostConfirmNeeded(info) => {
                 eprintln!(
@@ -470,17 +517,31 @@ async fn run_headless_event_loop(
                     info.summary,
                     info.files_modified.join(", ")
                 );
-                if local_mode {
-                    eprintln!("  -> Skipping (local mode, no PR to post to)");
-                    let _ = cmd_tx
-                        .send(OrchestratorCommand::PostConfirmResponse(false))
-                        .await;
-                } else {
-                    eprintln!("  -> Auto-approving post (headless mode)");
-                    let _ = cmd_tx
-                        .send(OrchestratorCommand::PostConfirmResponse(true))
-                        .await;
-                }
+                let approved = headless_post_decision(local_mode, auto_post);
+                let _ = cmd_tx
+                    .send(OrchestratorCommand::PostConfirmResponse(approved))
+                    .await;
+            }
+            RallyEvent::ProposalCompleted(p) => {
+                eprintln!(
+                    "[Proposal][iter {}] {} ({} plan item(s), files: {})",
+                    current_iteration,
+                    p.summary,
+                    p.plan.len(),
+                    p.target_files().join(", ")
+                );
+            }
+            RallyEvent::ProposalPostConfirmNeeded(info) => {
+                eprintln!(
+                    "  [Post proposal] {} ({} plan item(s), files: {})",
+                    info.summary,
+                    info.plan_item_count,
+                    info.target_files.join(", ")
+                );
+                let approved = headless_post_decision(local_mode, auto_post);
+                let _ = cmd_tx
+                    .send(OrchestratorCommand::PostConfirmResponse(approved))
+                    .await;
             }
         }
     }
@@ -1142,6 +1203,186 @@ mod tests {
         let temp_path = path.with_file_name(format!(".result.json.{}.tmp", std::process::id()));
         assert!(!temp_path.exists());
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_rally_started_then_approved() {
+        // Ensure the new RallyStarted arm in the headless event loop:
+        // (a) does not return early, and (b) lets the loop reach Approved.
+        let (tx, mut rx) = mpsc::channel(8);
+        let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+
+        tx.send(RallyEvent::RallyStarted { review_only: true })
+            .await
+            .unwrap();
+        tx.send(RallyEvent::IterationStarted(1)).await.unwrap();
+        tx.send(RallyEvent::Approved("Looks good".to_string()))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let outcome = run_headless_event_loop(&mut rx, &cmd_tx, false, true).await;
+        match outcome.result {
+            HeadlessResult::Approved(summary) => {
+                assert_eq!(summary, "Looks good");
+            }
+            other => panic!(
+                "expected Approved after RallyStarted+Approved sequence, got {:?}",
+                match other {
+                    HeadlessResult::NotApproved(s) => format!("NotApproved({})", s),
+                    HeadlessResult::Error(s) => format!("Error({})", s),
+                    HeadlessResult::Approved(_) => unreachable!(),
+                }
+            ),
+        }
+        assert_eq!(outcome.iterations, 1);
+    }
+
+    /// Drain commands sent to the orchestrator and assert exactly one
+    /// PostConfirmResponse matching `expected` was sent. Other variants
+    /// (PermissionResponse, SkipClarification, etc.) are ignored — the
+    /// post-confirmation flow is the only thing under test here.
+    async fn assert_single_post_confirm(
+        mut cmd_rx: mpsc::Receiver<OrchestratorCommand>,
+        expected: bool,
+        ctx: &str,
+    ) {
+        let mut seen: Vec<bool> = Vec::new();
+        while let Some(cmd) = cmd_rx.recv().await {
+            if let OrchestratorCommand::PostConfirmResponse(b) = cmd {
+                seen.push(b);
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![expected],
+            "{}: expected exactly one PostConfirmResponse({}), got {:?}",
+            ctx,
+            expected,
+            seen
+        );
+    }
+
+    /// Build a fake ProposalPostInfo for confirm-flow tests.
+    fn fake_proposal_post_info() -> crate::ai::orchestrator::ProposalPostInfo {
+        crate::ai::orchestrator::ProposalPostInfo {
+            summary: "fake proposal".to_string(),
+            target_files: vec!["src/foo.rs".to_string()],
+            plan_item_count: 1,
+        }
+    }
+
+    fn fake_review_post_info() -> crate::ai::orchestrator::ReviewPostInfo {
+        crate::ai::orchestrator::ReviewPostInfo {
+            action: "RequestChanges".to_string(),
+            summary: "fake review".to_string(),
+            comment_count: 0,
+        }
+    }
+
+    fn fake_fix_post_info() -> crate::ai::orchestrator::FixPostInfo {
+        crate::ai::orchestrator::FixPostInfo {
+            summary: "fake fix".to_string(),
+            files_modified: vec!["src/bar.rs".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_headless_proposal_post_skipped_when_auto_post_false() {
+        // Regression: headless mode previously auto-approved every post
+        // confirmation regardless of auto_post, silently pushing the
+        // final proposal to the PR even when the user configured
+        // ai.auto_post = false. The fix must respect auto_post: when false,
+        // skip (PostConfirmResponse(false)) instead of approve.
+        let (tx, mut rx) = mpsc::channel(8);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        tx.send(RallyEvent::ProposalPostConfirmNeeded(
+            fake_proposal_post_info(),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        let _outcome = run_headless_event_loop(&mut rx, &cmd_tx, false, false).await;
+        drop(cmd_tx);
+
+        assert_single_post_confirm(cmd_rx, false, "proposal/auto_post=false").await;
+    }
+
+    #[tokio::test]
+    async fn test_headless_proposal_post_approved_when_auto_post_true() {
+        // Inverse of the regression: auto_post=true must still auto-approve.
+        let (tx, mut rx) = mpsc::channel(8);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        tx.send(RallyEvent::ProposalPostConfirmNeeded(
+            fake_proposal_post_info(),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        let _outcome = run_headless_event_loop(&mut rx, &cmd_tx, false, true).await;
+        drop(cmd_tx);
+
+        assert_single_post_confirm(cmd_rx, true, "proposal/auto_post=true").await;
+    }
+
+    #[tokio::test]
+    async fn test_headless_review_post_skipped_when_auto_post_false() {
+        // Same consistency rule for review post.
+        let (tx, mut rx) = mpsc::channel(8);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        tx.send(RallyEvent::ReviewPostConfirmNeeded(fake_review_post_info()))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let _outcome = run_headless_event_loop(&mut rx, &cmd_tx, false, false).await;
+        drop(cmd_tx);
+
+        assert_single_post_confirm(cmd_rx, false, "review/auto_post=false").await;
+    }
+
+    #[tokio::test]
+    async fn test_headless_fix_post_skipped_when_auto_post_false() {
+        // Same consistency rule for fix post.
+        let (tx, mut rx) = mpsc::channel(8);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        tx.send(RallyEvent::FixPostConfirmNeeded(fake_fix_post_info()))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let _outcome = run_headless_event_loop(&mut rx, &cmd_tx, false, false).await;
+        drop(cmd_tx);
+
+        assert_single_post_confirm(cmd_rx, false, "fix/auto_post=false").await;
+    }
+
+    #[tokio::test]
+    async fn test_headless_local_mode_skips_regardless_of_auto_post() {
+        // local_mode is a hard skip — there is no PR to post to. auto_post
+        // (true or false) does not change this.
+        for auto_post in [true, false] {
+            let (tx, mut rx) = mpsc::channel(8);
+            let (cmd_tx, cmd_rx) = mpsc::channel(8);
+            tx.send(RallyEvent::ProposalPostConfirmNeeded(
+                fake_proposal_post_info(),
+            ))
+            .await
+            .unwrap();
+            drop(tx);
+
+            let _outcome = run_headless_event_loop(&mut rx, &cmd_tx, true, auto_post).await;
+            drop(cmd_tx);
+
+            assert_single_post_confirm(
+                cmd_rx,
+                false,
+                &format!("local_mode=true/auto_post={}", auto_post),
+            )
+            .await;
+        }
     }
 
     #[test]

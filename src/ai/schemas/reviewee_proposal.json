@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RevieweeProposal",
+  "description": "Structured output from the reviewee agent in proposal-only mode (no code mutation)",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "error"],
+      "description": "Status of the proposal attempt"
+    },
+    "summary": {
+      "type": "string",
+      "description": "1-3 sentence overview of the overall approach"
+    },
+    "plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target_files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Files this plan item would modify"
+          },
+          "description": {
+            "type": "string",
+            "description": "What this change would do"
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why this change is the right fix"
+          },
+          "addresses_comments": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Reviewer comments addressed (path:line strings)"
+          }
+        },
+        "required": ["target_files", "description", "rationale"]
+      },
+      "description": "Concrete plan items"
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Overall rationale tying all plan items to reviewer concerns"
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Unresolved questions for the reviewer"
+    },
+    "error_details": {
+      "type": "string",
+      "description": "Error details (when status is error)"
+    }
+  },
+  "required": ["status", "summary", "plan", "rationale"]
+}

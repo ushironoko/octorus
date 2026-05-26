@@ -13,6 +13,11 @@ max_iterations = 10       # Max review-fix cycles (clamped to 100)
 timeout_secs = 600        # Timeout per agent call (clamped to 7200)
 # prompt_dir = "/custom/path/to/prompts"  # Custom prompt directory
 
+# Skip the reviewee/edit phase and terminate after the reviewer step.
+# When true, the rally exits after a single review pass regardless of the
+# reviewer's verdict (approve / request-changes / comment).
+review_only = false
+
 # Additional tools for reviewer (Claude only, --allowedTools format)
 # reviewer_additional_tools = ["Skill", "WebSearch"]
 

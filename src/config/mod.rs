@@ -4,7 +4,9 @@ mod schema;
 
 pub use keybindings::KeybindingsConfig;
 pub use loader::{find_project_root, find_project_root_in};
-pub use schema::{AiConfig, DiffConfig, GitOpsConfig, LayoutConfig, ShellConfig};
+pub use schema::{
+    AiConfig, DiffConfig, GitOpsConfig, LayoutConfig, ProposalPostStrategy, ShellConfig,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -16,10 +18,13 @@ use std::path::PathBuf;
 pub const SENSITIVE_AI_KEYS: &[&str] = &[
     "ai.reviewer_additional_tools",
     "ai.reviewee_additional_tools",
+    "ai.reviewee_proposal_additional_tools",
     "ai.auto_post",
     "ai.reviewer",
     "ai.reviewee",
     "ai.prompt_dir",
+    "ai.review_only",
+    "ai.post_reviewee_proposals",
 ];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -133,7 +138,10 @@ mod tests {
           "prompt_dir": null,
           "reviewer_additional_tools": [],
           "reviewee_additional_tools": [],
-          "auto_post": false
+          "reviewee_proposal_additional_tools": [],
+          "auto_post": false,
+          "review_only": false,
+          "post_reviewee_proposals": "final"
         }
         "#);
     }
@@ -157,7 +165,10 @@ mod tests {
           "prompt_dir": null,
           "reviewer_additional_tools": [],
           "reviewee_additional_tools": [],
-          "auto_post": false
+          "reviewee_proposal_additional_tools": [],
+          "auto_post": false,
+          "review_only": false,
+          "post_reviewee_proposals": "final"
         }
         "#);
     }
@@ -184,7 +195,10 @@ mod tests {
           "reviewee_additional_tools": [
             "Bash(git push:*)"
           ],
-          "auto_post": false
+          "reviewee_proposal_additional_tools": [],
+          "auto_post": false,
+          "review_only": false,
+          "post_reviewee_proposals": "final"
         }
         "#);
     }
@@ -203,6 +217,22 @@ mod tests {
     fn test_parse_ai_config_auto_post_default() {
         let config: Config = toml::from_str("").unwrap();
         assert!(!config.ai.auto_post);
+    }
+
+    #[test]
+    fn test_parse_ai_config_review_only_true() {
+        let toml_str = r#"
+            [ai]
+            review_only = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.ai.review_only);
+    }
+
+    #[test]
+    fn test_parse_ai_config_review_only_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.ai.review_only);
     }
 
     #[test]
@@ -655,6 +685,99 @@ auto_post = true
             .local_overrides
             .contains("ai.reviewee_additional_tools"));
         assert!(config.local_overrides.contains("ai.auto_post"));
+    }
+
+    #[test]
+    fn test_review_only_is_sensitive_ai_key() {
+        assert!(
+            SENSITIVE_AI_KEYS.contains(&"ai.review_only"),
+            "ai.review_only must be sensitive — it materially changes rally behavior"
+        );
+    }
+
+    #[test]
+    fn test_local_overrides_tracks_review_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+review_only = true
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(config.local_overrides.contains("ai.review_only"));
+    }
+
+    #[test]
+    fn test_post_reviewee_proposals_and_proposal_tools_are_sensitive() {
+        assert!(
+            SENSITIVE_AI_KEYS.contains(&"ai.post_reviewee_proposals"),
+            "ai.post_reviewee_proposals controls PR side-effects (spam risk); must be sensitive"
+        );
+        assert!(
+            SENSITIVE_AI_KEYS.contains(&"ai.reviewee_proposal_additional_tools"),
+            "additional proposal tools expand the read-only sandbox; must be sensitive"
+        );
+    }
+
+    #[test]
+    fn test_parse_post_reviewee_proposals_values() {
+        use crate::config::ProposalPostStrategy;
+
+        for (value, expected) in [
+            ("\"final\"", ProposalPostStrategy::Final),
+            ("\"each\"", ProposalPostStrategy::Each),
+            ("\"none\"", ProposalPostStrategy::None),
+        ] {
+            let toml_str = format!("[ai]\npost_reviewee_proposals = {}\n", value);
+            let config: Config = toml::from_str(&toml_str)
+                .unwrap_or_else(|e| panic!("parse {} failed: {}", value, e));
+            assert_eq!(
+                config.ai.post_reviewee_proposals, expected,
+                "value {} must parse to {:?}",
+                value, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_post_reviewee_proposals_default_is_final() {
+        use crate::config::ProposalPostStrategy;
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            config.ai.post_reviewee_proposals,
+            ProposalPostStrategy::Final,
+            "default must be Final to avoid PR comment spam from intermediate proposals"
+        );
+    }
+
+    #[test]
+    fn test_local_overrides_tracks_post_reviewee_proposals() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+post_reviewee_proposals = "each"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(config
+            .local_overrides
+            .contains("ai.post_reviewee_proposals"));
     }
 
     #[test]

@@ -246,11 +246,32 @@ pub enum PauseState {
     Paused,
 }
 
+/// Mutually-exclusive pending post confirmations. At most one post
+/// confirmation can be in flight at a time, so encoding the three kinds
+/// as enum variants guarantees this at the type level rather than relying
+/// on three `Option` fields and manual clear logic.
+#[derive(Debug, Clone, Default)]
+pub enum PendingPostConfirmation {
+    #[default]
+    None,
+    Review(crate::ai::orchestrator::ReviewPostInfo),
+    Fix(crate::ai::orchestrator::FixPostInfo),
+    Proposal(crate::ai::orchestrator::ProposalPostInfo),
+}
+
+impl PendingPostConfirmation {
+    pub fn is_active(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// State for AI Rally view
 #[derive(Debug, Clone)]
 pub struct AiRallyState {
     pub iteration: u32,
     pub max_iterations: u32,
+    /// Whether the rally was started in review-only (proposal iteration) mode.
+    pub review_only: bool,
     pub state: RallyState,
     pub history: Vec<RallyEvent>,
     pub logs: Vec<LogEntry>,
@@ -263,10 +284,9 @@ pub struct AiRallyState {
     pub pending_question: Option<String>,
     /// Pending permission request from reviewee
     pub pending_permission: Option<PermissionInfo>,
-    /// Pending review post confirmation
-    pub pending_review_post: Option<crate::ai::orchestrator::ReviewPostInfo>,
-    /// Pending fix post confirmation
-    pub pending_fix_post: Option<crate::ai::orchestrator::FixPostInfo>,
+    /// Pending post confirmation (review / fix / proposal). At most one
+    /// kind is in flight at a time.
+    pub pending_post_confirmation: PendingPostConfirmation,
     /// Last rendered visible log height (updated by UI render)
     pub last_visible_log_height: usize,
     /// Pending local config security warning (key, value) pairs.

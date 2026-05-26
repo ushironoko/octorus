@@ -4,8 +4,8 @@ use anyhow::{anyhow, Context as AnyhowContext, Result};
 use serde::Deserialize;
 
 use crate::ai::adapter::{
-    CommentSeverity, PermissionRequest, ReviewAction, ReviewComment, RevieweeOutput,
-    RevieweeStatus, ReviewerOutput,
+    CommentSeverity, PermissionRequest, ProposalItem, ReviewAction, ReviewComment, RevieweeOutput,
+    RevieweeProposal, RevieweeProposalStatus, RevieweeStatus, ReviewerOutput,
 };
 
 /// Raw reviewer output structure shared by all adapters.
@@ -125,6 +125,65 @@ pub(crate) fn parse_reviewee_output(
         files_modified: raw.files_modified,
         question: raw.question,
         permission_request,
+        error_details: raw.error_details,
+    })
+}
+
+/// Raw reviewee proposal structure shared by all adapters.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawRevieweeProposal {
+    pub status: String,
+    pub summary: String,
+    pub plan: Vec<RawProposalItem>,
+    pub rationale: String,
+    #[serde(default)]
+    pub open_questions: Option<Vec<String>>,
+    #[serde(default)]
+    pub error_details: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawProposalItem {
+    pub target_files: Vec<String>,
+    pub description: String,
+    pub rationale: String,
+    #[serde(default)]
+    pub addresses_comments: Vec<String>,
+}
+
+/// Parse reviewee proposal output from a JSON result value.
+pub(crate) fn parse_reviewee_proposal(
+    result: Option<&serde_json::Value>,
+    agent_name: &str,
+) -> Result<RevieweeProposal> {
+    let result = result.ok_or_else(|| anyhow!("No result in {} response", agent_name))?;
+
+    let raw: RawRevieweeProposal = serde_json::from_value(result.clone())
+        .context("Failed to parse reviewee proposal output")?;
+
+    let status = match raw.status.as_str() {
+        "proposed" => RevieweeProposalStatus::Proposed,
+        "error" => RevieweeProposalStatus::Error,
+        other => return Err(anyhow!("Unknown reviewee proposal status: {}", other)),
+    };
+
+    let plan = raw
+        .plan
+        .into_iter()
+        .map(|item| ProposalItem {
+            target_files: item.target_files,
+            description: item.description,
+            rationale: item.rationale,
+            addresses_comments: item.addresses_comments,
+        })
+        .collect();
+
+    Ok(RevieweeProposal {
+        status,
+        summary: raw.summary,
+        plan,
+        rationale: raw.rationale,
+        open_questions: raw.open_questions,
         error_details: raw.error_details,
     })
 }
