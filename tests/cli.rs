@@ -59,6 +59,60 @@ fn invalid_repo_exits_with_error() {
 }
 
 #[test]
+fn pr_url_with_garbage_value_fails_with_clear_message() {
+    cargo_bin_cmd!("or")
+        .args(["--pr", "not-a-number-or-url"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "neither a number nor a GitHub URL",
+        ));
+}
+
+#[test]
+fn pr_issue_url_redirects_user_to_issue_flag() {
+    cargo_bin_cmd!("or")
+        .args(["--pr", "https://github.com/ushironoko/octorus/issues/161"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("use --issue instead"));
+}
+
+#[test]
+fn issue_url_pr_kind_redirects_user_to_pr_flag() {
+    cargo_bin_cmd!("or")
+        .args(["--issue", "https://github.com/ushironoko/octorus/pull/123"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("use --pr instead"));
+}
+
+#[test]
+fn issue_url_with_garbage_value_fails_with_clear_message() {
+    cargo_bin_cmd!("or")
+        .args(["--issue", "not-a-number-or-url"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "neither a number nor a GitHub URL",
+        ));
+}
+
+#[test]
+fn pr_url_conflicting_with_repo_flag_fails() {
+    cargo_bin_cmd!("or")
+        .args([
+            "--repo",
+            "someone/else",
+            "--pr",
+            "https://github.com/ushironoko/octorus/pull/123",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("conflicts with --repo"));
+}
+
+#[test]
 fn pr_flag_only_enters_pr_list() {
     cargo_bin_cmd!("or")
         .args(["--repo", "invalid/nonexistent-repo-12345", "--pr"])

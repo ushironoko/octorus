@@ -19,6 +19,7 @@ pub mod loader;
 pub mod symbol;
 pub mod syntax;
 pub mod ui;
+pub mod url_parse;
 
 // Re-export commonly used types for benchmarks
 pub use app::{CachedDiffLine, DiffCache, InternedSpan};

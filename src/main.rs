@@ -39,9 +39,10 @@ struct Args {
     #[arg(short, long)]
     repo: Option<String>,
 
-    /// Pull request number. Shows PR list if flag only (no number).
+    /// Pull request number or full GitHub PR URL. Shows PR list if flag only (no value).
+    /// URLs like `https://github.com/owner/repo/pull/123` also set `--repo`.
     #[arg(short, long, conflicts_with = "local", num_args = 0..=1, default_missing_value = "0")]
-    pr: Option<u32>,
+    pr: Option<String>,
 
     /// Start AI Rally mode directly
     #[arg(long, default_value = "false")]
@@ -51,9 +52,10 @@ struct Args {
     #[arg(long, default_value = "false", conflicts_with = "pr")]
     local: bool,
 
-    /// Issue number. Shows issue detail directly if provided, issue list if flag only.
+    /// Issue number or full GitHub issue URL. Shows issue list if flag only (no value).
+    /// URLs like `https://github.com/owner/repo/issues/123` also set `--repo`.
     #[arg(short, long, conflicts_with_all = ["pr", "local"], num_args = 0..=1, default_missing_value = "0")]
-    issue: Option<u32>,
+    issue: Option<String>,
 
     /// Start in Git Ops view directly
     #[arg(long, default_value = "false")]
@@ -227,6 +229,72 @@ fn setup_panic_hook() {
     }));
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefKind {
+    Pr,
+    Issue,
+}
+
+impl RefKind {
+    fn flag(self) -> &'static str {
+        match self {
+            RefKind::Pr => "--pr",
+            RefKind::Issue => "--issue",
+        }
+    }
+
+    fn other_flag(self) -> &'static str {
+        match self {
+            RefKind::Pr => "--issue",
+            RefKind::Issue => "--pr",
+        }
+    }
+}
+
+/// Resolve `--pr` or `--issue` into a numeric reference. Accepts a bare number
+/// or a GitHub URL; URLs of the matching kind also populate `--repo`.
+fn resolve_ref_arg(
+    raw: Option<String>,
+    repo: &mut Option<String>,
+    kind: RefKind,
+) -> Result<Option<u32>> {
+    use octorus::url_parse::{parse_github_url, GithubRef};
+
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    if let Ok(n) = raw.parse::<u32>() {
+        return Ok(Some(n));
+    }
+
+    let parsed = parse_github_url(&raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} value `{raw}` is neither a number nor a GitHub URL",
+            kind.flag()
+        )
+    })?;
+
+    let number = match (kind, &parsed) {
+        (RefKind::Pr, GithubRef::Pr { number, .. })
+        | (RefKind::Issue, GithubRef::Issue { number, .. }) => *number,
+        _ => anyhow::bail!(
+            "{} was given a URL of the wrong kind; use {} instead",
+            kind.flag(),
+            kind.other_flag()
+        ),
+    };
+
+    let slug = parsed.repo_slug();
+    if let Some(existing) = repo.as_ref() {
+        if existing != &slug {
+            anyhow::bail!("URL repo `{}` conflicts with --repo `{}`", slug, existing);
+        }
+    }
+    *repo = Some(slug);
+    Ok(Some(number))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Set up panic hook before anything else
@@ -260,7 +328,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+    let pr = resolve_ref_arg(args.pr.take(), &mut args.repo, RefKind::Pr)?;
+    let issue = resolve_ref_arg(args.issue.take(), &mut args.repo, RefKind::Issue)?;
 
     // Handle subcommands
     if let Some(command) = args.command {
@@ -323,7 +393,7 @@ async fn main() -> Result<()> {
         };
     }
 
-    let is_no_args = args.pr.is_none() && !args.local && args.issue.is_none() && !args.git_ops;
+    let is_no_args = pr.is_none() && !args.local && issue.is_none() && !args.git_ops;
 
     let (repo, repo_available) = match args.repo.clone() {
         Some(r) => (r, true),
@@ -367,8 +437,8 @@ async fn main() -> Result<()> {
     };
 
     // Headless mode: --ai-rally with --pr <number> or --local bypasses TUI entirely
-    if args.ai_rally && matches!(args.pr, Some(pr) if pr > 0) {
-        let pr = args.pr.unwrap();
+    if args.ai_rally && matches!(pr, Some(n) if n > 0) {
+        let pr = pr.unwrap();
         let working_dir = resolve_working_dir(&args);
         match headless::run_headless_rally(
             &repo,
@@ -410,10 +480,10 @@ async fn main() -> Result<()> {
 
     if args.local {
         run_with_local_diff(&repo, &config, &args).await
-    } else if let Some(pr) = args.pr.filter(|&n| n > 0) {
+    } else if let Some(pr) = pr.filter(|&n| n > 0) {
         run_with_pr(&repo, pr, &config, &args).await
     } else {
-        run_with_pr_list(&repo, config, &args, args.issue).await
+        run_with_pr_list(&repo, config, &args, issue).await
     }
 }
 
