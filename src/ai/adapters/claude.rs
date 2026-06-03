@@ -6,12 +6,13 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, ReviewerOutput};
+use crate::ai::adapter::{AgentAdapter, Context, RevieweeOutput, RevieweeProposal, ReviewerOutput};
 use crate::ai::orchestrator::RallyEvent;
 use crate::config::AiConfig;
 
 const REVIEWER_SCHEMA: &str = include_str!("../schemas/reviewer.json");
 const REVIEWEE_SCHEMA: &str = include_str!("../schemas/reviewee.json");
+const REVIEWEE_PROPOSAL_SCHEMA: &str = include_str!("../schemas/reviewee_proposal.json");
 
 /// Git commands to disallow in local mode.
 /// --disallowedTools overrides --allowedTools and settings.local.json.
@@ -23,28 +24,85 @@ const GIT_DISALLOWED_TOOLS: &str = concat!(
     "Bash(git restore:*),Bash(git tag:*),Bash(git rm:*),Bash(git clean:*)"
 );
 
+/// Bare tool keys disallowed in proposal mode. Bare `Bash` matches every Bash
+/// invocation, closing the wildcard-flag gap that subcommand patterns leave
+/// open (e.g. `Bash(git diff:*)` would otherwise admit `git diff --output=...`).
+const PROPOSAL_DISALLOWED_TOOLS: &str = "Bash,Edit,Write,NotebookEdit";
+
+/// Merge multiple comma-separated disallow lists into a single
+/// `--disallowedTools` argument value, preserving first-occurrence order and
+/// removing duplicates.
+pub(crate) fn merge_disallowed_tools(parts: &[&str]) -> String {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out: Vec<&str> = Vec::new();
+    for part in parts {
+        for tool in part.split(',') {
+            let t = tool.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if seen.insert(t) {
+                out.push(t);
+            }
+        }
+    }
+    out.join(",")
+}
+
 /// Claude Code adapter
 pub struct ClaudeAdapter {
     /// Cached allowed tools string for reviewer (built once at initialization)
     reviewer_allowed_tools: String,
     /// Cached allowed tools string for reviewee (built once at initialization)
     reviewee_allowed_tools: String,
+    /// Cached allowed tools string for reviewee in proposal mode (read-only).
+    reviewee_proposal_allowed_tools: String,
     reviewer_session_id: Option<String>,
     reviewee_session_id: Option<String>,
+    /// Separate session id for proposal mode so its read-only tool set is not
+    /// accidentally resumed from a write-capable reviewee session.
+    reviewee_proposal_session_id: Option<String>,
     event_sender: Option<mpsc::Sender<RallyEvent>>,
     /// When true, git write operations are blocked via --disallowedTools
     local_mode: bool,
 }
 
 impl ClaudeAdapter {
-    pub fn new(config: &AiConfig) -> Self {
-        Self {
+    pub fn new(config: &AiConfig) -> Result<Self> {
+        Self::validate_proposal_additional_tools(&config.reviewee_proposal_additional_tools)?;
+        Ok(Self {
             reviewer_allowed_tools: Self::build_reviewer_allowed_tools(config),
             reviewee_allowed_tools: Self::build_reviewee_allowed_tools(config),
+            reviewee_proposal_allowed_tools: Self::build_reviewee_proposal_allowed_tools(config),
             reviewer_session_id: None,
             reviewee_session_id: None,
+            reviewee_proposal_session_id: None,
             event_sender: None,
             local_mode: false,
+        })
+    }
+
+    /// Fail-closed allowlist gate for `reviewee_proposal_additional_tools`.
+    /// Rejects bare write-capable tools and any `Bash(...)` pattern so a
+    /// misconfigured user config cannot silently widen the proposal boundary
+    /// past the no-shell/no-mutation invariant.
+    fn validate_proposal_additional_tools(tools: &[String]) -> Result<()> {
+        const BANNED_EXACT: &[&str] = &["Bash", "Edit", "Write", "NotebookEdit"];
+        let mut rejected: Vec<String> = Vec::new();
+        for raw in tools {
+            let t = raw.trim();
+            if BANNED_EXACT.contains(&t) || t.starts_with("Bash(") {
+                rejected.push(raw.clone());
+            }
+        }
+        if rejected.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "reviewee_proposal_additional_tools contains entries that would break the no-shell/no-mutation boundary: [{}]. \
+                 The proposal-mode allowlist must not grant Bash, Edit, Write, NotebookEdit, or any Bash(...) pattern.",
+                rejected.join(", ")
+            ))
         }
     }
 
@@ -97,6 +155,25 @@ impl ClaudeAdapter {
         }
     }
 
+    /// Build allowed tools string for reviewee in proposal mode.
+    /// Hard boundary: only file-reading tools; no Bash at all.
+    /// `--disallowedTools Bash,Edit,Write,NotebookEdit` is layered on top in
+    /// `run_reviewee_proposal` for defense-in-depth (Bash subcommand wildcards
+    /// admit write-capable flags even when scoped to read commands).
+    pub(crate) fn build_reviewee_proposal_allowed_tools(config: &AiConfig) -> String {
+        let base = "Read,Glob,Grep";
+
+        if config.reviewee_proposal_additional_tools.is_empty() {
+            base.to_string()
+        } else {
+            format!(
+                "{},{}",
+                base,
+                config.reviewee_proposal_additional_tools.join(",")
+            )
+        }
+    }
+
     async fn send_event(&self, event: RallyEvent) {
         if let Some(ref sender) = self.event_sender {
             let _ = sender.send(event).await;
@@ -111,6 +188,7 @@ impl ClaudeAdapter {
         allowed_tools: Option<&str>,
         working_dir: Option<&str>,
         session_id: Option<&str>,
+        extra_disallowed_tools: Option<&str>,
     ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
         // Prevent nested session detection when octorus is run inside Claude Code
@@ -124,10 +202,19 @@ impl ClaudeAdapter {
             cmd.arg("--allowedTools").arg(tools);
         }
 
-        // In local mode, block git write operations via --disallowedTools.
-        // --disallowedTools takes precedence over --allowedTools and settings.local.json.
+        // --disallowedTools overrides --allowedTools and settings.local.json.
+        // Merge per-call extras (e.g. PROPOSAL_DISALLOWED_TOOLS) with the
+        // local_mode git layer so neither set drops entries.
+        let mut disallow_sources: Vec<&str> = Vec::new();
+        if let Some(extra) = extra_disallowed_tools {
+            disallow_sources.push(extra);
+        }
         if self.local_mode {
-            cmd.arg("--disallowedTools").arg(GIT_DISALLOWED_TOOLS);
+            disallow_sources.push(GIT_DISALLOWED_TOOLS);
+        }
+        if !disallow_sources.is_empty() {
+            cmd.arg("--disallowedTools")
+                .arg(merge_disallowed_tools(&disallow_sources));
         }
 
         if let Some(session) = session_id {
@@ -326,12 +413,6 @@ impl ClaudeAdapter {
     }
 }
 
-impl Default for ClaudeAdapter {
-    fn default() -> Self {
-        Self::new(&AiConfig::default())
-    }
-}
-
 #[async_trait]
 impl AgentAdapter for ClaudeAdapter {
     fn name(&self) -> &str {
@@ -363,6 +444,7 @@ impl AgentAdapter for ClaudeAdapter {
                 REVIEWER_SCHEMA,
                 Some(&self.reviewer_allowed_tools),
                 context.working_dir.as_deref(),
+                None,
                 None,
             )
             .await?;
@@ -403,12 +485,37 @@ impl AgentAdapter for ClaudeAdapter {
                 Some(&self.reviewee_allowed_tools),
                 context.working_dir.as_deref(),
                 None,
+                None,
             )
             .await?;
 
         self.reviewee_session_id = Some(response.session_id.clone());
 
         parse_reviewee_output(response.result.as_ref(), "claude")
+    }
+
+    async fn run_reviewee_proposal(
+        &mut self,
+        prompt: &str,
+        context: &Context,
+    ) -> Result<RevieweeProposal> {
+        // Hard no-mutation/no-shell boundary: --disallowedTools includes bare
+        // `Bash`, `Edit`, `Write`, `NotebookEdit`. This overrides any misset
+        // additional_tools and closes Bash-subcommand wildcard escapes.
+        let response = self
+            .run_claude_streaming(
+                prompt,
+                REVIEWEE_PROPOSAL_SCHEMA,
+                Some(&self.reviewee_proposal_allowed_tools),
+                context.working_dir.as_deref(),
+                None,
+                Some(PROPOSAL_DISALLOWED_TOOLS),
+            )
+            .await?;
+
+        self.reviewee_proposal_session_id = Some(response.session_id.clone());
+
+        parse_reviewee_proposal(response.result.as_ref(), "claude")
     }
 
     async fn continue_reviewer(&mut self, message: &str) -> Result<ReviewerOutput> {
@@ -425,6 +532,7 @@ impl AgentAdapter for ClaudeAdapter {
                 Some(&self.reviewer_allowed_tools),
                 None, // --resume restores the original session's context
                 Some(&session_id),
+                None,
             )
             .await?;
         parse_reviewer_output(response.result.as_ref(), "claude")
@@ -444,6 +552,7 @@ impl AgentAdapter for ClaudeAdapter {
                 Some(&self.reviewee_allowed_tools),
                 None, // --resume restores the original session's context
                 Some(&session_id),
+                None,
             )
             .await?;
         parse_reviewee_output(response.result.as_ref(), "claude")
@@ -544,7 +653,10 @@ struct ClaudeResponse {
     duration_ms: Option<u64>,
 }
 
-use super::common::{parse_reviewee_output, parse_reviewer_output, summarize_json, summarize_text};
+use super::common::{
+    parse_reviewee_output, parse_reviewee_proposal, parse_reviewer_output, summarize_json,
+    summarize_text,
+};
 
 #[cfg(test)]
 mod tests {
@@ -624,11 +736,104 @@ mod tests {
     }
 
     #[test]
+    fn test_build_reviewee_proposal_allowed_tools_default_snapshot() {
+        let config = AiConfig::default();
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+        assert_snapshot!(tools, @"Read,Glob,Grep");
+    }
+
+    #[test]
+    fn test_reviewee_proposal_allowed_tools_denylist() {
+        // The proposal tool set is the security boundary for "no code change"
+        // promise of review_only mode. None of these mutating tools may appear.
+        let config = AiConfig::default();
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+
+        let denied = [
+            "Edit",
+            "Write",
+            "NotebookEdit",
+            "Bash(git add",
+            "Bash(git commit",
+            "Bash(git push",
+            "Bash(git stash",
+            "Bash(git switch",
+            "Bash(git merge",
+            "Bash(git rebase",
+            "Bash(git reset",
+            "Bash(git cherry-pick",
+            "Bash(git revert",
+            "Bash(git checkout",
+            "Bash(git restore",
+            "Bash(git rm",
+            "Bash(git clean",
+            "Bash(cargo build",
+            "Bash(cargo test",
+            "Bash(cargo run",
+            "Bash(cargo publish",
+            "Bash(npm install",
+            "Bash(npm run",
+            "Bash(npm publish",
+            "Bash(pnpm install",
+            "Bash(bun install",
+            "Bash(gh pr review",
+            "Bash(gh pr comment",
+            "Bash(gh pr close",
+            "Bash(gh pr merge",
+            "Bash(gh api --method POST",
+            "Bash(gh api -X POST",
+            "Bash(gh api --method PUT",
+            "Bash(gh api --method DELETE",
+        ];
+
+        for d in &denied {
+            assert!(
+                !tools.contains(d),
+                "denied tool '{}' must NOT appear in proposal allowed_tools:\n{}",
+                d,
+                tools
+            );
+        }
+    }
+
+    #[test]
+    fn test_reviewee_proposal_allowed_tools_required() {
+        // Positive: only the read-only file-inspection tools are required.
+        // Bash is fully excluded; Slice B's --disallowedTools layer plus this
+        // shrunken allowlist together form the no-shell boundary.
+        let config = AiConfig::default();
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+
+        let required = ["Read", "Glob", "Grep"];
+        for r in &required {
+            assert!(
+                tools.contains(r),
+                "required tool '{}' must appear in proposal allowed_tools:\n{}",
+                r,
+                tools
+            );
+        }
+    }
+
+    #[test]
+    fn test_reviewee_proposal_with_additional_tools() {
+        // `WebSearch` is illustrative of a tool that passes the allowlist
+        // validator (`validate_proposal_additional_tools`) — Bash patterns
+        // would be rejected at `ClaudeAdapter::new`.
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["WebSearch".to_string()],
+            ..Default::default()
+        };
+        let tools = ClaudeAdapter::build_reviewee_proposal_allowed_tools(&config);
+        assert!(tools.ends_with(",WebSearch"));
+    }
+
+    #[test]
     fn test_add_reviewee_allowed_tool() {
         use crate::ai::adapter::AgentAdapter;
 
         let config = AiConfig::default();
-        let mut adapter = ClaudeAdapter::new(&config);
+        let mut adapter = ClaudeAdapter::new(&config).expect("default config must validate");
 
         // Initially, git push should not be present
         assert!(!adapter.reviewee_allowed_tools.contains("Bash(git push:*)"));
@@ -650,7 +855,7 @@ mod tests {
         use crate::ai::adapter::AgentAdapter;
 
         let config = AiConfig::default();
-        let mut adapter = ClaudeAdapter::new(&config);
+        let mut adapter = ClaudeAdapter::new(&config).expect("default config must validate");
 
         assert!(!adapter.local_mode);
 
@@ -688,6 +893,183 @@ mod tests {
                 disallowed.contains(&format!("Bash({}", cmd)),
                 "GIT_DISALLOWED_TOOLS should contain '{}'",
                 cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_proposal_disallowed_tools_constant_snapshot() {
+        // Bare keys: `Bash` blocks every Bash invocation regardless of subcommand;
+        // `Edit`/`Write`/`NotebookEdit` block all file-mutation tools.
+        assert_snapshot!(PROPOSAL_DISALLOWED_TOOLS, @"Bash,Edit,Write,NotebookEdit");
+    }
+
+    #[test]
+    fn test_proposal_disallowed_tools_contains_bare_keys() {
+        for key in ["Bash", "Edit", "Write", "NotebookEdit"] {
+            assert!(
+                PROPOSAL_DISALLOWED_TOOLS.split(',').any(|t| t == key),
+                "PROPOSAL_DISALLOWED_TOOLS must contain bare key '{}'",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_merge_disallowed_tools_dedups_and_preserves_order() {
+        let merged = merge_disallowed_tools(&["Bash,Edit", "Edit,Write,Bash"]);
+        assert_snapshot!(merged, @"Bash,Edit,Write");
+    }
+
+    #[test]
+    fn test_merge_disallowed_tools_skips_empty_segments() {
+        let merged = merge_disallowed_tools(&["Bash,,Edit", " "]);
+        assert_snapshot!(merged, @"Bash,Edit");
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_rejects_bare_bash() {
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["Bash".to_string()],
+            ..Default::default()
+        };
+        let err = ClaudeAdapter::new(&config)
+            .err()
+            .expect("bare Bash must be rejected");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("Bash"),
+            "error message must mention Bash: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_rejects_bare_edit() {
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["Edit".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            ClaudeAdapter::new(&config).is_err(),
+            "bare Edit must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_rejects_bare_write() {
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["Write".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            ClaudeAdapter::new(&config).is_err(),
+            "bare Write must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_rejects_bare_notebook_edit() {
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["NotebookEdit".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            ClaudeAdapter::new(&config).is_err(),
+            "bare NotebookEdit must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_rejects_bash_pattern() {
+        // Bash(...) wildcards admit write-capable flags via subcommand pattern
+        // matching, so any Bash(...) entry must be rejected.
+        for pat in [
+            "Bash(git diff:*)",
+            "Bash(rg:*)",
+            "Bash(gh api --method GET:*)",
+        ] {
+            let config = AiConfig {
+                reviewee_proposal_additional_tools: vec![pat.to_string()],
+                ..Default::default()
+            };
+            assert!(
+                ClaudeAdapter::new(&config).is_err(),
+                "pattern '{pat}' must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_reports_all_rejected_entries() {
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec![
+                "Bash".to_string(),
+                "Edit".to_string(),
+                "WebSearch".to_string(),
+                "Bash(rg:*)".to_string(),
+            ],
+            ..Default::default()
+        };
+        let err = ClaudeAdapter::new(&config).err().expect("must reject");
+        let msg = format!("{}", err);
+        assert!(msg.contains("Bash"), "must list 'Bash': {msg}");
+        assert!(msg.contains("Edit"), "must list 'Edit': {msg}");
+        assert!(msg.contains("Bash(rg:*)"), "must list 'Bash(rg:*)': {msg}");
+        assert!(
+            !msg.contains("WebSearch"),
+            "must NOT flag allowed 'WebSearch': {msg}"
+        );
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_accepts_read_only_tools() {
+        // Positive: tools that do not match the deny rules must pass.
+        let config = AiConfig {
+            reviewee_proposal_additional_tools: vec!["WebSearch".to_string(), "Skill".to_string()],
+            ..Default::default()
+        };
+        let adapter = ClaudeAdapter::new(&config).expect("read-only tools must validate");
+        assert!(adapter
+            .reviewee_proposal_allowed_tools
+            .contains("WebSearch"));
+        assert!(adapter.reviewee_proposal_allowed_tools.contains("Skill"));
+    }
+
+    #[test]
+    fn test_proposal_additional_tools_validation_empty_passes() {
+        let config = AiConfig::default();
+        assert!(
+            ClaudeAdapter::new(&config).is_ok(),
+            "default (empty) config must validate"
+        );
+    }
+
+    #[test]
+    fn test_merge_proposal_with_git_disallowed_keeps_both_layers() {
+        // Slice B contract: when local_mode is true and proposal mode is active,
+        // both PROPOSAL_DISALLOWED_TOOLS (no-shell) and GIT_DISALLOWED_TOOLS
+        // (git mutators) must appear after merging.
+        let merged = merge_disallowed_tools(&[PROPOSAL_DISALLOWED_TOOLS, GIT_DISALLOWED_TOOLS]);
+
+        for bare in ["Bash", "Edit", "Write", "NotebookEdit"] {
+            assert!(
+                merged.split(',').any(|t| t == bare),
+                "merged must contain bare proposal key '{}':\n{}",
+                bare,
+                merged
+            );
+        }
+        for git_pat in [
+            "Bash(git add:*)",
+            "Bash(git commit:*)",
+            "Bash(git push:*)",
+            "Bash(git reset:*)",
+        ] {
+            assert!(
+                merged.split(',').any(|t| t == git_pat),
+                "merged must contain git mutator pattern '{}':\n{}",
+                git_pat,
+                merged
             );
         }
     }

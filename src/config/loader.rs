@@ -91,8 +91,9 @@ impl Config {
     /// SECURITY NOTE: Local `.octorus/config.toml` has a 3-tier trust model:
     /// - **Stripped**: `editor` is removed before merge (command injection risk)
     /// - **Confirmation required**: `ai.*_additional_tools`, `ai.auto_post`,
-    ///   `ai.reviewer`, `ai.reviewee` — tracked in `local_overrides` and
-    ///   guarded by TUI confirmation / headless `--accept-local-overrides`
+    ///   `ai.reviewer`, `ai.reviewee`, `ai.review_only` — tracked in
+    ///   `local_overrides` and guarded by TUI confirmation / headless
+    ///   `--accept-local-overrides`
     /// - **Validated**: `ai.prompt_dir` — path traversal checks applied
     ///
     /// All other keys (theme, keybindings, etc.) are freely overridable.

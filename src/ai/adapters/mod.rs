@@ -21,7 +21,7 @@ pub fn create_adapter(name: &str, config: &AiConfig) -> Result<Box<dyn AgentAdap
 
     match agent {
         // Claude adapter uses config for additional tools
-        SupportedAgent::Claude => Ok(Box::new(ClaudeAdapter::new(config))),
+        SupportedAgent::Claude => Ok(Box::new(ClaudeAdapter::new(config)?)),
         // Codex adapter does not support fine-grained tool control
         SupportedAgent::Codex => Ok(Box::new(CodexAdapter::new())),
         // SupportedAgent::Gemini => Ok(Box::new(GeminiAdapter::new())),

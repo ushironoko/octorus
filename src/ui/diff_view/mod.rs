@@ -15,8 +15,7 @@ use smallvec::smallvec;
 
 use super::common::render_rally_status_bar;
 use crate::app::{
-    hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext,
-    SpanVec,
+    hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext, SpanVec,
 };
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{
@@ -1173,7 +1172,11 @@ pub fn render(frame: &mut Frame, app: &App) {
             Constraint::Length(3),
         ]
     } else {
-        vec![Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)]
+        vec![
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ]
     };
 
     let chunks = Layout::default()
@@ -1666,8 +1669,13 @@ fn render_suggestion_input(frame: &mut Frame, app: &App, area: ratatui::layout::
     let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
 
     if let Some(ref cache) = app.suggestion_highlight_cache {
-        app.input_text_area
-            .render_highlighted(frame, area, &title, "Edit the code...", &cache.lines);
+        app.input_text_area.render_highlighted(
+            frame,
+            area,
+            &title,
+            "Edit the code...",
+            &cache.lines,
+        );
     } else {
         app.input_text_area
             .render_with_title(frame, area, &title, "Edit the code...");

@@ -1723,6 +1723,7 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -1731,8 +1732,7 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 0,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -2660,6 +2660,7 @@ fn test_ai_rally_state_push_log_auto_follow() {
     let mut state = AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -2668,8 +2669,7 @@ fn test_ai_rally_state_push_log_auto_follow() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -2689,6 +2689,7 @@ fn test_ai_rally_state_push_log_no_auto_follow() {
     let mut state = AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![
@@ -2701,8 +2702,7 @@ fn test_ai_rally_state_push_log_no_auto_follow() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -2719,6 +2719,7 @@ fn test_ai_rally_state_is_selection_at_tail() {
     let mut state = AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![
@@ -2730,8 +2731,7 @@ fn test_ai_rally_state_is_selection_at_tail() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -3672,6 +3672,7 @@ fn test_cleanup_rally_state() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3680,8 +3681,7 @@ fn test_cleanup_rally_state() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -3888,6 +3888,7 @@ fn test_is_rally_running_in_background_not_in_rally() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3896,8 +3897,7 @@ fn test_is_rally_running_in_background_not_in_rally() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -3912,6 +3912,7 @@ fn test_is_rally_running_in_background_in_rally() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3920,8 +3921,7 @@ fn test_is_rally_running_in_background_in_rally() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -3944,6 +3944,7 @@ fn test_is_rally_running_in_background_finished() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::Completed,
         history: vec![],
         logs: vec![],
@@ -3952,8 +3953,7 @@ fn test_is_rally_running_in_background_finished() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -3968,6 +3968,7 @@ fn test_has_background_rally_true() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -3976,8 +3977,7 @@ fn test_has_background_rally_true() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -3992,6 +3992,7 @@ fn test_has_background_rally_false_in_rally() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4000,8 +4001,7 @@ fn test_has_background_rally_false_in_rally() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -4024,6 +4024,7 @@ fn test_is_background_rally_finished_completed() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::Completed,
         history: vec![],
         logs: vec![],
@@ -4032,8 +4033,7 @@ fn test_is_background_rally_finished_completed() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -4048,6 +4048,7 @@ fn test_is_background_rally_finished_running() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4056,8 +4057,7 @@ fn test_is_background_rally_finished_running() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -4071,6 +4071,7 @@ fn test_adjust_log_scroll_selection_above() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: (0..20)
@@ -4081,8 +4082,7 @@ fn test_adjust_log_scroll_selection_above() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 5,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -4100,6 +4100,7 @@ fn test_adjust_log_scroll_selection_below() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: (0..20)
@@ -4110,8 +4111,7 @@ fn test_adjust_log_scroll_selection_below() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 5,
         pending_config_warning: None,
         pause_state: PauseState::Running,
@@ -4140,6 +4140,7 @@ fn test_pause_state_reset_on_approve_state_change() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4148,8 +4149,7 @@ fn test_pause_state_reset_on_approve_state_change() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
@@ -4185,6 +4185,7 @@ fn test_pause_state_reset_on_waiting_for_clarification() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::RevieweeFix,
         history: vec![],
         logs: vec![],
@@ -4193,8 +4194,7 @@ fn test_pause_state_reset_on_waiting_for_clarification() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
@@ -4230,6 +4230,7 @@ fn test_pause_state_reset_on_waiting_for_permission() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::RevieweeFix,
         history: vec![],
         logs: vec![],
@@ -4238,8 +4239,7 @@ fn test_pause_state_reset_on_waiting_for_permission() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
@@ -4273,6 +4273,7 @@ fn test_pause_state_reset_on_waiting_for_post_confirmation() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::RevieweeFix,
         history: vec![],
         logs: vec![],
@@ -4281,8 +4282,7 @@ fn test_pause_state_reset_on_waiting_for_post_confirmation() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
@@ -4306,6 +4306,65 @@ fn test_pause_state_reset_on_waiting_for_post_confirmation() {
 }
 
 #[test]
+fn test_post_confirm_response_does_not_force_rally_state_to_reviewee_fix() {
+    use crate::ai::orchestrator::ProposalPostInfo;
+    use crate::ai::RallyState;
+
+    // Regression: the post-confirmation handler used to unconditionally set
+    // `rally_state.state = RallyState::RevieweeFix`. For Proposal-variant
+    // confirmations the next correct phase is never RevieweeFix (review_only
+    // mode never enters reviewee fix), so the assignment caused a one-tick
+    // wrong-phase flash before polling.rs StateChanged overwrote it. The
+    // handler must now leave `state` alone and let StateChanged drive it.
+    for approved in [true, false] {
+        let mut app = App::new_for_test();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(10);
+        app.rally_command_sender = Some(cmd_tx);
+        app.ai_rally_state = Some(AiRallyState {
+            iteration: 2,
+            max_iterations: 5,
+            review_only: true,
+            state: RallyState::WaitingForPostConfirmation,
+            history: vec![],
+            logs: vec![],
+            log_scroll_offset: 0,
+            selected_log_index: None,
+            showing_log_detail: false,
+            pending_question: None,
+            pending_permission: None,
+            pending_post_confirmation: crate::app::PendingPostConfirmation::Proposal(
+                ProposalPostInfo {
+                    summary: "test proposal".to_string(),
+                    target_files: vec!["src/foo.rs".to_string()],
+                    plan_item_count: 1,
+                },
+            ),
+            last_visible_log_height: 10,
+            pending_config_warning: None,
+            pause_state: PauseState::Running,
+        });
+
+        app.handle_post_confirm_response(approved);
+
+        let rally_state = app.ai_rally_state.as_ref().unwrap();
+        assert_eq!(
+            rally_state.state,
+            RallyState::WaitingForPostConfirmation,
+            "handler must not mutate rally_state.state (approved={}); polling.rs StateChanged is the single writer",
+            approved
+        );
+        assert!(
+            matches!(
+                rally_state.pending_post_confirmation,
+                crate::app::PendingPostConfirmation::None
+            ),
+            "handler must clear pending_post_confirmation (approved={})",
+            approved
+        );
+    }
+}
+
+#[test]
 fn test_pause_state_preserved_on_active_state_change() {
     use crate::ai::orchestrator::RallyEvent;
     use crate::ai::RallyState;
@@ -4318,6 +4377,7 @@ fn test_pause_state_preserved_on_active_state_change() {
     app.ai_rally_state = Some(AiRallyState {
         iteration: 1,
         max_iterations: 10,
+        review_only: false,
         state: crate::ai::RallyState::ReviewerReviewing,
         history: vec![],
         logs: vec![],
@@ -4326,8 +4386,7 @@ fn test_pause_state_preserved_on_active_state_change() {
         showing_log_detail: false,
         pending_question: None,
         pending_permission: None,
-        pending_review_post: None,
-        pending_fix_post: None,
+        pending_post_confirmation: crate::app::PendingPostConfirmation::None,
         last_visible_log_height: 10,
         pending_config_warning: None,
         pause_state: PauseState::PauseRequested,
@@ -7784,4 +7843,179 @@ fn test_apply_review_comments_populates_file_counts() {
 
     assert_eq!(app.cmt.file_comment_counts.get("src/a.rs"), Some(&2));
     assert_eq!(app.cmt.file_comment_counts.get("src/b.rs"), Some(&1));
+}
+
+// ========================================
+// Diff page-scroll pure functions (issue #161)
+// ========================================
+
+#[test]
+fn test_scroll_diff_page_down_advances_by_step() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 0;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        super::input_diff::DIFF_PAGE_STEP
+    );
+}
+
+#[test]
+fn test_scroll_diff_page_down_clamps_at_end() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 10;
+    app.diff_scroll.selected_line = 5;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(app.diff_scroll.selected_line, 9);
+}
+
+#[test]
+fn test_scroll_diff_page_down_no_op_on_empty_diff() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 0;
+    app.diff_scroll.selected_line = 0;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(app.diff_scroll.selected_line, 0);
+}
+
+#[test]
+fn test_scroll_diff_page_up_saturates_at_zero() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 5;
+
+    app.scroll_diff_page_up(40);
+
+    assert_eq!(app.diff_scroll.selected_line, 0);
+}
+
+#[test]
+fn test_scroll_diff_page_up_full_step_when_room() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 50;
+
+    app.scroll_diff_page_up(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        50 - super::input_diff::DIFF_PAGE_STEP
+    );
+}
+
+#[test]
+fn test_diff_visible_lines_panel_closed_uses_term_minus_8() {
+    let config = Config::default();
+    let (app, _tx) = App::new_loading("owner/repo", 1, config);
+    assert!(!app.cmt.comment_panel_open);
+
+    let lines = app.diff_visible_lines(50, super::types::DiffViewVariant::SplitPane);
+    assert_eq!(lines, 50 - 8);
+}
+
+#[test]
+fn test_diff_visible_lines_tiny_terminal_does_not_panic() {
+    let config = Config::default();
+    let (app, _tx) = App::new_loading("owner/repo", 1, config);
+
+    let lines = app.diff_visible_lines(4, super::types::DiffViewVariant::SplitPane);
+    assert_eq!(lines, 0);
+}
+
+#[test]
+fn test_diff_visible_lines_panel_open_split_pane_pct() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.cmt.comment_panel_open = true;
+
+    let term_h = 50usize;
+    let lines = app.diff_visible_lines(term_h, super::types::DiffViewVariant::SplitPane);
+    let fixed = 6;
+    let expected = (term_h.saturating_sub(fixed) * 50 / 90).saturating_sub(2);
+    assert_eq!(lines, expected);
+}
+
+// ========================================
+// Scenario: diff_page_down/up in split view contexts (issue #161)
+// ========================================
+
+#[test]
+fn test_diff_page_down_in_split_file_list_advances_only_diff() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewFileList;
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 0;
+    app.selected_file = 1;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        super::input_diff::DIFF_PAGE_STEP
+    );
+    assert_eq!(app.selected_file, 1, "file selection must not change");
+}
+
+#[test]
+fn test_diff_page_up_in_split_file_list_does_not_change_file_selection() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewFileList;
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 60;
+    app.selected_file = 2;
+
+    app.scroll_diff_page_up(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        60 - super::input_diff::DIFF_PAGE_STEP
+    );
+    assert_eq!(app.selected_file, 2);
+}
+
+#[test]
+fn test_diff_page_down_works_with_filter_active() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewFileList;
+    app.file_list_filter = Some(crate::filter::ListFilter::new());
+    app.diff_scroll.line_count = 100;
+    app.diff_scroll.selected_line = 0;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        super::input_diff::DIFF_PAGE_STEP
+    );
+}
+
+#[test]
+fn test_diff_page_down_in_diff_focus_matches_page_down_step() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::SplitViewDiff;
+    app.diff_scroll.line_count = 200;
+    app.diff_scroll.selected_line = 30;
+
+    app.scroll_diff_page_down(40);
+
+    assert_eq!(
+        app.diff_scroll.selected_line,
+        30 + super::input_diff::DIFF_PAGE_STEP
+    );
 }

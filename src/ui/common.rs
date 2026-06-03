@@ -53,6 +53,7 @@ pub fn render_rally_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         RallyState::Initializing => ("Initializing...", Color::Blue),
         RallyState::ReviewerReviewing => ("Reviewer reviewing...", Color::Yellow),
         RallyState::RevieweeFix => ("Reviewee fixing...", Color::Cyan),
+        RallyState::RevieweeProposing => ("Reviewee proposing...", Color::Cyan),
         RallyState::WaitingForClarification => ("Waiting for clarification", Color::Magenta),
         RallyState::WaitingForPermission => ("Waiting for permission", Color::Magenta),
         RallyState::WaitingForPostConfirmation => ("Waiting for post confirmation", Color::Magenta),
@@ -146,11 +147,7 @@ pub fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-pub fn render_filter_bar(
-    frame: &mut Frame,
-    area: Rect,
-    filter: &crate::filter::ListFilter,
-) {
+pub fn render_filter_bar(frame: &mut Frame, area: Rect, filter: &crate::filter::ListFilter) {
     let cursor_display = format!("/{}", filter.query);
     let filter_bar = Paragraph::new(Line::from(vec![
         Span::styled("Filter: ", Style::default().fg(Color::Cyan)),

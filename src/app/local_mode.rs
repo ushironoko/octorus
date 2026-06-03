@@ -155,7 +155,8 @@ impl App {
                 pr: cached.pr.clone(),
                 files: cached.files.clone(),
             };
-            self.diff_scroll.line_count = Self::calc_diff_line_count(&cached.files, self.selected_file);
+            self.diff_scroll.line_count =
+                Self::calc_diff_line_count(&cached.files, self.selected_file);
             self.start_prefetch_all_files();
         } else {
             self.data_state = DataState::Loading;

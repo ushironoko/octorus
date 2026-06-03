@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
-use crate::diff_store::{MAX_PREFETCH_FILES, PrefetchItem};
+use crate::diff_store::{PrefetchItem, MAX_PREFETCH_FILES};
 use crate::github::{ChangedFile, CiStatus};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
 
@@ -34,7 +34,12 @@ impl App {
                 self.prs.pr_list_has_more = page.has_more;
                 self.prs.pr_list_receiver = None;
 
-                if self.prs.pr_list_filter.as_ref().is_some_and(|f| f.has_query()) {
+                if self
+                    .prs
+                    .pr_list_filter
+                    .as_ref()
+                    .is_some_and(|f| f.has_query())
+                {
                     self.reapply_filter("pr");
                 }
             }
@@ -636,8 +641,8 @@ impl App {
                                     state,
                                     RallyState::Completed | RallyState::Aborted | RallyState::Error
                                 ) {
-                                    rally_state.pending_review_post = None;
-                                    rally_state.pending_fix_post = None;
+                                    rally_state.pending_post_confirmation =
+                                        crate::app::PendingPostConfirmation::None;
                                 }
                                 // Reset pause state on non-active or waiting states
                                 // to prevent stale "Pausing..." / pause controls
@@ -652,6 +657,15 @@ impl App {
                                 ) {
                                     rally_state.pause_state = PauseState::Running;
                                 }
+                            }
+                            RallyEvent::RallyStarted { review_only } => {
+                                let msg = if *review_only {
+                                    "AI Rally started in Review Only mode — reviewee (fix) phase will be skipped"
+                                        .to_string()
+                                } else {
+                                    "AI Rally started".to_string()
+                                };
+                                rally_state.push_log(LogEntry::new(LogEventType::Info, msg));
                             }
                             RallyEvent::IterationStarted(i) => {
                                 rally_state.iteration = *i;
@@ -722,8 +736,8 @@ impl App {
                                 ));
                             }
                             RallyEvent::ReviewPostConfirmNeeded(info) => {
-                                rally_state.pending_review_post = Some(info.clone());
-                                rally_state.pending_fix_post = None; // exclusive
+                                rally_state.pending_post_confirmation =
+                                    crate::app::PendingPostConfirmation::Review(info.clone());
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!(
@@ -733,13 +747,36 @@ impl App {
                                 ));
                             }
                             RallyEvent::FixPostConfirmNeeded(info) => {
-                                rally_state.pending_fix_post = Some(info.clone());
-                                rally_state.pending_review_post = None; // exclusive
+                                rally_state.pending_post_confirmation =
+                                    crate::app::PendingPostConfirmation::Fix(info.clone());
                                 rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!(
                                         "Fix post confirmation needed: {} file(s) modified",
                                         info.files_modified.len()
+                                    ),
+                                ));
+                            }
+                            RallyEvent::ProposalPostConfirmNeeded(info) => {
+                                rally_state.pending_post_confirmation =
+                                    crate::app::PendingPostConfirmation::Proposal(info.clone());
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!(
+                                        "Proposal post confirmation needed: {} plan item(s), {} file(s)",
+                                        info.plan_item_count,
+                                        info.target_files.len()
+                                    ),
+                                ));
+                            }
+                            RallyEvent::ProposalCompleted(p) => {
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Fix,
+                                    format!(
+                                        "Proposal completed: {} ({} plan item(s), files: {})",
+                                        p.summary,
+                                        p.plan.len(),
+                                        p.target_files().join(", ")
                                     ),
                                 ));
                             }
@@ -893,7 +930,9 @@ impl App {
                     self.load_review_comments();
                 }
                 // CLI 直接指定時: ci_status をバックグラウンドで取得
-                if !self.local_mode && self.chk.ci_status.is_none() && self.chk.ci_status_receiver.is_none()
+                if !self.local_mode
+                    && self.chk.ci_status.is_none()
+                    && self.chk.ci_status_receiver.is_none()
                 {
                     let (tx, rx) = mpsc::channel(1);
                     self.chk.ci_status_receiver = Some(rx);

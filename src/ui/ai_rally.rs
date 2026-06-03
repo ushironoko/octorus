@@ -23,7 +23,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(10), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(10),
+            Constraint::Length(3),
+        ])
         .split(frame.area());
 
     let kb = &app.config.keybindings;
@@ -41,6 +45,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         RallyState::Initializing => "Initializing...",
         RallyState::ReviewerReviewing => "Reviewer reviewing...",
         RallyState::RevieweeFix => "Reviewee fixing...",
+        RallyState::RevieweeProposing => "Reviewee designing fix proposal...",
         RallyState::WaitingForClarification => "Waiting for clarification",
         RallyState::WaitingForPermission => "Waiting for permission",
         RallyState::WaitingForPostConfirmation => "Waiting for post confirmation",
@@ -61,7 +66,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         match state.state {
             RallyState::Initializing => Color::Blue,
             RallyState::ReviewerReviewing => Color::Yellow,
-            RallyState::RevieweeFix => Color::Cyan,
+            RallyState::RevieweeFix | RallyState::RevieweeProposing => Color::Cyan,
             RallyState::WaitingForClarification
             | RallyState::WaitingForPermission
             | RallyState::WaitingForPostConfirmation => Color::Magenta,
@@ -71,10 +76,19 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
         }
     };
 
-    let title = format!(
-        " AI Rally - Iteration {}/{} ",
-        state.iteration, state.max_iterations
-    );
+    let title = if state.review_only {
+        // Proposal-iteration mode also has a finite max_iterations; show n/max
+        // so the user can track progress like normal mode.
+        format!(
+            " AI Rally [Review Only] - Iteration {}/{} ",
+            state.iteration, state.max_iterations
+        )
+    } else {
+        format!(
+            " AI Rally - Iteration {}/{} ",
+            state.iteration, state.max_iterations
+        )
+    };
 
     let header = Paragraph::new(vec![
         Line::from(Span::styled(pr_info, Style::default().fg(Color::White))),
@@ -98,7 +112,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState, pr_info: &
     frame.render_widget(header, area);
 }
 
-fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, kb: &KeybindingsConfig) {
+fn render_main_content(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut AiRallyState,
+    kb: &KeybindingsConfig,
+) {
     if state.pending_config_warning.is_some() {
         render_config_warning(frame, area, state, kb);
         return;
@@ -123,10 +142,7 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, 
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area)
     };
 
@@ -140,7 +156,12 @@ fn render_main_content(frame: &mut Frame, area: Rect, state: &mut AiRallyState, 
     }
 }
 
-fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+fn render_config_warning(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiRallyState,
+    kb: &KeybindingsConfig,
+) {
     let warnings = match &state.pending_config_warning {
         Some(w) => w,
         None => return,
@@ -169,7 +190,12 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
         Style::default().fg(Color::Yellow),
     )]));
     lines.push(Line::from(""));
-    let help_text = format!("Press '{}' to accept and continue, '{}'/'{}' to cancel", kb.confirm_yes.display(), kb.confirm_no.display(), kb.quit.display());
+    let help_text = format!(
+        "Press '{}' to accept and continue, '{}'/'{}' to cancel",
+        kb.confirm_yes.display(),
+        kb.confirm_no.display(),
+        kb.quit.display()
+    );
     lines.push(Line::from(vec![Span::styled(
         help_text,
         Style::default()
@@ -187,7 +213,12 @@ fn render_config_warning(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
     frame.render_widget(warning, area);
 }
 
-fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+fn render_waiting_prompt(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiRallyState,
+    kb: &KeybindingsConfig,
+) {
     let yes = kb.confirm_yes.display();
     let no = kb.confirm_no.display();
     let quit = kb.quit.display();
@@ -200,7 +231,10 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
             (
                 " Clarification Required ",
                 format!("Question: {}", question),
-                format!("Press '{}' to open editor and respond, '{}' to skip, '{}' to abort", yes, no, quit),
+                format!(
+                    "Press '{}' to open editor and respond, '{}' to skip, '{}' to abort",
+                    yes, no, quit
+                ),
             )
         }
         RallyState::WaitingForPermission => {
@@ -212,11 +246,14 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
             (
                 " Permission Required ",
                 format!("Action: {}\nReason: {}", action, reason),
-                format!("Press '{}' to approve, '{}' to deny, '{}' to abort", yes, no, quit),
+                format!(
+                    "Press '{}' to approve, '{}' to deny, '{}' to abort",
+                    yes, no, quit
+                ),
             )
         }
-        RallyState::WaitingForPostConfirmation => {
-            if let Some(ref info) = state.pending_review_post {
+        RallyState::WaitingForPostConfirmation => match &state.pending_post_confirmation {
+            crate::app::PendingPostConfirmation::Review(info) => {
                 let summary = truncate_with_width(&info.summary, 120);
                 (
                     " Review Post Confirmation ",
@@ -224,9 +261,13 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
                         "Action: {}\nSummary: {}\nComments: {}",
                         info.action, summary, info.comment_count
                     ),
-                    format!("Press '{}' to post to PR, '{}' to skip, '{}' to abort", yes, no, quit),
+                    format!(
+                        "Press '{}' to post to PR, '{}' to skip, '{}' to abort",
+                        yes, no, quit
+                    ),
                 )
-            } else if let Some(ref info) = state.pending_fix_post {
+            }
+            crate::app::PendingPostConfirmation::Fix(info) => {
                 let summary = truncate_with_width(&info.summary, 120);
                 let files_display = if info.files_modified.len() <= 5 {
                     info.files_modified.join(", ")
@@ -246,12 +287,43 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState, kb
                 (
                     " Fix Post Confirmation ",
                     format!("Summary: {}\nFiles: {}", summary, files_display),
-                    format!("Press '{}' to post to PR, '{}' to skip, '{}' to abort", yes, no, quit),
+                    format!(
+                        "Press '{}' to post to PR, '{}' to skip, '{}' to abort",
+                        yes, no, quit
+                    ),
                 )
-            } else {
-                return;
             }
-        }
+            crate::app::PendingPostConfirmation::Proposal(info) => {
+                let summary = truncate_with_width(&info.summary, 120);
+                let files_display = if info.target_files.len() <= 5 {
+                    info.target_files.join(", ")
+                } else {
+                    let shown: Vec<&str> = info
+                        .target_files
+                        .iter()
+                        .take(5)
+                        .map(|s| s.as_str())
+                        .collect();
+                    format!(
+                        "{} (+{} more)",
+                        shown.join(", "),
+                        info.target_files.len() - 5
+                    )
+                };
+                (
+                    " Reviewee Proposal Post Confirmation ",
+                    format!(
+                        "Summary: {}\nPlan items: {}\nFiles: {}",
+                        summary, info.plan_item_count, files_display
+                    ),
+                    format!(
+                        "Press '{}' to post to PR, '{}' to skip, '{}' to abort",
+                        yes, no, quit
+                    ),
+                )
+            }
+            crate::app::PendingPostConfirmation::None => return,
+        },
         _ => return,
     };
 
@@ -282,6 +354,15 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         .iter()
         .filter_map(|event| {
             let (prefix, content, color) = match event {
+                crate::ai::orchestrator::RallyEvent::RallyStarted { review_only }
+                    if *review_only =>
+                {
+                    (
+                        "Mode".to_string(),
+                        "Review Only — reviewee (fix) phase will be skipped".to_string(),
+                        Color::Cyan,
+                    )
+                }
                 crate::ai::orchestrator::RallyEvent::IterationStarted(i) => (
                     format!("[{}]", i),
                     "Iteration started".to_string(),
@@ -339,9 +420,28 @@ fn render_history(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                     truncate_with_width(summary, 60).into_owned(),
                     Color::Green,
                 ),
-                crate::ai::orchestrator::RallyEvent::Error(e) => {
-                    ("ERROR".to_string(), truncate_with_width(e, 60).into_owned(), Color::Red)
+                crate::ai::orchestrator::RallyEvent::ReviewOnlyCompleted(review) => {
+                    let action_text = match review.action {
+                        ReviewAction::Approve => "APPROVE",
+                        ReviewAction::RequestChanges => "REQUEST_CHANGES",
+                        ReviewAction::Comment => "COMMENT",
+                    };
+                    let color = match review.action {
+                        ReviewAction::Approve => Color::Green,
+                        ReviewAction::RequestChanges => Color::Red,
+                        ReviewAction::Comment => Color::Yellow,
+                    };
+                    (
+                        format!("Review Only: {}", action_text),
+                        truncate_with_width(&review.summary, 60).into_owned(),
+                        color,
+                    )
                 }
+                crate::ai::orchestrator::RallyEvent::Error(e) => (
+                    "ERROR".to_string(),
+                    truncate_with_width(e, 60).into_owned(),
+                    Color::Red,
+                ),
                 _ => return None,
             };
 
@@ -540,7 +640,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &K
     } else if state.showing_log_detail {
         format!("{quit}/{enter}: Close detail")
     } else if state.pause_state == PauseState::Paused {
-        format!("{pause}: Resume | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort")
+        format!(
+            "{pause}: Resume | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort"
+        )
     } else if state.pause_state == PauseState::PauseRequested {
         format!("{pause}: Cancel pause | {mv}: select | {enter}: detail | {bg}: Background | {quit}: Abort")
     } else {
@@ -586,9 +688,14 @@ mod tests {
     use ratatui::Terminal;
 
     fn make_rally_state() -> AiRallyState {
+        make_rally_state_with(false)
+    }
+
+    fn make_rally_state_with(review_only: bool) -> AiRallyState {
         AiRallyState {
             iteration: 1,
             max_iterations: 3,
+            review_only,
             state: RallyState::Initializing,
             history: vec![],
             logs: vec![],
@@ -597,8 +704,7 @@ mod tests {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
-            pending_review_post: None,
-            pending_fix_post: None,
+            pending_post_confirmation: crate::app::PendingPostConfirmation::None,
             last_visible_log_height: 0,
             pending_config_warning: None,
             pause_state: PauseState::Running,
@@ -667,7 +773,10 @@ mod tests {
         app.ai_rally_state = None;
 
         let output = render_full(&mut app);
-        assert!(!output.contains("AI Rally"), "should render empty when no state");
+        assert!(
+            !output.contains("AI Rally"),
+            "should render empty when no state"
+        );
     }
 
     #[test]
@@ -680,7 +789,10 @@ mod tests {
         app.ai_rally_state = Some(rally);
 
         let output = render_full(&mut app);
-        assert!(output.contains("Completed!"), "should show completed status");
+        assert!(
+            output.contains("Completed!"),
+            "should show completed status"
+        );
     }
 
     #[test]
@@ -702,7 +814,10 @@ mod tests {
 
         let output = render_full(&mut app);
         assert!(output.contains("Rally started"), "should show log messages");
-        assert!(output.contains("Analyzing code..."), "should show thinking log");
+        assert!(
+            output.contains("Analyzing code..."),
+            "should show thinking log"
+        );
     }
 
     #[test]
@@ -716,5 +831,78 @@ mod tests {
 
         let output = render_full(&mut app);
         assert!(output.contains("PAUSED"), "should show paused indicator");
+    }
+
+    #[test]
+    fn test_review_only_badge_in_header() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = Some(make_rally_state_with(true));
+
+        let output = render_full(&mut app);
+        assert!(
+            output.contains("[Review Only]"),
+            "header should show [Review Only] badge when review_only is set:\n{}",
+            output
+        );
+        assert!(
+            output.contains("Iteration 1/3"),
+            "review_only is now a proposal-iteration mode and should display Iteration n/max like normal mode:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_review_only_startup_banner_in_history() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state_with(true);
+        rally
+            .history
+            .push(crate::ai::orchestrator::RallyEvent::RallyStarted { review_only: true });
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(
+            output.contains("Mode:"),
+            "history should show Mode: prefix when RallyStarted with review_only=true:\n{}",
+            output
+        );
+        assert!(
+            output.contains("Review Only"),
+            "history should show Review Only label:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_rally_started_hidden_from_history() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        let mut rally = make_rally_state_with(false);
+        rally
+            .history
+            .push(crate::ai::orchestrator::RallyEvent::RallyStarted { review_only: false });
+        app.ai_rally_state = Some(rally);
+
+        let output = render_full(&mut app);
+        assert!(
+            !output.contains("Mode:"),
+            "history should not show Mode: entry when review_only is false:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_no_review_only_badge() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = Some(make_rally_state_with(false));
+
+        let output = render_full(&mut app);
+        assert!(
+            !output.contains("[Review Only]"),
+            "header should not show [Review Only] badge when review_only is false"
+        );
     }
 }

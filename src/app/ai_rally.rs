@@ -144,16 +144,7 @@ impl App {
                     self.open_clarification_editor_sync(&question, terminal)?;
                 }
                 RallyState::WaitingForPostConfirmation => {
-                    self.send_rally_command(OrchestratorCommand::PostConfirmResponse(true));
-                    if let Some(ref mut rally_state) = self.ai_rally_state {
-                        rally_state.pending_review_post = None;
-                        rally_state.pending_fix_post = None;
-                        rally_state.state = RallyState::RevieweeFix;
-                        rally_state.push_log(LogEntry::new(
-                            LogEventType::Info,
-                            "Post approved, posting to PR...".to_string(),
-                        ));
-                    }
+                    self.handle_post_confirm_response(true);
                 }
                 _ => {}
             }
@@ -198,16 +189,7 @@ impl App {
                     }
                 }
                 RallyState::WaitingForPostConfirmation => {
-                    self.send_rally_command(OrchestratorCommand::PostConfirmResponse(false));
-                    if let Some(ref mut rally_state) = self.ai_rally_state {
-                        rally_state.pending_review_post = None;
-                        rally_state.pending_fix_post = None;
-                        rally_state.state = RallyState::RevieweeFix;
-                        rally_state.push_log(LogEntry::new(
-                            LogEventType::Info,
-                            "Post skipped, continuing...".to_string(),
-                        ));
-                    }
+                    self.handle_post_confirm_response(false);
                 }
                 _ => {}
             }
@@ -361,6 +343,26 @@ impl App {
             }
         }
     }
+    /// Forward the user's post-confirmation response to the orchestrator and
+    /// clear the pending UI state. Does **not** mutate `rally_state.state` —
+    /// the orchestrator drives subsequent state transitions via
+    /// `RallyEvent::StateChanged` (processed in `poll_rally_events`).
+    /// Touching the state here would briefly flash a wrong phase label for
+    /// Proposal-variant confirmations (was always `RevieweeFix`, which is
+    /// never the correct next phase in review_only / proposal-iteration mode).
+    pub(crate) fn handle_post_confirm_response(&mut self, approved: bool) {
+        self.send_rally_command(OrchestratorCommand::PostConfirmResponse(approved));
+        if let Some(ref mut rally_state) = self.ai_rally_state {
+            rally_state.pending_post_confirmation = crate::app::PendingPostConfirmation::None;
+            let msg = if approved {
+                "Post approved, posting to PR..."
+            } else {
+                "Post skipped, continuing..."
+            };
+            rally_state.push_log(LogEntry::new(LogEventType::Info, msg.to_string()));
+        }
+    }
+
     pub(crate) fn send_rally_command(&mut self, cmd: OrchestratorCommand) {
         if let Some(ref sender) = self.rally_command_sender {
             // Use try_send since we're not in an async context
@@ -539,6 +541,7 @@ impl App {
         self.ai_rally_state = Some(AiRallyState {
             iteration: 0,
             max_iterations: self.config.ai.max_iterations,
+            review_only: self.config.ai.review_only,
             state: RallyState::Initializing,
             history: Vec::new(),
             logs: Vec::new(),
@@ -547,8 +550,7 @@ impl App {
             showing_log_detail: false,
             pending_question: None,
             pending_permission: None,
-            pending_review_post: None,
-            pending_fix_post: None,
+            pending_post_confirmation: crate::app::PendingPostConfirmation::None,
             last_visible_log_height: 10,
             pending_config_warning: if warnings.is_empty() {
                 None
@@ -680,6 +682,7 @@ impl App {
                 format!("{:?}", self.config.ai.reviewee_additional_tools)
             }
             "ai.auto_post" => format!("{}", self.config.ai.auto_post),
+            "ai.review_only" => format!("{}", self.config.ai.review_only),
             "ai.reviewer" => self.config.ai.reviewer.clone(),
             "ai.reviewee" => self.config.ai.reviewee.clone(),
             "ai.prompt_dir" => self

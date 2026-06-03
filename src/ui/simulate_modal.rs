@@ -68,10 +68,7 @@ struct FileDiff {
     after_label: String,
 }
 
-fn compute_diffs(
-    before: &GitfilmAreaSnapshot,
-    after: &GitfilmAreaSnapshot,
-) -> Vec<FileDiff> {
+fn compute_diffs(before: &GitfilmAreaSnapshot, after: &GitfilmAreaSnapshot) -> Vec<FileDiff> {
     let before_states = collect_file_states(before);
     let after_states = collect_file_states(after);
 
@@ -306,18 +303,12 @@ mod tests {
     #[test]
     fn test_compute_diffs_committed_to_staged() {
         let before = GitfilmAreaSnapshot {
-            working_tree: vec![
-                fe("src/main.rs", "clean"),
-                fe("src/lib.rs", "clean"),
-            ],
+            working_tree: vec![fe("src/main.rs", "clean"), fe("src/lib.rs", "clean")],
             staging_area: vec![],
             repository: GitfilmRepoState { commits: vec![] },
         };
         let after = GitfilmAreaSnapshot {
-            working_tree: vec![
-                fe("src/main.rs", "clean"),
-                fe("src/lib.rs", "clean"),
-            ],
+            working_tree: vec![fe("src/main.rs", "clean"), fe("src/lib.rs", "clean")],
             staging_area: vec![
                 fe("src/main.rs", "staged (modified)"),
                 fe("src/lib.rs", "staged (modified)"),

@@ -19,10 +19,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
 
     let outer_constraints = if has_rally {
-        vec![
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ]
+        vec![Constraint::Min(0), Constraint::Length(1)]
     } else {
         vec![Constraint::Min(0)]
     };
@@ -68,10 +65,7 @@ fn render_file_list_pane(
         .as_ref()
         .is_some_and(|f| f.input_active);
 
-    let mut constraints = vec![
-        Constraint::Length(3),
-        Constraint::Min(0),
-    ];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(0)];
     if has_filter_bar {
         constraints.push(Constraint::Length(3));
     }

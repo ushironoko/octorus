@@ -47,7 +47,9 @@ pub(crate) enum FileRecordStatus {
 #[derive(Debug, PartialEq)]
 enum FileStatus {
     UpToDate,
-    MatchesPreviousDefault { version: String },
+    MatchesPreviousDefault {
+        version: String,
+    },
     Customized,
     // check_file_status never returns Missing (file-not-found handled before calling it),
     // but the variant keeps the match exhaustive for safety
@@ -226,7 +228,7 @@ const HASH_SKILL_0_6_0: &str = "fef731483f46d966fc275ef3175dcdb46a4352648dce5ed1
 const HASH_SKILL_REF_HEADLESS_0_6_0: &str =
     "4990398413faebbb2b8237b04be68d554ea254381b6551df1350dd482d4f0962";
 const HASH_SKILL_REF_CONFIG_0_6_0: &str =
-    "24c757880aef964db0d8b08cc81fcca0be0d7031b6606893f3e25ab801be41e7";
+    "2d2a8beffdc65b63fd990557d703a8ef9fa67823078b8e31d8d438b3bf80dc5c";
 
 // ---------------------------------------------------------------------------
 // Config Migrations (breaking changes registry)

@@ -367,8 +367,7 @@ impl App {
     fn handle_issue_comment_detail_input(&mut self, key: event::KeyEvent) -> Result<()> {
         let kb = self.config.keybindings.clone();
 
-        if self.matches_single_key(&key, &kb.quit)
-                       || self.matches_single_key(&key, &kb.open_panel)
+        if self.matches_single_key(&key, &kb.quit) || self.matches_single_key(&key, &kb.open_panel)
         {
             let state = self.issue_state.as_mut().unwrap();
             state.issue_comment_detail_mode = false;
@@ -463,7 +462,8 @@ mod tests {
             }),
         ];
         let mut state = IssueState::new();
-        state.issue_detail = crate::app::LoadState::Loaded(make_issue_detail_with_comments(comments));
+        state.issue_detail =
+            crate::app::LoadState::Loaded(make_issue_detail_with_comments(comments));
         app.issue_state = Some(state);
         app.state = AppState::IssueDetail;
 

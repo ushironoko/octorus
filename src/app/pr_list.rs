@@ -63,7 +63,8 @@ impl App {
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if pr_count > 0 && !has_filter {
                 let step = 20usize;
-                self.prs.selected_pr = (self.prs.selected_pr + step).min(pr_count.saturating_sub(1));
+                self.prs.selected_pr =
+                    (self.prs.selected_pr + step).min(pr_count.saturating_sub(1));
                 if self.prs.pr_list_has_more
                     && !self.prs.pr_list.is_loading()
                     && self.prs.selected_pr + 5 >= pr_count

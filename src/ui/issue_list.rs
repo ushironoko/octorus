@@ -25,10 +25,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .as_ref()
         .is_some_and(|f| f.input_active);
 
-    let mut constraints = vec![
-        Constraint::Length(3),
-        Constraint::Min(0),
-    ];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(0)];
     if has_filter_bar {
         constraints.push(Constraint::Length(3));
     }
@@ -151,7 +148,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_footer(frame, chunks[next_chunk], app);
 }
-
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let help_text = super::footer::footer_hint_back(&app.config.keybindings);
@@ -285,7 +281,9 @@ mod tests {
             number,
             title: title.to_string(),
             state: state.to_string(),
-            author: User { login: author.to_string() },
+            author: User {
+                login: author.to_string(),
+            },
             labels: vec![],
             updated_at: "2025-01-01T00:00:00Z".to_string(),
             comments: vec![],
@@ -374,8 +372,12 @@ mod tests {
         let mut issue_state = IssueState::new();
         let mut issue = make_issue(5, "Bug report", "open", "carol");
         issue.labels = vec![
-            Label { name: "bug".to_string() },
-            Label { name: "priority".to_string() },
+            Label {
+                name: "bug".to_string(),
+            },
+            Label {
+                name: "priority".to_string(),
+            },
         ];
         issue_state.issues = crate::app::LoadState::Loaded(vec![issue]);
         app.issue_state = Some(issue_state);
@@ -415,7 +417,9 @@ mod tests {
         app.issue_state = None;
 
         let output = render_full(&mut app);
-        assert!(!output.contains("Issues"), "no issue panel when state is None");
+        assert!(
+            !output.contains("Issues"),
+            "no issue panel when state is None"
+        );
     }
 }
-

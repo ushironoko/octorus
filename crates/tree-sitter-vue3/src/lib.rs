@@ -98,12 +98,14 @@ export default {
     }
 
     #[test]
-    fn test_highlights_query_not_empty() {
-        assert!(!HIGHLIGHTS_QUERY.is_empty());
+    fn test_highlights_query_parses() {
+        tree_sitter::Query::new(&LANGUAGE.into(), HIGHLIGHTS_QUERY)
+            .expect("highlights.scm must be a valid tree-sitter query");
     }
 
     #[test]
-    fn test_injections_query_not_empty() {
-        assert!(!INJECTIONS_QUERY.is_empty());
+    fn test_injections_query_parses() {
+        tree_sitter::Query::new(&LANGUAGE.into(), INJECTIONS_QUERY)
+            .expect("injections.scm must be a valid tree-sitter query");
     }
 }

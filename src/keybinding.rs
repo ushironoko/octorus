@@ -508,7 +508,10 @@ impl<'de> Visitor<'de> for KeySequenceVisitor {
                 "key sequences longer than 2 keys are not supported",
             ));
         }
-        Ok(KeySequence { keys, alt: Vec::new() })
+        Ok(KeySequence {
+            keys,
+            alt: Vec::new(),
+        })
     }
 }
 

@@ -24,7 +24,11 @@ fn fmt_label(label: &str, width: usize) -> String {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     render_tab_header(frame, app, chunks[0]);
@@ -334,6 +338,12 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
             overrides,
         ),
         config_value_line(
+            "Review only",
+            &config.ai.review_only.to_string(),
+            "ai.review_only",
+            overrides,
+        ),
+        config_value_line(
             "Prompt dir",
             &prompt_dir_display,
             "ai.prompt_dir",
@@ -364,6 +374,32 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         "Reviewee tools",
         &reviewee_tools_display,
         "ai.reviewee_additional_tools",
+        overrides,
+    ));
+
+    // Reviewee proposal additional tools (read-only mode)
+    let proposal_tools_display = if config.ai.reviewee_proposal_additional_tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        config.ai.reviewee_proposal_additional_tools.join(", ")
+    };
+    lines.push(config_value_line(
+        "Proposal tools",
+        &proposal_tools_display,
+        "ai.reviewee_proposal_additional_tools",
+        overrides,
+    ));
+
+    // Post strategy for reviewee proposals
+    let post_strategy_display = match config.ai.post_reviewee_proposals {
+        crate::config::ProposalPostStrategy::Final => "final",
+        crate::config::ProposalPostStrategy::Each => "each",
+        crate::config::ProposalPostStrategy::None => "none",
+    };
+    lines.push(config_value_line(
+        "Post proposals",
+        post_strategy_display,
+        "ai.post_reviewee_proposals",
         overrides,
     ));
 
@@ -549,6 +585,17 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
+            "{}  Scroll diff page (regardless of focus)",
+            fmt_key(
+                &format!(
+                    "{}/{}",
+                    kb.diff_page_down.display(),
+                    kb.diff_page_up.display()
+                ),
+                key_width
+            )
+        )),
+        Line::from(format!(
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
         )),
@@ -581,6 +628,17 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Page scroll (also J/K)",
             fmt_key(
                 &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
+                key_width
+            )
+        )),
+        Line::from(format!(
+            "{}  Scroll diff page (regardless of focus)",
+            fmt_key(
+                &format!(
+                    "{}/{}",
+                    kb.diff_page_down.display(),
+                    kb.diff_page_up.display()
+                ),
                 key_width
             )
         )),
@@ -696,6 +754,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.page_up.display(), key_width)
         )),
         Line::from(format!(
+            "{}  Scroll diff page down",
+            fmt_key(&kb.diff_page_down.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Scroll diff page up",
+            fmt_key(&kb.diff_page_up.display(), key_width)
+        )),
+        Line::from(format!(
             "{}  Add comment at line",
             fmt_key(&kb.comment.display(), key_width)
         )),
@@ -763,7 +829,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Select reply target (multiple)",
-            fmt_key(&format!("{}/Shift-{}", kb.tab_switch.display(), kb.tab_switch.display()), key_width)
+            fmt_key(
+                &format!(
+                    "{}/Shift-{}",
+                    kb.tab_switch.display(),
+                    kb.tab_switch.display()
+                ),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Jump to next/prev comment",
@@ -786,7 +859,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Switch tab (Review/Discussion)",
-            fmt_key(&format!("{}, {}", kb.tab_prev.display(), kb.tab_next.display()), key_width)
+            fmt_key(
+                &format!("{}, {}", kb.tab_prev.display(), kb.tab_next.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Move selection",
@@ -1158,7 +1234,15 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Filter: open/closed/all",
-            fmt_key(&format!("{}/{}/{}", kb.filter_open.display(), kb.filter_closed.display(), kb.filter_all.display()), key_width)
+            fmt_key(
+                &format!(
+                    "{}/{}/{}",
+                    kb.filter_open.display(),
+                    kb.filter_closed.display(),
+                    kb.filter_all.display()
+                ),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open in browser",
@@ -1197,7 +1281,15 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Filter: open/closed/all",
-            fmt_key(&format!("{}/{}/{}", kb.filter_open.display(), kb.filter_closed.display(), kb.filter_all.display()), key_width)
+            fmt_key(
+                &format!(
+                    "{}/{}/{}",
+                    kb.filter_open.display(),
+                    kb.filter_closed.display(),
+                    kb.filter_all.display()
+                ),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open in browser",

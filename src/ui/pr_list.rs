@@ -16,13 +16,14 @@ use crate::app::App;
 use crate::github::{CiStatus, PullRequestSummary};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let has_filter_bar = app.prs.pr_list_filter.as_ref().is_some_and(|f| f.input_active);
+    let has_filter_bar = app
+        .prs
+        .pr_list_filter
+        .as_ref()
+        .is_some_and(|f| f.input_active);
     let has_update = app.update_available.is_some();
 
-    let mut constraints = vec![
-        Constraint::Length(3),
-        Constraint::Min(0),
-    ];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(0)];
     if has_filter_bar {
         constraints.push(Constraint::Length(3));
     }
@@ -169,7 +170,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, chunks[next_chunk], app);
 }
 
-
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let help_text = super::footer::footer_hint_quit(&app.config.keybindings);
     let line = super::footer::build_footer_line(app, &help_text);
@@ -257,4 +257,3 @@ fn build_pr_list_items_ref(
         })
         .collect()
 }
-

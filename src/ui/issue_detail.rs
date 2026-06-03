@@ -350,7 +350,9 @@ mod tests {
             title: title.to_string(),
             body: body.map(|s| s.to_string()),
             state: "open".to_string(),
-            author: User { login: "testuser".to_string() },
+            author: User {
+                login: "testuser".to_string(),
+            },
             labels: vec![],
             created_at: "2025-01-01T00:00:00Z".to_string(),
             updated_at: "2025-01-02T00:00:00Z".to_string(),
@@ -398,7 +400,11 @@ mod tests {
         let mut app = App::new_for_test();
         app.state = AppState::IssueDetail;
         let mut issue_state = IssueState::new();
-        issue_state.issue_detail = crate::app::LoadState::Loaded(make_detail(42, "Fix the widget", Some("This is the body text.")));
+        issue_state.issue_detail = crate::app::LoadState::Loaded(make_detail(
+            42,
+            "Fix the widget",
+            Some("This is the body text."),
+        ));
         app.issue_state = Some(issue_state);
 
         assert_snapshot!(render_full(&mut app), @"
@@ -434,11 +440,15 @@ mod tests {
         let mut app = App::new_for_test();
         app.state = AppState::IssueDetail;
         let mut issue_state = IssueState::new();
-        issue_state.issue_detail = crate::app::LoadState::Loaded(make_detail(7, "Empty body issue", None));
+        issue_state.issue_detail =
+            crate::app::LoadState::Loaded(make_detail(7, "Empty body issue", None));
         app.issue_state = Some(issue_state);
 
         let output = render_full(&mut app);
-        assert!(output.contains("(no description)"), "should show fallback text");
+        assert!(
+            output.contains("(no description)"),
+            "should show fallback text"
+        );
     }
 
     #[test]

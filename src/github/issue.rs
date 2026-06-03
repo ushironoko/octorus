@@ -830,8 +830,7 @@ mod tests {
 
     #[test]
     fn snapshot_reply_template_truncated() {
-        let template =
-            build_reply_template("charlie", "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
+        let template = build_reply_template("charlie", "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
         insta::assert_snapshot!(template, @r"
         > @charlie wrote:
         > Line 1
