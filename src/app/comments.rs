@@ -396,7 +396,10 @@ impl App {
             // Bounded by n to guard against cycles.
             let mut root_idx = i;
             for _ in 0..n {
-                match comments[root_idx].in_reply_to_id.and_then(|pid| id_to_idx.get(&pid)) {
+                match comments[root_idx]
+                    .in_reply_to_id
+                    .and_then(|pid| id_to_idx.get(&pid))
+                {
                     Some(&parent) if parent != root_idx => root_idx = parent,
                     _ => break,
                 }
@@ -427,9 +430,11 @@ impl App {
         }
 
         // Sort threads by root comment's created_at
-        self.cmt
-            .review_threads
-            .sort_by(|a, b| comments[a.root].created_at.cmp(&comments[b.root].created_at));
+        self.cmt.review_threads.sort_by(|a, b| {
+            comments[a.root]
+                .created_at
+                .cmp(&comments[b.root].created_at)
+        });
     }
 
     /// Apply a fetched (or cached) set of review comments to the UI state:
@@ -444,7 +449,11 @@ impl App {
         self.cmt.file_comment_counts.clear();
         for c in &comments {
             if c.path != "[PR Review]" {
-                *self.cmt.file_comment_counts.entry(c.path.clone()).or_insert(0) += 1;
+                *self
+                    .cmt
+                    .file_comment_counts
+                    .entry(c.path.clone())
+                    .or_insert(0) += 1;
             }
         }
 
@@ -516,6 +525,16 @@ impl App {
         }
 
         self.cmt.comments_loading = false;
+    }
+
+    /// Whether a remote review-comment fetch should be kicked off: only for
+    /// non-local PRs that have neither loaded comments nor an in-flight fetch.
+    /// The receiver check prevents the eager load (on PR select) and the
+    /// post-data-load fallback from both firing and double-fetching.
+    pub(crate) fn needs_review_comment_load(&self) -> bool {
+        !self.local_mode
+            && self.cmt.review_comments.is_none()
+            && self.cmt.comment_receiver.is_none()
     }
 
     pub(crate) fn load_review_comments(&mut self) {
@@ -730,38 +749,7 @@ impl App {
             }
         } else if self.matches_single_key(&key, &kb.open_panel) {
             match self.cmt.comment_tab {
-                CommentTab::Review => {
-                    if let Some(thread_idx) = self
-                        .cmt
-                        .expanded_thread
-                        .filter(|&i| i < self.cmt.review_threads.len())
-                    {
-                        // Jump to the selected comment within the expanded thread
-                        let thread = &self.cmt.review_threads[thread_idx];
-                        let indices: Vec<usize> = std::iter::once(thread.root)
-                            .chain(thread.replies.iter().copied())
-                            .collect();
-                        if let Some(&ci) = indices.get(self.cmt.expanded_selected) {
-                            self.cmt.selected_comment = ci;
-                            self.jump_to_comment();
-                        }
-                    } else if !self.cmt.review_threads.is_empty() {
-                        let last = self.cmt.review_threads.len() - 1;
-                        self.cmt.selected_thread = self.cmt.selected_thread.min(last);
-                        let thread = &self.cmt.review_threads[self.cmt.selected_thread];
-                        if thread.replies.is_empty() {
-                            // Single comment, jump to file
-                            self.cmt.selected_comment = thread.root;
-                            self.jump_to_comment();
-                        } else {
-                            // Expand thread
-                            self.cmt.expanded_thread = Some(self.cmt.selected_thread);
-                            self.cmt.expanded_selected = 0;
-                            self.cmt.expanded_scroll_offset = 0;
-                            self.sync_expanded_comment_id();
-                        }
-                    }
-                }
+                CommentTab::Review => self.review_tab_open_panel(),
                 CommentTab::Discussion => {
                     if self
                         .cmt
@@ -785,7 +773,18 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+        self.handle_local_comment_list_key(key, visible_lines)
+    }
 
+    /// Terminal-free core of the local-mode comment list input. Local mode
+    /// renders the same threaded review list as GitHub mode, so navigation
+    /// drives `selected_thread` / expanded-thread state — not the flat
+    /// `selected_comment` the renderer no longer reads.
+    pub(crate) fn handle_local_comment_list_key(
+        &mut self,
+        key: event::KeyEvent,
+        visible_lines: usize,
+    ) -> Result<()> {
         let kb = self.config.keybindings.clone();
 
         if !self.pending_keys.is_empty() {
@@ -794,7 +793,7 @@ impl App {
 
                 if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    self.cmt.selected_comment = 0;
+                    self.review_jump_to_first();
                     return Ok(());
                 }
 
@@ -813,53 +812,90 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.quit) {
-            self.state = self.previous_state;
-        } else if self.navigate_review_comments(&key, visible_lines) {
-        } else if self.matches_single_key(&key, &kb.jump_to_last) {
-            if let Some(ref comments) = self.cmt.review_comments {
-                if !comments.is_empty() {
-                    self.cmt.selected_comment = comments.len() - 1;
-                }
+            // In expanded thread view, collapse first; otherwise go back.
+            if self.cmt.expanded_thread.is_some() {
+                self.cmt.expanded_thread = None;
+                self.cmt.expanded_selected = 0;
+                self.cmt.expanded_selected_comment_id = None;
+            } else {
+                self.state = self.previous_state;
             }
+        } else if self.matches_single_key(&key, &kb.move_down) {
+            self.review_nav_down(1);
+        } else if self.matches_single_key(&key, &kb.move_up) {
+            self.review_nav_up(1);
+        } else if self.matches_single_key(&key, &kb.page_down)
+            || Self::is_shift_char_shortcut(&key, 'j')
+        {
+            self.review_nav_down(visible_lines.max(1));
+        } else if self.matches_single_key(&key, &kb.page_up)
+            || Self::is_shift_char_shortcut(&key, 'k')
+        {
+            self.review_nav_up(visible_lines.max(1));
+        } else if self.matches_single_key(&key, &kb.jump_to_last) {
+            self.review_jump_to_last();
         } else if self.matches_single_key(&key, &kb.open_panel) {
-            self.jump_to_comment();
+            self.review_tab_open_panel();
         }
 
         Ok(())
     }
 
-    fn navigate_review_comments(&mut self, key: &event::KeyEvent, visible_lines: usize) -> bool {
-        let kb = self.config.keybindings.clone();
-        if self.matches_single_key(key, &kb.move_down) {
-            if let Some(ref comments) = self.cmt.review_comments {
-                if !comments.is_empty() {
-                    self.cmt.selected_comment =
-                        (self.cmt.selected_comment + 1).min(comments.len().saturating_sub(1));
-                }
-            }
-            true
-        } else if self.matches_single_key(key, &kb.move_up) {
-            self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(1);
-            true
-        } else if self.matches_single_key(key, &kb.page_down)
-            || Self::is_shift_char_shortcut(key, 'j')
+    /// Enter on the review list: jump within an expanded thread, expand a
+    /// thread that has replies, or jump straight to a single-comment file.
+    /// Shared by GitHub-mode and local-mode comment list handlers.
+    fn review_tab_open_panel(&mut self) {
+        if let Some(thread_idx) = self
+            .cmt
+            .expanded_thread
+            .filter(|&i| i < self.cmt.review_threads.len())
         {
-            let step = visible_lines.max(1);
-            if let Some(ref comments) = self.cmt.review_comments {
-                if !comments.is_empty() {
-                    self.cmt.selected_comment =
-                        (self.cmt.selected_comment + step).min(comments.len() - 1);
-                }
+            // Jump to the selected comment within the expanded thread.
+            let thread = &self.cmt.review_threads[thread_idx];
+            let indices: Vec<usize> = std::iter::once(thread.root)
+                .chain(thread.replies.iter().copied())
+                .collect();
+            if let Some(&ci) = indices.get(self.cmt.expanded_selected) {
+                self.cmt.selected_comment = ci;
+                self.jump_to_comment();
             }
-            true
-        } else if self.matches_single_key(key, &kb.page_up)
-            || Self::is_shift_char_shortcut(key, 'k')
-        {
-            let step = visible_lines.max(1);
-            self.cmt.selected_comment = self.cmt.selected_comment.saturating_sub(step);
-            true
+        } else if !self.cmt.review_threads.is_empty() {
+            let last = self.cmt.review_threads.len() - 1;
+            self.cmt.selected_thread = self.cmt.selected_thread.min(last);
+            let thread = &self.cmt.review_threads[self.cmt.selected_thread];
+            if thread.replies.is_empty() {
+                // Single comment, jump to file.
+                self.cmt.selected_comment = thread.root;
+                self.jump_to_comment();
+            } else {
+                // Expand thread.
+                self.cmt.expanded_thread = Some(self.cmt.selected_thread);
+                self.cmt.expanded_selected = 0;
+                self.cmt.expanded_scroll_offset = 0;
+                self.sync_expanded_comment_id();
+            }
+        }
+    }
+
+    fn review_jump_to_first(&mut self) {
+        if self.cmt.expanded_thread.is_some() {
+            self.cmt.expanded_selected = 0;
+            self.sync_expanded_comment_id();
         } else {
-            false
+            self.cmt.selected_thread = 0;
+        }
+    }
+
+    fn review_jump_to_last(&mut self) {
+        if let Some(thread_idx) = self
+            .cmt
+            .expanded_thread
+            .filter(|&i| i < self.cmt.review_threads.len())
+        {
+            self.cmt.expanded_selected = self.cmt.review_threads[thread_idx].replies.len();
+            self.sync_expanded_comment_id();
+        } else {
+            self.cmt.selected_thread = self.cmt.review_threads.len().saturating_sub(1);
         }
     }
 

@@ -331,7 +331,11 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
 
             let reply_count = thread.replies.len();
             let reply_info = if reply_count > 0 {
-                format!("  ({} {})", reply_count, if reply_count == 1 { "reply" } else { "replies" })
+                format!(
+                    "  ({} {})",
+                    reply_count,
+                    if reply_count == 1 { "reply" } else { "replies" }
+                )
             } else {
                 String::new()
             };
@@ -513,9 +517,7 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
         .unwrap_or_default();
     let title = format!(
         "Thread: {}{} ({} comments)",
-        root_comment.path,
-        line_info,
-        total_items
+        root_comment.path, line_info, total_items
     );
 
     let mut list_state = ListState::default()
@@ -537,8 +539,8 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
 
-        let mut scrollbar_state = ScrollbarState::new(total_items.saturating_sub(1))
-            .position(app.cmt.expanded_selected);
+        let mut scrollbar_state =
+            ScrollbarState::new(total_items.saturating_sub(1)).position(app.cmt.expanded_selected);
 
         frame.render_stateful_widget(
             scrollbar,
@@ -1034,7 +1036,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Root comment".to_string(),
-                user: User { login: "alice".to_string() },
+                user: User {
+                    login: "alice".to_string(),
+                },
                 created_at: "2025-01-01T00:00:00Z".to_string(),
                 in_reply_to_id: None,
             },
@@ -1044,7 +1048,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "First reply".to_string(),
-                user: User { login: "bob".to_string() },
+                user: User {
+                    login: "bob".to_string(),
+                },
                 created_at: "2025-01-01T01:00:00Z".to_string(),
                 in_reply_to_id: Some(100),
             },
@@ -1054,7 +1060,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Second reply".to_string(),
-                user: User { login: "carol".to_string() },
+                user: User {
+                    login: "carol".to_string(),
+                },
                 created_at: "2025-01-01T02:00:00Z".to_string(),
                 in_reply_to_id: Some(100),
             },
@@ -1064,7 +1072,9 @@ mod tests {
                 line: Some(5),
                 start_line: None,
                 body: "Independent thread".to_string(),
-                user: User { login: "dave".to_string() },
+                user: User {
+                    login: "dave".to_string(),
+                },
                 created_at: "2025-01-01T03:00:00Z".to_string(),
                 in_reply_to_id: None,
             },
@@ -1094,7 +1104,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Needs refactoring".to_string(),
-                user: User { login: "alice".to_string() },
+                user: User {
+                    login: "alice".to_string(),
+                },
                 created_at: "2025-01-01T00:00:00Z".to_string(),
                 in_reply_to_id: None,
             },
@@ -1104,7 +1116,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Agreed".to_string(),
-                user: User { login: "bob".to_string() },
+                user: User {
+                    login: "bob".to_string(),
+                },
                 created_at: "2025-01-01T01:00:00Z".to_string(),
                 in_reply_to_id: Some(100),
             },
@@ -1151,7 +1165,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Needs refactoring".to_string(),
-                user: User { login: "alice".to_string() },
+                user: User {
+                    login: "alice".to_string(),
+                },
                 created_at: "2025-01-01T00:00:00Z".to_string(),
                 in_reply_to_id: None,
             },
@@ -1161,7 +1177,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Agreed, will fix".to_string(),
-                user: User { login: "bob".to_string() },
+                user: User {
+                    login: "bob".to_string(),
+                },
                 created_at: "2025-01-02T00:00:00Z".to_string(),
                 in_reply_to_id: Some(100),
             },
@@ -1171,7 +1189,9 @@ mod tests {
                 line: Some(10),
                 start_line: None,
                 body: "Done in latest push".to_string(),
-                user: User { login: "alice".to_string() },
+                user: User {
+                    login: "alice".to_string(),
+                },
                 created_at: "2025-01-03T00:00:00Z".to_string(),
                 in_reply_to_id: Some(100),
             },

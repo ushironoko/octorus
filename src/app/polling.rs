@@ -926,7 +926,7 @@ impl App {
                 } else {
                     self.start_prefetch_all_files();
                 }
-                if !self.local_mode && self.cmt.review_comments.is_none() {
+                if self.needs_review_comment_load() {
                     self.load_review_comments();
                 }
                 // CLI 直接指定時: ci_status をバックグラウンドで取得

@@ -12,10 +12,10 @@ use ratatui::{
 use super::common::{
     build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar,
 };
-use std::collections::HashMap;
 use crate::app::App;
 use crate::app::TreeRow;
 use crate::github::ChangedFile;
+use std::collections::HashMap;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
@@ -69,7 +69,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(&filtered, display_selected, &app.cmt.file_comment_counts);
+            let items = build_file_list_items_ref(
+                &filtered,
+                display_selected,
+                &app.cmt.file_comment_counts,
+            );
 
             let list = List::new(items)
                 .block(
@@ -118,7 +122,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .visible_rows
             .iter()
             .enumerate()
-            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row, &app.cmt.file_comment_counts, col_width))
+            .map(|(i, row)| {
+                build_tree_row_item(
+                    files,
+                    row,
+                    i == tree.selected_row,
+                    &app.cmt.file_comment_counts,
+                    col_width,
+                )
+            })
             .collect();
 
         let title = format!("Changed Files ({}) [tree]", total_files);
@@ -362,7 +374,12 @@ fn build_comment_column(count: usize, col_width: usize) -> Span<'static> {
     )
 }
 
-fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool, comment_count: usize, col_width: usize) -> ListItem<'a> {
+fn build_file_list_item<'a>(
+    file: &'a ChangedFile,
+    is_selected: bool,
+    comment_count: usize,
+    col_width: usize,
+) -> ListItem<'a> {
     let style = if is_selected {
         Style::default()
             .fg(Color::Yellow)

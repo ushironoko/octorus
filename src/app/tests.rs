@@ -7845,6 +7845,166 @@ fn test_apply_review_comments_populates_file_counts() {
     assert_eq!(app.cmt.file_comment_counts.get("src/b.rs"), Some(&1));
 }
 
+fn pr157_rc(id: u64, parent: Option<u64>, path: &str, created_at: &str) -> ReviewComment {
+    ReviewComment {
+        id,
+        path: path.to_string(),
+        line: Some(10),
+        start_line: None,
+        body: format!("comment {id}"),
+        user: crate::github::User {
+            login: "alice".to_string(),
+        },
+        created_at: created_at.to_string(),
+        in_reply_to_id: parent,
+    }
+}
+
+/// In local mode the comment list renders threads driven by `selected_thread`,
+/// so navigation keys must advance `selected_thread`, not the flat
+/// `selected_comment` the renderer ignores.
+#[test]
+fn test_local_comment_list_move_down_advances_thread() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.apply_review_comments(vec![
+        pr157_rc(1, None, "src/a.rs", "2025-01-01T00:00:00Z"),
+        pr157_rc(2, None, "src/b.rs", "2025-01-01T01:00:00Z"),
+        pr157_rc(3, Some(2), "src/b.rs", "2025-01-01T02:00:00Z"),
+    ]);
+    assert_eq!(app.cmt.review_threads.len(), 2);
+    assert_eq!(app.cmt.selected_thread, 0);
+
+    let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+    app.handle_local_comment_list_key(key, 40).unwrap();
+
+    assert_eq!(app.cmt.selected_thread, 1);
+}
+
+/// Enter on a thread with replies expands it in local mode, matching
+/// GitHub-mode behavior, instead of jumping straight to the file.
+#[test]
+fn test_local_comment_list_enter_expands_thread_with_replies() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.apply_review_comments(vec![
+        pr157_rc(1, None, "src/a.rs", "2025-01-01T00:00:00Z"),
+        pr157_rc(2, None, "src/b.rs", "2025-01-01T01:00:00Z"),
+        pr157_rc(3, Some(2), "src/b.rs", "2025-01-01T02:00:00Z"),
+    ]);
+    app.cmt.selected_thread = 1;
+
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_local_comment_list_key(enter, 40).unwrap();
+
+    assert_eq!(app.cmt.expanded_thread, Some(1));
+    assert_eq!(app.cmt.expanded_selected, 0);
+}
+
+/// Inside an expanded thread, navigation moves `expanded_selected`, and quit
+/// collapses the thread rather than leaving the comment list screen.
+#[test]
+fn test_local_comment_list_expanded_move_then_quit_collapses() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.previous_state = AppState::FileList;
+    app.state = AppState::CommentList;
+    app.apply_review_comments(vec![
+        pr157_rc(2, None, "src/b.rs", "2025-01-01T01:00:00Z"),
+        pr157_rc(3, Some(2), "src/b.rs", "2025-01-01T02:00:00Z"),
+    ]);
+    app.cmt.expanded_thread = Some(0);
+    app.cmt.expanded_selected = 0;
+
+    let down = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+    app.handle_local_comment_list_key(down, 40).unwrap();
+    assert_eq!(app.cmt.expanded_selected, 1, "should move to the reply");
+
+    let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+    app.handle_local_comment_list_key(quit, 40).unwrap();
+    assert_eq!(app.cmt.expanded_thread, None, "quit collapses the thread");
+    assert_eq!(app.state, AppState::CommentList, "stays on comment list");
+}
+
+/// A reply created in local mode must record its parent's id in
+/// `in_reply_to_id` so the threading view nests it under the parent.
+#[test]
+#[serial]
+fn test_submit_local_reply_links_parent_id() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &[crate::cache::LocalReviewComment::new(pr157_rc(
+            1,
+            None,
+            "src/main.rs",
+            "2026-03-24T00:00:00Z",
+        ))],
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+    app.load_review_comments();
+
+    app.submit_local_reply(1, "a threaded reply".to_string());
+
+    let saved = crate::cache::load_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let reply = saved
+        .iter()
+        .map(|l| &l.comment)
+        .find(|c| c.body == "a threaded reply")
+        .expect("reply persisted");
+    assert_eq!(reply.in_reply_to_id, Some(1));
+}
+
+/// The eager comment load (on PR select) and the post-data-load fallback must
+/// not both fetch: an in-flight receiver suppresses a redundant reload.
+#[test]
+fn test_needs_review_comment_load_respects_inflight_receiver() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.local_mode = false;
+    app.cmt.review_comments = None;
+    app.cmt.comment_receiver = None;
+    assert!(app.needs_review_comment_load());
+
+    let (_tx2, rx) = tokio::sync::mpsc::channel::<Result<Vec<ReviewComment>, String>>(1);
+    app.cmt.comment_receiver = Some((1, rx));
+    assert!(
+        !app.needs_review_comment_load(),
+        "in-flight fetch must suppress reload"
+    );
+
+    app.cmt.comment_receiver = None;
+    app.cmt.review_comments = Some(vec![]);
+    assert!(
+        !app.needs_review_comment_load(),
+        "already loaded -> no reload"
+    );
+
+    app.cmt.review_comments = None;
+    app.local_mode = true;
+    assert!(
+        !app.needs_review_comment_load(),
+        "local mode -> no remote load"
+    );
+}
+
 // ========================================
 // Diff page-scroll pure functions (issue #161)
 // ========================================

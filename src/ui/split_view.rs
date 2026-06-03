@@ -115,7 +115,11 @@ fn render_file_list_pane(
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(&filtered, display_selected, &app.cmt.file_comment_counts);
+            let items = build_file_list_items_ref(
+                &filtered,
+                display_selected,
+                &app.cmt.file_comment_counts,
+            );
 
             let list = List::new(items)
                 .block(
@@ -165,7 +169,15 @@ fn render_file_list_pane(
             .visible_rows
             .iter()
             .enumerate()
-            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row, &app.cmt.file_comment_counts, col_width))
+            .map(|(i, row)| {
+                build_tree_row_item(
+                    files,
+                    row,
+                    i == tree.selected_row,
+                    &app.cmt.file_comment_counts,
+                    col_width,
+                )
+            })
             .collect();
 
         let title = format!("Files ({}) [tree]", total_files);
@@ -281,7 +293,6 @@ fn render_file_list_pane(
     ));
     frame.render_widget(footer, chunks[next_chunk]);
 }
-
 
 fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, is_focused: bool) {
     let border_color = if is_focused {
