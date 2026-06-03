@@ -209,6 +209,7 @@ impl App {
                 login: Self::local_comment_author(),
             },
             created_at: Utc::now().to_rfc3339(),
+            in_reply_to_id: None,
         }));
 
         self.persist_local_review_comments(comments, "Saved local comment");
@@ -239,7 +240,7 @@ impl App {
         });
     }
 
-    fn submit_local_reply(&mut self, comment_id: u64, body: String) {
+    pub(crate) fn submit_local_reply(&mut self, comment_id: u64, body: String) {
         let Some(parent) = self
             .cmt
             .review_comments
@@ -282,6 +283,7 @@ impl App {
                 login: Self::local_comment_author(),
             },
             created_at: Utc::now().to_rfc3339(),
+            in_reply_to_id: Some(comment_id),
         }));
 
         self.persist_local_review_comments(comments, "Saved local reply");

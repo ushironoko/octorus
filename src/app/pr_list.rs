@@ -267,6 +267,9 @@ impl App {
         self.state = AppState::FileList;
         self.file_list_filter = None;
         self.cmt.pending_approve_body = None;
+        self.cmt.review_comments = None;
+        self.cmt.file_comment_counts.clear();
+        self.cmt.reset_threads();
 
         self.tree_mode_active = false;
         self.file_tree_state = None;
@@ -321,6 +324,12 @@ impl App {
             self.data_state = DataState::Loading;
         }
 
+        // Eagerly load review comments in the background so they're
+        // available by the time the user opens the comment list or file list.
+        if !self.local_mode {
+            self.load_review_comments();
+        }
+
         self.retry_load();
     }
     /// Clear transient state accumulated in PR detail screens.
@@ -335,6 +344,8 @@ impl App {
         self.data_state = DataState::Loading;
         self.cmt.review_comments = None;
         self.cmt.discussion_comments = None;
+        self.cmt.file_comment_counts.clear();
+        self.cmt.reset_threads();
         self.diff_store.clear();
         self.diff_scroll.reset();
         self.cmt.comment_receiver = None;

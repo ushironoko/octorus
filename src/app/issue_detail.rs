@@ -649,8 +649,8 @@ mod tests {
         assert!(!content.contains("line4"), "line4 should be truncated");
     }
 
-    #[test]
-    fn test_enter_pr_from_issue_sets_return_flag() {
+    #[tokio::test]
+    async fn test_enter_pr_from_issue_sets_return_flag() {
         let mut app = App::new_for_test();
         app.started_from_pr_list = true;
         app.issue_state = Some(IssueState::new());

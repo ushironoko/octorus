@@ -379,6 +379,7 @@ mod tests {
                 login: user.to_string(),
             },
             created_at: created_at.to_string(),
+            in_reply_to_id: None,
         })
     }
 
@@ -402,6 +403,7 @@ mod tests {
                     login: user.to_string(),
                 },
                 created_at: created_at.to_string(),
+                in_reply_to_id: None,
             },
             LocalCommentMeta {
                 is_resolved: true,

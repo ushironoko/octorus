@@ -707,6 +707,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
     }]);
 
     // Pre-populate stale comment positions for the old file
@@ -3746,6 +3747,7 @@ fn test_build_seed_review_from_local_comments_uses_persisted_comments() {
                     login: "local".to_string(),
                 },
                 created_at: "2026-03-24T00:00:00Z".to_string(),
+                in_reply_to_id: None,
             },
         )],
     )
@@ -3796,6 +3798,7 @@ fn test_build_seed_review_from_local_comments_skips_resolved_comments() {
                     login: "local".to_string(),
                 },
                 created_at: "2026-03-24T00:00:00Z".to_string(),
+                in_reply_to_id: None,
             },
             crate::cache::LocalCommentMeta {
                 is_resolved: true,
@@ -3838,6 +3841,7 @@ fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
                     login: "local".to_string(),
                 },
                 created_at: "2026-03-24T00:00:00Z".to_string(),
+                in_reply_to_id: None,
             },
         )],
     )
@@ -4778,6 +4782,7 @@ fn test_load_review_comments_local_mode_refreshes_meta_from_disk() {
                 login: "local".to_string(),
             },
             created_at: "2026-03-24T00:00:00Z".to_string(),
+            in_reply_to_id: None,
         },
     )];
     crate::cache::save_local_review_comments(
@@ -4820,6 +4825,90 @@ fn test_load_review_comments_local_mode_refreshes_meta_from_disk() {
         .expect("local meta should reflect disk state");
     assert!(meta.is_resolved);
     assert_eq!(meta.resolved_at.as_deref(), Some("2026-03-24T01:00:00Z"));
+
+    let path = crate::cache::local_review_comments_path(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let _ = std::fs::remove_file(path);
+}
+
+/// In local mode, `load_review_comments` must route through
+/// `apply_review_comments` so the threaded renderer and the file-list
+/// per-file count badges both work. A regression that goes back to
+/// assigning `review_comments` directly leaves `review_threads` empty
+/// and `file_comment_counts` un-populated, which the unit-level test
+/// of `apply_review_comments` does not catch.
+#[test]
+#[serial]
+fn test_load_review_comments_local_mode_builds_threads_and_counts() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    let local_comments = vec![
+        crate::cache::LocalReviewComment::new(crate::github::comment::ReviewComment {
+            id: 1,
+            path: "src/a.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "root on a".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-04-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
+        }),
+        crate::cache::LocalReviewComment::new(crate::github::comment::ReviewComment {
+            id: 2,
+            path: "src/a.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "reply on a".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-04-01T01:00:00Z".to_string(),
+            in_reply_to_id: Some(1),
+        }),
+        crate::cache::LocalReviewComment::new(crate::github::comment::ReviewComment {
+            id: 3,
+            path: "src/b.rs".to_string(),
+            line: Some(7),
+            start_line: None,
+            body: "independent".to_string(),
+            user: crate::github::User {
+                login: "local".to_string(),
+            },
+            created_at: "2026-04-01T02:00:00Z".to_string(),
+            in_reply_to_id: None,
+        }),
+    ];
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &local_comments,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.repo = "owner/repo".to_string();
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+
+    app.load_review_comments();
+
+    assert_eq!(
+        app.cmt.review_threads.len(),
+        2,
+        "two threads should exist: the root+reply on a.rs and the independent on b.rs"
+    );
+    assert_eq!(app.cmt.file_comment_counts.get("src/a.rs"), Some(&2));
+    assert_eq!(app.cmt.file_comment_counts.get("src/b.rs"), Some(&1));
 
     let path = crate::cache::local_review_comments_path(
         "owner/repo",
@@ -4878,6 +4967,7 @@ fn test_update_file_comment_positions_with_comments() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
     }]);
     app.update_file_comment_positions();
     assert_eq!(app.cmt.file_comment_positions.len(), 1);
@@ -4897,6 +4987,7 @@ fn test_update_file_comment_positions_stale_comment() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
     }]);
     app.update_file_comment_positions();
     assert!(app.cmt.file_comment_positions.is_empty());
@@ -4965,6 +5056,7 @@ fn test_enter_reply_input_sets_mode() {
             login: "reviewer".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
     }]);
     app.cmt.file_comment_positions = vec![CommentPosition {
         diff_line_index: 1,
@@ -5052,6 +5144,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
             login: "r".to_string(),
         },
         created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
     }]);
     app.cmt.selected_comment = 0;
 
@@ -5239,8 +5332,8 @@ fn test_load_more_prs_skips_when_loading() {
     assert_eq!(app.prs.pr_list_receiver.is_some(), prev_receiver);
 }
 
-#[test]
-fn test_select_pr_cache_miss_sets_loading() {
+#[tokio::test]
+async fn test_select_pr_cache_miss_sets_loading() {
     let mut app = App::new_for_test();
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
     let (_data_tx, data_rx) = mpsc::channel(2);
@@ -7082,8 +7175,8 @@ fn test_deep_nested_collapse_hides_descendants() {
     );
 }
 
-#[test]
-fn test_select_pr_resets_tree_state() {
+#[tokio::test]
+async fn test_select_pr_resets_tree_state() {
     let mut app = make_app_with_files(&["src/main.rs", "README.md"]);
     app.started_from_pr_list = true;
 
@@ -7619,6 +7712,7 @@ fn test_try_open_comment_panel_in_local_mode() {
             login: "local".to_string(),
         },
         created_at: "2026-04-27T00:00:00Z".to_string(),
+        in_reply_to_id: None,
     }]);
 
     let kb = app.config.keybindings.clone();
@@ -7641,6 +7735,274 @@ fn test_try_open_comment_panel_ignores_non_matching_key() {
 
     assert!(!app.try_open_comment_panel(&key, &kb));
     assert!(!app.cmt.comment_panel_open);
+}
+
+/// Re-applying a comment set with the same thread roots plus a new reply
+/// must preserve the user's expanded-thread selection by comment ID, not by
+/// positional index. This is the central correctness claim of the merged
+/// per-file-counts + threading features: a background poll that returns
+/// identical roots with new replies should not silently shift the user
+/// to a different comment.
+#[test]
+fn test_apply_review_comments_preserves_expanded_selection_by_id() {
+    fn comment(id: u64, parent: Option<u64>, created_at: &str) -> ReviewComment {
+        ReviewComment {
+            id,
+            path: "src/main.rs".to_string(),
+            line: Some(10),
+            start_line: None,
+            body: format!("comment {id}"),
+            user: crate::github::User {
+                login: "alice".to_string(),
+            },
+            created_at: created_at.to_string(),
+            in_reply_to_id: parent,
+        }
+    }
+
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+    // Initial poll: one thread, root + 1 reply.
+    app.apply_review_comments(vec![
+        comment(100, None, "2025-01-01T00:00:00Z"),
+        comment(101, Some(100), "2025-01-01T01:00:00Z"),
+    ]);
+    assert_eq!(app.cmt.review_threads.len(), 1);
+
+    // User expands the thread and selects the reply.
+    app.cmt.expanded_thread = Some(0);
+    app.cmt.expanded_selected = 1;
+    app.cmt.expanded_selected_comment_id = Some(101);
+
+    // Background poll returns the same root with an additional newer reply
+    // sorted ahead of the previously-selected reply by created_at order.
+    app.apply_review_comments(vec![
+        comment(100, None, "2025-01-01T00:00:00Z"),
+        comment(102, Some(100), "2025-01-01T00:30:00Z"),
+        comment(101, Some(100), "2025-01-01T01:00:00Z"),
+    ]);
+
+    // Expansion must still resolve to comment id 101, even though its
+    // positional index within the thread shifted from 1 to 2.
+    assert_eq!(app.cmt.expanded_thread, Some(0));
+    assert_eq!(app.cmt.expanded_selected_comment_id, Some(101));
+    assert_eq!(
+        app.cmt.expanded_selected, 2,
+        "expanded_selected should be re-derived from the comment id"
+    );
+}
+
+/// Per-file comment counts must be populated whenever review_comments
+/// is applied — including from the cache-hit path through
+/// apply_review_comments. Without this, the file-list badge feature
+/// silently degrades after the first load.
+#[test]
+fn test_apply_review_comments_populates_file_counts() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+    app.apply_review_comments(vec![
+        ReviewComment {
+            id: 1,
+            path: "src/a.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "x".to_string(),
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
+        },
+        ReviewComment {
+            id: 2,
+            path: "src/a.rs".to_string(),
+            line: Some(2),
+            start_line: None,
+            body: "y".to_string(),
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: "2025-01-01T01:00:00Z".to_string(),
+            in_reply_to_id: None,
+        },
+        ReviewComment {
+            id: 3,
+            path: "src/b.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "z".to_string(),
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            created_at: "2025-01-01T02:00:00Z".to_string(),
+            in_reply_to_id: None,
+        },
+    ]);
+
+    assert_eq!(app.cmt.file_comment_counts.get("src/a.rs"), Some(&2));
+    assert_eq!(app.cmt.file_comment_counts.get("src/b.rs"), Some(&1));
+}
+
+fn pr157_rc(id: u64, parent: Option<u64>, path: &str, created_at: &str) -> ReviewComment {
+    ReviewComment {
+        id,
+        path: path.to_string(),
+        line: Some(10),
+        start_line: None,
+        body: format!("comment {id}"),
+        user: crate::github::User {
+            login: "alice".to_string(),
+        },
+        created_at: created_at.to_string(),
+        in_reply_to_id: parent,
+    }
+}
+
+/// In local mode the comment list renders threads driven by `selected_thread`,
+/// so navigation keys must advance `selected_thread`, not the flat
+/// `selected_comment` the renderer ignores.
+#[test]
+fn test_local_comment_list_move_down_advances_thread() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.apply_review_comments(vec![
+        pr157_rc(1, None, "src/a.rs", "2025-01-01T00:00:00Z"),
+        pr157_rc(2, None, "src/b.rs", "2025-01-01T01:00:00Z"),
+        pr157_rc(3, Some(2), "src/b.rs", "2025-01-01T02:00:00Z"),
+    ]);
+    assert_eq!(app.cmt.review_threads.len(), 2);
+    assert_eq!(app.cmt.selected_thread, 0);
+
+    let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+    app.handle_local_comment_list_key(key, 40).unwrap();
+
+    assert_eq!(app.cmt.selected_thread, 1);
+}
+
+/// Enter on a thread with replies expands it in local mode, matching
+/// GitHub-mode behavior, instead of jumping straight to the file.
+#[test]
+fn test_local_comment_list_enter_expands_thread_with_replies() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.apply_review_comments(vec![
+        pr157_rc(1, None, "src/a.rs", "2025-01-01T00:00:00Z"),
+        pr157_rc(2, None, "src/b.rs", "2025-01-01T01:00:00Z"),
+        pr157_rc(3, Some(2), "src/b.rs", "2025-01-01T02:00:00Z"),
+    ]);
+    app.cmt.selected_thread = 1;
+
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_local_comment_list_key(enter, 40).unwrap();
+
+    assert_eq!(app.cmt.expanded_thread, Some(1));
+    assert_eq!(app.cmt.expanded_selected, 0);
+}
+
+/// Inside an expanded thread, navigation moves `expanded_selected`, and quit
+/// collapses the thread rather than leaving the comment list screen.
+#[test]
+fn test_local_comment_list_expanded_move_then_quit_collapses() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("local", 0, config);
+    app.local_mode = true;
+    app.previous_state = AppState::FileList;
+    app.state = AppState::CommentList;
+    app.apply_review_comments(vec![
+        pr157_rc(2, None, "src/b.rs", "2025-01-01T01:00:00Z"),
+        pr157_rc(3, Some(2), "src/b.rs", "2025-01-01T02:00:00Z"),
+    ]);
+    app.cmt.expanded_thread = Some(0);
+    app.cmt.expanded_selected = 0;
+
+    let down = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+    app.handle_local_comment_list_key(down, 40).unwrap();
+    assert_eq!(app.cmt.expanded_selected, 1, "should move to the reply");
+
+    let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+    app.handle_local_comment_list_key(quit, 40).unwrap();
+    assert_eq!(app.cmt.expanded_thread, None, "quit collapses the thread");
+    assert_eq!(app.state, AppState::CommentList, "stays on comment list");
+}
+
+/// A reply created in local mode must record its parent's id in
+/// `in_reply_to_id` so the threading view nests it under the parent.
+#[test]
+#[serial]
+fn test_submit_local_reply_links_parent_id() {
+    let tempdir = tempdir().unwrap();
+    let workdir = tempdir.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+
+    crate::cache::save_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+        &[crate::cache::LocalReviewComment::new(pr157_rc(
+            1,
+            None,
+            "src/main.rs",
+            "2026-03-24T00:00:00Z",
+        ))],
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.working_dir = Some(workdir.to_string_lossy().to_string());
+    app.load_review_comments();
+
+    app.submit_local_reply(1, "a threaded reply".to_string());
+
+    let saved = crate::cache::load_local_review_comments(
+        "owner/repo",
+        Some(workdir.to_string_lossy().as_ref()),
+    )
+    .unwrap();
+    let reply = saved
+        .iter()
+        .map(|l| &l.comment)
+        .find(|c| c.body == "a threaded reply")
+        .expect("reply persisted");
+    assert_eq!(reply.in_reply_to_id, Some(1));
+}
+
+/// The eager comment load (on PR select) and the post-data-load fallback must
+/// not both fetch: an in-flight receiver suppresses a redundant reload.
+#[test]
+fn test_needs_review_comment_load_respects_inflight_receiver() {
+    let config = Config::default();
+    let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+    app.local_mode = false;
+    app.cmt.review_comments = None;
+    app.cmt.comment_receiver = None;
+    assert!(app.needs_review_comment_load());
+
+    let (_tx2, rx) = tokio::sync::mpsc::channel::<Result<Vec<ReviewComment>, String>>(1);
+    app.cmt.comment_receiver = Some((1, rx));
+    assert!(
+        !app.needs_review_comment_load(),
+        "in-flight fetch must suppress reload"
+    );
+
+    app.cmt.comment_receiver = None;
+    app.cmt.review_comments = Some(vec![]);
+    assert!(
+        !app.needs_review_comment_load(),
+        "already loaded -> no reload"
+    );
+
+    app.cmt.review_comments = None;
+    app.local_mode = true;
+    assert!(
+        !app.needs_review_comment_load(),
+        "local mode -> no remote load"
+    );
 }
 
 // ========================================

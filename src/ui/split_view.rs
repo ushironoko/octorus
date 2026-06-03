@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::common::render_rally_status_bar;
 use super::diff_view;
-use super::file_list::{build_file_list_items, build_tree_row_item};
+use super::file_list::{build_file_list_items, build_file_list_items_ref, build_tree_row_item};
 use crate::app::{App, AppState, DataState};
 use crate::github::ChangedFile;
 
@@ -115,7 +115,11 @@ fn render_file_list_pane(
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(&filtered, display_selected);
+            let items = build_file_list_items_ref(
+                &filtered,
+                display_selected,
+                &app.cmt.file_comment_counts,
+            );
 
             let list = List::new(items)
                 .block(
@@ -155,11 +159,25 @@ fn render_file_list_pane(
     } else if app.is_file_tree_active() {
         let tree = app.file_tree_state.as_ref().unwrap();
         let row_count = tree.row_count();
+        let max_count = files
+            .iter()
+            .filter_map(|f| app.cmt.file_comment_counts.get(&f.filename).copied())
+            .max()
+            .unwrap_or(0);
+        let col_width = super::file_list::comment_col_width(max_count);
         let items: Vec<ListItem> = tree
             .visible_rows
             .iter()
             .enumerate()
-            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row))
+            .map(|(i, row)| {
+                build_tree_row_item(
+                    files,
+                    row,
+                    i == tree.selected_row,
+                    &app.cmt.file_comment_counts,
+                    col_width,
+                )
+            })
             .collect();
 
         let title = format!("Files ({}) [tree]", total_files);
@@ -199,7 +217,7 @@ fn render_file_list_pane(
             );
         }
     } else {
-        let items = build_file_list_items(files, app.selected_file);
+        let items = build_file_list_items(files, app.selected_file, &app.cmt.file_comment_counts);
 
         let list = List::new(items)
             .block(
@@ -274,58 +292,6 @@ fn render_file_list_pane(
         is_focused,
     ));
     frame.render_widget(footer, chunks[next_chunk]);
-}
-
-fn build_file_list_items_ref<'a>(files: &[&'a ChangedFile], selected: usize) -> Vec<ListItem<'a>> {
-    use ratatui::style::Modifier;
-
-    files
-        .iter()
-        .enumerate()
-        .map(|(i, file)| {
-            let is_selected = i == selected;
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            let status_color = match file.status.as_str() {
-                "added" => Color::Green,
-                "removed" => Color::Red,
-                "modified" => Color::Yellow,
-                "copied" => Color::Cyan,
-                _ => Color::White,
-            };
-
-            let status_char = match file.status.as_str() {
-                "added" => 'A',
-                "removed" => 'D',
-                "modified" => 'M',
-                "renamed" => 'R',
-                "copied" => 'C',
-                _ => '?',
-            };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("[{}] ", status_char),
-                    Style::default().fg(status_color),
-                ),
-                if file.viewed {
-                    Span::styled("✓ ", Style::default().fg(Color::Green))
-                } else {
-                    Span::raw("  ")
-                },
-                Span::styled(&file.filename, style),
-                Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
-            ]);
-
-            ListItem::new(line)
-        })
-        .collect()
 }
 
 fn render_diff_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, is_focused: bool) {

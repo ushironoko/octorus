@@ -24,6 +24,8 @@ pub struct ReviewComment {
     pub body: String,
     pub user: User,
     pub created_at: String,
+    #[serde(default)]
+    pub in_reply_to_id: Option<u64>,
 }
 
 pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<ReviewComment>> {
@@ -201,6 +203,7 @@ mod tests {
                 login: "dev".to_string(),
             },
             created_at: "2025-03-01T12:00:00Z".to_string(),
+            in_reply_to_id: None,
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let deserialized: ReviewComment = serde_json::from_str(&serialized).unwrap();
@@ -319,7 +322,7 @@ mod tests {
             "created_at": "2025-01-01T00:00:00Z"
         });
         let comment: ReviewComment = serde_json::from_value(json).unwrap();
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z" }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z", in_reply_to_id: None }"#);
     }
 
     #[test]
@@ -334,7 +337,8 @@ mod tests {
                 login: "dacuna".to_string(),
             },
             created_at: "2026-03-25T00:00:00Z".to_string(),
+            in_reply_to_id: None,
         };
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Multiline review", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z" }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Multiline review", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z", in_reply_to_id: None }"#);
     }
 }

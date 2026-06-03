@@ -15,6 +15,7 @@ use super::common::{
 use crate::app::App;
 use crate::app::TreeRow;
 use crate::github::ChangedFile;
+use std::collections::HashMap;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
@@ -68,7 +69,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(&filtered, display_selected);
+            let items = build_file_list_items_ref(
+                &filtered,
+                display_selected,
+                &app.cmt.file_comment_counts,
+            );
 
             let list = List::new(items)
                 .block(
@@ -107,11 +112,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else if app.is_file_tree_active() {
         let tree = app.file_tree_state.as_ref().unwrap();
         let row_count = tree.row_count();
+        let max_count = files
+            .iter()
+            .filter_map(|f| app.cmt.file_comment_counts.get(&f.filename).copied())
+            .max()
+            .unwrap_or(0);
+        let col_width = comment_col_width(max_count);
         let items: Vec<ListItem> = tree
             .visible_rows
             .iter()
             .enumerate()
-            .map(|(i, row)| build_tree_row_item(files, row, i == tree.selected_row))
+            .map(|(i, row)| {
+                build_tree_row_item(
+                    files,
+                    row,
+                    i == tree.selected_row,
+                    &app.cmt.file_comment_counts,
+                    col_width,
+                )
+            })
             .collect();
 
         let title = format!("Changed Files ({}) [tree]", total_files);
@@ -146,7 +165,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             );
         }
     } else {
-        let items = build_file_list_items(files, app.selected_file);
+        let items = build_file_list_items(files, app.selected_file, &app.cmt.file_comment_counts);
 
         let list = List::new(items)
             .block(
@@ -288,23 +307,79 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
 pub(crate) fn build_file_list_items<'a>(
     files: &'a [ChangedFile],
     selected_file: usize,
+    comment_counts: &HashMap<String, usize>,
 ) -> Vec<ListItem<'a>> {
+    let max_count = files
+        .iter()
+        .filter_map(|f| comment_counts.get(&f.filename).copied())
+        .max()
+        .unwrap_or(0);
+    let col_width = comment_col_width(max_count);
     files
         .iter()
         .enumerate()
-        .map(|(i, file)| build_file_list_item(file, i == selected_file))
+        .map(|(i, file)| {
+            let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
+            build_file_list_item(file, i == selected_file, count, col_width)
+        })
         .collect()
 }
 
-fn build_file_list_items_ref<'a>(files: &[&'a ChangedFile], selected: usize) -> Vec<ListItem<'a>> {
+pub(crate) fn build_file_list_items_ref<'a>(
+    files: &[&'a ChangedFile],
+    selected: usize,
+    comment_counts: &HashMap<String, usize>,
+) -> Vec<ListItem<'a>> {
+    let max_count = files
+        .iter()
+        .filter_map(|f| comment_counts.get(&f.filename).copied())
+        .max()
+        .unwrap_or(0);
+    let col_width = comment_col_width(max_count);
     files
         .iter()
         .enumerate()
-        .map(|(i, file)| build_file_list_item(file, i == selected))
+        .map(|(i, file)| {
+            let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
+            build_file_list_item(file, i == selected, count, col_width)
+        })
         .collect()
 }
 
-fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListItem<'a> {
+fn comment_label(count: usize) -> String {
+    if count > 999 {
+        "[1k+]".to_string()
+    } else {
+        format!("[{}]", count)
+    }
+}
+
+pub(crate) fn comment_col_width(max_count: usize) -> usize {
+    if max_count == 0 {
+        1
+    } else {
+        comment_label(max_count).len() + 2
+    }
+}
+
+fn build_comment_column(count: usize, col_width: usize) -> Span<'static> {
+    if count == 0 {
+        return Span::raw(" ".repeat(col_width));
+    }
+    let label = comment_label(count);
+    let pad = col_width - label.len() - 1;
+    Span::styled(
+        format!("{}{} ", " ".repeat(pad), label),
+        Style::default().fg(Color::Magenta),
+    )
+}
+
+fn build_file_list_item<'a>(
+    file: &'a ChangedFile,
+    is_selected: bool,
+    comment_count: usize,
+    col_width: usize,
+) -> ListItem<'a> {
     let style = if is_selected {
         Style::default()
             .fg(Color::Yellow)
@@ -330,11 +405,14 @@ fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListIte
         _ => '?',
     };
 
-    let line = Line::from(vec![
+    let comment_span = build_comment_column(comment_count, col_width);
+
+    let spans = vec![
         Span::styled(
-            format!("[{}] ", status_char),
+            format!("[{}]", status_char),
             Style::default().fg(status_color),
         ),
+        comment_span,
         if file.viewed {
             Span::styled("✓ ", Style::default().fg(Color::Green))
         } else {
@@ -342,15 +420,17 @@ fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListIte
         },
         Span::styled(&file.filename, style),
         Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
-    ]);
+    ];
 
-    ListItem::new(line)
+    ListItem::new(Line::from(spans))
 }
 
 pub(crate) fn build_tree_row_item<'a>(
     files: &'a [ChangedFile],
     row: &TreeRow,
     is_selected: bool,
+    comment_counts: &HashMap<String, usize>,
+    col_width: usize,
 ) -> ListItem<'a> {
     match row {
         TreeRow::Dir {
@@ -412,12 +492,16 @@ pub(crate) fn build_tree_row_item<'a>(
                 _ => '?',
             };
 
-            let line = Line::from(vec![
+            let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
+            let comment_span = build_comment_column(count, col_width);
+
+            let spans = vec![
                 Span::raw(indent),
                 Span::styled(
-                    format!("[{}] ", status_char),
+                    format!("[{}]", status_char),
                     Style::default().fg(status_color),
                 ),
+                comment_span,
                 if file.viewed {
                     Span::styled("✓ ", Style::default().fg(Color::Green))
                 } else {
@@ -425,8 +509,71 @@ pub(crate) fn build_tree_row_item<'a>(
                 },
                 Span::styled(filename, style),
                 Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
-            ]);
-            ListItem::new(line)
+            ];
+            ListItem::new(Line::from(spans))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insta::assert_snapshot;
+
+    fn col_text(count: usize, col_width: usize) -> String {
+        let span = build_comment_column(count, col_width);
+        span.content.to_string()
+    }
+
+    #[test]
+    fn comment_column_no_comments_collapses() {
+        let col = comment_col_width(0);
+        assert_eq!(col, 1);
+        assert_snapshot!(col_text(0, col), @" ");
+    }
+
+    #[test]
+    fn comment_column_single_digit() {
+        let col = comment_col_width(9);
+        assert_eq!(col, 5);
+        assert_snapshot!(col_text(3, col), @" [3] ");
+        assert_snapshot!(col_text(0, col), @"     ");
+    }
+
+    #[test]
+    fn comment_column_double_digit() {
+        let col = comment_col_width(42);
+        assert_eq!(col, 6);
+        assert_snapshot!(col_text(42, col), @" [42] ");
+        assert_snapshot!(col_text(1, col), @"  [1] ");
+        assert_snapshot!(col_text(0, col), @"      ");
+    }
+
+    #[test]
+    fn comment_column_triple_digit() {
+        let col = comment_col_width(123);
+        assert_eq!(col, 7);
+        assert_snapshot!(col_text(123, col), @" [123] ");
+        assert_snapshot!(col_text(7, col), @"   [7] ");
+        assert_snapshot!(col_text(0, col), @"       ");
+    }
+
+    #[test]
+    fn comment_column_overflow_clamps_to_1k_plus() {
+        let col = comment_col_width(2500);
+        assert_eq!(col, 7);
+        assert_snapshot!(col_text(2500, col), @" [1k+] ");
+    }
+
+    #[test]
+    fn comment_col_width_values() {
+        assert_eq!(comment_col_width(0), 1);
+        assert_eq!(comment_col_width(1), 5);
+        assert_eq!(comment_col_width(9), 5);
+        assert_eq!(comment_col_width(10), 6);
+        assert_eq!(comment_col_width(99), 6);
+        assert_eq!(comment_col_width(100), 7);
+        assert_eq!(comment_col_width(999), 7);
+        assert_eq!(comment_col_width(1000), 7);
     }
 }

@@ -543,6 +543,7 @@ mod tests {
                 login: "local".to_string(),
             },
             created_at: "2026-03-24T00:00:00Z".to_string(),
+            in_reply_to_id: None,
         })];
 
         save_local_review_comments_with_base(
@@ -682,6 +683,7 @@ mod tests {
                     login: "local".to_string(),
                 },
                 created_at: "2026-04-27T00:00:00Z".to_string(),
+                in_reply_to_id: None,
             }),
             LocalReviewComment::new(ReviewComment {
                 id: 2,
@@ -693,6 +695,7 @@ mod tests {
                     login: "local".to_string(),
                 },
                 created_at: "2026-04-27T00:01:00Z".to_string(),
+                in_reply_to_id: None,
             }),
         ];
         save_local_review_comments_with_base(

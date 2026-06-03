@@ -117,10 +117,7 @@ impl App {
                     .put_review_comments(cache_key, comments.clone());
                 // PR が切り替わっていなければ UI 状態にも反映
                 if self.pr_number == Some(origin_pr) {
-                    self.cmt.review_comments = Some(comments);
-                    self.cmt.selected_comment = 0;
-                    self.cmt.comment_list_scroll_offset = 0;
-                    self.cmt.comments_loading = false;
+                    self.apply_review_comments(comments);
                     // Update comment positions if in diff view or side-by-side
                     if matches!(
                         self.state,
@@ -928,6 +925,9 @@ impl App {
                     self.start_batch_diff_loading();
                 } else {
                     self.start_prefetch_all_files();
+                }
+                if self.needs_review_comment_load() {
+                    self.load_review_comments();
                 }
                 // CLI 直接指定時: ci_status をバックグラウンドで取得
                 if !self.local_mode
