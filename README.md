@@ -222,6 +222,31 @@ Press `!` to enter shell command mode and execute any shell command.
 - Permission and clarification prompts during the cycle
 - Pause / resume / retry / run in background
 
+#### Review Only Mode
+
+Set `ai.review_only = true` to run AI Rally in **proposal-iteration mode**. The reviewee never modifies code — instead it produces a written fix proposal which the reviewer re-reviews. Useful when you want a vetted plan rather than direct commits, or when the working tree must stay untouched.
+
+**Flow:**
+
+1. Reviewer reviews the PR diff (same as normal mode).
+2. If the reviewer approves → rally ends.
+3. Otherwise the reviewee produces a `RevieweeProposal` using **read-only tools only** (no `Bash`, `Edit`, `Write`, `NotebookEdit`).
+4. The reviewer re-reviews the proposal.
+5. Loop continues until reviewer approves or `max_iterations` is hit.
+
+The TUI header shows a `[Review Only]` badge while the mode is active.
+
+**Tool boundary:** The proposal step runs under a hard read-only boundary (base allowlist `Read,Glob,Grep`; mutating tools are denied at the agent layer). Extra read-only tools can be added via `ai.reviewee_proposal_additional_tools` — any entry that would re-introduce a mutating tool is rejected at startup.
+
+**Posting proposals:** `ai.post_reviewee_proposals` controls when proposals are posted to the PR — `"final"` (default) posts only the last proposal, `"each"` posts every iteration, `"none"` keeps them in session history only.
+
+```toml
+[ai]
+review_only = true
+post_reviewee_proposals = "final"
+reviewee_proposal_additional_tools = ["WebSearch"]  # optional, read-only only
+```
+
 ### Headless Mode (CI/CD)
 
 When `--ai-rally` is combined with `--pr` or `--local`, AI Rally runs in **headless mode** — no TUI is launched, all output goes to stderr.
@@ -358,7 +383,10 @@ All octorus settings are configurable. Settings can be global or project-local.
 | `prompt_dir` | `string` | (none) | Custom prompt template directory. Absolute paths and `..` are rejected in local config |
 | `reviewer_additional_tools` | `string[]` | `[]` | Additional tools for reviewer (Claude only). Uses `--allowedTools` format |
 | `reviewee_additional_tools` | `string[]` | `[]` | Additional tools for reviewee (Claude only). Uses `--allowedTools` format |
+| `reviewee_proposal_additional_tools` | `string[]` | `[]` | Additional read-only tools layered on the proposal-mode allowlist (Claude only). Fail-closed: entries matching `Bash`, `Edit`, `Write`, `NotebookEdit`, or `Bash(...)` are rejected at startup. See [Review Only Mode](#review-only-mode) |
 | `auto_post` | `bool` | `false` | Post reviews/fixes to PR without confirmation |
+| `review_only` | `bool` | `false` | Run AI Rally in proposal-iteration mode — reviewee produces fix proposals (no code modification) instead of applying changes. See [Review Only Mode](#review-only-mode) |
+| `post_reviewee_proposals` | `string` | `"final"` | When to post reviewee proposals as PR comments in `review_only` mode. `"final"`: only the final proposal. `"each"`: every proposal. `"none"`: never post (session history only) |
 
 #### `[git_ops]`
 
