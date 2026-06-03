@@ -60,6 +60,7 @@ or --local
 | `-i, --issue [<ISSUE>]` | Open issue list (flag only), or open a specific issue directly if number is provided |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--ai-rally` | Start AI Rally mode directly. Runs in headless mode when combined with `--pr <number>` or `--local` |
+| `--review-only[=BOOL]` | Force AI Rally proposal-iteration mode. Use with `--ai-rally`, for example `--review-only=true` |
 | `--git-ops` | Open Git Ops view directly on startup |
 | `--auto-focus` | Auto-focus changed file when local diff updates (local mode only) |
 | `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
@@ -224,7 +225,9 @@ Press `!` to enter shell command mode and execute any shell command.
 
 #### Review Only Mode
 
-Set `ai.review_only = true` to run AI Rally in **proposal-iteration mode**. The reviewee never modifies code — instead it produces a written fix proposal which the reviewer re-reviews. Useful when you want a vetted plan rather than direct commits, or when the working tree must stay untouched.
+Use `--ai-rally --review-only=true` to run AI Rally in **proposal-iteration mode**. The reviewee never modifies code — instead it produces a written fix proposal which the reviewer re-reviews. Useful when you want a vetted plan rather than direct commits, or when the working tree must stay untouched.
+
+You can also set `ai.review_only = true` in config, but the CLI flag is the explicit per-run override.
 
 **Flow:**
 
@@ -254,6 +257,9 @@ When `--ai-rally` is combined with `--pr` or `--local`, AI Rally runs in **headl
 ```bash
 # Headless rally on a specific PR
 or --repo owner/repo --pr 123 --ai-rally
+
+# Headless review-only rally on a specific PR
+or --repo owner/repo --pr 123 --ai-rally --review-only=true
 
 # Headless rally on local diff
 or --local --ai-rally

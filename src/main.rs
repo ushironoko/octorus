@@ -47,6 +47,10 @@ struct Args {
     #[arg(long, default_value = "false")]
     ai_rally: bool,
 
+    /// Force AI Rally review-only (proposal iteration) mode. Use --review-only=true.
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true", requires = "ai_rally")]
+    review_only: Option<bool>,
+
     /// Show local git diff against current HEAD (no GitHub PR fetch)
     #[arg(long, default_value = "false", conflicts_with = "pr")]
     local: bool,
@@ -69,8 +73,7 @@ struct Args {
 
     /// Accept local .octorus/ overrides for AI settings in headless mode.
     /// Without this flag, headless AI Rally will refuse to run if the local config
-    /// overrides security-sensitive keys (ai.reviewer, ai.reviewee, ai.*_additional_tools,
-    /// ai.auto_post, ai.prompt_dir) or local prompt files are detected in .octorus/prompts/.
+    /// overrides security-sensitive AI keys or local prompt files are detected in .octorus/prompts/.
     #[arg(long, default_value = "false")]
     accept_local_overrides: bool,
 
@@ -323,7 +326,8 @@ async fn main() -> Result<()> {
         };
     }
 
-    let is_no_args = args.pr.is_none() && !args.local && args.issue.is_none() && !args.git_ops;
+    let is_no_args =
+        args.pr.is_none() && !args.local && args.issue.is_none() && !args.git_ops && !args.ai_rally;
 
     let (repo, repo_available) = match args.repo.clone() {
         Some(r) => (r, true),
@@ -346,11 +350,12 @@ async fn main() -> Result<()> {
     };
 
     if is_no_args {
-        let config = if let Some(ref dir) = args.working_dir {
+        let mut config = if let Some(ref dir) = args.working_dir {
             config::Config::load_for_dir(Path::new(dir))?
         } else {
             config::Config::load()?
         };
+        apply_cli_config_overrides(&mut config, &args);
         return run_with_cockpit(&repo, config, &args, repo_available).await;
     }
 
@@ -360,11 +365,12 @@ async fn main() -> Result<()> {
         let _ = syntax::theme_set();
     });
 
-    let config = if let Some(ref dir) = args.working_dir {
+    let mut config = if let Some(ref dir) = args.working_dir {
         config::Config::load_for_dir(Path::new(dir))?
     } else {
         config::Config::load()?
     };
+    apply_cli_config_overrides(&mut config, &args);
 
     // Headless mode: --ai-rally with --pr <number> or --local bypasses TUI entirely
     if args.ai_rally && matches!(args.pr, Some(pr) if pr > 0) {
@@ -790,6 +796,15 @@ fn resolve_working_dir(args: &Args) -> Option<String> {
     }
 }
 
+fn apply_cli_config_overrides(config: &mut config::Config, args: &Args) {
+    if let Some(review_only) = args.review_only {
+        config.ai.review_only = review_only;
+        // A CLI value is explicit user input, so it supersedes the same
+        // project-local key for headless/TUI local-override warnings.
+        config.local_overrides.remove("ai.review_only");
+    }
+}
+
 /// Set up working directory for AI agents
 fn setup_working_dir(app: &mut app::App, args: &Args) {
     if let Some(dir) = args.working_dir.clone() {
@@ -874,5 +889,70 @@ mod tests {
             ".octorus/prompts/reviewer.md"
         )));
         assert!(!is_octorus_config_file(std::path::Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn test_review_only_cli_flag_parses_bool_value() {
+        let args = Args::parse_from(["or", "--ai-rally", "--review-only=true", "--pr", "123"]);
+
+        assert_eq!(args.review_only, Some(true));
+    }
+
+    #[test]
+    fn test_review_only_cli_flag_requires_ai_rally() {
+        let result = Args::try_parse_from(["or", "--review-only=true", "--pr", "123"]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_review_only_cli_override_sets_config_and_clears_local_warning() {
+        let args = Args::parse_from(["or", "--ai-rally", "--review-only=true", "--local"]);
+        let mut config = config::Config::default();
+        config.ai.review_only = false;
+        config.local_overrides.insert("ai.review_only".to_string());
+
+        apply_cli_config_overrides(&mut config, &args);
+
+        assert!(config.ai.review_only);
+        assert!(!config.local_overrides.contains("ai.review_only"));
+    }
+
+    #[test]
+    fn test_root_help_snapshot_includes_review_only_flag() {
+        use clap::CommandFactory;
+        use insta::assert_snapshot;
+
+        let help = Args::command().render_help().to_string();
+
+        assert_snapshot!(help, @r#"
+        TUI for GitHub PRs, issues, local diffs, and Git Ops. AI-powered automated review cycles.
+
+        Usage: or [OPTIONS] [COMMAND]
+
+        Commands:
+          init                  Initialize configuration files and prompt templates
+          clean                 Remove AI Rally session data
+          local-comments        Show saved local comments for the current worktree
+          update-local-comment  Update saved local comments for the current worktree
+          update                Update to the latest version from GitHub Releases
+          migrate               Migrate configuration files and prompts after an update
+          help                  Print this message or the help of the given subcommand(s)
+
+        Options:
+          -r, --repo <REPO>                Repository name (e.g., "owner/repo"). Auto-detected from current directory if omitted
+          -p, --pr [<PR>]                  Pull request number. Shows PR list if flag only (no number)
+              --ai-rally                   Start AI Rally mode directly
+              --review-only [<BOOL>]       Force AI Rally review-only (proposal iteration) mode. Use --review-only=true [possible values: true, false]
+              --local                      Show local git diff against current HEAD (no GitHub PR fetch)
+          -i, --issue [<ISSUE>]            Issue number. Shows issue detail directly if provided, issue list if flag only
+              --git-ops                    Start in Git Ops view directly
+              --auto-focus                 Auto-focus changed file when local diff updates (for local mode)
+              --working-dir <WORKING_DIR>  Working directory for AI agents (default: current directory)
+              --accept-local-overrides     Accept local .octorus/ overrides for AI settings in headless mode. Without this flag, headless AI Rally will refuse to run if the local config overrides security-sensitive AI keys or local prompt files are detected in .octorus/prompts/
+              --output <OUTPUT>            Write JSON result to a file (in addition to stdout). Useful when running as a background task where stdout may not be captured
+          -h, --help                       Print help
+          -V, --version                    Print version
+        "#);
     }
 }
