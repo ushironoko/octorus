@@ -342,8 +342,8 @@ impl Orchestrator {
 
             // Store the review for later use
             if let Err(e) = write_history_entry(
-                &self.repo,
-                self.pr_number,
+                &self.session.repo,
+                self.session.pr_number,
                 iteration,
                 &HistoryEntryType::Review(review_result.clone()),
             ) {
@@ -484,8 +484,8 @@ impl Orchestrator {
             };
 
             if let Err(e) = write_history_entry(
-                &self.repo,
-                self.pr_number,
+                &self.session.repo,
+                self.session.pr_number,
                 iteration,
                 &HistoryEntryType::Fix(fix_result.clone()),
             ) {
@@ -581,8 +581,8 @@ impl Orchestrator {
                                         Ok(output) => {
                                             // Write history entry for the follow-up fix
                                             if let Err(e) = write_history_entry(
-                                                &self.repo,
-                                                self.pr_number,
+                                                &self.session.repo,
+                                                self.session.pr_number,
                                                 iteration,
                                                 &HistoryEntryType::Fix(output.clone()),
                                             ) {
@@ -710,8 +710,8 @@ impl Orchestrator {
                                             Ok(output) => {
                                                 // Write history entry for the follow-up fix
                                                 if let Err(e) = write_history_entry(
-                                                    &self.repo,
-                                                    self.pr_number,
+                                                    &self.session.repo,
+                                                    self.session.pr_number,
                                                     iteration,
                                                     &HistoryEntryType::Fix(output.clone()),
                                                 ) {
@@ -1198,8 +1198,8 @@ impl Orchestrator {
         };
 
         if let Err(e) = write_history_entry(
-            &self.repo,
-            self.pr_number,
+            &self.session.repo,
+            self.session.pr_number,
             iteration,
             &HistoryEntryType::Proposal(proposal.clone()),
         ) {
@@ -2045,7 +2045,29 @@ fn check_blocked_git_operation(action: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tokio::sync::mpsc;
+
+    struct ScopedCacheHome {
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedCacheHome {
+        fn new(dir: &std::path::Path) -> Self {
+            let old = std::env::var_os("XDG_CACHE_HOME");
+            unsafe { std::env::set_var("XDG_CACHE_HOME", dir) };
+            Self { old }
+        }
+    }
+
+    impl Drop for ScopedCacheHome {
+        fn drop(&mut self) {
+            match self.old.take() {
+                Some(value) => unsafe { std::env::set_var("XDG_CACHE_HOME", value) },
+                None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+            }
+        }
+    }
 
     #[test]
     fn test_orchestrator_command_variants() {
@@ -2664,10 +2686,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_review_only_proposal_history_written() {
         // The reviewee proposal must be persisted to session history as
         // `HistoryEntryType::Proposal`.
         use crate::ai::session::{history_dir, read_history, HistoryEntryType};
+
+        let tempdir = tempfile::tempdir().expect("create temp cache home");
+        let _cache_home = ScopedCacheHome::new(tempdir.path());
 
         let pr_number = 8_017_001; // unlikely to collide with other tests
         let repo = "owner/proposal-history-test";
