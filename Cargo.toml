@@ -16,7 +16,7 @@ name = "or"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.30.0"
+ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 crossterm = "0.28.1"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "rt", "macros", "sync", "process", "io-util", "time"] }
 tokio-util = "0.7.18"
