@@ -78,35 +78,36 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         })
         .collect();
 
-    let total_lines = lines.len();
-    let max_scroll = total_lines.saturating_sub(content_height);
+    // Scroll offset is measured in *wrapped* (visual) rows because
+    // `Paragraph::scroll` applies after wrapping. Count wrapped rows at the inner
+    // content width so the clamp reaches the true bottom; using the logical line
+    // count would leave the wrapped tail unreachable.
+    let inner_width = area.width.saturating_sub(2);
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total_visual = body.line_count(inner_width);
+    let max_scroll = total_visual.saturating_sub(content_height);
     if app.pr_description_scroll_offset > max_scroll {
         app.pr_description_scroll_offset = max_scroll;
     }
+    let offset = app.pr_description_scroll_offset;
 
-    let scroll_info = if total_lines > content_height {
-        format!(
-            " ({}/{})",
-            app.pr_description_scroll_offset + 1,
-            max_scroll + 1
-        )
+    let scroll_info = if total_visual > content_height {
+        format!(" ({}/{})", offset + 1, max_scroll + 1)
     } else {
         String::new()
     };
 
-    let body = Paragraph::new(lines)
+    let body = body
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!("Description{}", scroll_info)),
         )
-        .wrap(Wrap { trim: false })
-        .scroll((app.pr_description_scroll_offset as u16, 0));
+        .scroll((offset as u16, 0));
     frame.render_widget(body, area);
 
-    if total_lines > content_height {
-        let mut scrollbar_state =
-            ScrollbarState::new(max_scroll + 1).position(app.pr_description_scroll_offset);
+    if total_visual > content_height {
+        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(offset);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None);
@@ -139,7 +140,11 @@ mod tests {
     use ratatui::Terminal;
 
     fn render_full(app: &mut App) -> String {
-        let backend = TestBackend::new(100, 24);
+        render_at(app, 100, 24)
+    }
+
+    fn render_at(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -148,15 +153,69 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         let mut lines = Vec::new();
-        for y in 0..24u16 {
+        for y in 0..height {
             let mut line = String::new();
-            for x in 0..100u16 {
+            for x in 0..width {
                 let cell = &buf[(x, y)];
                 line.push_str(cell.symbol());
             }
             lines.push(line.trim_end().to_string());
         }
         lines.join("\n")
+    }
+
+    fn app_with_pr_body(body: &str) -> App {
+        use crate::app::DataState;
+        use crate::github::{Branch, PullRequest, User};
+
+        let (mut app, _) = App::new_loading("owner/repo", 1, crate::config::Config::default());
+        let pr = Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Test PR".to_string(),
+            body: Some(body.to_string()),
+            state: "open".to_string(),
+            head: Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc".to_string(),
+            },
+            base: Branch {
+                ref_name: "main".to_string(),
+                sha: "def".to_string(),
+            },
+            user: User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+        app.data_state = DataState::Loaded { pr, files: vec![] };
+        app.open_pr_description();
+        app
+    }
+
+    /// Regression: a long description whose logical lines wrap across many visual
+    /// rows must remain fully scrollable. Jumping to the bottom (offset = MAX) has
+    /// to reveal the final line — the scroll clamp must be based on wrapped visual
+    /// lines, not logical line count.
+    #[test]
+    fn test_long_wrapping_description_tail_reachable() {
+        let mut body = String::new();
+        for i in 0..8 {
+            body.push_str(&format!(
+                "Paragraph {i} is intentionally long so that it wraps across several visual rows when rendered inside a narrow terminal viewport.\n"
+            ));
+        }
+        body.push_str("UNIQUE_TAIL_MARKER");
+
+        let mut app = app_with_pr_body(&body);
+        // Emulate "jump to bottom" (Shift+G sets offset to usize::MAX).
+        app.pr_description_scroll_offset = usize::MAX;
+
+        let out = render_at(&mut app, 40, 12);
+        assert!(
+            out.contains("UNIQUE_TAIL_MARKER"),
+            "final line must be reachable when scrolled to the bottom:\n{out}"
+        );
     }
 
     #[test]

@@ -227,11 +227,11 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
         .is_some_and(|s| s.issue_detail_cache.is_some());
 
     if has_cache {
-        let (body_lines, total_lines, scroll_offset) = {
+        let body_lines: Vec<Line> = {
             let state = app.issue_state.as_ref().unwrap();
             let cache = state.issue_detail_cache.as_ref().unwrap();
 
-            let lines: Vec<Line> = cache
+            cache
                 .lines
                 .iter()
                 .filter(|line| line.line_type != LineType::Header)
@@ -251,35 +251,38 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
                         .collect();
                     Line::from(spans)
                 })
-                .collect();
-
-            let total = lines.len();
-            let content_height = area.height.saturating_sub(2) as usize;
-            let max_scroll = total.saturating_sub(content_height);
-            let offset = state.issue_detail_scroll_offset.min(max_scroll);
-
-            (lines, total, offset)
+                .collect()
         };
 
-        if let Some(ref mut state) = app.issue_state {
-            state.issue_detail_scroll_offset = scroll_offset;
-        }
-
+        // Scroll offset is measured in *wrapped* (visual) rows because
+        // `Paragraph::scroll` applies after wrapping. Count wrapped rows at the
+        // inner content width so the clamp reaches the true bottom; the logical
+        // line count would leave the wrapped tail unreachable.
         let content_height = area.height.saturating_sub(2) as usize;
-        let max_scroll = total_lines.saturating_sub(content_height);
+        let inner_width = area.width.saturating_sub(2);
 
-        let body = Paragraph::new(body_lines)
+        let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+        let total_visual = body.line_count(inner_width);
+        let max_scroll = total_visual.saturating_sub(content_height);
+
+        let scroll_offset = if let Some(ref mut state) = app.issue_state {
+            state.issue_detail_scroll_offset = state.issue_detail_scroll_offset.min(max_scroll);
+            state.issue_detail_scroll_offset
+        } else {
+            0
+        };
+
+        let body = body
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style)
                     .title("Body"),
             )
-            .wrap(Wrap { trim: false })
             .scroll((scroll_offset as u16, 0));
         frame.render_widget(body, area);
 
-        if total_lines > content_height {
+        if total_visual > content_height {
             let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(scroll_offset);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -324,7 +327,11 @@ mod tests {
     use ratatui::Terminal;
 
     fn render_full(app: &mut App) -> String {
-        let backend = TestBackend::new(100, 24);
+        render_at(app, 100, 24)
+    }
+
+    fn render_at(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -333,9 +340,9 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         let mut lines = Vec::new();
-        for y in 0..24u16 {
+        for y in 0..height {
             let mut line = String::new();
-            for x in 0..100u16 {
+            for x in 0..width {
                 let cell = &buf[(x, y)];
                 line.push_str(cell.symbol());
             }
@@ -448,6 +455,39 @@ mod tests {
         assert!(
             output.contains("(no description)"),
             "should show fallback text"
+        );
+    }
+
+    /// Regression: a long issue body whose logical lines wrap across many visual
+    /// rows must remain fully scrollable. Jumping to the bottom (offset = MAX) has
+    /// to reveal the final line — the scroll clamp must be based on wrapped visual
+    /// lines, not logical line count.
+    #[test]
+    fn test_long_wrapping_body_tail_reachable() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueDetail;
+        let mut issue_state = IssueState::new();
+
+        let mut body = String::new();
+        for i in 0..8 {
+            body.push_str(&format!(
+                "Paragraph {i} is intentionally long so that it wraps across several visual rows when rendered inside a narrow terminal viewport.\n"
+            ));
+        }
+        body.push_str("UNIQUE_TAIL_MARKER");
+
+        issue_state.issue_detail =
+            crate::app::LoadState::Loaded(make_detail(9, "Long body issue", Some(&body)));
+        app.issue_state = Some(issue_state);
+        app.rebuild_issue_detail_cache();
+
+        // Emulate "jump to bottom".
+        app.issue_state.as_mut().unwrap().issue_detail_scroll_offset = usize::MAX;
+
+        let out = render_at(&mut app, 40, 12);
+        assert!(
+            out.contains("UNIQUE_TAIL_MARKER"),
+            "final line must be reachable when scrolled to the bottom:\n{out}"
         );
     }
 
