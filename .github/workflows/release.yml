@@ -230,6 +230,9 @@ jobs:
     needs: [validate, test, build, release]
     if: always() && (needs.test.result == 'failure' || needs.build.result == 'failure' || needs.release.result == 'failure')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -249,15 +252,30 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Revert bump commit
+      # The main ruleset requires changes via PR (with review), so the revert
+      # cannot be pushed directly — open a PR and leave the merge to a human.
+      - name: Open revert PR
         if: steps.check.outputs.skip != 'true'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUMP_SHA: ${{ inputs.bump_sha }}
+          VERSION: ${{ inputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="revert-bump-v${VERSION}"
+          git switch -c "$BRANCH"
           git revert --no-edit "$BUMP_SHA"
-          git push origin main
+          git push --force origin "$BRANCH"
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            BODY=$(printf 'Reverts the v%s bump because the release failed: %s\n\nMerge this PR to restore main, fix the cause, then restart the release from the version bump.' "$VERSION" "$RUN_URL")
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: revert version bump v${VERSION}" \
+              --body "$BODY"
+          fi
 
       - name: Delete tag
         if: always()

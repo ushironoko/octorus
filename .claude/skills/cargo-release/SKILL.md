@@ -93,7 +93,7 @@ Rust/Cargoプロジェクトのリリース手順を実行するスキル。
    gh run watch <run-id>
    ```
    - ワークフローがtest/build/release/publishを自動実行
-   - 失敗時はバージョンバンプコミットが自動revertされる
+   - 失敗時はバンプコミットのrevert PRが自動作成される（マージは手動）
 
 ## 前提条件
 
@@ -104,14 +104,15 @@ Rust/Cargoプロジェクトのリリース手順を実行するスキル。
 
 ## 注意事項
 
-- ワークフローが失敗した場合、バンプコミットは自動revertされる（ただしHEADが移動していない場合のみ）
+- ワークフローが失敗した場合、バンプコミットのrevert PR（`revert-bump-v{version}` ブランチ）が自動作成される（ただしHEADが移動していない場合のみ）。mainのルールセットがPR必須のためワークフローからは直接pushできず、マージはユーザーの手動操作
 - `cargo publish` の失敗ではrollbackされない（GitHub Releaseは成功済みのため）
 
 ## エラー時のリカバリ
 
 ### validate/test/build/release の失敗
-- 自動rollback（バンプコミットrevert + タグ/リリース削除）が実行される
-- 原因を修正後、Phase 2 からやり直す（バージョン更新 → コミット → プッシュ → ワークフロー起動）
+- rollbackジョブがrevert PRの作成とタグ/リリース削除を自動実行する
+- **fix-forwardする場合**（原因を修正して同じバージョンで再リリース）: revert PRをクローズし、修正をmainに反映後、新HEADのSHAで `gh workflow run release.yml -f version={version} -f bump_sha=$(git rev-parse HEAD)` を再実行（bump_shaはorigin/mainのHEADであれば、バンプコミット自体でなくてよい）
+- **リリースを取りやめる場合**: revert PRをマージしてバンプを打ち消し、原因修正後にPhase 2 からやり直す
 
 ### publish のみ失敗（GitHub Release は成功済み）
 - **推奨**: GitHub Actions UI から "Re-run failed jobs" で `publish` ジョブのみ再実行
