@@ -47,6 +47,22 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --workspace -- -D warnings
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+
+      - name: Run tests
+        run: cargo test
+
   # The blame parser's design rests on a memory layout — eight bytes per line
   # (commit index plus original line),
   # and an allocation count that does not scale with the commit count. The
