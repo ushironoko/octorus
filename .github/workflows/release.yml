@@ -16,9 +16,12 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+# Jobs that need more (release, publish, rollback) elevate per-job. In
+# particular, id-token stays out of test/build, whose cargo invocations run
+# third-party build scripts that could otherwise mint the trusted-publishing
+# OIDC token.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -175,6 +178,8 @@ jobs:
   release:
     needs: [validate, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -207,6 +212,9 @@ jobs:
   publish:
     needs: [validate, release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
