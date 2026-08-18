@@ -1001,12 +1001,14 @@ dependencies = [
 
 [[package]]
 name = "hearth-graph"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ec4cd2eb3541701be3c3bbc80d3ef2596d4d5759d96e28555716da4259e5e5d"
+checksum = "ab2e8c8bae37fc2eab3fceea31cbb9754b95366ba30fc559b271ff22a2c31601"
 dependencies = [
  "compact_str 0.10.0",
  "json-strip-comments",
+ "libc",
+ "octorus-tree-sitter-vue3 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "oxc_resolver",
  "parking_lot",
  "rustc-hash",
@@ -1030,6 +1032,7 @@ dependencies = [
  "tree-sitter-swift",
  "tree-sitter-typescript",
  "tree-sitter-zig",
+ "windows-sys 0.61.2",
  "xxhash-rust",
 ]
 
@@ -1548,7 +1551,7 @@ dependencies = [
  "lasso",
  "notify",
  "octorus-tree-sitter-moonbit",
- "octorus-tree-sitter-vue3",
+ "octorus-tree-sitter-vue3 0.1.0",
  "phf 0.13.1",
  "predicates",
  "rand 0.9.2",
@@ -1612,6 +1615,16 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "tree-sitter",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "octorus-tree-sitter-vue3"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42b1a774d18509365a2bf562a0fa5f4507f22f1703bfb675b4f09e6ffab3ce7b"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

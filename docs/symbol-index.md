@@ -143,6 +143,7 @@ always use its constructor/builders.
 | Lua | `.lua` | Hearth / grammar crate |
 | PHP | `.php` | Hearth / grammar crate |
 | Swift | `.swift` | Hearth / grammar crate |
+| Vue | `.vue` | Hearth-bundled injections query — `<script>` blocks are parsed as embedded TypeScript/JavaScript, symbols keep whole-file line/column |
 | Markdown | `.md`, `.markdown` | Hearth-bundled query |
 
 ### Registered by octorus
@@ -151,9 +152,11 @@ always use its constructor/builders.
 |---|---|---|
 | MoonBit | `.mbt` | `src/queries/moonbit/tags.scm` |
 
-Svelte, Vue, CSS, and MarkdownInline remain highlighting/injection languages,
-not standalone symbol languages. Their handling in `SupportedLanguage` is
-independent of the Hearth symbol registry.
+Since hearth-graph 0.2.0, Vue is a bundled symbol language: it has no tags
+query of its own, so `test_all_registered_symbol_queries_compile` accepts an
+injections query in place of one. Svelte, CSS, and MarkdownInline remain
+highlighting/injection languages, not standalone symbol languages. Their
+handling in `SupportedLanguage` is independent of the Hearth symbol registry.
 
 ## 4. Parser and query reuse
 

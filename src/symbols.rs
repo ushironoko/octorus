@@ -546,17 +546,29 @@ mod tests {
     }
 
     #[test]
-    fn test_all_registered_tags_queries_compile() {
+    fn test_all_registered_symbol_queries_compile() {
         let registry = symbol_language_registry();
         let mut pool = hearth_graph::ParserPool::new(registry);
 
         for (id, spec) in registry.iter() {
-            assert!(spec.tags_query.is_some(), "{} has no tags query", spec.name);
-            assert!(
-                pool.tags_query(id).is_some(),
-                "tags query for {} failed to compile",
-                spec.name
-            );
+            if spec.tags_query.is_some() {
+                assert!(
+                    pool.tags_query(id).is_some(),
+                    "tags query for {} failed to compile",
+                    spec.name
+                );
+            } else {
+                assert!(
+                    spec.injections_query.is_some(),
+                    "{} has neither a tags query nor an injections query",
+                    spec.name
+                );
+                assert!(
+                    pool.injections_query(id).is_some(),
+                    "injections query for {} failed to compile",
+                    spec.name
+                );
+            }
         }
     }
 
@@ -593,6 +605,38 @@ fn helper() {}
                 "helper",
                 Function,
                 11,
+                0,
+            ),
+        ]
+        "#);
+    }
+
+    #[test]
+    fn test_extract_vue_script_outline() {
+        let source = "\
+<template>
+  <p>{{ label }}</p>
+</template>
+<script setup lang=\"ts\">
+export interface Props {
+  label: string
+}
+
+export function useCounter() {}
+</script>
+";
+        insta::assert_debug_snapshot!(outline(source, "src/Counter.vue"), @r#"
+        [
+            (
+                "Props",
+                Interface,
+                5,
+                0,
+            ),
+            (
+                "useCounter",
+                Function,
+                9,
                 0,
             ),
         ]

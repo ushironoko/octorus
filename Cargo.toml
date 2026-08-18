@@ -17,7 +17,7 @@ name = "or"
 path = "src/main.rs"
 
 [dependencies]
-hearth-graph = { version = "=0.1.1", default-features = false, features = ["bundled-languages", "fs", "resolve-js", "resolve-rust"] }
+hearth-graph = { version = "=0.2.0", default-features = false, features = ["bundled-languages", "fs", "resolve-js", "resolve-rust"] }
 ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 crossterm = "0.28.1"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "rt", "macros", "sync", "process", "io-util", "time"] }
