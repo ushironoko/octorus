@@ -1001,9 +1001,9 @@ dependencies = [
 
 [[package]]
 name = "hearth-graph"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab2e8c8bae37fc2eab3fceea31cbb9754b95366ba30fc559b271ff22a2c31601"
+checksum = "b97b303638424a7087d145af8d69048c8b47b2cc661efeefb25bbc8c1a8a69b9"
 dependencies = [
  "compact_str 0.10.0",
  "json-strip-comments",

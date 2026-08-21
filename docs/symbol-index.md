@@ -2,7 +2,7 @@
 
 The Repository Browser symbol engine is exposed by `src/symbols.rs`, an
 octorus-owned compatibility facade over the exact crates.io dependency
-`hearth-graph = "=0.1.1"`.
+`hearth-graph = "=0.3.0"`.
 
 Read this document when changing the facade, adding a symbol language, or
 upgrading Hearth. The browser architecture and task lifecycle remain documented
