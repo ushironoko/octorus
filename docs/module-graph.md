@@ -1,7 +1,7 @@
 # Module Graph — Technical Reference
 
 The Repository Browser import engine is an octorus-owned compatibility facade
-over `hearth-graph = "=0.1.1"`. Read this document when changing import
+over `hearth-graph = "=0.3.0"`. Read this document when changing import
 extraction, resolver setup, graph guarantees, or the `i` dependency graph pane.
 Browser task/state/rendering architecture remains in
 [`repo-browse-architecture.md`](repo-browse-architecture.md); symbol-specific

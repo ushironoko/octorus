@@ -40,7 +40,7 @@ Changes to existing files are kept minimal:
 - `tests/cli.rs` — e2e tests that launch the binary
 
 The code-intelligence implementation depends on exact registry release
-`hearth-graph 0.1.1` with `bundled-languages`, `fs`, `resolve-js`, and
+`hearth-graph 0.3.0` with `bundled-languages`, `fs`, `resolve-js`, and
 `resolve-rust`, with default features disabled. See
 [symbol-index.md](symbol-index.md) and [module-graph.md](module-graph.md) for
 ownership and compatibility boundaries.
