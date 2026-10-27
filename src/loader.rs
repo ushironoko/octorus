@@ -580,17 +580,28 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn run_git(cmd: &mut Command, dir: &Path, args: &[&str], message: &str) {
-        let status = cmd
+        // The developer machine's global git config is not part of the fixture.
+        // `commit.gpgsign` plus an SSH signer makes `git commit` exit 128 when
+        // that signer cannot reach the agent.
+        let output = cmd
             .args(args)
             .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_AUTHOR_NAME", "octorus-test")
             .env("GIT_AUTHOR_EMAIL", "octorus-test@example.com")
             .env("GIT_COMMITTER_NAME", "octorus-test")
             .env("GIT_COMMITTER_EMAIL", "octorus-test@example.com")
-            .status()
+            .output()
             .expect(message);
 
-        assert!(status.success(), "{message}: {status}");
+        assert!(
+            output.status.success(),
+            "{message}: {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     fn write_file(path: &Path, content: &str) {
