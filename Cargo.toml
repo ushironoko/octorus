@@ -24,7 +24,7 @@ tokio = { version = "1.49.0", features = ["rt-multi-thread", "rt", "macros", "sy
 tokio-util = "0.7.18"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.151"
-toml = "0.8.23"
+toml = "1.1.8"
 tempfile = "3.24.0"
 notify = "6.1.1"
 anyhow = "1.0.100"
