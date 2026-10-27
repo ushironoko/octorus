@@ -28,7 +28,7 @@ jobs:
         run: cargo bench --bench ui_rendering --bench diff_parsing -- --output-format bencher | tee output.txt
 
       - name: Store benchmark result
-        uses: benchmark-action/github-action-benchmark@d48d326b4ca9ba73ca0cd0d59f108f9e02a381c7 # v1.20.4
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: octorus Benchmark
           tool: 'cargo'

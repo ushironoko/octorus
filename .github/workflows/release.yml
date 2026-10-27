@@ -226,7 +226,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Obtain token via trusted publishing
-        uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
         id: auth
 
       - name: Publish to crates.io
