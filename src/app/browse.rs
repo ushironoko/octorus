@@ -242,7 +242,9 @@ impl App {
                 }
                 Ok(IndexDelivery::Failed(message)) => {
                     state.index_receiver = None;
-                    state.index = IndexState::Failed(message.clone());
+                    state.index = IndexState::Failed {
+                        reason: message.clone(),
+                    };
                     state.module_graph = ModuleGraphState::Failed;
                     state.status = Some(message);
                 }
@@ -251,7 +253,9 @@ impl App {
                     state.index_receiver = None;
                     if !state.cancel_token.is_cancelled() {
                         let message = "code indexing task ended".to_string();
-                        state.index = IndexState::Failed(message.clone());
+                        state.index = IndexState::Failed {
+                            reason: message.clone(),
+                        };
                         state.module_graph = ModuleGraphState::Failed;
                         state.status = Some(message);
                     }
@@ -1779,16 +1783,15 @@ pub struct BrowseJump {
 }
 
 /// Lifecycle of the repository symbol index.
-///
-/// `Failed` keeps the error from the build. The footer status is replaced by
-/// later messages, so a symbol action has to read the reason from here.
 #[derive(Debug, Default)]
 pub enum IndexState {
     #[default]
     Idle,
     Building,
     Ready(Arc<SymbolIndex>),
-    Failed(String),
+    Failed {
+        reason: String,
+    },
 }
 
 impl IndexState {
@@ -1805,7 +1808,7 @@ impl IndexState {
             Self::Idle => "symbols: -",
             Self::Building => "symbols: indexing",
             Self::Ready(_) => "symbols: ready",
-            Self::Failed(_) => "symbols: unavailable",
+            Self::Failed { .. } => "symbols: unavailable",
         }
     }
 
@@ -1813,7 +1816,7 @@ impl IndexState {
         match self {
             Self::Idle => Some("Symbol index has not started".to_string()),
             Self::Building => Some("Symbol index is still building".to_string()),
-            Self::Failed(reason) => Some(format!("Symbol index is unavailable: {reason}")),
+            Self::Failed { reason } => Some(format!("Symbol index is unavailable: {reason}")),
             Self::Ready(_) => None,
         }
     }
@@ -3622,7 +3625,7 @@ mod tests {
             app.poll_browse_updates();
             if matches!(
                 app.browse_state.as_ref().map(|state| &state.index),
-                Some(IndexState::Ready(_) | IndexState::Failed(_))
+                Some(IndexState::Ready(_) | IndexState::Failed { .. })
             ) {
                 return;
             }
@@ -4067,7 +4070,10 @@ mod tests {
         assert_eq!(IndexState::Building.label(), "symbols: indexing");
         assert_eq!(ready_index().label(), "symbols: ready");
         assert_eq!(
-            IndexState::Failed("parser crashed".to_string()).label(),
+            IndexState::Failed {
+                reason: "parser crashed".to_string(),
+            }
+            .label(),
             "symbols: unavailable"
         );
         assert!(IndexState::Building.ready().is_none());
@@ -6994,7 +7000,7 @@ mod tests {
         let state = app.browse_state.as_ref().unwrap();
         assert!(matches!(
             state.index,
-            IndexState::Failed(ref reason) if reason == "code indexing task ended"
+            IndexState::Failed { ref reason } if reason == "code indexing task ended"
         ));
         assert!(matches!(state.module_graph, ModuleGraphState::Failed));
     }
@@ -7092,7 +7098,7 @@ mod tests {
 
         let reason = {
             let state = app.browse_state.as_ref().unwrap();
-            let IndexState::Failed(reason) = &state.index else {
+            let IndexState::Failed { reason } = &state.index else {
                 panic!("a failed index build must keep its error");
             };
             assert!(reason.contains("cannot build symbol index"), "{reason}");

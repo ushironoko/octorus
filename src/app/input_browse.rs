@@ -14,12 +14,12 @@ use std::io::Stdout;
 use crate::filter::ListFilter;
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
-#[cfg(test)]
-use super::browse::ModuleGraphState;
 use super::browse::{
-    BrowseCommitDiffState, BrowseOverlay, IndexState, ModuleGraphDirection, ModuleGraphPaneState,
+    BrowseCommitDiffState, BrowseOverlay, ModuleGraphDirection, ModuleGraphPaneState,
     ModuleGraphPanel, PrLookupState,
 };
+#[cfg(test)]
+use super::browse::{IndexState, ModuleGraphState};
 use super::browse_discussion::{DiscussionView, LineDiscussionState};
 use super::{App, AppState, PrOpenSource};
 
@@ -1203,18 +1203,15 @@ impl App {
         let Some(state) = self.browse_state.as_mut() else {
             return;
         };
+        if state.open_is_pending() {
+            state.status = Some("Still opening this file".to_string());
+            return;
+        }
         if state.outline_symbols().is_empty() {
-            // The pending check must come first. During a background load
-            // `open` is a placeholder with no symbols, so reporting on the
-            // index alone would claim the file has none when it has not been
-            // read yet.
-            let message = if state.open_is_pending() {
-                "Still opening this file".to_string()
-            } else if let Some(message) = state.index.blocked_message() {
-                message
-            } else {
-                "No symbols in this file".to_string()
-            };
+            let message = state
+                .index
+                .blocked_message()
+                .unwrap_or_else(|| "No symbols in this file".to_string());
             state.status = Some(message);
             return;
         }
@@ -2894,7 +2891,9 @@ mod tests {
             let index = match self {
                 Self::Idle => IndexState::Idle,
                 Self::Building => IndexState::Building,
-                Self::Failed => IndexState::Failed("parser crashed".to_string()),
+                Self::Failed => IndexState::Failed {
+                    reason: "parser crashed".to_string(),
+                },
             };
             let state = app.browse_state.as_mut().unwrap();
             state.index = index;
