@@ -14,12 +14,12 @@ use std::io::Stdout;
 use crate::filter::ListFilter;
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
-#[cfg(test)]
-use super::browse::ModuleGraphState;
 use super::browse::{
-    BrowseCommitDiffState, BrowseOverlay, IndexState, ModuleGraphDirection, ModuleGraphPaneState,
+    BrowseCommitDiffState, BrowseOverlay, ModuleGraphDirection, ModuleGraphPaneState,
     ModuleGraphPanel, PrLookupState,
 };
+#[cfg(test)]
+use super::browse::{IndexState, ModuleGraphState};
 use super::browse_discussion::{DiscussionView, LineDiscussionState};
 use super::{App, AppState, PrOpenSource};
 
@@ -719,12 +719,12 @@ impl App {
             self.set_browse_status("Still opening this file");
             return;
         }
-        let indexing = self
+        let blocked = self
             .browse_state
             .as_ref()
-            .is_some_and(|state| state.index.ready().is_none());
-        if indexing {
-            self.set_browse_status("Symbol index is still building");
+            .and_then(|state| state.index.blocked_message());
+        if let Some(message) = blocked {
+            self.set_browse_status(&message);
             return;
         }
         if !self.browse_go_to_definition() {
@@ -1203,20 +1203,16 @@ impl App {
         let Some(state) = self.browse_state.as_mut() else {
             return;
         };
+        if state.open_is_pending() {
+            state.status = Some("Still opening this file".to_string());
+            return;
+        }
         if state.outline_symbols().is_empty() {
-            // The pending check must come first. During a background load
-            // `open` is a placeholder with no symbols, so reporting on the
-            // index alone would claim the file has none when it has not been
-            // read yet.
-            let message = if state.open_is_pending() {
-                "Still opening this file"
-            } else {
-                match state.index {
-                    IndexState::Ready(_) => "No symbols in this file",
-                    _ => "Symbol index is still building",
-                }
-            };
-            state.status = Some(message.to_string());
+            let message = state
+                .index
+                .blocked_message()
+                .unwrap_or_else(|| "No symbols in this file".to_string());
+            state.status = Some(message);
             return;
         }
 
@@ -1235,8 +1231,8 @@ impl App {
         let Some(state) = self.browse_state.as_mut() else {
             return;
         };
-        if state.index.ready().is_none() {
-            state.status = Some("Symbol index is still building".to_string());
+        if let Some(message) = state.index.blocked_message() {
+            state.status = Some(message);
             return;
         }
         state.overlay = BrowseOverlay::SymbolSearch {
@@ -2706,16 +2702,20 @@ mod tests {
     fn test_outline_without_symbols_reports_instead_of_opening_empty() {
         let mut app = browsing_app(&["notes.txt"]);
         attach_open_file(&mut app, "notes.txt", "plain text\n", Vec::new());
+        attach_index(
+            &mut app,
+            vec![FileSymbols {
+                path: "notes.txt".to_string(),
+                symbols: Vec::new(),
+            }],
+        );
         app.state = AppState::RepoBrowseFile;
 
         app.handle_repo_browse_file_input(press(KeyCode::Char('o')), &mut test_terminal())
             .unwrap();
         let state = app.browse_state.as_ref().unwrap();
         assert_eq!(state.overlay, BrowseOverlay::None);
-        assert_eq!(
-            state.status.as_deref(),
-            Some("Symbol index is still building")
-        );
+        assert_eq!(state.status.as_deref(), Some("No symbols in this file"));
     }
 
     // ===== scenario: symbol search =====
@@ -2856,7 +2856,7 @@ mod tests {
         assert_eq!(state.overlay, BrowseOverlay::None);
         assert_eq!(
             state.status.as_deref(),
-            Some("Symbol index is still building")
+            Some("Symbol index has not started")
         );
     }
 
@@ -2875,8 +2875,104 @@ mod tests {
 
         assert_eq!(
             app.browse_state.as_ref().unwrap().status.as_deref(),
-            Some("Symbol index is still building")
+            Some("Symbol index has not started")
         );
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Lifecycle {
+        Idle,
+        Building,
+        Failed,
+    }
+
+    impl Lifecycle {
+        fn install(self, app: &mut App) {
+            let index = match self {
+                Self::Idle => IndexState::Idle,
+                Self::Building => IndexState::Building,
+                Self::Failed => IndexState::Failed {
+                    reason: "parser crashed".to_string(),
+                },
+            };
+            let state = app.browse_state.as_mut().unwrap();
+            state.index = index;
+            state.status = None;
+        }
+
+        fn message(self) -> &'static str {
+            match self {
+                Self::Idle => "Symbol index has not started",
+                Self::Building => "Symbol index is still building",
+                Self::Failed => "Symbol index is unavailable: parser crashed",
+            }
+        }
+    }
+
+    #[test]
+    fn test_symbol_actions_report_idle_building_and_failed_indexes() {
+        for lifecycle in [Lifecycle::Idle, Lifecycle::Building, Lifecycle::Failed] {
+            let expected = lifecycle.message();
+            let mut terminal = test_terminal();
+
+            let mut outline = browsing_app(&["src/a.rs"]);
+            attach_open_file(&mut outline, "src/a.rs", "let x = alpha();\n", Vec::new());
+            lifecycle.install(&mut outline);
+            outline.state = AppState::RepoBrowseFile;
+            outline
+                .handle_repo_browse_file_input(press(KeyCode::Char('o')), &mut terminal)
+                .unwrap();
+            let state = outline.browse_state.as_ref().unwrap();
+            assert_eq!(
+                state.overlay,
+                BrowseOverlay::None,
+                "{lifecycle:?} opened the outline"
+            );
+            assert_eq!(
+                state.status.as_deref(),
+                Some(expected),
+                "{lifecycle:?} outline"
+            );
+
+            let mut search = browsing_app(&["src/a.rs"]);
+            lifecycle.install(&mut search);
+            search.state = AppState::RepoBrowseFile;
+            search
+                .handle_repo_browse_file_input(press(KeyCode::Char('s')), &mut terminal)
+                .unwrap();
+            let state = search.browse_state.as_ref().unwrap();
+            assert_eq!(
+                state.overlay,
+                BrowseOverlay::None,
+                "{lifecycle:?} opened symbol search"
+            );
+            assert_eq!(
+                state.status.as_deref(),
+                Some(expected),
+                "{lifecycle:?} symbol search"
+            );
+
+            let mut definition = browsing_app(&["src/a.rs"]);
+            attach_open_file(
+                &mut definition,
+                "src/a.rs",
+                "let x = alpha();\n",
+                Vec::new(),
+            );
+            lifecycle.install(&mut definition);
+            definition.state = AppState::RepoBrowseFile;
+            definition
+                .handle_repo_browse_file_input(press(KeyCode::Char('g')), &mut terminal)
+                .unwrap();
+            definition
+                .handle_repo_browse_file_input(press(KeyCode::Char('d')), &mut terminal)
+                .unwrap();
+            assert_eq!(
+                definition.browse_state.as_ref().unwrap().status.as_deref(),
+                Some(expected),
+                "{lifecycle:?} go to definition"
+            );
+        }
     }
 
     /// A pending load leaves `open` holding a placeholder with no content and
