@@ -263,23 +263,26 @@ fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // `.{filename}.{random}.tmp`. Builder inserts the random bytes between the
     // prefix and the suffix, and on a name collision it tries another name
     // without removing the existing file.
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "local comments path has no file name",
-        )
-    })?;
-    let mut prefix = std::ffi::OsString::from(".");
-    prefix.push(file_name);
-    prefix.push(".");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "local comments path has no file name",
+            )
+        })?;
+    let prefix = format!(".{file_name}.");
     let mut temp = tempfile::Builder::new()
         .prefix(&prefix)
         .suffix(".tmp")
         .tempfile_in(parent)?;
     temp.write_all(bytes)?;
-    set_replaced_file_permissions(path, temp.path())?;
+    #[cfg(unix)]
+    set_replaced_file_permissions(temp.as_file(), path)?;
     temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|err| err.error)?;
+    // `?` drops the temp file when persist fails, so only our file is removed.
+    drop(temp.persist(path)?);
     if let Ok(dir) = fs::File::open(parent) {
         let _ = dir.sync_all();
     }
@@ -287,20 +290,15 @@ fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn set_replaced_file_permissions(dest: &Path, temp: &Path) -> std::io::Result<()> {
+fn set_replaced_file_permissions(file: &fs::File, dest: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mode = match fs::metadata(dest) {
-        Ok(meta) => meta.permissions().mode(),
+        Ok(meta) => meta.permissions().mode() & 0o777,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0o600,
         Err(err) => return Err(err),
     };
-    fs::set_permissions(temp, fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_replaced_file_permissions(_dest: &Path, _temp: &Path) -> std::io::Result<()> {
-    Ok(())
+    file.set_permissions(fs::Permissions::from_mode(mode))
 }
 
 /// A live save holds its temp file only while it writes, syncs, and renames
@@ -319,11 +317,31 @@ fn sweep_stale_local_comment_tmps(comments_path: &Path) {
     else {
         return;
     };
-    let Ok(entries) = fs::read_dir(parent) else {
-        return;
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(
+                "failed to scan for stale local review comment temp files in {}: {}",
+                parent.display(),
+                err
+            );
+            return;
+        }
     };
     let now = SystemTime::now();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!(
+                    "skipped a directory entry while cleaning local review comment temp files in {}: {}",
+                    parent.display(),
+                    err
+                );
+                continue;
+            }
+        };
         let file_name = entry.file_name();
         let Some(name) = file_name.to_str() else {
             continue;
@@ -331,20 +349,41 @@ fn sweep_stale_local_comment_tmps(comments_path: &Path) {
         if !is_local_comment_tmp_name(name, comments_file) {
             continue;
         }
-        let Ok(meta) = entry.metadata() else {
-            continue;
+        let meta = match entry.metadata() {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to stat local review comment temp file {}: {}",
+                    entry.path().display(),
+                    err
+                );
+                continue;
+            }
         };
-        if !meta.is_file() {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else {
-            continue;
+        let modified = match meta.modified() {
+            Ok(modified) => modified,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read local review comment temp file mtime {}: {}",
+                    entry.path().display(),
+                    err
+                );
+                continue;
+            }
         };
         let Ok(age) = now.duration_since(modified) else {
             continue;
         };
         if age > STALE_LOCAL_COMMENT_TMP_MAX_AGE {
-            let _ = fs::remove_file(entry.path());
+            let temp_path = entry.path();
+            if let Err(err) = fs::remove_file(&temp_path) {
+                tracing::warn!(
+                    "failed to remove stale local review comment temp file {}: {}",
+                    temp_path.display(),
+                    err
+                );
+            }
         }
     }
 }
@@ -354,9 +393,13 @@ fn is_local_comment_tmp_name(name: &str, comments_file: &str) -> bool {
     prefix.push('.');
     prefix.push_str(comments_file);
     prefix.push('.');
-    name.strip_prefix(&prefix)
+    let Some(random) = name
+        .strip_prefix(&prefix)
         .and_then(|rest| rest.strip_suffix(".tmp"))
-        .is_some_and(|random| !random.is_empty())
+    else {
+        return false;
+    };
+    !random.is_empty() && random.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
