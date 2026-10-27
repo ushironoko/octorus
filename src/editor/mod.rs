@@ -234,6 +234,7 @@ mod tests {
     // ── command_found_in_path tests ──
 
     #[test]
+    #[serial]
     fn test_command_found_in_path_basic() {
         // `sh` exists on every Unix system
         assert!(command_found_in_path("sh"));
