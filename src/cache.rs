@@ -2,7 +2,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -80,6 +82,7 @@ pub fn cleanup_rally_sessions() {
     }
 }
 
+const LOCAL_REVIEW_COMMENTS_V1: u32 = 1;
 const LOCAL_REVIEW_COMMENTS_VERSION: u32 = 1;
 
 /// Local-only state attached to a review comment. Lives outside [`ReviewComment`]
@@ -178,14 +181,13 @@ fn load_local_review_comments_with_base(
     let file: LocalReviewCommentsFile = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))?;
 
-    if file.version != LOCAL_REVIEW_COMMENTS_VERSION {
-        return Err(anyhow::anyhow!(
+    match file.version {
+        LOCAL_REVIEW_COMMENTS_V1 => Ok(file.comments),
+        version => Err(anyhow::anyhow!(
             "Unsupported local comments version: {}",
-            file.version
-        ));
+            version
+        )),
     }
-
-    Ok(file.comments)
 }
 
 pub fn save_local_review_comments(
@@ -247,9 +249,48 @@ fn save_local_review_comments_with_base(
     };
     let json = serde_json::to_string_pretty(&payload)
         .map_err(|e| anyhow::anyhow!("Failed to serialize local review comments: {}", e))?;
-    fs::write(&path, json)
+    replace_file_atomically(&path, json.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
     Ok(())
+}
+
+fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "local comments path has no file name",
+        )
+    })?;
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut temp_name = file_name.to_os_string();
+    temp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
+    let temp_path = parent.join(temp_name);
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        fs::rename(&temp_path, path)?;
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
