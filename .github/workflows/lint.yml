@@ -61,7 +61,7 @@ jobs:
         uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --workspace
 
   # The blame parser's design rests on a memory layout — eight bytes per line
   # (commit index plus original line),
