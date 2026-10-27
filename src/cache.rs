@@ -936,6 +936,158 @@ mod tests {
         assert_eq!(fs::read(path.join("keep")).unwrap(), b"original");
     }
 
+    #[test]
+    fn test_save_local_review_comments_leaves_unrelated_tmp_files() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+
+        // These are the names the old writer claimed (`{file}.{pid}.{seq}.tmp`),
+        // plus one file from another pid. A save must leave every one of them
+        // byte-for-byte, including when that name is the one it would have opened.
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let pid = std::process::id();
+        let mut planted = Vec::with_capacity(512);
+        for seq in 0..512 {
+            let tmp_path = parent.join(format!("{file_name}.{pid}.{seq}.tmp"));
+            let body = format!("other-process-{seq}");
+            fs::write(&tmp_path, &body).unwrap();
+            planted.push((tmp_path, body));
+        }
+        let other_pid = parent.join(format!("{file_name}.1.0.tmp"));
+        fs::write(&other_pid, b"other-pid").unwrap();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(7))];
+        let saved =
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base);
+
+        let damaged: Vec<_> = planted
+            .iter()
+            .filter(|(tmp_path, body)| fs::read(tmp_path).ok().as_deref() != Some(body.as_bytes()))
+            .map(|(tmp_path, _)| tmp_path.display().to_string())
+            .collect();
+        assert!(
+            damaged.is_empty(),
+            "a save must not change tmp files it did not create: {damaged:?}"
+        );
+        assert_eq!(
+            fs::read(&other_pid).unwrap(),
+            b"other-pid",
+            "a save must not change another process's tmp file"
+        );
+        saved.expect("a name collision must not fail the save");
+
+        let loaded =
+            load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_local_review_comments_preserves_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let first = vec![LocalReviewComment::new(make_review_comment(1))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &first, &base).unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+
+        for mode in [0o640, 0o600] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            let next = vec![LocalReviewComment::new(make_review_comment(mode as u64))];
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &next, &base)
+                .unwrap();
+            let kept = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(kept, mode, "replacing a comments file must keep its mode");
+            let loaded =
+                load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].comment.id, mode as u64);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_local_review_comments_creates_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(1))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base)
+            .unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a new comments file must be readable only by its owner"
+        );
+    }
+
+    #[test]
+    fn test_load_local_review_comments_drops_only_stale_tmp_files() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(4))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base)
+            .unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        let parent = path.parent().unwrap();
+
+        let stale = parent.join("crash.424242.1.tmp");
+        let fresh = parent.join("writer.424242.2.tmp");
+        fs::write(&stale, b"stale-tmp").unwrap();
+        fs::write(&fresh, b"fresh-tmp").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(
+                std::time::SystemTime::now()
+                    .checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60))
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let loaded =
+            load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 4);
+        assert!(
+            !stale.exists(),
+            "a load must remove a tmp file left by a crash"
+        );
+        assert_eq!(
+            fs::read(&fresh).unwrap(),
+            b"fresh-tmp",
+            "a load must leave a tmp file that is still new enough to be in progress"
+        );
+    }
+
     fn complete_local_comments_document(bytes: &[u8]) -> bool {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return false;
