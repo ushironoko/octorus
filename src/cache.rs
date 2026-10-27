@@ -4,7 +4,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -171,6 +171,7 @@ fn load_local_review_comments_with_base(
     base: &std::path::Path,
 ) -> Result<Vec<LocalReviewComment>> {
     let path = local_review_comments_path_with_base(repo, working_dir, base)?;
+    sweep_stale_local_comment_tmps(&path);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -255,41 +256,107 @@ fn save_local_review_comments_with_base(
 }
 
 fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
     let parent = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
+    // `.{filename}.{random}.tmp`. Builder inserts the random bytes between the
+    // prefix and the suffix, and on a name collision it tries another name
+    // without removing the existing file.
     let file_name = path.file_name().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "local comments path has no file name",
         )
     })?;
-    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut temp_name = file_name.to_os_string();
-    temp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
-    let temp_path = parent.join(temp_name);
-
-    let result = (|| -> std::io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp_path, path)?;
-        if let Ok(dir) = fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
+    let mut prefix = std::ffi::OsString::from(".");
+    prefix.push(file_name);
+    prefix.push(".");
+    let mut temp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    temp.write_all(bytes)?;
+    set_replaced_file_permissions(path, temp.path())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|err| err.error)?;
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
-    result
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_replaced_file_permissions(dest: &Path, temp: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = match fs::metadata(dest) {
+        Ok(meta) => meta.permissions().mode(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0o600,
+        Err(err) => return Err(err),
+    };
+    fs::set_permissions(temp, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_replaced_file_permissions(_dest: &Path, _temp: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// A live save holds its temp file only while it writes, syncs, and renames
+/// one comments document. That finishes in seconds. One hour is far past any
+/// in-progress write, so a newer temp file is left alone, and a crash leftover
+/// is removed on the next load.
+const STALE_LOCAL_COMMENT_TMP_MAX_AGE: Duration = Duration::from_hours(1);
+
+fn sweep_stale_local_comment_tmps(comments_path: &Path) {
+    let Some(comments_file) = comments_path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = comments_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !is_local_comment_tmp_name(name, comments_file) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > STALE_LOCAL_COMMENT_TMP_MAX_AGE {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn is_local_comment_tmp_name(name: &str, comments_file: &str) -> bool {
+    let mut prefix = String::with_capacity(comments_file.len() + 2);
+    prefix.push('.');
+    prefix.push_str(comments_file);
+    prefix.push('.');
+    name.strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .is_some_and(|random| !random.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -963,6 +1030,8 @@ mod tests {
         }
         let other_pid = parent.join(format!("{file_name}.1.0.tmp"));
         fs::write(&other_pid, b"other-pid").unwrap();
+        let in_progress = parent.join(format!(".{file_name}.taken.tmp"));
+        fs::write(&in_progress, b"in-progress").unwrap();
 
         let comments = vec![LocalReviewComment::new(make_review_comment(7))];
         let saved =
@@ -982,12 +1051,18 @@ mod tests {
             b"other-pid",
             "a save must not change another process's tmp file"
         );
+        assert_eq!(
+            fs::read(&in_progress).unwrap(),
+            b"in-progress",
+            "a save must not change another writer's hidden tmp"
+        );
         saved.expect("a name collision must not fail the save");
 
         let loaded =
             load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].comment.id, 7);
+        assert_eq!(fs::read(&in_progress).unwrap(), b"in-progress");
     }
 
     #[cfg(unix)]
@@ -1058,20 +1133,24 @@ mod tests {
             local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
         let parent = path.parent().unwrap();
 
-        let stale = parent.join("crash.424242.1.tmp");
-        let fresh = parent.join("writer.424242.2.tmp");
+        let file_name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let stale = parent.join(format!(".{file_name}.stale1.tmp"));
+        let fresh = parent.join(format!(".{file_name}.fresh1.tmp"));
+        let other_shape = parent.join("crash.424242.1.tmp");
         fs::write(&stale, b"stale-tmp").unwrap();
         fs::write(&fresh, b"fresh-tmp").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&stale)
-            .unwrap()
-            .set_modified(
-                std::time::SystemTime::now()
-                    .checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60))
-                    .unwrap(),
-            )
+        fs::write(&other_shape, b"other-shape").unwrap();
+        let old = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60))
             .unwrap();
+        for path in [&stale, &other_shape] {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
 
         let loaded =
             load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
@@ -1085,6 +1164,11 @@ mod tests {
             fs::read(&fresh).unwrap(),
             b"fresh-tmp",
             "a load must leave a tmp file that is still new enough to be in progress"
+        );
+        assert_eq!(
+            fs::read(&other_shape).unwrap(),
+            b"other-shape",
+            "a load must leave a tmp file whose name is not a comments temp"
         );
     }
 
