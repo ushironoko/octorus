@@ -22,6 +22,10 @@ updates:
       cargo-minor-patch:
         patterns:
           - "*"
+        exclude-patterns:
+          - "ratatui"
+          - "crossterm"
+          - "tree-sitter*"
         update-types:
           - minor
           - patch
