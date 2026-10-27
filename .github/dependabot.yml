@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "ratatui"
+          - "crossterm"
+          - "tree-sitter*"
+        update-types:
+          - minor
+          - patch

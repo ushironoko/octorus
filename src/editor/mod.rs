@@ -234,6 +234,7 @@ mod tests {
     // ── command_found_in_path tests ──
 
     #[test]
+    #[serial]
     fn test_command_found_in_path_basic() {
         // `sh` exists on every Unix system
         assert!(command_found_in_path("sh"));
@@ -245,130 +246,94 @@ mod tests {
     #[test]
     #[serial]
     fn test_candidates_explicit_config() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let candidates = editor_candidates(Some("vim"));
         assert_eq!(candidates[0], "vim");
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_empty_string_falls_through() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let candidates = editor_candidates(Some(""));
         // Empty config is skipped, only "vi" remains
         assert_eq!(candidates, vec!["vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_whitespace_only_falls_through() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let candidates = editor_candidates(Some("   "));
         assert_eq!(candidates, vec!["vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_none_falls_through() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let candidates = editor_candidates(None);
         assert_eq!(candidates, vec!["vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_visual_env_var() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::set_var("VISUAL", "nano");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::set("VISUAL", "nano");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let candidates = editor_candidates(None);
         assert_eq!(candidates, vec!["nano", "vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_editor_env_var() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::set_var("EDITOR", "emacs");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::set("EDITOR", "emacs");
 
         let candidates = editor_candidates(None);
         assert_eq!(candidates, vec!["emacs", "vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_visual_takes_priority_over_editor() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::set_var("VISUAL", "code --wait");
-        env::set_var("EDITOR", "vim");
+        let _visual = EnvVarGuard::set("VISUAL", "code --wait");
+        let _editor = EnvVarGuard::set("EDITOR", "vim");
 
         let candidates = editor_candidates(None);
         assert_eq!(candidates, vec!["code --wait", "vim", "vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_config_takes_priority_over_env() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::set_var("VISUAL", "nano");
-        env::set_var("EDITOR", "emacs");
+        let _visual = EnvVarGuard::set("VISUAL", "nano");
+        let _editor = EnvVarGuard::set("EDITOR", "emacs");
 
         let candidates = editor_candidates(Some("hx"));
         assert_eq!(candidates[0], "hx");
         assert_eq!(candidates[1], "nano");
         assert_eq!(candidates[2], "emacs");
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_candidates_fallback_to_vi() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let candidates = editor_candidates(None);
         assert_eq!(candidates, vec!["vi"]);
-
-        restore_env(orig_visual, orig_editor);
     }
 
     // ── shell_words parsing tests (PATH-independent) ──
@@ -396,72 +361,53 @@ mod tests {
     #[test]
     #[serial]
     fn test_resolve_finds_sh() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::remove_var("EDITOR");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::unset("EDITOR");
 
         let (cmd, args) = resolve_and_split_editor(Some("sh")).unwrap();
         assert_eq!(cmd, "sh");
         assert!(args.is_empty());
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_fallback_when_configured_not_in_path() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::set_var("EDITOR", "sh");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::set("EDITOR", "sh");
 
         // Configured editor doesn't exist, should fall back to $EDITOR=sh
         let (cmd, args) = resolve_and_split_editor(Some("__nonexistent__")).unwrap();
         assert_eq!(cmd, "sh");
         assert!(args.is_empty());
-
-        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
     fn test_fallback_with_args_not_inherited() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        env::remove_var("VISUAL");
-        env::set_var("EDITOR", "sh");
+        let _visual = EnvVarGuard::unset("VISUAL");
+        let _editor = EnvVarGuard::set("EDITOR", "sh");
 
         // Args from the non-existent editor should NOT carry over
         let (cmd, args) = resolve_and_split_editor(Some("__nonexistent__ --flag")).unwrap();
         assert_eq!(cmd, "sh");
         assert!(args.is_empty());
-
-        restore_env(orig_visual, orig_editor);
     }
 
+    // `#[serial]` only lines up other `#[serial]` tests. An unmarked test that
+    // starts a command while PATH is replaced can still fail. A later PR will
+    // pass the search path to `which::which_in` instead.
     #[test]
     #[serial]
     fn test_all_candidates_not_in_path() {
-        let orig_visual = env::var("VISUAL").ok();
-        let orig_editor = env::var("EDITOR").ok();
-        let orig_path = env::var("PATH").ok();
-        env::set_var("VISUAL", "__nonexistent_visual__");
-        env::set_var("EDITOR", "__nonexistent_editor__");
+        let _visual = EnvVarGuard::set("VISUAL", "__nonexistent_visual__");
+        let _editor = EnvVarGuard::set("EDITOR", "__nonexistent_editor__");
         // Point PATH to an empty dir so even `vi` is not found
         let empty_dir = tempfile::tempdir().unwrap();
-        env::set_var("PATH", empty_dir.path());
+        let _path = EnvVarGuard::set("PATH", empty_dir.path());
 
         // All candidates missing from PATH → returns the first parsed one
         let (cmd, _) = resolve_and_split_editor(Some("__nonexistent_config__")).unwrap();
         assert_eq!(cmd, "__nonexistent_config__");
-
-        // Restore
-        match orig_path {
-            Some(v) => env::set_var("PATH", v),
-            None => env::remove_var("PATH"),
-        }
-        restore_env(orig_visual, orig_editor);
     }
 
     // ── run_editor_command error message test ──
@@ -483,14 +429,32 @@ mod tests {
 
     // ── helpers ──
 
-    fn restore_env(orig_visual: Option<String>, orig_editor: Option<String>) {
-        match orig_visual {
-            Some(v) => env::set_var("VISUAL", v),
-            None => env::remove_var("VISUAL"),
+    #[must_use]
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let original = env::var_os(key);
+            env::set_var(key, value);
+            Self { key, original }
         }
-        match orig_editor {
-            Some(v) => env::set_var("EDITOR", v),
-            None => env::remove_var("EDITOR"),
+
+        fn unset(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => env::set_var(self.key, value),
+                None => env::remove_var(self.key),
+            }
         }
     }
 }
