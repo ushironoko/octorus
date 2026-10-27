@@ -719,12 +719,12 @@ impl App {
             self.set_browse_status("Still opening this file");
             return;
         }
-        let indexing = self
+        let blocked = self
             .browse_state
             .as_ref()
-            .is_some_and(|state| state.index.ready().is_none());
-        if indexing {
-            self.set_browse_status("Symbol index is still building");
+            .and_then(|state| state.index.blocked_message());
+        if let Some(message) = blocked {
+            self.set_browse_status(&message);
             return;
         }
         if !self.browse_go_to_definition() {
@@ -1209,14 +1209,13 @@ impl App {
             // index alone would claim the file has none when it has not been
             // read yet.
             let message = if state.open_is_pending() {
-                "Still opening this file"
+                "Still opening this file".to_string()
+            } else if let Some(message) = state.index.blocked_message() {
+                message
             } else {
-                match state.index {
-                    IndexState::Ready(_) => "No symbols in this file",
-                    _ => "Symbol index is still building",
-                }
+                "No symbols in this file".to_string()
             };
-            state.status = Some(message.to_string());
+            state.status = Some(message);
             return;
         }
 
@@ -1235,8 +1234,8 @@ impl App {
         let Some(state) = self.browse_state.as_mut() else {
             return;
         };
-        if state.index.ready().is_none() {
-            state.status = Some("Symbol index is still building".to_string());
+        if let Some(message) = state.index.blocked_message() {
+            state.status = Some(message);
             return;
         }
         state.overlay = BrowseOverlay::SymbolSearch {

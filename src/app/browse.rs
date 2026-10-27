@@ -1808,6 +1808,15 @@ impl IndexState {
             Self::Failed(_) => "symbols: unavailable",
         }
     }
+
+    pub fn blocked_message(&self) -> Option<String> {
+        match self {
+            Self::Idle => Some("Symbol index has not started".to_string()),
+            Self::Building => Some("Symbol index is still building".to_string()),
+            Self::Failed(reason) => Some(format!("Symbol index is unavailable: {reason}")),
+            Self::Ready(_) => None,
+        }
+    }
 }
 
 /// Lifecycle of the repository module graph built in the symbol analysis pass.

@@ -129,24 +129,25 @@ More than one message can come out. `o` and `gd` **check `open_is_pending()`
 first**, so while a file is loading, `Still opening this file` wins regardless
 of the index state (`browse_run_go_to_definition()` and
 `open_browse_outline()`; in both, placing that check **above** the
-`index.ready()` inspection is itself the contract — swap the order and both
+`blocked_message()` check is itself the contract — swap the order and both
 messages still get emitted). An `open` that is still loading is a placeholder
 with no lines and no symbols, so answering "no symbols here" or "no definition
 found" from it would be a verdict about a file that has not been read. `s` is a
 repository-wide search that does not depend on the currently open file, so it
 does not carry this check.
 
-| Key | While loading (even with the index incomplete) | Index not `Ready` | Otherwise |
-|-----|-----------------------------------------------|-------------------|-----------|
-| `o` | `Still opening this file` | `Symbol index is still building` | `No symbols in this file` if the target file has none, otherwise opens the outline |
-| `s` | (not checked) | `Symbol index is still building` | opens the search overlay |
-| `gd` | `Still opening this file` | `Symbol index is still building` | `No definition found` when it cannot resolve |
-| `i` | `Still opening this file` | `Module graph is still building` | opens/focuses a cancellable right-side pane, or reports unsupported/unavailable analysis |
+| Key | While loading (even with the index incomplete) | Index `Idle` | Index `Building` | Index `Failed` | Index `Ready` |
+|-----|-----------------------------------------------|--------------|------------------|----------------|---------------|
+| `o` | `Still opening this file` | `Symbol index has not started` | `Symbol index is still building` | `Symbol index is unavailable: <reason>` | `No symbols in this file` if the target file has none, otherwise opens the outline |
+| `s` | (not checked) | `Symbol index has not started` | `Symbol index is still building` | `Symbol index is unavailable: <reason>` | opens the search overlay |
+| `gd` | `Still opening this file` | `Symbol index has not started` | `Symbol index is still building` | `Symbol index is unavailable: <reason>` | `No definition found` when it cannot resolve |
+| `i` | `Still opening this file` | `Module graph is still building` | `Module graph is still building` | `Module graph is unavailable` | opens/focuses a cancellable right-side pane, or reports unsupported/unavailable analysis |
 
-`Symbol index is still building` is emitted on `index.ready().is_none()`.
-`IndexState::Failed` also satisfies that condition, so after a failed build the
-footer keeps saying "building". The header shows `symbols: unavailable` in red,
-so the same screen contradicts itself (a known limitation, §8).
+`o`, `s`, and `gd` read `IndexState::blocked_message()`. `Idle` says the index
+has not started. `Building` says it is still building. `Failed` repeats the
+error stored on that variant. The header still shows `symbols: unavailable`
+in red. A ready index with no symbols in the open file says
+`No symbols in this file` for `o`.
 
 `OpenLoad` is the single authority over a file being opened: "is something
 loading", "which path's result are we waiting for", and "where does the cursor
@@ -154,9 +155,10 @@ go" all live in one place.
 
 `BlameState` follows the same principle: shown-or-not, fetching, ready, and
 failed live in one enum. `Waiting` is the state after opening another file
-while blame is shown, lasting until that file is known to be viewable. As with
-`IndexState::Failed`, failure reasons are not carried in the variant; they go
-into `BrowseState::status` for the footer.
+while blame is shown, lasting until that file is known to be viewable. A blame
+failure reason goes into `BrowseState::status` for the footer. A symbol-index
+failure reason stays on `IndexState::Failed`, because later keypresses replace
+that footer status.
 
 `BrowseCommitDiffState` is not a new screen; it is an in-browser mode describing
 what the file content pane currently shows. `AppState` stays `RepoBrowseFile`,
@@ -666,7 +668,6 @@ source — but that is not the default procedure.
 | Rust graph answers are approximate | Hearth 0.1.1 does not model Cargo targets, `cfg`, `#[path]`, macros, or inline modules completely | Supply Cargo metadata and a declaration-tree model upstream |
 | Only a root JS config is selected explicitly | Complex workspaces may need package-local tsconfig policy beyond current `oxc_resolver` behavior | Discover project configs and define deterministic ownership before building resolvers |
 | Only one file-contents cache | Going through `OpenLoad` keeps the UI thread free, but every revisit re-reads the whole file | Give it an LRU like `DiffCacheStore` |
-| `o` / `s` / `gd` keep saying "building" after a failed index build | All three test `index.ready().is_none()`, so `IndexState::Failed` falls into the same branch. The header shows `symbols: unavailable` in red, so two places on the same screen disagree | Match on `IndexState` in the footer too, and on `Failed` show the actual failure reason held in `BrowseState::status` |
 
 ### Gates verified by revert
 
