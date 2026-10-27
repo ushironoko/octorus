@@ -82,7 +82,6 @@ pub fn cleanup_rally_sessions() {
     }
 }
 
-const LOCAL_REVIEW_COMMENTS_V1: u32 = 1;
 const LOCAL_REVIEW_COMMENTS_VERSION: u32 = 1;
 
 /// Local-only state attached to a review comment. Lives outside [`ReviewComment`]
@@ -181,13 +180,14 @@ fn load_local_review_comments_with_base(
     let file: LocalReviewCommentsFile = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))?;
 
-    match file.version {
-        LOCAL_REVIEW_COMMENTS_V1 => Ok(file.comments),
-        version => Err(anyhow::anyhow!(
+    if file.version != LOCAL_REVIEW_COMMENTS_VERSION {
+        return Err(anyhow::anyhow!(
             "Unsupported local comments version: {}",
-            version
-        )),
+            file.version
+        ));
     }
+
+    Ok(file.comments)
 }
 
 pub fn save_local_review_comments(
@@ -278,7 +278,6 @@ fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             .create_new(true)
             .open(&temp_path)?;
         file.write_all(bytes)?;
-        file.flush()?;
         file.sync_all()?;
         fs::rename(&temp_path, path)?;
         if let Ok(dir) = fs::File::open(parent) {
