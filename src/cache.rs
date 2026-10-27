@@ -2,7 +2,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -247,9 +249,47 @@ fn save_local_review_comments_with_base(
     };
     let json = serde_json::to_string_pretty(&payload)
         .map_err(|e| anyhow::anyhow!("Failed to serialize local review comments: {}", e))?;
-    fs::write(&path, json)
+    replace_file_atomically(&path, json.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
     Ok(())
+}
+
+fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "local comments path has no file name",
+        )
+    })?;
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut temp_name = file_name.to_os_string();
+    temp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
+    let temp_path = parent.join(temp_name);
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temp_path, path)?;
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -693,6 +733,218 @@ mod tests {
             loaded[0].meta.resolved_at.as_deref(),
             Some("2026-03-24T01:00:00Z")
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_local_review_comments_reads_v1_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+              "version": 1,
+              "comments": [
+                {
+                  "id": 3,
+                  "path": "src/main.rs",
+                  "line": 9,
+                  "body": "v1 body",
+                  "user": { "login": "local" },
+                  "created_at": "2026-03-24T00:00:00Z"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 3);
+        assert_eq!(loaded[0].comment.body, "v1 body");
+        assert_eq!(loaded[0].comment.line, Some(9));
+        assert!(!loaded[0].meta.is_resolved);
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_local_review_comments_rejects_unknown_version() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+
+        let path = local_review_comments_path_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+              "version": 2,
+              "comments": []
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_local_review_comments_with_base(
+            "owner/repo",
+            Some(workdir.to_string_lossy().as_ref()),
+            &base,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Unsupported local comments version: 2"),
+            "{err}"
+        );
+        assert!(path.exists(), "an unknown version must stay on disk");
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_local_review_comments_replace_never_exposes_a_partial_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let original = vec![LocalReviewComment::new(make_review_comment(1))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &original, &base)
+            .unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let torn = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let samples = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = {
+            let path = path.clone();
+            let stop = stop.clone();
+            let torn = torn.clone();
+            let samples = samples.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    match fs::read(&path) {
+                        Ok(bytes) if complete_local_comments_document(&bytes) => {
+                            samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Ok(_) | Err(_) => {
+                            torn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            })
+        };
+
+        while samples.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            std::thread::yield_now();
+        }
+
+        let mut heavy = make_review_comment(2);
+        heavy.body = "y".repeat(4_000_000);
+        let updated = vec![LocalReviewComment::new(heavy)];
+        for _ in 0..6 {
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &updated, &base)
+                .unwrap();
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &original, &base)
+                .unwrap();
+        }
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+
+        let torn = torn.load(std::sync::atomic::Ordering::Relaxed);
+        let samples = samples.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(samples > 1, "reader never overlapped the save");
+        assert_eq!(
+            torn, 0,
+            "a reader observed an empty, missing, or partial comments file during save ({torn} of {samples})"
+        );
+
+        let loaded =
+            load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 1);
+
+        let parent = path.parent().unwrap();
+        let leftovers: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp") || name.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "save left temporary files behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_local_review_comments_failure_leaves_no_temporary_file() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("keep"), b"original").unwrap();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(1))];
+        let err =
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base)
+                .unwrap_err();
+        assert!(!err.to_string().is_empty());
+
+        let parent = path.parent().unwrap();
+        let leftovers: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp") || name.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a failed save left temporary files behind: {leftovers:?}"
+        );
+        assert_eq!(fs::read(path.join("keep")).unwrap(), b"original");
+    }
+
+    fn complete_local_comments_document(bytes: &[u8]) -> bool {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return false;
+        };
+        value.get("version").and_then(|version| version.as_u64()) == Some(1)
+            && value
+                .get("comments")
+                .and_then(|comments| comments.as_array())
+                .is_some()
     }
 
     /// 壊れた / 未対応 version のファイルを silent に削除しないこと。
