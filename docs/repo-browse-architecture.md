@@ -153,6 +153,12 @@ line is logged once when the failure is stored. The header still shows
 `symbols: unavailable` in red. A ready index with no symbols in the open file
 says `No symbols in this file` for `o`.
 
+A failed file listing does not leave the symbol index or the module graph idle.
+It uses that same failed-index path, so the listing error is the stored reason.
+`o`, `s`, and `gd` report `Symbol index is unavailable: ` plus that error. The
+footer still points at the listing pane until one of those keys replaces the
+status.
+
 `OpenLoad` is the single authority over a file being opened: "is something
 loading", "which path's result are we waiting for", and "where does the cursor
 go" all live in one place.
