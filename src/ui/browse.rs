@@ -840,6 +840,14 @@ fn blame_gutter_width(content_width: usize, total: usize) -> Option<BlameGutterW
     }
 }
 
+fn fit_footer_line(text: &str, max_width: usize) -> std::borrow::Cow<'_, str> {
+    if max_width == 0 {
+        std::borrow::Cow::Borrowed("")
+    } else {
+        truncate_with_width(text, max_width)
+    }
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let kb = &app.config.keybindings;
     let state = app.browse_state.as_ref();
@@ -928,7 +936,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             kb.quit.display()
         )),
         Some(BrowseCommitDiffState::Off) | None => match status {
-        Some(message) => std::borrow::Cow::Borrowed(message),
+        Some(message) => fit_footer_line(message, usize::from(area.width)),
         None if app.state == AppState::RepoBrowseTree => std::borrow::Cow::Owned(format!(
             " {} open | {} filter | {} symbol search | {} back",
             kb.open_panel.display(),
@@ -1839,6 +1847,49 @@ mod tests {
 
     fn press_binding(binding: crate::keybinding::KeyBinding) -> KeyEvent {
         KeyEvent::new(binding.code.to_keycode(), binding.modifiers.to_crossterm())
+    }
+
+    #[test]
+    fn fit_footer_line_truncates_fullwidth_text_within_the_footer_width() {
+        let samples = [
+            "あいうえお",
+            "読み取り拒否: src/日本語.rs",
+            "Symbol index is unavailable: 読み取り拒否: src/日本語.rs",
+            "aあb",
+        ];
+        assert!(
+            !samples[0].is_char_boundary(1),
+            "fullwidth text must not be sliced on a byte boundary"
+        );
+        for text in samples {
+            for width in 0..=text.width() + 1 {
+                let fitted = fit_footer_line(text, width);
+                assert!(
+                    fitted.width() <= width,
+                    "footer {width} held {} columns: {fitted}",
+                    fitted.width()
+                );
+                if width == 0 {
+                    assert_eq!(fitted, "");
+                } else if text.width() > width {
+                    assert!(fitted.ends_with('…'), "{fitted}");
+                    let kept = fitted.trim_end_matches('…');
+                    assert!(text.starts_with(kept), "{fitted}");
+                } else {
+                    assert_eq!(fitted, text);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_footer_ends_a_fullwidth_status_with_an_ellipsis() {
+        let mut app = app_with_browse(&["src/日本語.rs"]);
+        app.browse_state.as_mut().unwrap().status =
+            Some("Symbol index is unavailable: 読み取り拒否: src/日本語.rs".to_string());
+        let rendered = render_at(&mut app, 16, 8);
+        let last = rendered.lines().next_back().unwrap_or("");
+        assert!(last.ends_with('…'), "{rendered}");
     }
 
     fn app_with_browse(paths: &[&str]) -> App {

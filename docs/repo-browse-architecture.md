@@ -144,10 +144,14 @@ does not carry this check.
 | `i` | `Still opening this file` | `Module graph is still building` | `Module graph is still building` | `Module graph is unavailable` | opens/focuses a cancellable right-side pane, or reports unsupported/unavailable analysis |
 
 `o`, `s`, and `gd` read `IndexState::blocked_message()`. `Idle` says the index
-has not started. `Building` says it is still building. `Failed` repeats the
-error stored on that variant. The header still shows `symbols: unavailable`
-in red. A ready index with no symbols in the open file says
-`No symbols in this file` for `o`.
+has not started. `Building` says it is still building. `Failed` says
+`Symbol index is unavailable: ` plus the stored reason. That reason is the
+underlying error. When the error names the source root, the path is relative
+to the repository root, and a path outside the root stays as given. A footer
+status wider than the footer ends with `…`, cut by display width, and the full
+line is logged once when the failure is stored. The header still shows
+`symbols: unavailable` in red. A ready index with no symbols in the open file
+says `No symbols in this file` for `o`.
 
 `OpenLoad` is the single authority over a file being opened: "is something
 loading", "which path's result are we waiting for", and "where does the cursor

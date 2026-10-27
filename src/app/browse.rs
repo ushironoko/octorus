@@ -12,7 +12,7 @@
 //! prerequisite.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use tokio::sync::mpsc;
@@ -242,22 +242,13 @@ impl App {
                 }
                 Ok(IndexDelivery::Failed(message)) => {
                     state.index_receiver = None;
-                    state.index = IndexState::Failed {
-                        reason: message.clone(),
-                    };
-                    state.module_graph = ModuleGraphState::Failed;
-                    state.status = Some(message);
+                    install_index_failure(state, message);
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     state.index_receiver = None;
                     if !state.cancel_token.is_cancelled() {
-                        let message = "code indexing task ended".to_string();
-                        state.index = IndexState::Failed {
-                            reason: message.clone(),
-                        };
-                        state.module_graph = ModuleGraphState::Failed;
-                        state.status = Some(message);
+                        install_index_failure(state, "code indexing task ended".to_string());
                     }
                 }
             }
@@ -3326,6 +3317,61 @@ fn install_open_file(state: &mut BrowseState, open: OpenFile, line: usize, scrol
     }
     state.sync_tree_to_open_file();
     state.refresh_open_file_symbols();
+}
+
+fn install_index_failure(state: &mut BrowseState, message: String) {
+    let reason = index_failure_reason(&state.repo_root, &message);
+    let shown = format!("Symbol index is unavailable: {reason}");
+    tracing::warn!("{shown}");
+    state.index = IndexState::Failed { reason };
+    state.module_graph = ModuleGraphState::Failed;
+    state.status = Some(shown);
+}
+
+/// Stored text for `IndexState::Failed`.
+///
+/// Hearth reports `cannot build symbol index: source root 'PATH' is unavailable: ERROR`
+/// and `cannot build symbol index: source root 'PATH' is not a directory`. The footer
+/// already says the index is unavailable, so the stored reason keeps the underlying
+/// error and a path relative to the repository root.
+fn index_failure_reason(repo_root: &Path, message: &str) -> String {
+    let message = message
+        .strip_prefix("cannot build symbol index: ")
+        .unwrap_or(message);
+    let Some(rest) = message.strip_prefix("source root '") else {
+        return message.to_string();
+    };
+    let Some((raw_path, tail)) = split_source_root(rest) else {
+        return message.to_string();
+    };
+    let path = relativize_to_root(repo_root, Path::new(raw_path));
+    let tail = tail.trim();
+    if let Some(error) = tail.strip_prefix("unavailable:") {
+        let error = error.trim();
+        if error.is_empty() {
+            path
+        } else {
+            format!("{error}: {path}")
+        }
+    } else if tail == "not a directory" {
+        format!("not a directory: {path}")
+    } else {
+        message.to_string()
+    }
+}
+
+fn split_source_root(rest: &str) -> Option<(&str, &str)> {
+    let marker = "' is ";
+    let split_at = rest.rfind(marker)?;
+    Some((&rest[..split_at], &rest[split_at + marker.len()..]))
+}
+
+fn relativize_to_root(repo_root: &Path, path: &Path) -> String {
+    match path.strip_prefix(repo_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_string(),
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 fn install_file_load_failure(
@@ -7077,6 +7123,74 @@ mod tests {
         assert!(state.module_graph_query_receiver.is_none());
     }
 
+    #[test]
+    fn test_index_failure_reason_drops_the_wrapper_and_keeps_a_relative_path() {
+        let reason = index_failure_reason(
+            Path::new("/repo"),
+            "cannot build symbol index: source root '/repo/src/foo.rs' is unavailable: Permission denied (os error 13)",
+        );
+        assert_eq!(reason, "Permission denied (os error 13): src/foo.rs");
+        let shown = format!("Symbol index is unavailable: {reason}");
+        assert!(shown.starts_with("Symbol index is unavailable: "));
+        assert!(!reason.contains("cannot build symbol index"), "{reason}");
+        assert!(!shown.contains("cannot build symbol index"), "{shown}");
+    }
+
+    #[test]
+    fn test_index_failure_reason_leaves_a_path_outside_the_repository() {
+        let reason = index_failure_reason(
+            Path::new("/repo"),
+            "cannot build symbol index: source root '/other/secret.rs' is unavailable: Permission denied (os error 13)",
+        );
+        assert_eq!(reason, "Permission denied (os error 13): /other/secret.rs");
+    }
+
+    #[test]
+    fn test_index_failure_reason_names_a_root_that_is_not_a_directory() {
+        let reason = index_failure_reason(
+            Path::new("/repo"),
+            "cannot build symbol index: source root '/repo/src' is not a directory",
+        );
+        assert_eq!(reason, "not a directory: src");
+    }
+
+    #[test]
+    fn test_index_failure_reason_keeps_a_japanese_path_on_character_boundaries() {
+        let raw = "cannot build symbol index: source root '/repo/src/日本語.rs' is unavailable: 読み取り拒否";
+        let reason = index_failure_reason(Path::new("/repo"), raw);
+        assert_eq!(reason, "読み取り拒否: src/日本語.rs");
+        assert!(!reason.contains("cannot build symbol index"), "{reason}");
+    }
+
+    #[test]
+    fn test_index_failure_stores_a_relative_japanese_reason() {
+        let mut app = App::new_for_test();
+        let mut state = BrowseState::new(PathBuf::from("/repo"), AppState::FileList);
+        let (tx, rx) = mpsc::channel(1);
+        state.index = IndexState::Building;
+        state.index_receiver = Some(rx);
+        app.browse_state = Some(state);
+        tx.try_send(IndexDelivery::Failed(
+            "cannot build symbol index: source root '/repo/src/日本語.rs' is unavailable: 読み取り拒否"
+                .to_string(),
+        ))
+        .unwrap();
+
+        app.poll_browse_updates();
+
+        let state = app.browse_state.as_ref().unwrap();
+        let IndexState::Failed { reason } = &state.index else {
+            panic!("a failed index build must keep its error");
+        };
+        assert_eq!(reason, "読み取り拒否: src/日本語.rs");
+        let shown = format!("Symbol index is unavailable: {reason}");
+        assert_eq!(state.status.as_deref(), Some(shown.as_str()));
+        assert_eq!(
+            state.index.blocked_message().as_deref(),
+            Some(shown.as_str())
+        );
+    }
+
     #[tokio::test]
     async fn test_symbol_index_failure_reports_instead_of_a_silent_empty_index() {
         let dir = tempfile::tempdir().unwrap();
@@ -7096,18 +7210,19 @@ mod tests {
 
         settle_index(&mut app).await;
 
-        let reason = {
+        let expected = {
             let state = app.browse_state.as_ref().unwrap();
             let IndexState::Failed { reason } = &state.index else {
                 panic!("a failed index build must keep its error");
             };
-            assert!(reason.contains("cannot build symbol index"), "{reason}");
-            assert!(reason.contains("removed-worktree"), "{reason}");
-            assert_eq!(state.status.as_deref(), Some(reason.as_str()));
+            assert!(!reason.contains("cannot build symbol index"), "{reason}");
+            assert!(!reason.contains("removed-worktree"), "{reason}");
+            assert!(reason.ends_with(": ."), "{reason}");
             assert!(matches!(state.module_graph, ModuleGraphState::Failed));
-            reason.clone()
+            let expected = format!("Symbol index is unavailable: {reason}");
+            assert_eq!(state.status.as_deref(), Some(expected.as_str()));
+            expected
         };
-        let expected = format!("Symbol index is unavailable: {reason}");
         app.handle_repo_browse_tree_input(crossterm::event::KeyEvent {
             code: crossterm::event::KeyCode::Char('s'),
             modifiers: crossterm::event::KeyModifiers::NONE,
