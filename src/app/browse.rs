@@ -6728,6 +6728,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_file_listing_failure_marks_the_symbol_index_unavailable() {
+        let error = "fatal: not a git repository";
+        let mut app = App::new_for_test();
+        let mut state = BrowseState::new(PathBuf::from("/repo"), AppState::FileList);
+        let (tx, rx) = mpsc::channel(1);
+        state.paths_receiver = Some(rx);
+        app.browse_state = Some(state);
+        tx.send(Err(error.to_string())).await.unwrap();
+
+        app.poll_browse_updates();
+
+        let state = app.browse_state.as_ref().unwrap();
+        let IndexState::Failed { reason } = &state.index else {
+            panic!("a failed file listing must fail the symbol index");
+        };
+        assert_eq!(reason, error);
+        assert_eq!(
+            state.index.blocked_message().as_deref(),
+            Some("Symbol index is unavailable: fatal: not a git repository")
+        );
+    }
+
+    #[tokio::test]
     async fn test_repository_listing_error_is_complete_in_the_wide_content_pane() {
         let first_line = "fatal: dubious ownership at '/segment-one/segment-two/segment-three/segment-four/segment-five/segment-six'";
         let second_line = "hint: add it to safe.directory before trying again";
