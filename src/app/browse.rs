@@ -242,7 +242,7 @@ impl App {
                 }
                 Ok(IndexDelivery::Failed(message)) => {
                     state.index_receiver = None;
-                    state.index = IndexState::Failed;
+                    state.index = IndexState::Failed(message.clone());
                     state.module_graph = ModuleGraphState::Failed;
                     state.status = Some(message);
                 }
@@ -250,9 +250,10 @@ impl App {
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     state.index_receiver = None;
                     if !state.cancel_token.is_cancelled() {
-                        state.index = IndexState::Failed;
+                        let message = "code indexing task ended".to_string();
+                        state.index = IndexState::Failed(message.clone());
                         state.module_graph = ModuleGraphState::Failed;
-                        state.status = Some("code indexing task ended".to_string());
+                        state.status = Some(message);
                     }
                 }
             }
@@ -1778,16 +1779,16 @@ pub struct BrowseJump {
 }
 
 /// Lifecycle of the repository symbol index.
+///
+/// `Failed` keeps the error from the build. The footer status is replaced by
+/// later messages, so a symbol action has to read the reason from here.
 #[derive(Debug, Default)]
 pub enum IndexState {
     #[default]
     Idle,
     Building,
     Ready(Arc<SymbolIndex>),
-    // The symbol-index failure message is surfaced through `BrowseState::status`
-    // (the footer). This stays a unit variant because `src/ui/browse.rs`
-    // matches it directly to render the red "symbols: unavailable" header.
-    Failed,
+    Failed(String),
 }
 
 impl IndexState {
@@ -1804,7 +1805,7 @@ impl IndexState {
             Self::Idle => "symbols: -",
             Self::Building => "symbols: indexing",
             Self::Ready(_) => "symbols: ready",
-            Self::Failed => "symbols: unavailable",
+            Self::Failed(_) => "symbols: unavailable",
         }
     }
 }
@@ -3612,7 +3613,7 @@ mod tests {
             app.poll_browse_updates();
             if matches!(
                 app.browse_state.as_ref().map(|state| &state.index),
-                Some(IndexState::Ready(_) | IndexState::Failed)
+                Some(IndexState::Ready(_) | IndexState::Failed(_))
             ) {
                 return;
             }
@@ -4056,7 +4057,10 @@ mod tests {
         assert_eq!(IndexState::Idle.label(), "symbols: -");
         assert_eq!(IndexState::Building.label(), "symbols: indexing");
         assert_eq!(ready_index().label(), "symbols: ready");
-        assert_eq!(IndexState::Failed.label(), "symbols: unavailable");
+        assert_eq!(
+            IndexState::Failed("parser crashed".to_string()).label(),
+            "symbols: unavailable"
+        );
         assert!(IndexState::Building.ready().is_none());
     }
 
@@ -6979,7 +6983,10 @@ mod tests {
         app.poll_browse_updates();
 
         let state = app.browse_state.as_ref().unwrap();
-        assert!(matches!(state.index, IndexState::Failed));
+        assert!(matches!(
+            state.index,
+            IndexState::Failed(ref reason) if reason == "code indexing task ended"
+        ));
         assert!(matches!(state.module_graph, ModuleGraphState::Failed));
     }
 
@@ -7074,12 +7081,28 @@ mod tests {
 
         settle_index(&mut app).await;
 
+        let reason = {
+            let state = app.browse_state.as_ref().unwrap();
+            let IndexState::Failed(reason) = &state.index else {
+                panic!("a failed index build must keep its error");
+            };
+            assert!(reason.contains("cannot build symbol index"), "{reason}");
+            assert!(reason.contains("removed-worktree"), "{reason}");
+            assert_eq!(state.status.as_deref(), Some(reason.as_str()));
+            assert!(matches!(state.module_graph, ModuleGraphState::Failed));
+            reason.clone()
+        };
+        let expected = format!("Symbol index is unavailable: {reason}");
+        app.handle_repo_browse_tree_input(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char('s'),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        })
+        .unwrap();
         let state = app.browse_state.as_ref().unwrap();
-        assert!(matches!(state.index, IndexState::Failed));
-        assert!(matches!(state.module_graph, ModuleGraphState::Failed));
-        let message = state.status.as_deref().expect("failure reason in footer");
-        assert!(message.contains("cannot build symbol index"), "{message}");
-        assert!(message.contains("removed-worktree"), "{message}");
+        assert_eq!(state.overlay, BrowseOverlay::None);
+        assert_eq!(state.status.as_deref(), Some(expected.as_str()));
     }
 
     #[tokio::test]

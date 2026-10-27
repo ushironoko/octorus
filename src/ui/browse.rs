@@ -150,7 +150,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             state.index.label(),
             Style::default().fg(match state.index {
                 crate::app::browse::IndexState::Ready(_) => Color::Green,
-                crate::app::browse::IndexState::Failed => Color::Red,
+                crate::app::browse::IndexState::Failed(_) => Color::Red,
                 _ => Color::Yellow,
             }),
         ),
