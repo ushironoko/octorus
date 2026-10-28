@@ -5451,6 +5451,56 @@ fn comments_after_an_empty_context_line_land_on_their_diff_rows() {
 }
 
 #[test]
+fn left_comment_after_a_removed_dashdash_line_lands_on_keep_c() {
+    let patch = "@@ -1,4 +1,3 @@\n keep-a\n--- haskell comment\n keep-b\n keep-c\n";
+    assert_eq!(patch.lines().nth(2), Some("--- haskell comment"));
+
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(4),
+        Some("LEFT"),
+        None,
+        "old line 4",
+    )]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let landed: Vec<&str> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| rows[pos.diff_line_index])
+        .collect();
+    assert_eq!(landed, vec![" keep-c"]);
+}
+
+#[test]
+fn right_comment_after_an_added_plusplus_line_lands_on_keep_c() {
+    let patch = "@@ -1,3 +1,4 @@\n keep-a\n+++ added\n keep-b\n keep-c\n";
+    assert_eq!(patch.lines().nth(2), Some("+++ added"));
+
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(4),
+        Some("RIGHT"),
+        None,
+        "new line 4",
+    )]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let landed: Vec<&str> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| rows[pos.diff_line_index])
+        .collect();
+    assert_eq!(landed, vec![" keep-c"]);
+}
+
+#[test]
 fn missing_newline_marker_does_not_accept_the_next_line_number() {
     let patch = "@@ -1,2 +1,2 @@\n alpha\n beta\n\\ No newline at end of file\n";
     let mut app = make_app_with_patch(patch);
