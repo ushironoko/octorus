@@ -33,7 +33,7 @@ Changes to existing files are kept minimal:
 - `src/app/cockpit.rs` / `src/ui/cockpit.rs` — the Cockpit menu item that opens the browser
 - `src/language.rs` — highlighting-language detection plus the public tags-query compatibility accessor
 - `src/lib.rs` — `pub mod symbols;` and the public `ParserPool` re-export
-- `src/syntax/parser_pool.rs` — highlight caches plus the Hearth parser/query cache
+- `src/syntax/parser_pool.rs` — per-job highlight parsers, process-wide highlight queries, and the Hearth parser/query cache
 - `src/queries/moonbit/tags.scm` — the host-owned MoonBit symbol query; bundled-language queries are owned by Hearth
 - `Cargo.toml` / `Cargo.lock` — the exact `hearth-graph` dependency, Rust version, and the `symbol_index` bench target
 - `benches/ui_rendering.rs` — the `browse_render` group / `benches/symbol_index.rs` — facade extraction, build, and query benchmarks

@@ -160,9 +160,11 @@ handling in `SupportedLanguage` is independent of the Hearth symbol registry.
 
 ## 4. Parser and query reuse
 
-The existing `crate::syntax::ParserPool` still owns highlighting parsers and
-queries. It now also contains a `hearth_graph::ParserPool<'static>` tied to the
-static symbol registry. `extract_symbols` borrows that cache rather than
+The existing `crate::syntax::ParserPool` still owns highlighting parsers.
+Compiled highlight queries are shared for the whole process, one slot per
+`SupportedLanguage`, because each highlight job builds a new pool. The pool
+also contains a `hearth_graph::ParserPool<'static>` tied to the static symbol
+registry. `extract_symbols` borrows that cache rather than
 constructing a registry, parser, or query for each call.
 
 Repository builds use Hearth's worker-local parser pools. Both the public

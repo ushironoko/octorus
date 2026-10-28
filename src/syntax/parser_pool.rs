@@ -1,25 +1,25 @@
-//! Parser pool for efficient tree-sitter parser management.
+//! Parser pool for tree-sitter parsers.
 //!
 //! Parsers are relatively heavy objects (~200KB each), so we maintain a pool
 //! to reuse them across multiple files rather than creating new ones for each file.
 //!
-//! Also caches compiled queries, which are expensive to create (they require
-//! parsing the query string and building internal data structures).
+//! Highlight queries are compiled once per [`SupportedLanguage`] for the whole
+//! process. Jobs each own a pool, and sharing the `Query` avoids compiling it
+//! again on every job. A `Parser` stays in the pool that created it.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tree_sitter::{Parser, Query};
 
 use crate::language::SupportedLanguage;
 
-/// Pool of tree-sitter parsers and compiled queries, one per language.
+/// Pool of tree-sitter parsers, one per language, for a single highlight job.
 ///
-/// Parsers and queries are lazily created on first use and reused for subsequent operations.
-/// This avoids the overhead of creating new parsers/compiling queries for each file.
+/// Parsers are created on first use and reused for later files in that job.
+/// Highlight queries live in a process-wide slot. See [`Self::get_or_create_query`].
 pub struct ParserPool {
     parsers: HashMap<SupportedLanguage, Parser>,
-    /// Cached compiled queries for highlight queries.
-    queries: HashMap<SupportedLanguage, Query>,
     /// Hearth-owned parser and tags-query cache for symbol extraction.
     symbol_parsers: hearth_graph::ParserPool<'static>,
 }
@@ -35,7 +35,6 @@ impl ParserPool {
     pub fn new() -> Self {
         Self {
             parsers: HashMap::new(),
-            queries: HashMap::new(),
             symbol_parsers: hearth_graph::ParserPool::new(
                 crate::symbols::symbol_language_registry(),
             ),
@@ -58,18 +57,14 @@ impl ParserPool {
 
     /// Get or create a compiled highlight query for the given language.
     ///
-    /// Queries are cached to avoid recompilation overhead on each use.
-    /// This is particularly important for injection processing (e.g., Svelte)
-    /// where multiple queries are needed per file.
-    pub fn get_or_create_query(&mut self, lang: SupportedLanguage) -> Option<&Query> {
-        if let Entry::Vacant(e) = self.queries.entry(lang) {
-            let ts_language = lang.ts_language();
-            let query_source = lang.highlights_query();
-            let query = Query::new(&ts_language, query_source).ok()?;
-            e.insert(query);
-        }
-
-        self.queries.get(&lang)
+    /// The compiled `Query` is shared by every pool in the process. The pool
+    /// does not store it. Callers keep using this method so a highlight job
+    /// does not need a different API.
+    ///
+    /// A failed compile returns `None` and is not stored, so the next call
+    /// tries again.
+    pub fn get_or_create_query(&self, lang: SupportedLanguage) -> Option<&'static Query> {
+        shared_highlight_query(lang)
     }
 
     /// Get or create a parser for the given file extension.
@@ -93,6 +88,54 @@ impl ParserPool {
     /// Check if tree-sitter supports the given file extension.
     pub fn supports_extension(ext: &str) -> bool {
         SupportedLanguage::is_supported(ext)
+    }
+}
+
+const HIGHLIGHT_QUERY_SLOT_COUNT: usize = 24;
+
+fn shared_highlight_query(lang: SupportedLanguage) -> Option<&'static Query> {
+    let slot = highlight_query_slot(lang);
+    if let Some(query) = slot.get() {
+        return Some(query);
+    }
+    let query = Query::new(&lang.ts_language(), lang.highlights_query()).ok()?;
+    let _ = slot.set(query);
+    slot.get()
+}
+
+fn highlight_query_slot(lang: SupportedLanguage) -> &'static OnceLock<Query> {
+    static SLOTS: [OnceLock<Query>; HIGHLIGHT_QUERY_SLOT_COUNT] =
+        [const { OnceLock::new() }; HIGHLIGHT_QUERY_SLOT_COUNT];
+    &SLOTS[highlight_query_slot_index(lang)]
+}
+
+fn highlight_query_slot_index(lang: SupportedLanguage) -> usize {
+    use SupportedLanguage::*;
+    match lang {
+        Rust => 0,
+        TypeScript => 1,
+        TypeScriptReact => 2,
+        JavaScript => 3,
+        JavaScriptReact => 4,
+        Go => 5,
+        Python => 6,
+        Ruby => 7,
+        Zig => 8,
+        C => 9,
+        Cpp => 10,
+        Java => 11,
+        CSharp => 12,
+        Lua => 13,
+        Bash => 14,
+        Php => 15,
+        Swift => 16,
+        Haskell => 17,
+        MoonBit => 18,
+        Svelte => 19,
+        Vue => 20,
+        Css => 21,
+        Markdown => 22,
+        MarkdownInline => 23,
     }
 }
 
@@ -296,51 +339,102 @@ mod tests {
 
     #[test]
     fn test_query_cache_creates_query() {
-        let mut pool = ParserPool::new();
+        let pool = ParserPool::new();
         let query = pool.get_or_create_query(SupportedLanguage::Rust);
         assert!(query.is_some(), "Should create Rust highlight query");
     }
 
     #[test]
     fn test_query_cache_reuses_query() {
-        let mut pool = ParserPool::new();
+        let pool = ParserPool::new();
 
-        // First call creates the query
-        let query1 = pool.get_or_create_query(SupportedLanguage::TypeScript);
-        assert!(query1.is_some());
+        let query1 = pool
+            .get_or_create_query(SupportedLanguage::TypeScript)
+            .expect("TypeScript highlight query should compile");
+        let query2 = pool
+            .get_or_create_query(SupportedLanguage::TypeScript)
+            .expect("TypeScript highlight query should compile");
+        assert!(std::ptr::eq(query1, query2));
+    }
 
-        // Second call should return the same query (cached)
-        let query2 = pool.get_or_create_query(SupportedLanguage::TypeScript);
-        assert!(query2.is_some());
+    #[test]
+    fn second_pool_reuses_compiled_highlight_query() {
+        let first = ParserPool::new();
+        let second = ParserPool::new();
+        let languages = [
+            SupportedLanguage::Rust,
+            SupportedLanguage::Haskell,
+            SupportedLanguage::Markdown,
+            SupportedLanguage::Vue,
+            SupportedLanguage::TypeScript,
+            SupportedLanguage::TypeScriptReact,
+            SupportedLanguage::JavaScript,
+            SupportedLanguage::JavaScriptReact,
+        ];
 
-        // Verify cache is populated
-        assert!(
-            pool.queries.contains_key(&SupportedLanguage::TypeScript),
-            "Query should be cached"
-        );
+        for lang in languages {
+            let left = first.get_or_create_query(lang).unwrap_or_else(|| {
+                panic!("{lang:?} highlight query should compile");
+            });
+            let right = second.get_or_create_query(lang).unwrap_or_else(|| {
+                panic!("{lang:?} highlight query should compile");
+            });
+            assert!(
+                std::ptr::eq(left, right),
+                "{lang:?} compiled a second highlight query"
+            );
+        }
+
+        let rust = first
+            .get_or_create_query(SupportedLanguage::Rust)
+            .expect("Rust highlight query should compile");
+        let haskell = first
+            .get_or_create_query(SupportedLanguage::Haskell)
+            .expect("Haskell highlight query should compile");
+        let typescript = first
+            .get_or_create_query(SupportedLanguage::TypeScript)
+            .expect("TypeScript highlight query should compile");
+        let tsx = first
+            .get_or_create_query(SupportedLanguage::TypeScriptReact)
+            .expect("TSX highlight query should compile");
+        assert!(!std::ptr::eq(rust, haskell));
+        assert!(!std::ptr::eq(typescript, tsx));
+    }
+
+    #[test]
+    fn highlight_query_slots_are_unique_per_language() {
+        let mut seen = [false; HIGHLIGHT_QUERY_SLOT_COUNT];
+        let mut count = 0;
+        for lang in SupportedLanguage::all() {
+            let index = highlight_query_slot_index(lang);
+            assert!(
+                index < seen.len(),
+                "{lang:?} highlight query slot {index} is out of range"
+            );
+            assert!(!seen[index], "{lang:?} shares highlight query slot {index}");
+            seen[index] = true;
+            count += 1;
+        }
+        assert_eq!(count, HIGHLIGHT_QUERY_SLOT_COUNT);
     }
 
     #[test]
     fn test_query_cache_multiple_languages() {
-        let mut pool = ParserPool::new();
-
-        // Create queries for multiple languages
-        assert!(pool.get_or_create_query(SupportedLanguage::Rust).is_some());
-        assert!(pool
-            .get_or_create_query(SupportedLanguage::TypeScript)
-            .is_some());
-        assert!(pool
-            .get_or_create_query(SupportedLanguage::JavaScript)
-            .is_some());
-        assert!(pool.get_or_create_query(SupportedLanguage::Css).is_some());
-
-        // All should be cached
-        assert_eq!(pool.queries.len(), 4);
+        let pool = ParserPool::new();
+        let rust = pool.get_or_create_query(SupportedLanguage::Rust);
+        let typescript = pool.get_or_create_query(SupportedLanguage::TypeScript);
+        let javascript = pool.get_or_create_query(SupportedLanguage::JavaScript);
+        let css = pool.get_or_create_query(SupportedLanguage::Css);
+        assert!(rust.is_some());
+        assert!(typescript.is_some());
+        assert!(javascript.is_some());
+        assert!(css.is_some());
+        assert!(!std::ptr::eq(rust.unwrap(), css.unwrap()));
     }
 
     #[test]
     fn test_query_has_capture_names() {
-        let mut pool = ParserPool::new();
+        let pool = ParserPool::new();
         let query = pool.get_or_create_query(SupportedLanguage::Rust).unwrap();
 
         // Query should have capture names for highlighting
@@ -350,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_query_cache_markdown() {
-        let mut pool = ParserPool::new();
+        let pool = ParserPool::new();
         let query = pool.get_or_create_query(SupportedLanguage::Markdown);
         assert!(
             query.is_some(),
@@ -360,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_query_cache_markdown_inline() {
-        let mut pool = ParserPool::new();
+        let pool = ParserPool::new();
         let query = pool.get_or_create_query(SupportedLanguage::MarkdownInline);
         assert!(
             query.is_some(),
