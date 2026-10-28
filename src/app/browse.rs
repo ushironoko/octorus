@@ -7219,6 +7219,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_blocked_message_shows_only_the_first_line_of_a_multiline_reason() {
+        let reason = "fatal: not a git repository\nhint: add the directory to safe.directory";
+        let state = IndexState::Failed {
+            reason: reason.to_string(),
+        };
+
+        assert_eq!(
+            state.blocked_message().as_deref(),
+            Some("Symbol index is unavailable: fatal: not a git repository")
+        );
+        let IndexState::Failed { reason: stored } = &state else {
+            panic!("a failed index keeps its reason");
+        };
+        assert_eq!(stored, reason);
+    }
+
+    #[test]
+    fn test_blocked_message_skips_leading_blank_lines() {
+        let reason = "\n\n致命的: 読み取り拒否\nhint: second line stays stored";
+        let state = IndexState::Failed {
+            reason: reason.to_string(),
+        };
+
+        assert_eq!(
+            state.blocked_message().as_deref(),
+            Some("Symbol index is unavailable: 致命的: 読み取り拒否")
+        );
+        let IndexState::Failed { reason: stored } = &state else {
+            panic!("a failed index keeps its reason");
+        };
+        assert_eq!(stored, reason);
+    }
+
+    #[test]
+    fn test_blocked_message_stays_on_one_line_when_the_reason_is_blank() {
+        for reason in ["", "   ", "\n", "\r\n\r\n", " \n\t\n "] {
+            let state = IndexState::Failed {
+                reason: reason.to_string(),
+            };
+            let message = state
+                .blocked_message()
+                .expect("a failed index still has a status");
+            assert_eq!(message, SYMBOL_INDEX_UNAVAILABLE_PREFIX, "{reason:?}");
+            let IndexState::Failed { reason: stored } = &state else {
+                panic!("a failed index keeps its reason");
+            };
+            assert_eq!(stored, reason);
+        }
+    }
+
+    #[test]
+    fn test_failed_index_footer_keeps_later_reason_lines_out_of_the_row() {
+        let reason = "fatal: not a git repository\nhint: add safe.directory before trying again";
+        let mut app = App::new_for_test();
+        let mut state = BrowseState::new(PathBuf::from("/repo"), AppState::FileList);
+        let (tx, rx) = mpsc::channel(1);
+        state.index = IndexState::Building;
+        state.index_receiver = Some(rx);
+        app.browse_state = Some(state);
+        app.state = AppState::RepoBrowseFile;
+        tx.try_send(IndexDelivery::Failed(reason.to_string()))
+            .unwrap();
+
+        app.poll_browse_updates();
+
+        let rendered = render_at(&mut app, 80, 8);
+        let footer = rendered.lines().next_back().unwrap_or("");
+        assert_eq!(
+            footer, "Symbol index is unavailable: fatal: not a git repository",
+            "{rendered}"
+        );
+        assert!(!rendered.contains("safe.directory"), "{rendered}");
+
+        let state = app.browse_state.as_ref().unwrap();
+        let IndexState::Failed { reason: stored } = &state.index else {
+            panic!("a failed index build must keep its error");
+        };
+        assert_eq!(stored, reason);
+    }
+
+    #[test]
+    fn test_failed_index_footer_truncates_a_long_fullwidth_reason_by_display_width() {
+        let first_line = format!("読み取り拒否{}", "あ".repeat(20));
+        let reason = format!("\n{first_line}\n二行目はフッターに出ない");
+        let mut app = App::new_for_test();
+        let mut state = BrowseState::new(PathBuf::from("/repo"), AppState::FileList);
+        let (tx, rx) = mpsc::channel(1);
+        state.index = IndexState::Building;
+        state.index_receiver = Some(rx);
+        app.browse_state = Some(state);
+        app.state = AppState::RepoBrowseFile;
+        tx.try_send(IndexDelivery::Failed(reason.clone())).unwrap();
+
+        app.poll_browse_updates();
+
+        let expected = format!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{first_line}");
+        let width = 40u16;
+        let rendered = render_at(&mut app, width, 8);
+        let footer = rendered.lines().next_back().unwrap_or("");
+        assert_eq!(
+            footer,
+            "Symbol index is unavailable: 読 み 取 り 拒 …",
+            "a 40-column footer keeps five fullwidth columns, then an ellipsis\n{rendered}"
+        );
+        assert_eq!(footer.chars().count(), usize::from(width), "{footer:?}");
+        assert!(!footer.contains('否'), "{footer}");
+        assert!(!rendered.contains("二行目"), "{rendered}");
+
+        let state = app.browse_state.as_ref().unwrap();
+        let IndexState::Failed { reason: stored } = &state.index else {
+            panic!("a failed index build must keep its error");
+        };
+        assert_eq!(stored, &reason);
+        assert_eq!(
+            state.index.blocked_message().as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(state.status.as_deref(), Some(expected.as_str()));
+    }
+
     #[tokio::test]
     async fn test_symbol_index_failure_reports_instead_of_a_silent_empty_index() {
         let dir = tempfile::tempdir().unwrap();
