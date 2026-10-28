@@ -63,9 +63,7 @@ pub struct GitfilmCommit {
 /// Extract embedded gitfilm binary to cache directory, return path.
 pub fn extract_gitfilm() -> Option<PathBuf> {
     let binary = GITFILM_BINARY?;
-    let cache_dir = xdg::BaseDirectories::with_prefix("octorus")
-        .ok()?
-        .get_cache_home();
+    let cache_dir = crate::dirs::project_dirs().ok()?.cache_home;
 
     std::fs::create_dir_all(&cache_dir).ok()?;
     let dest = cache_dir.join(GITFILM_FILENAME);

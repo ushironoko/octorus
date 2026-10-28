@@ -8,7 +8,6 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use xdg::BaseDirectories;
 
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{ChangedFile, CommitPrResolution, PullRequest};
@@ -59,8 +58,8 @@ pub fn sanitize_repo_name(repo: &str) -> Result<String> {
 /// キャッシュディレクトリ: ~/.cache/octorus/
 /// AI Rally セッション等で使用
 pub fn cache_dir() -> PathBuf {
-    BaseDirectories::with_prefix("octorus")
-        .map(|dirs| dirs.get_cache_home())
+    crate::dirs::project_dirs()
+        .map(|dirs| dirs.cache_home)
         .unwrap_or_else(|_| PathBuf::from(".cache"))
 }
 

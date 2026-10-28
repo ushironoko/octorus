@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use xdg::BaseDirectories;
 
 use super::{RallyState, RevieweeOutput, RevieweeProposal, ReviewerOutput};
 use crate::cache::sanitize_repo_name;
@@ -33,9 +32,9 @@ pub enum HistoryEntryType {
 
 fn rally_dir(repo: &str, pr_number: u32) -> Result<PathBuf> {
     let safe_repo = sanitize_repo_name(repo)?;
-    let dir = BaseDirectories::with_prefix("octorus")
+    let dir = crate::dirs::project_dirs()
         .map(|dirs| {
-            dirs.get_cache_home()
+            dirs.cache_home
                 .join("rally")
                 .join(format!("{}_{}", safe_repo, pr_number))
         })

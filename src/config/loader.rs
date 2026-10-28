@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use xdg::BaseDirectories;
 
 use super::Config;
 
@@ -200,8 +199,8 @@ impl Config {
     }
 
     pub fn config_path() -> PathBuf {
-        BaseDirectories::with_prefix("octorus")
-            .map(|dirs| dirs.get_config_home().join("config.toml"))
+        crate::dirs::project_dirs()
+            .map(|dirs| dirs.config_home.join("config.toml"))
             .unwrap_or_else(|_| PathBuf::from("config.toml"))
     }
 }
