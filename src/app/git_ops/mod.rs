@@ -1521,8 +1521,9 @@ impl App {
             return;
         };
 
-        let args = op.to_gitfilm_args();
-        if let Some(gitfilm) = ops.gitfilm_path.clone().filter(|_| !args.is_empty()) {
+        let gitfilm = ops.gitfilm_path.clone();
+        let args = op.to_gitfilm_args().filter(|args| !args.is_empty());
+        if let (Some(gitfilm), Some(args)) = (gitfilm, args) {
             static ABORT_COUNTER: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
             let abort_id = ABORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3018,7 +3019,7 @@ mod tests {
     async fn confirm_selected_discard(
         repo: &DiscardRepo,
         index: usize,
-    ) -> (Vec<String>, String, bool) {
+    ) -> (Option<Vec<String>>, String, bool) {
         let (mut app, _tx) = make_git_ops_app();
         app.working_dir = Some(repo.dir.path().to_string_lossy().into_owned());
         let mut ops = GitOpsState::new(repo.entries());
@@ -3080,7 +3081,7 @@ mod tests {
         let repo = DiscardRepo::new();
         let (preview, label, simple) = confirm_selected_discard(&repo, 2).await;
         assert!(simple, "untracked discard must skip gitfilm");
-        assert!(preview.is_empty(), "gitfilm must not be told to restore");
+        assert!(preview.is_none(), "gitfilm must not be told to restore");
         assert_eq!(label, "Delete untracked file: git clean -f -- new.txt");
         assert!(!repo.dir.path().join("new.txt").exists());
         assert!(repo.dir.path().join("keep.txt").exists());
@@ -3095,7 +3096,7 @@ mod tests {
         let repo = DiscardRepo::new();
         let (preview, label, simple) = confirm_selected_discard(&repo, 1).await;
         assert!(simple, "staged-only discard must skip gitfilm");
-        assert!(preview.is_empty());
+        assert!(preview.is_none());
         assert_eq!(label, "git restore --staged --source=HEAD -- staged.txt");
         assert!(
             !names(&repo, true).lines().any(|line| line == "staged.txt"),
@@ -3117,7 +3118,7 @@ mod tests {
         let repo = DiscardRepo::new();
         let (preview, label, simple) = confirm_selected_discard(&repo, 0).await;
         assert!(!simple, "worktree restore is a gitfilm operation");
-        assert_eq!(preview, vec!["restore tracked.txt".to_string()]);
+        assert_eq!(preview, Some(vec!["restore tracked.txt".to_string()]));
         assert_eq!(label, "git restore -- tracked.txt");
         assert_eq!(
             std::fs::read_to_string(repo.dir.path().join("tracked.txt")).unwrap(),
@@ -3136,7 +3137,7 @@ mod tests {
         let repo = DiscardRepo::new();
         let (preview, label, simple) = confirm_selected_discard(&repo, 4).await;
         assert!(simple);
-        assert!(preview.is_empty());
+        assert!(preview.is_none());
         assert_eq!(
             label,
             "Delete untracked file: git clean -f -- 'new file.txt'"
@@ -3151,7 +3152,7 @@ mod tests {
         let repo = DiscardRepo::new();
         let (preview, label, simple) = confirm_selected_discard(&repo, 3).await;
         assert!(!simple);
-        assert_eq!(preview, vec!["restore 'my file.txt'".to_string()]);
+        assert_eq!(preview, Some(vec!["restore 'my file.txt'".to_string()]));
         assert_eq!(label, "git restore -- 'my file.txt'");
         assert_eq!(
             std::fs::read_to_string(repo.dir.path().join("my file.txt")).unwrap(),
@@ -3161,5 +3162,36 @@ mod tests {
             std::fs::read_to_string(repo.dir.path().join("tracked.txt")).unwrap(),
             "base\ndirty\n"
         );
+    }
+
+    #[test]
+    fn path_with_both_quotes_skips_gitfilm_and_uses_simple_confirm() {
+        let path = "a'b\"c.txt".to_string();
+        let ops = [
+            DestructiveOp::Discard {
+                invocation: DiscardInvocation::Restore { path: path.clone() },
+            },
+            DestructiveOp::UndoStage {
+                paths: vec![path.clone()],
+            },
+            DestructiveOp::UndoUnstage {
+                paths: vec!["ok.rs".to_string(), path.clone()],
+            },
+        ];
+        for op in ops {
+            assert_eq!(op.to_gitfilm_args(), None);
+            let (mut app, _tx) = make_git_ops_app();
+            let mut state = GitOpsState::new(Vec::new());
+            state.gitfilm_path = Some(std::path::PathBuf::from("/nonexistent/gitfilm"));
+            app.git_ops_state = Some(state);
+            app.start_confirm_with_simulation(op);
+            assert!(
+                matches!(
+                    app.git_ops_state.as_ref().unwrap().pending_confirm,
+                    Some(PendingGitOpsConfirm::Simple { .. })
+                ),
+                "a path with both quotes must use the simple confirm"
+            );
+        }
     }
 }
