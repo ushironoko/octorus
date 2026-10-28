@@ -11,7 +11,7 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
-use super::common::truncate_with_width;
+use super::common::fit_to_width;
 use crate::app::App;
 use crate::github::IssueSummary;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -217,7 +217,6 @@ fn build_issue_list_items(
             let author_width = 4 + issue.author.login.width();
             let fixed_width = 2 + 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
-            let title = truncate_with_width(&issue.title, title_width);
             let title_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -226,7 +225,7 @@ fn build_issue_list_items(
                 Style::default()
             };
             let title_span = Span::styled(
-                format!("{:<width$}", title, width = title_width),
+                fit_to_width(&issue.title, title_width).into_owned(),
                 title_style,
             );
 
