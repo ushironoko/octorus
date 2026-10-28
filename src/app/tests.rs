@@ -5425,6 +5425,30 @@ fn left_comment_on_a_context_line_uses_the_old_line_number() {
     assert!(!row_containing(&diff, "removed-left").contains('●'));
 }
 
+#[test]
+fn comments_after_an_empty_context_line_land_on_their_diff_rows() {
+    let patch = "@@ -10,5 +10,5 @@\n before\n\n after-blank\n-removed-tail\n+added-tail\n kept-end\n";
+    assert_eq!(
+        patch.lines().nth(2),
+        Some(""),
+        "the fixture's third row is an empty context line"
+    );
+
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(13), Some("LEFT"), None, "on the removed line"),
+        review_on(2, Some(13), Some("RIGHT"), None, "on the added line"),
+    ]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let mut landed = [None, None];
+    for pos in &app.cmt.file_comment_positions {
+        landed[pos.comment_index] = Some(rows[pos.diff_line_index]);
+    }
+    assert_eq!(landed, [Some("-removed-tail"), Some("+added-tail")]);
+}
+
 #[tokio::test]
 async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff() {
     let mut app = make_app_with_patch(SIDE_PATCH);
