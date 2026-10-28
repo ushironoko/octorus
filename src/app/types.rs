@@ -665,10 +665,6 @@ impl GitStatusEntry {
         )
     }
 
-    pub fn describe_discard_command(&self) -> String {
-        DiscardInvocation::from_entry(self).display_command()
-    }
-
     /// Fixed-width 2-char change type label.
     ///
     /// Stable across stage/unstage: both index and worktree statuses are
