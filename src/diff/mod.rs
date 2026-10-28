@@ -259,26 +259,22 @@ pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
     let mut new_line: Option<u32> = None;
 
     for (index, line) in patch.lines().enumerate() {
-        let (line_type, _) = classify_line(line);
-        let (on_old, on_new) = match line_type {
-            LineType::Header => {
-                if let Some((old_start, new_start)) = hunk_line_starts(line) {
-                    old_line = Some(old_start);
-                    new_line = Some(new_start);
-                }
-                continue;
+        if line.starts_with("@@") {
+            if let Some((old_start, new_start)) = hunk_line_starts(line) {
+                old_line = Some(old_start);
+                new_line = Some(new_start);
             }
-            LineType::Meta => continue,
-            LineType::Removed => (true, false),
-            LineType::Added => (false, true),
-            // The no-newline marker has no prefix, so classify_line reports
-            // context. It is not a file row. Counting it places a comment
-            // on the marker and drops the outdated state.
-            LineType::Context if line.trim_end_matches('\r') == "\\ No newline at end of file" => {
-                continue;
-            }
-            LineType::Context => (true, true),
-        };
+            continue;
+        }
+
+        // An empty row is a context row whose prefix space was dropped.
+        // A row that starts with `---` or `+++` is still a removed or added
+        // file row, so the first character decides the side.
+        let on_old = line.starts_with('-') || line.starts_with(' ') || line.is_empty();
+        let on_new = line.starts_with('+') || line.starts_with(' ') || line.is_empty();
+        if !on_old && !on_new {
+            continue;
+        }
 
         let matched = match target.side {
             DiffSide::Left => on_old && old_line == Some(target.line),
