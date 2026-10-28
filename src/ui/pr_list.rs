@@ -290,3 +290,196 @@ fn build_pr_list_items_ref(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, AppState, LoadState};
+    use crate::github::{PullRequestSummary, User};
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+    use unicode_width::UnicodeWidthStr;
+
+    fn sample_pr(number: u32, title: &str, author: &str) -> PullRequestSummary {
+        PullRequestSummary {
+            number,
+            title: title.to_string(),
+            state: "open".to_string(),
+            author: User {
+                login: author.to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2025-01-01T00:00:00Z".to_string(),
+            status_check_rollup: vec![],
+        }
+    }
+
+    fn render_rows(prs: &[PullRequestSummary], area_width: usize) -> Buffer {
+        let refs: Vec<&PullRequestSummary> = prs.iter().collect();
+        let items = build_pr_list_items_ref(&refs, 0, area_width);
+        let width = 160;
+        let height = u16::try_from(items.len()).unwrap_or(1).max(1);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+                let mut state = ListState::default().with_selected(Some(0));
+                frame.render_stateful_widget(list, frame.area(), &mut state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_screen(prs: Vec<PullRequestSummary>) -> Buffer {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Loaded(prs);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn find_column(buf: &Buffer, y: u16, needle: &str) -> Option<u16> {
+        let width = buf.area().width;
+        let needle: Vec<char> = needle.chars().collect();
+        if needle.is_empty() {
+            return Some(0);
+        }
+        for start in 0..width {
+            let mut x = start;
+            let mut matched = 0;
+            let mut found = true;
+            while matched < needle.len() {
+                if x >= width {
+                    found = false;
+                    break;
+                }
+                let mut chars = buf[(x, y)].symbol().chars();
+                let Some(ch) = chars.next() else {
+                    found = false;
+                    break;
+                };
+                if chars.next().is_some() || ch != needle[matched] {
+                    found = false;
+                    break;
+                }
+                matched += 1;
+                x += 1;
+            }
+            if found {
+                return Some(start);
+            }
+        }
+        None
+    }
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        let mut line = String::new();
+        let mut x = 0;
+        while x < buf.area().width {
+            let sym = buf[(x, y)].symbol();
+            let width = u16::try_from(sym.width()).unwrap_or(1).max(1);
+            line.push_str(sym);
+            x = x.saturating_add(width);
+        }
+        line.trim_end().to_string()
+    }
+
+    fn screen_text(buf: &Buffer) -> String {
+        (0..buf.area().height)
+            .map(|y| row_text(buf, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn fullwidth_pr_title_keeps_author_column_aligned_with_ascii() {
+        let prs = vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "alice"),
+            sample_pr(3, "ログイン修正", "alice"),
+            sample_pr(4, &"あ".repeat(40), "alice"),
+        ];
+        let buf = render_rows(&prs, 40);
+        let marker = "by @alice";
+        let cols: Vec<Option<u16>> = (0..4).map(|y| find_column(&buf, y, marker)).collect();
+        let rendered = (0..4)
+            .map(|y| row_text(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ascii = cols[1].expect("ascii author column");
+        assert_eq!(
+            cols[2],
+            Some(ascii),
+            "short fullwidth title shifted the author column. columns={cols:?}\n{rendered}"
+        );
+        assert_eq!(
+            cols[3],
+            Some(ascii),
+            "truncated fullwidth title shifted the author column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn ascii_pr_titles_keep_the_same_author_column() {
+        let prs = vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "alice"),
+            sample_pr(10, "x", "alice"),
+        ];
+        let buf = render_rows(&prs, 40);
+        let marker = "by @alice";
+        let cols: Vec<Option<u16>> = (0..3).map(|y| find_column(&buf, y, marker)).collect();
+        let rendered = (0..3)
+            .map(|y| row_text(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            cols.iter().all(|col| *col == cols[0]),
+            "ascii titles disagree on the author column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn ascii_pr_list_screen_snapshot() {
+        let buf = render_screen(vec![
+            sample_pr(10, "Fix login bug", "alice"),
+            sample_pr(9, "Add dark mode", "bob"),
+        ]);
+        assert_snapshot!(screen_text(&buf), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │PR List: test/repo (open)                                                                         │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Pull Requests (2)─────────────────────────────────────────────────────────────────────────────────┐
+        │#10     Fix login bug                                                                   by @alice ▲
+        │#9      Add dark mode                                                                     by @bob █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  ▼
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Quit                                                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+}
