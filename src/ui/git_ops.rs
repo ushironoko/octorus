@@ -219,7 +219,7 @@ fn render_tree_pane(
     let help_text = if let Some(confirm) = pending {
         match confirm {
             crate::app::PendingGitOpsConfirm::Simple { ref op } => {
-                confirm_text = format!("{} (Y/n)", op.display_command());
+                confirm_text = format!("{} (Y/n)", op.confirmation_label());
                 confirm_text.as_str()
             }
             crate::app::PendingGitOpsConfirm::Simulating { .. } => {
@@ -887,8 +887,8 @@ fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
 mod tests {
     use super::*;
     use crate::app::{
-        DestructiveOp, FileStatus, GitOpsState, GitStatusEntry, PendingGitOpsConfirm,
-        RepositoryAvailability,
+        DestructiveOp, DiscardInvocation, FileStatus, GitOpsState, GitStatusEntry,
+        PendingGitOpsConfirm, RepositoryAvailability,
     };
     use crate::config::Config;
     use insta::assert_snapshot;
@@ -977,7 +977,9 @@ mod tests {
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
             op: DestructiveOp::Discard {
-                path: "src/main.rs".to_string(),
+                invocation: DiscardInvocation::Restore {
+                    path: "src/main.rs".to_string(),
+                },
             },
         });
         app.git_ops_state = Some(ops);
@@ -997,7 +999,9 @@ mod tests {
         rebuild_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
             op: DestructiveOp::Discard {
-                path: "a.rs".to_string(),
+                invocation: DiscardInvocation::Restore {
+                    path: "a.rs".to_string(),
+                },
             },
         });
         app.git_ops_state = Some(ops);
@@ -1005,6 +1009,31 @@ mod tests {
         assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │git restore -- a.rs (Y/n)                                                                         │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_footer_discard_untracked_says_file_will_be_deleted() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![entry(
+            "new.txt",
+            FileStatus::Untracked,
+            FileStatus::Untracked,
+        )]);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard {
+                invocation: DiscardInvocation::Clean {
+                    path: "new.txt".to_string(),
+                },
+            },
+        });
+        app.git_ops_state = Some(ops);
+
+        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │git clean -f -- new.txt (file will be deleted) (Y/n)                                              │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
