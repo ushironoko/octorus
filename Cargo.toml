@@ -29,7 +29,7 @@ tempfile = "3.24.0"
 notify = "6.1.1"
 anyhow = "1.0.100"
 clap = { version = "4.5.54", features = ["derive"] }
-xdg = "2.5.2"
+xdg = "3.0.0"
 unicode-width = "0.2.2"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 syntect-tui = "3.0.4"

@@ -76,9 +76,9 @@ impl PromptLoader {
             }
         };
 
-        let global_prompts_dir = xdg::BaseDirectories::with_prefix("octorus")
+        let global_prompts_dir = crate::dirs::project_dirs()
             .ok()
-            .map(|dirs| dirs.get_config_home().join("prompts"));
+            .map(|dirs| dirs.config_home.join("prompts"));
 
         Self {
             prompt_dir,

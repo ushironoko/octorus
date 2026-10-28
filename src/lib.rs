@@ -9,6 +9,7 @@ pub mod code_index;
 pub mod config;
 pub mod diff;
 pub mod diff_store;
+pub mod dirs;
 pub mod editor;
 pub mod filter;
 pub mod gitfilm;

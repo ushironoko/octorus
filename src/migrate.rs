@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use xdg::BaseDirectories;
 
 use crate::init::{
     AGENT_SKILL_CONTENT, AGENT_SKILL_REF_CONFIG, AGENT_SKILL_REF_HEADLESS, DEFAULT_CONFIG,
@@ -971,9 +970,7 @@ pub fn run_migrate(dry_run: bool, is_local: bool, force: bool) -> Result<()> {
         let octorus_dir = project_root.join(".octorus");
         (octorus_dir, None)
     } else {
-        let base_dirs =
-            BaseDirectories::with_prefix("octorus").context("Failed to get config directory")?;
-        let config_home = base_dirs.get_config_home();
+        let config_home = octorus::dirs::project_dirs()?.config_home;
 
         let claude_dir = std::env::var("HOME")
             .ok()

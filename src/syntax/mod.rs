@@ -51,7 +51,6 @@ use ratatui::text::Span;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-use xdg::BaseDirectories;
 
 use smallvec::smallvec;
 
@@ -94,8 +93,8 @@ fn load_all_themes() -> ThemeSet {
     }
 
     // Load user themes from ~/.config/octorus/themes/
-    if let Ok(base_dirs) = BaseDirectories::with_prefix("octorus") {
-        let user_themes_dir = base_dirs.get_config_home().join("themes");
+    if let Ok(dirs) = crate::dirs::project_dirs() {
+        let user_themes_dir = dirs.config_home.join("themes");
         if user_themes_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&user_themes_dir) {
                 for entry in entries.flatten() {

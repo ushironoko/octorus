@@ -3,9 +3,9 @@ use crossterm::style::Stylize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use xdg::BaseDirectories;
 
 use octorus::config::find_project_root;
+use octorus::dirs::project_dirs;
 
 use crate::migrate::{
     detect_version_from_hash, read_manifest, write_manifest, FileRecord, FileRecordStatus,
@@ -104,10 +104,7 @@ pub fn run_init(force: bool, local: bool) -> Result<()> {
         let project_root = find_project_root();
         return run_init_local(&project_root, force);
     }
-    let base_dirs =
-        BaseDirectories::with_prefix("octorus").context("Failed to get config directory")?;
-
-    let config_home = base_dirs.get_config_home();
+    let config_home = project_dirs()?.config_home;
 
     if !config_home.exists() {
         println!(
