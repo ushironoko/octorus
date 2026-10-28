@@ -242,13 +242,13 @@ impl App {
                 }
                 Ok(IndexDelivery::Failed(message)) => {
                     state.index_receiver = None;
-                    install_index_failure(state, message);
+                    install_index_failure(state, &message);
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     state.index_receiver = None;
                     if !state.cancel_token.is_cancelled() {
-                        install_index_failure(state, "code indexing task ended".to_string());
+                        install_index_failure(state, "code indexing task ended");
                     }
                 }
             }
@@ -1807,11 +1807,13 @@ impl IndexState {
         match self {
             Self::Idle => Some("Symbol index has not started".to_string()),
             Self::Building => Some("Symbol index is still building".to_string()),
-            Self::Failed { reason } => Some(format!("Symbol index is unavailable: {reason}")),
+            Self::Failed { reason } => Some(format!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{reason}")),
             Self::Ready(_) => None,
         }
     }
 }
+
+const SYMBOL_INDEX_UNAVAILABLE_PREFIX: &str = "Symbol index is unavailable: ";
 
 /// Lifecycle of the repository module graph built in the symbol analysis pass.
 #[derive(Debug, Default)]
@@ -3319,9 +3321,9 @@ fn install_open_file(state: &mut BrowseState, open: OpenFile, line: usize, scrol
     state.refresh_open_file_symbols();
 }
 
-fn install_index_failure(state: &mut BrowseState, message: String) {
-    let reason = index_failure_reason(&state.repo_root, &message);
-    let shown = format!("Symbol index is unavailable: {reason}");
+fn install_index_failure(state: &mut BrowseState, message: &str) {
+    let reason = index_failure_reason(&state.repo_root, message);
+    let shown = format!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{reason}");
     tracing::warn!("{shown}");
     state.index = IndexState::Failed { reason };
     state.module_graph = ModuleGraphState::Failed;
@@ -3405,6 +3407,9 @@ fn install_file_load_failure(
 /// without horizontal scrolling.
 fn install_repository_listing_failure(state: &mut BrowseState, message: String, tab_width: u8) {
     const WRAP_WIDTH: usize = 60;
+
+    // Symbol keys read this failure from the index. The listing pane keeps the footer.
+    install_index_failure(state, &message);
 
     let wrapped = wrap_display_message(&message, WRAP_WIDTH);
     let source = format!("Git could not list repository files.\n\n{wrapped}");
@@ -6724,6 +6729,29 @@ mod tests {
                 .as_ref()
                 .map(|open| open.path.as_str()),
             Some("Repository listing error")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_listing_failure_marks_the_symbol_index_unavailable() {
+        let error = "fatal: not a git repository";
+        let mut app = App::new_for_test();
+        let mut state = BrowseState::new(PathBuf::from("/repo"), AppState::FileList);
+        let (tx, rx) = mpsc::channel(1);
+        state.paths_receiver = Some(rx);
+        app.browse_state = Some(state);
+        tx.send(Err(error.to_string())).await.unwrap();
+
+        app.poll_browse_updates();
+
+        let state = app.browse_state.as_ref().unwrap();
+        let IndexState::Failed { reason } = &state.index else {
+            panic!("a failed file listing must fail the symbol index");
+        };
+        assert_eq!(reason, error);
+        assert_eq!(
+            state.index.blocked_message().as_deref(),
+            Some("Symbol index is unavailable: fatal: not a git repository")
         );
     }
 
