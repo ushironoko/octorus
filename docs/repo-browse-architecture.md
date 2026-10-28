@@ -145,19 +145,21 @@ does not carry this check.
 
 `o`, `s`, and `gd` read `IndexState::blocked_message()`. `Idle` says the index
 has not started. `Building` says it is still building. `Failed` says
-`Symbol index is unavailable: ` plus the stored reason. That reason is the
-underlying error. When the error names the source root, the path is relative
-to the repository root, and a path outside the root stays as given. A footer
-status wider than the footer ends with `…`, cut by display width, and the full
-line is logged once when the failure is stored. The header still shows
-`symbols: unavailable` in red. A ready index with no symbols in the open file
-says `No symbols in this file` for `o`.
+`Symbol index is unavailable: ` plus the first non-empty line of the stored
+reason. Blank lines at the start are skipped, and a reason that is only
+whitespace adds nothing after the prefix. The state keeps the full reason.
+That reason is the underlying error. When the error names the source root, the
+path is relative to the repository root, and a path outside the root stays as
+given. A footer status wider than the footer ends with `…`, cut by display
+width, and the full reason is logged once when the failure is stored. The
+header still shows `symbols: unavailable` in red. A ready index with no
+symbols in the open file says `No symbols in this file` for `o`.
 
 A failed file listing does not leave the symbol index or the module graph idle.
 It uses that same failed-index path, so the listing error is the stored reason.
-`o`, `s`, and `gd` report `Symbol index is unavailable: ` plus that error. The
-footer still points at the listing pane until one of those keys replaces the
-status.
+`o`, `s`, and `gd` report `Symbol index is unavailable: ` plus the first
+non-empty line of that error. The footer still points at the listing pane
+until one of those keys replaces the status.
 
 `OpenLoad` is the single authority over a file being opened: "is something
 loading", "which path's result are we waiting for", and "where does the cursor
