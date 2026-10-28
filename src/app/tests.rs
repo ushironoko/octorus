@@ -5427,7 +5427,8 @@ fn left_comment_on_a_context_line_uses_the_old_line_number() {
 
 #[test]
 fn comments_after_an_empty_context_line_land_on_their_diff_rows() {
-    let patch = "@@ -10,5 +10,5 @@\n before\n\n after-blank\n-removed-tail\n+added-tail\n kept-end\n";
+    let patch =
+        "@@ -10,5 +10,5 @@\n before\n\n after-blank\n-removed-tail\n+added-tail\n kept-end\n";
     assert_eq!(
         patch.lines().nth(2),
         Some(""),
@@ -5447,6 +5448,22 @@ fn comments_after_an_empty_context_line_land_on_their_diff_rows() {
         landed[pos.comment_index] = Some(rows[pos.diff_line_index]);
     }
     assert_eq!(landed, [Some("-removed-tail"), Some("+added-tail")]);
+}
+
+#[test]
+fn missing_newline_marker_does_not_accept_the_next_line_number() {
+    let patch = "@@ -1,2 +1,2 @@\n alpha\n beta\n\\ No newline at end of file\n";
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(3), Some("LEFT"), None, "past the last old line"),
+        review_on(2, Some(3), Some("RIGHT"), None, "past the last new line"),
+    ]);
+    app.update_file_comment_positions();
+    assert!(app.cmt.file_comment_positions.is_empty());
+    assert!(App::left_review_comment_is_outdated(
+        &app.cmt.review_comments.as_ref().unwrap()[0],
+        app.files(),
+    ));
 }
 
 #[tokio::test]
