@@ -1807,7 +1807,14 @@ impl IndexState {
         match self {
             Self::Idle => Some("Symbol index has not started".to_string()),
             Self::Building => Some("Symbol index is still building".to_string()),
-            Self::Failed { reason } => Some(format!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{reason}")),
+            Self::Failed { reason } => {
+                let line = reason
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .map(str::trim)
+                    .unwrap_or("");
+                Some(format!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{line}"))
+            }
             Self::Ready(_) => None,
         }
     }
@@ -3323,11 +3330,10 @@ fn install_open_file(state: &mut BrowseState, open: OpenFile, line: usize, scrol
 
 fn install_index_failure(state: &mut BrowseState, message: &str) {
     let reason = index_failure_reason(&state.repo_root, message);
-    let shown = format!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{reason}");
-    tracing::warn!("{shown}");
+    tracing::warn!("{SYMBOL_INDEX_UNAVAILABLE_PREFIX}{reason}");
     state.index = IndexState::Failed { reason };
     state.module_graph = ModuleGraphState::Failed;
-    state.status = Some(shown);
+    state.status = state.index.blocked_message();
 }
 
 /// Stored text for `IndexState::Failed`.
