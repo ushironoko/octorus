@@ -11,7 +11,7 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
-use super::common::{render_update_bar, truncate_with_width};
+use super::common::{fit_to_width, render_update_bar};
 use crate::app::App;
 use crate::github::{CiStatus, PullRequestSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -235,7 +235,6 @@ fn build_pr_list_items_ref(
             let fixed_width = 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);
-            let title = truncate_with_width(&full_title, title_width);
             let title_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -246,7 +245,7 @@ fn build_pr_list_items_ref(
                 Style::default()
             };
             let title_span = Span::styled(
-                format!("{:<width$}", title, width = title_width),
+                fit_to_width(&full_title, title_width).into_owned(),
                 title_style,
             );
 

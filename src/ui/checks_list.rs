@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::common::truncate_with_width;
+use super::common::fit_to_width;
 use crate::app::App;
 use crate::github::CheckItem;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -197,19 +197,17 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
 
             let name_width = 30;
             let workflow_width = 15;
-            let name_display = truncate_with_width(&check.name, name_width);
-            let workflow_display = truncate_with_width(workflow, workflow_width);
 
             let line = Line::from(vec![
                 Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<width$}", name_display, width = name_width),
+                    fit_to_width(&check.name, name_width).into_owned(),
                     name_style,
                 ),
                 Span::raw("  "),
                 Span::styled(
-                    format!("{:<width$}", workflow_display, width = workflow_width),
+                    fit_to_width(workflow, workflow_width).into_owned(),
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw("  "),
@@ -225,6 +223,7 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
 mod tests {
     use super::*;
     use crate::app::AppState;
+    use crate::ui::common::truncate_with_width;
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -311,6 +310,13 @@ mod tests {
             started_at: None,
             completed_at: None,
         }
+    }
+
+    fn timed_check(name: &str, workflow: &str, completed_at: &str) -> CheckItem {
+        let mut check = sample_check(name, workflow);
+        check.started_at = Some("2024-01-01T00:00:00Z".to_string());
+        check.completed_at = Some(completed_at.to_string());
+        check
     }
 
     fn render_checks(checks: Vec<CheckItem>) -> Buffer {
@@ -429,6 +435,20 @@ mod tests {
         assert_eq!(
             cols[2], cols[0],
             "truncated fullwidth check name shifted the workflow column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn fullwidth_workflow_aligns_duration_with_ascii() {
+        let buf = render_checks(vec![
+            timed_check("lint", "ci", "2024-01-01T00:00:45Z"),
+            timed_check("lint", "ビルド", "2024-01-01T00:03:12Z"),
+        ]);
+        let cols = workflow_columns(&buf, &["45s", "3m 12s"]);
+        let rendered = screen_text(&buf);
+        assert_eq!(
+            cols[0], cols[1],
+            "fullwidth workflow shifted the duration column. columns={cols:?}\n{rendered}"
         );
     }
 
