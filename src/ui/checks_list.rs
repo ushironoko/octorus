@@ -221,6 +221,7 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_buffer::{find_column, screen_text};
     use super::*;
     use crate::app::AppState;
     use crate::ui::common::truncate_with_width;
@@ -228,7 +229,6 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::Terminal;
-    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn test_check_status_icon_by_bucket() {
@@ -333,57 +333,6 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
-    }
-
-    fn find_column(buf: &Buffer, y: u16, needle: &str) -> Option<u16> {
-        let width = buf.area().width;
-        let needle: Vec<char> = needle.chars().collect();
-        if needle.is_empty() {
-            return Some(0);
-        }
-        for start in 0..width {
-            let mut x = start;
-            let mut matched = 0;
-            let mut found = true;
-            while matched < needle.len() {
-                if x >= width {
-                    found = false;
-                    break;
-                }
-                let mut chars = buf[(x, y)].symbol().chars();
-                let Some(ch) = chars.next() else {
-                    found = false;
-                    break;
-                };
-                if chars.next().is_some() || ch != needle[matched] {
-                    found = false;
-                    break;
-                }
-                matched += 1;
-                x += 1;
-            }
-            if found {
-                return Some(start);
-            }
-        }
-        None
-    }
-
-    fn screen_text(buf: &Buffer) -> String {
-        (0..buf.area().height)
-            .map(|y| {
-                let mut line = String::new();
-                let mut x = 0;
-                while x < buf.area().width {
-                    let sym = buf[(x, y)].symbol();
-                    let width = u16::try_from(sym.width()).unwrap_or(1).max(1);
-                    line.push_str(sym);
-                    x = x.saturating_add(width);
-                }
-                line.trim_end().to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 
     fn workflow_columns(buf: &Buffer, markers: &[&str]) -> Vec<Option<u16>> {
