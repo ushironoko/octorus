@@ -7326,8 +7326,7 @@ mod tests {
         let rendered = render_at(&mut app, width, 8);
         let footer = rendered.lines().next_back().unwrap_or("");
         assert_eq!(
-            footer,
-            "Symbol index is unavailable: 読 み 取 り 拒 …",
+            footer, "Symbol index is unavailable: 読 み 取 り 拒 …",
             "a 40-column footer keeps five fullwidth columns, then an ellipsis\n{rendered}"
         );
         assert_eq!(footer.chars().count(), usize::from(width), "{footer:?}");
