@@ -3081,7 +3081,7 @@ mod tests {
         let (preview, label, simple) = confirm_selected_discard(&repo, 2).await;
         assert!(simple, "untracked discard must skip gitfilm");
         assert!(preview.is_empty(), "gitfilm must not be told to restore");
-        assert_eq!(label, "git clean -f -- new.txt (file will be deleted)");
+        assert_eq!(label, "Delete untracked file: git clean -f -- new.txt");
         assert!(!repo.dir.path().join("new.txt").exists());
         assert!(repo.dir.path().join("keep.txt").exists());
         assert_eq!(
@@ -3139,7 +3139,7 @@ mod tests {
         assert!(preview.is_empty());
         assert_eq!(
             label,
-            "git clean -f -- 'new file.txt' (file will be deleted)"
+            "Delete untracked file: git clean -f -- 'new file.txt'"
         );
         assert!(!repo.dir.path().join("new file.txt").exists());
         assert!(repo.dir.path().join("new.txt").exists());

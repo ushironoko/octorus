@@ -903,7 +903,7 @@ impl DestructiveOp {
         match self {
             Self::Discard {
                 invocation: DiscardInvocation::Clean { .. },
-            } => format!("{} (file will be deleted)", self.display_command()),
+            } => format!("Delete untracked file: {}", self.display_command()),
             _ => self.display_command(),
         }
     }

@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn test_footer_discard_untracked_says_file_will_be_deleted() {
+    fn test_footer_untracked_discard_leads_with_delete_warning() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(vec![entry(
             "new.txt",
@@ -1033,7 +1033,7 @@ mod tests {
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │git clean -f -- new.txt (file will be deleted) (Y/n)                                              │
+        │Delete untracked file: git clean -f -- new.txt (Y/n)                                              │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
