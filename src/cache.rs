@@ -4,7 +4,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -171,6 +171,7 @@ fn load_local_review_comments_with_base(
     base: &std::path::Path,
 ) -> Result<Vec<LocalReviewComment>> {
     let path = local_review_comments_path_with_base(repo, working_dir, base)?;
+    sweep_stale_local_comment_tmps(&path);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -255,41 +256,150 @@ fn save_local_review_comments_with_base(
 }
 
 fn replace_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
     let parent = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "local comments path has no file name",
-        )
-    })?;
-    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut temp_name = file_name.to_os_string();
-    temp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
-    let temp_path = parent.join(temp_name);
-
-    let result = (|| -> std::io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp_path, path)?;
-        if let Ok(dir) = fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
+    // `.{filename}.{random}.tmp`. Builder inserts the random bytes between the
+    // prefix and the suffix, and on a name collision it tries another name
+    // without removing the existing file.
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "local comments path has no file name",
+            )
+        })?;
+    let prefix = format!(".{file_name}.");
+    let mut temp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    temp.write_all(bytes)?;
+    #[cfg(unix)]
+    set_replaced_file_permissions(temp.as_file(), path)?;
+    temp.as_file().sync_all()?;
+    // `?` drops the temp file when persist fails, so only our file is removed.
+    drop(temp.persist(path)?);
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
-    result
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_replaced_file_permissions(file: &fs::File, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = match fs::metadata(dest) {
+        Ok(meta) => meta.permissions().mode() & 0o777,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0o600,
+        Err(err) => return Err(err),
+    };
+    file.set_permissions(fs::Permissions::from_mode(mode))
+}
+
+/// A live save holds its temp file only while it writes, syncs, and renames
+/// one comments document. That finishes in seconds. One hour is far past any
+/// in-progress write, so a newer temp file is left alone, and a crash leftover
+/// is removed on the next load.
+const STALE_LOCAL_COMMENT_TMP_MAX_AGE: Duration = Duration::from_hours(1);
+
+fn sweep_stale_local_comment_tmps(comments_path: &Path) {
+    let Some(comments_file) = comments_path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = comments_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return;
+    };
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(
+                "failed to scan for stale local review comment temp files in {}: {}",
+                parent.display(),
+                err
+            );
+            return;
+        }
+    };
+    let now = SystemTime::now();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!(
+                    "skipped a directory entry while cleaning local review comment temp files in {}: {}",
+                    parent.display(),
+                    err
+                );
+                continue;
+            }
+        };
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !is_local_comment_tmp_name(name, comments_file) {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to stat local review comment temp file {}: {}",
+                    entry.path().display(),
+                    err
+                );
+                continue;
+            }
+        };
+        let modified = match meta.modified() {
+            Ok(modified) => modified,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read local review comment temp file mtime {}: {}",
+                    entry.path().display(),
+                    err
+                );
+                continue;
+            }
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > STALE_LOCAL_COMMENT_TMP_MAX_AGE {
+            let temp_path = entry.path();
+            if let Err(err) = fs::remove_file(&temp_path) {
+                tracing::warn!(
+                    "failed to remove stale local review comment temp file {}: {}",
+                    temp_path.display(),
+                    err
+                );
+            }
+        }
+    }
+}
+
+fn is_local_comment_tmp_name(name: &str, comments_file: &str) -> bool {
+    let mut prefix = String::with_capacity(comments_file.len() + 2);
+    prefix.push('.');
+    prefix.push_str(comments_file);
+    prefix.push('.');
+    let Some(random) = name
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    !random.is_empty() && random.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -934,6 +1044,175 @@ mod tests {
             "a failed save left temporary files behind: {leftovers:?}"
         );
         assert_eq!(fs::read(path.join("keep")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn test_save_local_review_comments_leaves_unrelated_tmp_files() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+
+        // These are the names the old writer claimed (`{file}.{pid}.{seq}.tmp`),
+        // plus one file from another pid. A save must leave every one of them
+        // byte-for-byte, including when that name is the one it would have opened.
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let pid = std::process::id();
+        let mut planted = Vec::with_capacity(512);
+        for seq in 0..512 {
+            let tmp_path = parent.join(format!("{file_name}.{pid}.{seq}.tmp"));
+            let body = format!("other-process-{seq}");
+            fs::write(&tmp_path, &body).unwrap();
+            planted.push((tmp_path, body));
+        }
+        let other_pid = parent.join(format!("{file_name}.1.0.tmp"));
+        fs::write(&other_pid, b"other-pid").unwrap();
+        let in_progress = parent.join(format!(".{file_name}.taken.tmp"));
+        fs::write(&in_progress, b"in-progress").unwrap();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(7))];
+        let saved =
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base);
+
+        let damaged: Vec<_> = planted
+            .iter()
+            .filter(|(tmp_path, body)| fs::read(tmp_path).ok().as_deref() != Some(body.as_bytes()))
+            .map(|(tmp_path, _)| tmp_path.display().to_string())
+            .collect();
+        assert!(
+            damaged.is_empty(),
+            "a save must not change tmp files it did not create: {damaged:?}"
+        );
+        assert_eq!(
+            fs::read(&other_pid).unwrap(),
+            b"other-pid",
+            "a save must not change another process's tmp file"
+        );
+        assert_eq!(
+            fs::read(&in_progress).unwrap(),
+            b"in-progress",
+            "a save must not change another writer's hidden tmp"
+        );
+        saved.expect("a name collision must not fail the save");
+
+        let loaded =
+            load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 7);
+        assert_eq!(fs::read(&in_progress).unwrap(), b"in-progress");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_local_review_comments_preserves_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let first = vec![LocalReviewComment::new(make_review_comment(1))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &first, &base).unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+
+        for mode in [0o640, 0o600] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            let next = vec![LocalReviewComment::new(make_review_comment(mode as u64))];
+            save_local_review_comments_with_base("owner/repo", Some(&workdir), &next, &base)
+                .unwrap();
+            let kept = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(kept, mode, "replacing a comments file must keep its mode");
+            let loaded =
+                load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].comment.id, mode as u64);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_local_review_comments_creates_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(1))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base)
+            .unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a new comments file must be readable only by its owner"
+        );
+    }
+
+    #[test]
+    fn test_load_local_review_comments_drops_only_stale_tmp_files() {
+        let tempdir = tempdir().unwrap();
+        let base = tempdir.path().join("cache");
+        let workdir = tempdir.path().join("worktree");
+        fs::create_dir_all(&workdir).unwrap();
+        let workdir = workdir.to_string_lossy().to_string();
+
+        let comments = vec![LocalReviewComment::new(make_review_comment(4))];
+        save_local_review_comments_with_base("owner/repo", Some(&workdir), &comments, &base)
+            .unwrap();
+        let path =
+            local_review_comments_path_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        let parent = path.parent().unwrap();
+
+        let file_name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let stale = parent.join(format!(".{file_name}.stale1.tmp"));
+        let fresh = parent.join(format!(".{file_name}.fresh1.tmp"));
+        let other_shape = parent.join("crash.424242.1.tmp");
+        fs::write(&stale, b"stale-tmp").unwrap();
+        fs::write(&fresh, b"fresh-tmp").unwrap();
+        fs::write(&other_shape, b"other-shape").unwrap();
+        let old = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60))
+            .unwrap();
+        for path in [&stale, &other_shape] {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+
+        let loaded =
+            load_local_review_comments_with_base("owner/repo", Some(&workdir), &base).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].comment.id, 4);
+        assert!(
+            !stale.exists(),
+            "a load must remove a tmp file left by a crash"
+        );
+        assert_eq!(
+            fs::read(&fresh).unwrap(),
+            b"fresh-tmp",
+            "a load must leave a tmp file that is still new enough to be in progress"
+        );
+        assert_eq!(
+            fs::read(&other_shape).unwrap(),
+            b"other-shape",
+            "a load must leave a tmp file whose name is not a comments temp"
+        );
     }
 
     fn complete_local_comments_document(bytes: &[u8]) -> bool {
