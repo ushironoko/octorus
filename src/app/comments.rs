@@ -7,7 +7,8 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
-use crate::github::{self, comment::ReviewComment};
+use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
+use crate::github::{self, comment::ReviewComment, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::ui;
 
@@ -27,6 +28,35 @@ pub(crate) fn split_local_comments(
         }
     }
     (comments, meta)
+}
+
+fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
+    Some(SideLine {
+        side: parse_diff_side(comment.location.side.as_deref()),
+        line: comment.line?,
+    })
+}
+
+/// Every `LEFT` endpoint of a comment must hit an old-file row.
+/// A `RIGHT` start line is not required. New-file placement ignores it.
+fn left_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
+    let Some(line) = comment.line else {
+        return false;
+    };
+    if find_diff_line_index(patch, SideLine::left(line)).is_none() {
+        return false;
+    }
+    let Some(start) = comment.start_line else {
+        return true;
+    };
+    let start_side = parse_diff_side(
+        comment
+            .location
+            .start_side
+            .as_deref()
+            .or(comment.location.side.as_deref()),
+    );
+    start_side == DiffSide::Right || find_diff_line_index(patch, SideLine::left(start)).is_some()
 }
 
 impl App {
@@ -1089,11 +1119,13 @@ impl App {
             if comment.path != filename {
                 continue;
             }
-            // Skip PR-level comments (line: None)
-            let Some(line_num) = comment.line else {
+            let Some(anchor) = comment_anchor(comment) else {
                 continue;
             };
-            if let Some(diff_index) = Self::find_diff_line_index(&patch, line_num) {
+            if anchor.side == DiffSide::Left && !left_anchor_resolves(comment, &patch) {
+                continue;
+            }
+            if let Some(diff_index) = find_diff_line_index(&patch, anchor) {
                 self.cmt.file_comment_positions.push(CommentPosition {
                     diff_line_index: diff_index,
                     comment_index: i,
@@ -1106,33 +1138,27 @@ impl App {
             .sort_by_key(|pos| pos.diff_line_index);
     }
 
-    /// Static helper to find diff line index for a given line number
-    pub(crate) fn find_diff_line_index(patch: &str, target_line: u32) -> Option<usize> {
-        let lines: Vec<&str> = patch.lines().collect();
-        let mut new_line_number: Option<u32> = None;
-
-        for (i, line) in lines.iter().enumerate() {
-            if line.starts_with("@@") {
-                // Parse hunk header to get starting line number
-                if let Some(plus_pos) = line.find('+') {
-                    let after_plus = &line[plus_pos + 1..];
-                    let end_pos = after_plus.find([',', ' ']).unwrap_or(after_plus.len());
-                    if let Ok(num) = after_plus[..end_pos].parse::<u32>() {
-                        new_line_number = Some(num);
-                    }
-                }
-            } else if line.starts_with('+') || line.starts_with(' ') {
-                if let Some(current) = new_line_number {
-                    if current == target_line {
-                        return Some(i);
-                    }
-                    new_line_number = Some(current + 1);
-                }
-            }
-            // Removed lines don't increment new_line_number
+    /// `true` when a `LEFT` comment has no old-file row in the loaded diff.
+    ///
+    /// A file whose patch is still loading is not outdated. A missing file,
+    /// a null `line`, or an old line that is not in the patch is outdated.
+    pub(crate) fn left_review_comment_is_outdated(
+        comment: &ReviewComment,
+        files: &[ChangedFile],
+    ) -> bool {
+        if parse_diff_side(comment.location.side.as_deref()) != DiffSide::Left {
+            return false;
         }
-
-        None
+        if comment.line.is_none() {
+            return true;
+        }
+        let Some(file) = files.iter().find(|file| file.filename == comment.path) else {
+            return true;
+        };
+        let Some(patch) = file.patch.as_deref() else {
+            return false;
+        };
+        !left_anchor_resolves(comment, patch)
     }
     /// Get comment indices at the current selected line
     pub fn get_comment_indices_at_current_line(&self) -> Vec<usize> {

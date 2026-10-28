@@ -1098,6 +1098,7 @@ fn render_line_discussion(
         }
     };
     let resolved = HashSet::new();
+    let outdated_ids = HashSet::new();
     match view {
         DiscussionView::Closed => {}
         DiscussionView::ThreadList {
@@ -1128,6 +1129,7 @@ fn render_line_discussion(
                     visible_threads: Some(visible_threads),
                     selected: *selected,
                     resolved_ids: &resolved,
+                    outdated_ids: &outdated_ids,
                 },
                 scroll,
             );
@@ -1165,6 +1167,7 @@ fn render_line_discussion(
                 *selected,
                 scroll,
                 &resolved,
+                &outdated_ids,
             );
             register_rows(hit_map, &item_heights, *scroll);
         }

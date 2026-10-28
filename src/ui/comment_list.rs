@@ -11,6 +11,7 @@ use ratatui::{
     },
     Frame,
 };
+use std::collections::HashSet;
 
 fn register_comment_list_hits(
     hit_map: &mut HitMap,
@@ -360,9 +361,22 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     frame.render_widget(header, area);
 }
 
+fn outdated_left_ids(app: &App) -> HashSet<u64> {
+    let Some(comments) = app.cmt.review_comments.as_deref() else {
+        return HashSet::new();
+    };
+    let files = app.files();
+    comments
+        .iter()
+        .filter(|comment| App::left_review_comment_is_outdated(comment, files))
+        .map(|comment| comment.id)
+        .collect()
+}
+
 fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let outdated_ids = outdated_left_ids(app);
     if app.cmt.expanded_thread.is_some() {
-        render_expanded_thread(frame, app, area);
+        render_expanded_thread(frame, app, area, &outdated_ids);
         return;
     }
 
@@ -413,6 +427,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
             visible_threads: None,
             selected: app.cmt.selected_thread,
             resolved_ids: &resolved_ids,
+            outdated_ids: &outdated_ids,
         },
         &mut app.cmt.thread_scroll_offset,
         Some(&mut app.hit_map),
@@ -425,6 +440,7 @@ pub(crate) struct ReviewThreadListData<'a> {
     pub visible_threads: Option<&'a [usize]>,
     pub selected: usize,
     pub resolved_ids: &'a std::collections::HashSet<u64>,
+    pub outdated_ids: &'a HashSet<u64>,
 }
 
 pub(crate) fn render_review_thread_list_data(
@@ -491,6 +507,11 @@ fn render_review_thread_list_data_with_hits(
                     format!("{}{}", comment.path, line_info),
                     Style::default().fg(Color::Green),
                 ),
+                if data.outdated_ids.contains(&comment.id) {
+                    Span::styled(" outdated", Style::default().fg(Color::DarkGray))
+                } else {
+                    Span::raw("")
+                },
                 Span::styled(reply_info, Style::default().fg(Color::DarkGray)),
             ]);
 
@@ -544,7 +565,12 @@ fn render_review_thread_list_data_with_hits(
     }
 }
 
-fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+fn render_expanded_thread(
+    frame: &mut Frame,
+    app: &mut App,
+    area: ratatui::layout::Rect,
+    outdated_ids: &HashSet<u64>,
+) {
     use std::collections::HashSet;
 
     let Some(thread_idx) = app.cmt.expanded_thread else {
@@ -579,10 +605,12 @@ fn render_expanded_thread(frame: &mut Frame, app: &mut App, area: ratatui::layou
         app.cmt.expanded_selected,
         &mut app.cmt.expanded_scroll_offset,
         &resolved_ids,
+        outdated_ids,
         Some(&mut app.hit_map),
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_review_thread_data(
     frame: &mut Frame,
     area: Rect,
@@ -591,6 +619,7 @@ pub(crate) fn render_review_thread_data(
     selected: usize,
     scroll_offset: &mut usize,
     resolved_ids: &std::collections::HashSet<u64>,
+    outdated_ids: &HashSet<u64>,
 ) {
     render_review_thread_data_with_hits(
         frame,
@@ -600,6 +629,7 @@ pub(crate) fn render_review_thread_data(
         selected,
         scroll_offset,
         resolved_ids,
+        outdated_ids,
         None,
     );
 }
@@ -613,6 +643,7 @@ fn render_review_thread_data_with_hits(
     selected: usize,
     scroll_offset: &mut usize,
     resolved_ids: &std::collections::HashSet<u64>,
+    outdated_ids: &HashSet<u64>,
     hit_map: Option<&mut HitMap>,
 ) {
     let available_width = area.width.saturating_sub(4) as usize;
@@ -652,6 +683,11 @@ fn render_review_thread_data_with_hits(
                         format!("{}{}", comment.path, line_info),
                         Style::default().fg(Color::Green),
                     ),
+                    if outdated_ids.contains(&comment.id) {
+                        Span::styled(" outdated", Style::default().fg(Color::DarkGray))
+                    } else {
+                        Span::raw("")
+                    },
                 ])
             } else {
                 let date = comment

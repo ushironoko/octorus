@@ -18,7 +18,7 @@ use crate::github::{
 use crate::loader::SingleFileDiffResult;
 
 /// Position of a comment within the diff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommentPosition {
     pub diff_line_index: usize,
     pub comment_index: usize,
