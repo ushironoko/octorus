@@ -2,6 +2,7 @@
 //!
 //! ## Production benchmarks (matches actual production execution)
 //! - `diff_cache/` – cache building with/without syntax highlighting
+//! - `diff_cache/build_cache_warm_pool` – cache building with a reused parser pool
 //! - `browse_render/` – Repository Browser rendering at fixed viewport size
 //! - `visible_range/visible_borrowed` – visible range processing (production)
 //! - `highlighter/tree_sitter_rust` – Rust highlighting
@@ -220,6 +221,47 @@ fn bench_build_diff_cache(c: &mut Criterion) {
                     },
                     criterion::BatchSize::SmallInput,
                 );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+/// Benchmark diff cache building with one reused parser pool.
+///
+/// Parser creation and highlight-query compilation run once before the timed
+/// loop. `diff_cache/build_cache` still constructs a pool on every iteration.
+fn bench_build_diff_cache_warm_pool(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff_cache/build_cache_warm_pool");
+
+    for line_count in [100, 500, 1000, 5000] {
+        let patch = generate_diff_patch(line_count);
+
+        group.throughput(Throughput::Elements(line_count as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(line_count),
+            &patch,
+            |b, patch| {
+                let mut parser_pool = ParserPool::new();
+                black_box(build_diff_cache(
+                    patch,
+                    "test.rs",
+                    "base16-ocean.dark",
+                    &mut parser_pool,
+                    false,
+                    4,
+                ));
+                b.iter(|| {
+                    black_box(build_diff_cache(
+                        black_box(patch),
+                        black_box("test.rs"),
+                        black_box("base16-ocean.dark"),
+                        black_box(&mut parser_pool),
+                        black_box(false),
+                        black_box(4),
+                    ))
+                });
             },
         );
     }
@@ -675,6 +717,7 @@ criterion_group!(
     benches,
     bench_browse_render,
     bench_build_diff_cache,
+    bench_build_diff_cache_warm_pool,
     bench_build_diff_cache_no_highlight,
     bench_selected_line_rendering,
     bench_visible_range_processing,
