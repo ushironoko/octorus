@@ -178,18 +178,117 @@ impl PatchLineInfo<'_> {
     }
 }
 
+/// Which file a diff line number belongs to.
+///
+/// `Left` is the old file (`-` and context lines). `Right` is the new file
+/// (`+` and context lines). GitHub review comments use the same names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSide {
+    Left,
+    Right,
+}
+
+/// A line number that is only meaningful on one side of a diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SideLine {
+    pub side: DiffSide,
+    pub line: u32,
+}
+
+impl SideLine {
+    pub fn left(line: u32) -> Self {
+        Self {
+            side: DiffSide::Left,
+            line,
+        }
+    }
+
+    pub fn right(line: u32) -> Self {
+        Self {
+            side: DiffSide::Right,
+            line,
+        }
+    }
+}
+
+/// GitHub omits `side` on new-file comments. Only `LEFT` selects the old file.
+pub fn parse_diff_side(side: Option<&str>) -> DiffSide {
+    match side {
+        Some("LEFT") => DiffSide::Left,
+        _ => DiffSide::Right,
+    }
+}
+
 /// Parse a hunk header to extract the starting line number for new file
 /// Format: @@ -old_start,old_count +new_start,new_count @@
 fn parse_hunk_header(line: &str) -> Option<u32> {
-    // Find the +new_start part
-    let plus_pos = line.find('+')?;
-    let after_plus = &line[plus_pos + 1..];
+    hunk_line_starts(line).map(|(_, new_start)| new_start)
+}
 
-    // Extract the number (stop at comma or space)
-    let end_pos = after_plus.find([',', ' ']).unwrap_or(after_plus.len());
-    let num_str = &after_plus[..end_pos];
+/// Old-file and new-file start lines from `@@ -old[,count] +new[,count] @@`.
+fn hunk_line_starts(line: &str) -> Option<(u32, u32)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old_start, rest) = split_hunk_number(rest)?;
+    let rest = skip_hunk_count(rest).trim_start().strip_prefix('+')?;
+    let (new_start, _) = split_hunk_number(rest)?;
+    Some((old_start, new_start))
+}
 
-    num_str.parse().ok()
+fn skip_hunk_count(input: &str) -> &str {
+    let Some(rest) = input.strip_prefix(',') else {
+        return input;
+    };
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    &rest[end..]
+}
+
+fn split_hunk_number(input: &str) -> Option<(u32, &str)> {
+    let end = input.find([',', ' ']).unwrap_or(input.len());
+    let number = input[..end].parse().ok()?;
+    Some((number, &input[end..]))
+}
+
+/// Diff row whose old-file or new-file line number is `target`.
+///
+/// `Left` matches `-` and context rows. `Right` matches `+` and context rows.
+/// A miss is `None`. The search does not move to a neighboring row.
+pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
+    let mut old_line: Option<u32> = None;
+    let mut new_line: Option<u32> = None;
+
+    for (index, line) in patch.lines().enumerate() {
+        if line.starts_with("@@") {
+            if let Some((old_start, new_start)) = hunk_line_starts(line) {
+                old_line = Some(old_start);
+                new_line = Some(new_start);
+            }
+            continue;
+        }
+
+        let on_old = line.starts_with('-') || line.starts_with(' ');
+        let on_new = line.starts_with('+') || line.starts_with(' ');
+        if !on_old && !on_new {
+            continue;
+        }
+
+        let matched = match target.side {
+            DiffSide::Left => on_old && old_line == Some(target.line),
+            DiffSide::Right => on_new && new_line == Some(target.line),
+        };
+        if matched {
+            return Some(index);
+        }
+        if on_old {
+            old_line = old_line.map(|number| number + 1);
+        }
+        if on_new {
+            new_line = new_line.map(|number| number + 1);
+        }
+    }
+
+    None
 }
 
 /// Get information about a specific line in a patch
@@ -1391,6 +1490,40 @@ index 1234567..abcdefg 100644
         let diff = "diff --git a/file.rs b/file.rs\r\nindex 123..456 100644\r\n--- a/file.rs\r\n+++ b/file.rs\r\n@@ -1,2 +1,3 @@\r\n fn main() {\r\n+    hello\r\n }";
         let result = parse_unified_diff(diff);
         assert!(result.contains_key("file.rs"), "keys: {:?}", result.keys());
+    }
+
+    #[test]
+    fn left_side_line_matches_the_removed_row_not_the_added_row() {
+        let patch = "\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,3 +10,3 @@
+ kept-top
+-removed-left
++added-right
+ kept-bottom
+";
+        assert_eq!(find_diff_line_index(patch, SideLine::left(11)), Some(5));
+        assert_eq!(find_diff_line_index(patch, SideLine::right(11)), Some(6));
+        assert_eq!(find_diff_line_index(patch, SideLine::left(10)), Some(4));
+        assert_eq!(find_diff_line_index(patch, SideLine::right(10)), Some(4));
+        assert_eq!(find_diff_line_index(patch, SideLine::left(9)), None);
+        assert_eq!(find_diff_line_index(patch, SideLine::right(9)), None);
+    }
+
+    #[test]
+    fn left_side_line_does_not_jump_to_another_hunk() {
+        let patch = "\
+@@ -1,2 +1,2 @@
+ alpha
+-beta
+@@ -30,1 +30,1 @@
+-gamma
+";
+        assert_eq!(find_diff_line_index(patch, SideLine::left(2)), Some(2));
+        assert_eq!(find_diff_line_index(patch, SideLine::left(30)), Some(4));
+        assert_eq!(find_diff_line_index(patch, SideLine::left(3)), None);
     }
 
     #[test]

@@ -6,7 +6,8 @@ use serial_test::serial;
 use tempfile::tempdir;
 
 use crate::cache::{PrCacheKey, PrData};
-use crate::github::comment::ReviewComment;
+use crate::diff::{find_diff_line_index, SideLine};
+use crate::github::comment::{ReviewComment, ReviewCommentLocation};
 use crate::github::{ChangedFile, PrCommit, PullRequest};
 use crate::loader::DataLoadResult;
 
@@ -91,13 +92,13 @@ fn test_find_diff_line_index_basic() {
 -removed line"#;
 
     // Line 1 (context) is at diff index 1
-    assert_eq!(App::find_diff_line_index(patch, 1), Some(1));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(1)), Some(1));
     // Line 2 (added) is at diff index 2
-    assert_eq!(App::find_diff_line_index(patch, 2), Some(2));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(2)), Some(2));
     // Line 3 (context) is at diff index 3
-    assert_eq!(App::find_diff_line_index(patch, 3), Some(3));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(3)), Some(3));
     // Line 5 doesn't exist in new file
-    assert_eq!(App::find_diff_line_index(patch, 5), None);
+    assert_eq!(find_diff_line_index(patch, SideLine::right(5)), None);
 }
 
 #[test]
@@ -110,11 +111,11 @@ fn test_find_diff_line_index_multi_hunk() {
 +new line11"#;
 
     // First hunk: line 1 at index 1, line 2 at index 2
-    assert_eq!(App::find_diff_line_index(patch, 1), Some(1));
-    assert_eq!(App::find_diff_line_index(patch, 2), Some(2));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(1)), Some(1));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(2)), Some(2));
     // Second hunk: line 10 at index 4, line 11 at index 5
-    assert_eq!(App::find_diff_line_index(patch, 10), Some(4));
-    assert_eq!(App::find_diff_line_index(patch, 11), Some(5));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(10)), Some(4));
+    assert_eq!(find_diff_line_index(patch, SideLine::right(11)), Some(5));
 }
 
 #[test]
@@ -5227,6 +5228,374 @@ fn test_update_file_comment_positions_stale_comment() {
     }]);
     app.update_file_comment_positions();
     assert!(app.cmt.file_comment_positions.is_empty());
+}
+
+fn review_on(
+    id: u64,
+    line: Option<u32>,
+    side: Option<&str>,
+    start: Option<(u32, &str)>,
+    body: &str,
+) -> ReviewComment {
+    ReviewComment {
+        id,
+        path: "test.rs".to_string(),
+        line,
+        start_line: start.map(|(line, _)| line),
+        body: body.to_string(),
+        user: crate::github::User {
+            login: "reviewer".to_string(),
+        },
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
+        location: ReviewCommentLocation {
+            side: side.map(str::to_string),
+            start_side: start.map(|(_, side)| side.to_string()),
+            ..ReviewCommentLocation::default()
+        },
+    }
+}
+
+const SIDE_PATCH: &str = "\
+@@ -10,3 +10,3 @@
+ kept-top
+-removed-left
++added-right
+ kept-bottom
+";
+
+fn install_plain_diff(app: &mut App) {
+    let patch = app.files()[app.selected_file].patch.clone().expect("patch");
+    let tab_width = app.config.diff.tab_width;
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache(&patch, tab_width);
+    cache.file_index = app.selected_file;
+    let index = app.selected_file;
+    app.diff_store.set_current(index, cache);
+}
+
+fn render_screen(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn row_containing(rendered: &str, needle: &str) -> String {
+    rendered
+        .lines()
+        .find(|line| line.contains(needle))
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn left_comment_marks_the_removed_line_in_diff_and_split_view() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(11),
+        Some("LEFT"),
+        None,
+        "deleted line note",
+    )]);
+    app.update_file_comment_positions();
+
+    assert_eq!(
+        app.cmt.file_comment_positions,
+        vec![CommentPosition {
+            diff_line_index: 2,
+            comment_index: 0,
+        }]
+    );
+    assert!(app.cmt.file_comment_lines.contains(&2));
+    assert!(!app.cmt.file_comment_lines.contains(&3));
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    let removed = row_containing(&diff, "removed-left");
+    let added = row_containing(&diff, "added-right");
+    assert!(
+        removed.contains('●'),
+        "removed row should carry the comment marker, got {removed:?}"
+    );
+    assert!(
+        !added.contains('●'),
+        "added row should not carry a LEFT comment, got {added:?}"
+    );
+    insta::assert_snapshot!(diff, @r#"
+    ┌Diff──────────────────────────────────────────────────────────────────────────────────────────────┐
+    │test.rs (+1 -1)                                                                                   │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │@@ -10,3 +10,3 @@                                                                                 │
+    │ kept-top                                                                                         │
+    │● -removed-left                                                                                   │
+    │+added-right                                                                                      │
+    │ kept-bottom                                                                                      │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │? Help | ! Shell | q/Esc Back                                                                     │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    "#);
+
+    app.state = AppState::SplitViewDiff;
+    let split = render_screen(&mut app, 120, 24);
+    let removed = row_containing(&split, "removed-left");
+    let added = row_containing(&split, "added-right");
+    assert!(
+        removed.contains('●'),
+        "split diff should mark the removed row, got {removed:?}"
+    );
+    assert!(
+        !added.contains('●'),
+        "split diff should leave the added row unmarked, got {added:?}"
+    );
+    insta::assert_snapshot!(split, @r#"
+    ┌octorus─────────────────────────────────┐┌Diff Preview────────────────────────────────────────────────────────────────┐
+    │PR #1: Test                             ││test.rs (+1 -1)                                                             │
+    └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+    ┌Files (1)───────────────────────────────┐┌────────────────────────────────────────────────────────────────────────────┐
+    │[M]   test.rs +1 -1                     ││@@ -10,3 +10,3 @@                                                           │
+    │                                        ││ kept-top                                                                   │
+    │                                        ││● -removed-left                                                             │
+    │                                        ││+added-right                                                                │
+    │                                        ││ kept-bottom                                                                │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    │                                        ││                                                                            │
+    └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+    ┌────────────────────────────────────────┐┌────────────────────────────────────────────────────────────────────────────┐
+    │←/h: focus files                        ││? Help | ! Shell | q/Esc Back                                               │
+    └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+    "#);
+}
+
+#[test]
+fn left_comment_on_a_context_line_uses_the_old_line_number() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(10),
+        Some("LEFT"),
+        None,
+        "context on the old side",
+    )]);
+    app.update_file_comment_positions();
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 1);
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&diff, "kept-top").contains('●'));
+    assert!(!row_containing(&diff, "removed-left").contains('●'));
+}
+
+#[tokio::test]
+async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(11), Some("RIGHT"), None, "right stays"),
+        review_on(2, Some(40), Some("LEFT"), None, "left is gone"),
+        review_on(3, None, Some("LEFT"), None, "github dropped the line"),
+    ]);
+    app.build_review_threads();
+    app.update_file_comment_positions();
+
+    assert_eq!(app.cmt.file_comment_positions.len(), 1);
+    assert_eq!(app.cmt.file_comment_positions[0].comment_index, 0);
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 3);
+
+    app.cmt.selected_comment = 1;
+    app.jump_to_comment();
+    assert_eq!(app.diff_scroll.selected_line, 0);
+    assert_eq!(app.cmt.file_comment_positions.len(), 1);
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&diff, "added-right").contains('●'));
+    assert!(!row_containing(&diff, "removed-left").contains('●'));
+    assert!(!diff.contains("left is gone"));
+    assert!(!diff.contains("github dropped the line"));
+
+    app.state = AppState::CommentList;
+    app.cmt.comment_tab = CommentTab::Review;
+    let list = render_screen(&mut app, 100, 24);
+    let placed = row_containing(&list, "test.rs:11");
+    let missing = row_containing(&list, "test.rs:40");
+    let dropped = row_containing(&list, "test.rs");
+    assert!(!placed.contains("outdated"), "RIGHT row: {placed:?}");
+    assert!(
+        missing.contains("outdated"),
+        "missing LEFT row: {missing:?}\n{list}"
+    );
+    assert!(list.contains("left is gone"));
+    assert!(
+        list.lines()
+            .any(|line| line.contains("outdated") && !line.contains(":40")),
+        "null-line LEFT comment should be outdated\n{dropped}\n{list}"
+    );
+}
+
+#[test]
+fn right_comment_with_a_missing_start_stays_on_the_new_line() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(11),
+        Some("RIGHT"),
+        Some((50, "RIGHT")),
+        "multiline right",
+    )]);
+    app.update_file_comment_positions();
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 3);
+    assert!(!App::left_review_comment_is_outdated(
+        &app.cmt.review_comments.as_ref().unwrap()[0],
+        app.files(),
+    ));
+}
+
+#[test]
+fn multiline_left_comment_marks_only_the_end_removed_line() {
+    let patch = "\
+@@ -10,4 +10,3 @@
+ kept-top
+-old-start
+-old-end
++new-only
+ kept-bottom
+";
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(12),
+        Some("LEFT"),
+        Some((11, "LEFT")),
+        "span of deletions",
+    )]);
+    app.update_file_comment_positions();
+    assert_eq!(
+        app.cmt.file_comment_positions,
+        vec![CommentPosition {
+            diff_line_index: 3,
+            comment_index: 0,
+        }]
+    );
+    assert!(!app.cmt.file_comment_lines.contains(&2));
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&diff, "old-end").contains('●'));
+    assert!(!row_containing(&diff, "old-start").contains('●'));
+    assert!(!row_containing(&diff, "new-only").contains('●'));
+}
+
+#[test]
+fn multiline_left_comment_with_a_missing_start_is_not_placed() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(11),
+        Some("LEFT"),
+        Some((99, "LEFT")),
+        "range starts outside the hunk",
+    )]);
+    app.build_review_threads();
+    app.update_file_comment_positions();
+    assert!(app.cmt.file_comment_positions.is_empty());
+    assert!(App::left_review_comment_is_outdated(
+        &app.cmt.review_comments.as_ref().unwrap()[0],
+        app.files(),
+    ));
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(!diff.contains('●'));
+    assert!(!diff.contains("range starts outside the hunk"));
+
+    app.state = AppState::CommentList;
+    app.cmt.comment_tab = CommentTab::Review;
+    let list = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&list, "test.rs:11").contains("outdated"));
+    assert!(list.contains("range starts outside the hunk"));
+    insta::assert_snapshot!(list, @r#"
+    ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+    │ [Review Threads (1)]  [Discussion (0)]                                                           │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │> @reviewer on test.rs:11 outdated                                                                │
+    │    range starts outside the hunk                                                                 │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │? Help | ! Shell | q/Esc Back                                                                     │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    "#);
+}
+
+#[test]
+fn left_comment_waits_for_a_loading_patch_before_calling_it_outdated() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    let comment = review_on(1, Some(11), Some("LEFT"), None, "pending");
+    if let DataState::Loaded { files, .. } = &mut app.data_state {
+        files[0].patch = None;
+    }
+    assert!(!App::left_review_comment_is_outdated(&comment, app.files()));
+
+    let orphan = review_on(2, Some(11), Some("LEFT"), None, "no file");
+    let mut orphan = orphan;
+    orphan.path = "missing.rs".to_string();
+    assert!(App::left_review_comment_is_outdated(&orphan, app.files()));
 }
 
 #[test]
