@@ -86,6 +86,18 @@ pub fn render_update_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(bar, area);
 }
 
+pub fn fit_to_width(s: &str, width: usize) -> Cow<'_, str> {
+    let truncated = truncate_with_width(s, width);
+    let current = truncated.width();
+    if current >= width {
+        truncated
+    } else {
+        let mut owned = truncated.into_owned();
+        owned.extend(std::iter::repeat_n(' ', width - current));
+        Cow::Owned(owned)
+    }
+}
+
 pub fn truncate_with_width(s: &str, max_width: usize) -> Cow<'_, str> {
     if s.width() <= max_width {
         Cow::Borrowed(s)
@@ -225,5 +237,63 @@ mod tests {
         app.set_local_mode(true);
         app.set_local_auto_focus(true);
         assert_eq!(build_pr_info(&app), "[LOCAL AF] Local HEAD diff");
+    }
+
+    #[test]
+    fn fit_to_width_matches_format_for_ascii() {
+        for (text, width) in [("hello", 10), ("hello", 5), ("", 4), ("x", 1), ("abc", 3)] {
+            assert_eq!(
+                fit_to_width(text, width).as_ref(),
+                format!("{text:<width$}"),
+                "ascii text {text:?} at width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn fit_to_width_matches_ascii_truncate_then_pad() {
+        let text = "abcdefghijklmnopqrstuvwxyz";
+        let width = 8;
+        let truncated = truncate_with_width(text, width);
+        let old = format!("{truncated:<width$}");
+        let fitted = fit_to_width(text, width);
+        assert_eq!(fitted.as_ref(), old);
+        assert_eq!(fitted.width(), width);
+    }
+
+    #[test]
+    fn fit_to_width_pads_fullwidth_to_display_width() {
+        let text = "ログイン修正";
+        let width = 20;
+        let fitted = fit_to_width(text, width);
+        assert_eq!(fitted.width(), width);
+        assert!(fitted.starts_with(text));
+        let char_padded = format!("{text:<width$}");
+        assert_ne!(fitted.as_ref(), char_padded);
+        assert!(char_padded.width() > width);
+    }
+
+    #[test]
+    fn fit_to_width_truncates_fullwidth_then_pads() {
+        let text = "あ".repeat(40);
+        let fitted = fit_to_width(&text, 10);
+        assert_eq!(fitted.width(), 10);
+        assert!(fitted.contains('…'));
+    }
+
+    #[test]
+    fn fit_to_width_pads_mixed_width_chars() {
+        let fitted = fit_to_width("aあb", 6);
+        assert_eq!(fitted.as_ref(), "aあb  ");
+        assert_eq!(fitted.width(), 6);
+    }
+
+    #[test]
+    fn fit_to_width_width_zero_matches_truncate() {
+        assert_eq!(fit_to_width("", 0).as_ref(), "");
+        assert_eq!(
+            fit_to_width("あ", 0).as_ref(),
+            truncate_with_width("あ", 0).as_ref()
+        );
     }
 }

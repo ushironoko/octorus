@@ -19,6 +19,9 @@ mod simulate_modal;
 mod split_view;
 pub mod text_area;
 
+#[cfg(test)]
+mod test_buffer;
+
 use anyhow::Result;
 use crossterm::{
     event::{

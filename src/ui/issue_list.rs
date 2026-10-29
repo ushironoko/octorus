@@ -11,7 +11,7 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
-use super::common::truncate_with_width;
+use super::common::fit_to_width;
 use crate::app::App;
 use crate::github::IssueSummary;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -217,7 +217,6 @@ fn build_issue_list_items(
             let author_width = 4 + issue.author.login.width();
             let fixed_width = 2 + 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
-            let title = truncate_with_width(&issue.title, title_width);
             let title_style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -226,7 +225,7 @@ fn build_issue_list_items(
                 Style::default()
             };
             let title_span = Span::styled(
-                format!("{:<width$}", title, width = title_width),
+                fit_to_width(&issue.title, title_width).into_owned(),
                 title_style,
             );
 
@@ -280,11 +279,13 @@ fn build_issue_list_items(
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_buffer::{find_column, row_text};
     use super::*;
     use crate::app::{App, AppState, IssueState};
     use crate::github::{IssueSummary, Label, User};
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::Terminal;
 
     fn render_full(app: &mut App) -> String {
@@ -440,6 +441,71 @@ mod tests {
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    fn render_issue_rows(issues: &[IssueSummary], area_width: usize) -> Buffer {
+        let refs: Vec<&IssueSummary> = issues.iter().collect();
+        let items = build_issue_list_items(&refs, 0, area_width);
+        let width = 160;
+        let height = u16::try_from(items.len()).unwrap_or(1).max(1);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+                let mut state = ListState::default().with_selected(Some(0));
+                frame.render_stateful_widget(list, frame.area(), &mut state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn fullwidth_issue_title_keeps_author_column_aligned_with_ascii() {
+        let issues = vec![
+            make_issue(1, "Fix login bug", "open", "alice"),
+            make_issue(2, "Add dark mode", "open", "alice"),
+            make_issue(3, "ログイン修正", "open", "alice"),
+            make_issue(4, &"あ".repeat(40), "open", "alice"),
+        ];
+        let buf = render_issue_rows(&issues, 40);
+        let marker = "by @alice";
+        let cols: Vec<Option<u16>> = (0..4).map(|y| find_column(&buf, y, marker)).collect();
+        let rendered = (0..4)
+            .map(|y| row_text(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ascii = cols[1].expect("ascii author column");
+        assert_eq!(
+            cols[2],
+            Some(ascii),
+            "short fullwidth title shifted the author column. columns={cols:?}\n{rendered}"
+        );
+        assert_eq!(
+            cols[3],
+            Some(ascii),
+            "truncated fullwidth title shifted the author column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn ascii_issue_titles_keep_the_same_author_column() {
+        let issues = vec![
+            make_issue(1, "Fix login bug", "open", "alice"),
+            make_issue(2, "Add dark mode", "open", "alice"),
+            make_issue(10, "x", "open", "alice"),
+        ];
+        let buf = render_issue_rows(&issues, 40);
+        let marker = "by @alice";
+        let cols: Vec<Option<u16>> = (0..3).map(|y| find_column(&buf, y, marker)).collect();
+        let rendered = (0..3)
+            .map(|y| row_text(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            cols.iter().all(|col| *col == cols[0]),
+            "ascii titles disagree on the author column. columns={cols:?}\n{rendered}"
+        );
     }
 
     #[test]

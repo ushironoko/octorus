@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::common::truncate_with_width;
+use super::common::fit_to_width;
 use crate::app::App;
 use crate::github::CheckItem;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -197,19 +197,17 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
 
             let name_width = 30;
             let workflow_width = 15;
-            let name_display = truncate_with_width(&check.name, name_width);
-            let workflow_display = truncate_with_width(workflow, workflow_width);
 
             let line = Line::from(vec![
                 Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<width$}", name_display, width = name_width),
+                    fit_to_width(&check.name, name_width).into_owned(),
                     name_style,
                 ),
                 Span::raw("  "),
                 Span::styled(
-                    format!("{:<width$}", workflow_display, width = workflow_width),
+                    fit_to_width(workflow, workflow_width).into_owned(),
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw("  "),
@@ -223,7 +221,14 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_buffer::{find_column, screen_text};
     use super::*;
+    use crate::app::AppState;
+    use crate::ui::common::truncate_with_width;
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
 
     #[test]
     fn test_check_status_icon_by_bucket() {
@@ -292,5 +297,141 @@ mod tests {
         let result = truncate_with_width("a very long string that needs truncation", 15);
         assert!(result.ends_with('…'));
         assert!(result.len() <= 20);
+    }
+
+    fn sample_check(name: &str, workflow: &str) -> CheckItem {
+        CheckItem {
+            name: name.to_string(),
+            state: String::new(),
+            bucket: Some("pass".to_string()),
+            link: None,
+            workflow: workflow.to_string(),
+            description: None,
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn timed_check(name: &str, workflow: &str, completed_at: &str) -> CheckItem {
+        let mut check = sample_check(name, workflow);
+        check.started_at = Some("2024-01-01T00:00:00Z".to_string());
+        check.completed_at = Some(completed_at.to_string());
+        check
+    }
+
+    fn render_checks(checks: Vec<CheckItem>) -> Buffer {
+        let mut app = App::new_for_test();
+        app.state = AppState::ChecksList;
+        app.chk.checks_loading = false;
+        app.chk.checks_target_pr = Some(42);
+        app.chk.checks = Some(checks);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn workflow_columns(buf: &Buffer, markers: &[&str]) -> Vec<Option<u16>> {
+        let mut cols = Vec::new();
+        for marker in markers {
+            let mut found = None;
+            for y in 0..buf.area().height {
+                if let Some(x) = find_column(buf, y, marker) {
+                    found = Some(x);
+                    break;
+                }
+            }
+            cols.push(found);
+        }
+        cols
+    }
+
+    #[test]
+    fn ascii_check_names_share_one_workflow_column() {
+        let buf = render_checks(vec![
+            sample_check("lint", "flow-short"),
+            sample_check("integration-tests", "flow-long"),
+        ]);
+        let cols = workflow_columns(&buf, &["flow-short", "flow-long"]);
+        let rendered = screen_text(&buf);
+        assert_eq!(
+            cols[0], cols[1],
+            "ascii check names disagree on the workflow column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn fullwidth_check_name_aligns_workflow_with_ascii() {
+        let buf = render_checks(vec![
+            sample_check("lint", "flow-ascii"),
+            sample_check("単体テスト", "flow-wide"),
+            sample_check(&"あ".repeat(40), "flow-trunc"),
+        ]);
+        let cols = workflow_columns(&buf, &["flow-ascii", "flow-wide", "flow-trunc"]);
+        let rendered = screen_text(&buf);
+        assert!(
+            cols.iter().all(Option::is_some),
+            "workflow marker missing. columns={cols:?}\n{rendered}"
+        );
+        assert_eq!(
+            cols[1], cols[0],
+            "fullwidth check name shifted the workflow column. columns={cols:?}\n{rendered}"
+        );
+        assert_eq!(
+            cols[2], cols[0],
+            "truncated fullwidth check name shifted the workflow column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn fullwidth_workflow_aligns_duration_with_ascii() {
+        let buf = render_checks(vec![
+            timed_check("lint", "ci", "2024-01-01T00:00:45Z"),
+            timed_check("lint", "ビルド", "2024-01-01T00:03:12Z"),
+        ]);
+        let cols = workflow_columns(&buf, &["45s", "3m 12s"]);
+        let rendered = screen_text(&buf);
+        assert_eq!(
+            cols[0], cols[1],
+            "fullwidth workflow shifted the duration column. columns={cols:?}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn ascii_checks_list_screen_snapshot() {
+        let buf = render_checks(vec![
+            sample_check("lint", "ci"),
+            sample_check("integration-tests", "nightly"),
+        ]);
+        assert_snapshot!(screen_text(&buf), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │CI Checks: PR #42                                                                                 │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌CI Checks (2)─────────────────────────────────────────────────────────────────────────────────────┐
+        │ ✓  lint                            ci               -                                            ▲
+        │ ✓  integration-tests               nightly          -                                            █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  █
+        │                                                                                                  ▼
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Back                                                                     │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
     }
 }
