@@ -894,7 +894,7 @@ impl DestructiveOp {
         }
     }
 
-    /// Three text rows for the simple confirm: warning, file, then the git command.
+    /// Text rows for the simple confirm. Discard uses warning, file, and command.
     pub fn simple_confirm_lines(&self) -> Vec<String> {
         match self {
             Self::Discard { invocation } => {
@@ -909,11 +909,7 @@ impl DestructiveOp {
                     invocation.display_command(),
                 ]
             }
-            _ => vec![
-                format!("{} (y/n)", self.display_command()),
-                String::new(),
-                self.display_command(),
-            ],
+            _ => vec![format!("{} (y/n)", self.display_command())],
         }
     }
 

@@ -90,18 +90,24 @@ fn render_tree_pane(
         Color::DarkGray
     };
 
-    let simple_confirm = matches!(
+    let simple_lines =
         app.git_ops_state
             .as_ref()
-            .and_then(|ops| ops.pending_confirm.as_ref()),
-        Some(crate::app::PendingGitOpsConfirm::Simple { .. })
-    );
+            .and_then(|ops| match ops.pending_confirm.as_ref() {
+                Some(crate::app::PendingGitOpsConfirm::Simple { op }) => {
+                    Some(op.simple_confirm_lines())
+                }
+                _ => None,
+            });
+    let footer_height = simple_lines
+        .as_ref()
+        .map_or(3, |lines| (lines.len() as u16).saturating_add(2));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(if simple_confirm { 5 } else { 3 }),
+            Constraint::Length(footer_height),
         ])
         .split(area);
 
@@ -222,12 +228,11 @@ fn render_tree_pane(
         .git_ops_state
         .as_ref()
         .and_then(|ops| ops.pending_confirm.as_ref());
-    if let Some(crate::app::PendingGitOpsConfirm::Simple { op }) = pending {
+    if let Some(texts) = simple_lines {
         let style = Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);
-        let lines: Vec<Line> = op
-            .simple_confirm_lines()
+        let lines: Vec<Line> = texts
             .into_iter()
             .map(|text| Line::from(Span::styled(text, style)))
             .collect();
@@ -1299,11 +1304,9 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 3), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │git reset -- a.rs (y/n)                                                                           │
-        │                                                                                                  │
-        │git reset -- a.rs                                                                                 │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1325,11 +1328,9 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 3), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │git reset --soft abc1234 (y/n)                                                                    │
-        │                                                                                                  │
-        │git reset --soft abc1234                                                                          │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
