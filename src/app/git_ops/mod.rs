@@ -817,19 +817,22 @@ impl App {
         ops.undo_stack.push(UndoAction::StageAll { tree_hash });
     }
 
-    /// d: discard changes
-    pub(crate) fn discard_changes(&mut self) {
-        let Some(ref ops) = self.git_ops_state else {
-            return;
-        };
-        let path = match ops.selected_path() {
-            Some(p) => p.to_string(),
-            None => return,
-        };
+    fn begin_discard_confirm(&mut self) {
+        let invocation = self.git_ops_state.as_ref().and_then(|ops| {
+            let path = ops.selected_path()?;
+            ops.entries
+                .iter()
+                .find(|entry| entry.path == path)
+                .map(DiscardInvocation::from_entry)
+        });
+        if let Some(invocation) = invocation {
+            self.start_confirm_with_simulation(DestructiveOp::Discard { invocation });
+        }
+    }
 
-        let entry = ops.entries.iter().find(|e| e.path == path).cloned();
-        let Some(entry) = entry else { return };
-
+    fn execute_discard(&mut self, invocation: DiscardInvocation) {
+        let path = invocation.path().to_string();
+        let args = invocation.git_args();
         let working_dir = self.working_dir.clone();
         let (tx, rx) = mpsc::channel(1);
         if let Some(ref mut ops) = self.git_ops_state {
@@ -837,21 +840,8 @@ impl App {
         }
 
         tokio::spawn(async move {
-            let result = if entry.worktree_status == FileStatus::Untracked
-                && entry.index_status == FileStatus::Untracked
-            {
-                run_git_op(working_dir.as_deref(), &["clean", "-f", "--", &path]).await
-            } else if entry.is_staged() && !entry.has_worktree_changes() {
-                run_git_op(
-                    working_dir.as_deref(),
-                    &["restore", "--staged", "--source=HEAD", "--", &path],
-                )
-                .await
-            } else {
-                run_git_op(working_dir.as_deref(), &["restore", "--", &path]).await
-            };
-
-            match result {
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match run_git_op(working_dir.as_deref(), &arg_refs).await {
                 Ok(_) => {
                     let _ = tx.send(Ok(format!("Discarded changes: {}", path))).await;
                 }
@@ -1291,12 +1281,7 @@ impl App {
 
         // Discard: enter confirmation prompt
         if self.matches_single_key(&key, &kb.git_ops_discard) {
-            if let Some(ref mut ops) = self.git_ops_state {
-                if let Some(path) = ops.selected_path().map(|p| p.to_string()) {
-                    let op = DestructiveOp::Discard { path };
-                    self.start_confirm_with_simulation(op);
-                }
-            }
+            self.begin_discard_confirm();
             return;
         }
 
@@ -1536,14 +1521,14 @@ impl App {
             return;
         };
 
-        if let Some(ref gitfilm_path) = ops.gitfilm_path {
+        let gitfilm = ops.gitfilm_path.clone();
+        let args = op.to_gitfilm_args().filter(|args| !args.is_empty());
+        if let (Some(gitfilm), Some(args)) = (gitfilm, args) {
             static ABORT_COUNTER: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
             let abort_id = ABORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let (tx, rx) = tokio::sync::mpsc::channel(1);
-            let gitfilm = gitfilm_path.clone();
-            let args = op.to_gitfilm_args();
             let working_dir = self.working_dir.clone();
 
             tokio::spawn(async move {
@@ -1569,7 +1554,7 @@ impl App {
         let needs_execute = self.handle_confirm_input_common(key, kb);
         if let Some(op) = needs_execute {
             match op {
-                DestructiveOp::Discard { .. } => self.discard_changes(),
+                DestructiveOp::Discard { invocation } => self.execute_discard(invocation),
                 DestructiveOp::ForcePush { branch } => self.execute_force_push(&branch),
                 _ => self.execute_undo(),
             }
@@ -2737,7 +2722,7 @@ mod tests {
     }
 
     // =================================================================
-    // Confirmation prompt (Y/n) tests
+    // Confirmation prompt (y/n) tests
     // =================================================================
 
     /// Simulate confirmation dialog input without requiring a terminal
@@ -2769,9 +2754,9 @@ mod tests {
                 .selected_path()
                 .and_then(|p| ops.entries.iter().find(|e| e.path == p))
             {
-                let path = entry.path.clone();
+                let invocation = DiscardInvocation::from_entry(entry);
                 ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
-                    op: DestructiveOp::Discard { path },
+                    op: DestructiveOp::Discard { invocation },
                 });
             }
         }
@@ -2779,7 +2764,7 @@ mod tests {
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(matches!(
             ops.pending_confirm,
-            Some(PendingGitOpsConfirm::Simple { op: DestructiveOp::Discard { ref path } }) if path == "a.rs"
+            Some(PendingGitOpsConfirm::Simple { op: DestructiveOp::Discard { ref invocation } }) if invocation.path() == "a.rs"
         ));
     }
 
@@ -2789,7 +2774,9 @@ mod tests {
         let mut ops = GitOpsState::new(Vec::new());
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
             op: DestructiveOp::Discard {
-                path: "a.rs".to_string(),
+                invocation: DiscardInvocation::Restore {
+                    path: "a.rs".to_string(),
+                },
             },
         });
         app.git_ops_state = Some(ops);
@@ -2857,7 +2844,9 @@ mod tests {
         rebuild_git_ops_tree(&mut ops);
         ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
             op: DestructiveOp::Discard {
-                path: "a.rs".to_string(),
+                invocation: DiscardInvocation::Restore {
+                    path: "a.rs".to_string(),
+                },
             },
         });
         let initial_row = ops.tree.selected_row;
@@ -2969,5 +2958,237 @@ mod tests {
             0,
             "undo_stack should be empty after execute"
         );
+    }
+
+    fn git_run(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Tester")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "Tester")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .expect("git");
+        assert!(
+            output.status.success(),
+            "git {args:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    struct DiscardRepo {
+        dir: tempfile::TempDir,
+    }
+
+    impl DiscardRepo {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path();
+            git_run(path, &["init", "-q"]);
+            git_run(path, &["config", "user.email", "t@example.com"]);
+            git_run(path, &["config", "user.name", "Tester"]);
+            std::fs::write(path.join("tracked.txt"), "base\n").unwrap();
+            std::fs::write(path.join("staged.txt"), "base\n").unwrap();
+            std::fs::write(path.join("my file.txt"), "base\n").unwrap();
+            git_run(path, &["add", "tracked.txt", "staged.txt", "my file.txt"]);
+            git_run(path, &["commit", "-q", "-m", "init"]);
+            std::fs::write(path.join("tracked.txt"), "base\ndirty\n").unwrap();
+            std::fs::write(path.join("staged.txt"), "base\nstaged\n").unwrap();
+            git_run(path, &["add", "--", "staged.txt"]);
+            std::fs::write(path.join("my file.txt"), "base\ndirty\n").unwrap();
+            std::fs::write(path.join("new.txt"), "new\n").unwrap();
+            std::fs::write(path.join("new file.txt"), "spaced\n").unwrap();
+            std::fs::write(path.join("keep.txt"), "keep\n").unwrap();
+            Self { dir }
+        }
+
+        fn entries(&self) -> Vec<GitStatusEntry> {
+            vec![
+                entry("tracked.txt", FileStatus::Unmodified, FileStatus::Modified),
+                entry("staged.txt", FileStatus::Modified, FileStatus::Unmodified),
+                entry("new.txt", FileStatus::Untracked, FileStatus::Untracked),
+                entry("my file.txt", FileStatus::Unmodified, FileStatus::Modified),
+                entry("new file.txt", FileStatus::Untracked, FileStatus::Untracked),
+                entry("keep.txt", FileStatus::Untracked, FileStatus::Untracked),
+            ]
+        }
+    }
+
+    async fn confirm_selected_discard(
+        repo: &DiscardRepo,
+        index: usize,
+    ) -> (Option<Vec<String>>, String, bool) {
+        let (mut app, _tx) = make_git_ops_app();
+        app.working_dir = Some(repo.dir.path().to_string_lossy().into_owned());
+        let mut ops = GitOpsState::new(repo.entries());
+        ops.gitfilm_path = Some(std::path::PathBuf::from("/nonexistent/gitfilm"));
+        rebuild_git_ops_tree(&mut ops);
+        ops.tree.selected_row = ops.tree.find_row_for_file(index).expect("row");
+        app.git_ops_state = Some(ops);
+        app.state = AppState::GitOpsSplitTree;
+
+        app.begin_discard_confirm();
+
+        let pending = app
+            .git_ops_state
+            .as_ref()
+            .unwrap()
+            .pending_confirm
+            .clone()
+            .expect("confirm");
+        let (op, simple) = match &pending {
+            PendingGitOpsConfirm::Simple { op } => (op.clone(), true),
+            PendingGitOpsConfirm::Simulating { op, .. } => (op.clone(), false),
+            PendingGitOpsConfirm::Previewing { op, .. } => (op.clone(), false),
+        };
+        let preview = op.to_gitfilm_args();
+        let label = op.confirmation_label();
+
+        if let Some(ref mut ops) = app.git_ops_state {
+            ops.simulate_receiver = None;
+            ops.pending_confirm = Some(PendingGitOpsConfirm::Simple { op });
+        }
+        simulate_tree_confirm(&mut app, KeyCode::Char('y'));
+
+        let mut rx = app
+            .git_ops_state
+            .as_mut()
+            .unwrap()
+            .op_receiver
+            .take()
+            .expect("discard started");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("discard timed out")
+            .expect("discard channel closed");
+        result.expect("discard git command failed");
+        (preview, label, simple)
+    }
+
+    fn names(repo: &DiscardRepo, cached: bool) -> String {
+        let mut args = vec!["diff", "--name-only"];
+        if cached {
+            args.push("--cached");
+        }
+        let output = git_run(repo.dir.path(), &args);
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[tokio::test]
+    async fn discard_untracked_preview_matches_clean_and_deletes_the_file() {
+        let repo = DiscardRepo::new();
+        let (preview, label, simple) = confirm_selected_discard(&repo, 2).await;
+        assert!(simple, "untracked discard must skip gitfilm");
+        assert!(preview.is_none(), "gitfilm must not be told to restore");
+        assert_eq!(label, "Delete untracked file (y/n)");
+        assert!(!repo.dir.path().join("new.txt").exists());
+        assert!(repo.dir.path().join("keep.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(repo.dir.path().join("tracked.txt")).unwrap(),
+            "base\ndirty\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_staged_only_preview_matches_restore_staged_and_unstages() {
+        let repo = DiscardRepo::new();
+        let (preview, label, simple) = confirm_selected_discard(&repo, 1).await;
+        assert!(simple, "staged-only discard must skip gitfilm");
+        assert!(preview.is_none());
+        assert_eq!(label, "Unstage (y/n)");
+        assert!(
+            !names(&repo, true).lines().any(|line| line == "staged.txt"),
+            "index must drop staged.txt, got {}",
+            names(&repo, true)
+        );
+        assert!(
+            names(&repo, false).lines().any(|line| line == "staged.txt"),
+            "worktree change must remain"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.dir.path().join("staged.txt")).unwrap(),
+            "base\nstaged\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_worktree_preview_matches_restore_and_reverts_the_file() {
+        let repo = DiscardRepo::new();
+        let (preview, label, simple) = confirm_selected_discard(&repo, 0).await;
+        assert!(!simple, "worktree restore is a gitfilm operation");
+        assert_eq!(preview, Some(vec!["restore tracked.txt".to_string()]));
+        assert_eq!(label, "Discard changes (y/n)");
+        assert_eq!(
+            std::fs::read_to_string(repo.dir.path().join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        assert!(
+            !names(&repo, false)
+                .lines()
+                .any(|line| line == "tracked.txt"),
+            "worktree restore must clear tracked.txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_spaced_untracked_path_quotes_the_path_and_deletes_that_file() {
+        let repo = DiscardRepo::new();
+        let (preview, label, simple) = confirm_selected_discard(&repo, 4).await;
+        assert!(simple);
+        assert!(preview.is_none());
+        assert_eq!(label, "Delete untracked file (y/n)");
+        assert!(!repo.dir.path().join("new file.txt").exists());
+        assert!(repo.dir.path().join("new.txt").exists());
+        assert!(repo.dir.path().join("keep.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn discard_spaced_worktree_path_preview_is_one_quoted_restore() {
+        let repo = DiscardRepo::new();
+        let (preview, label, simple) = confirm_selected_discard(&repo, 3).await;
+        assert!(!simple);
+        assert_eq!(preview, Some(vec!["restore 'my file.txt'".to_string()]));
+        assert_eq!(label, "Discard changes (y/n)");
+        assert_eq!(
+            std::fs::read_to_string(repo.dir.path().join("my file.txt")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.dir.path().join("tracked.txt")).unwrap(),
+            "base\ndirty\n"
+        );
+    }
+
+    #[test]
+    fn path_with_both_quotes_skips_gitfilm_and_uses_simple_confirm() {
+        let path = "a'b\"c.txt".to_string();
+        let ops = [
+            DestructiveOp::Discard {
+                invocation: DiscardInvocation::Restore { path: path.clone() },
+            },
+            DestructiveOp::UndoStage {
+                paths: vec![path.clone()],
+            },
+            DestructiveOp::UndoUnstage {
+                paths: vec!["ok.rs".to_string(), path.clone()],
+            },
+        ];
+        for op in ops {
+            assert_eq!(op.to_gitfilm_args(), None);
+            let (mut app, _tx) = make_git_ops_app();
+            let mut state = GitOpsState::new(Vec::new());
+            state.gitfilm_path = Some(std::path::PathBuf::from("/nonexistent/gitfilm"));
+            app.git_ops_state = Some(state);
+            app.start_confirm_with_simulation(op);
+            assert!(
+                matches!(
+                    app.git_ops_state.as_ref().unwrap().pending_confirm,
+                    Some(PendingGitOpsConfirm::Simple { .. })
+                ),
+                "a path with both quotes must use the simple confirm"
+            );
+        }
     }
 }

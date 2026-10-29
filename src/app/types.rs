@@ -665,18 +665,6 @@ impl GitStatusEntry {
         )
     }
 
-    pub fn describe_discard_command(&self) -> String {
-        if self.worktree_status == FileStatus::Untracked
-            && self.index_status == FileStatus::Untracked
-        {
-            format!("git clean -f -- {}", self.path)
-        } else if self.is_staged() && !self.has_worktree_changes() {
-            format!("git restore --staged --source=HEAD -- {}", self.path)
-        } else {
-            format!("git restore -- {}", self.path)
-        }
-    }
-
     /// Fixed-width 2-char change type label.
     ///
     /// Stable across stage/unstage: both index and worktree statuses are
@@ -779,10 +767,99 @@ impl UndoAction {
     }
 }
 
+/// The git command a discard runs. Preview and execution both read this value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscardInvocation {
+    /// `git clean -f -- <path>`. Deletes an untracked file.
+    Clean { path: String },
+    /// `git restore --staged --source=HEAD -- <path>`.
+    RestoreStaged { path: String },
+    /// `git restore -- <path>`.
+    Restore { path: String },
+}
+
+impl DiscardInvocation {
+    pub fn from_entry(entry: &GitStatusEntry) -> Self {
+        let path = entry.path.clone();
+        if entry.worktree_status == FileStatus::Untracked
+            && entry.index_status == FileStatus::Untracked
+        {
+            Self::Clean { path }
+        } else if entry.is_staged() && !entry.has_worktree_changes() {
+            Self::RestoreStaged { path }
+        } else {
+            Self::Restore { path }
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Clean { path } | Self::RestoreStaged { path } | Self::Restore { path } => path,
+        }
+    }
+
+    /// Argv for `git`, without the program name. One path is one argument.
+    pub fn git_args(&self) -> Vec<String> {
+        let path = self.path().to_string();
+        match self {
+            Self::Clean { .. } => vec!["clean".into(), "-f".into(), "--".into(), path],
+            Self::RestoreStaged { .. } => vec![
+                "restore".into(),
+                "--staged".into(),
+                "--source=HEAD".into(),
+                "--".into(),
+                path,
+            ],
+            Self::Restore { .. } => vec!["restore".into(), "--".into(), path],
+        }
+    }
+
+    pub fn display_command(&self) -> String {
+        let path = display_quote(self.path());
+        match self {
+            Self::Clean { .. } => format!("git clean -f -- {path}"),
+            Self::RestoreStaged { .. } => {
+                format!("git restore --staged --source=HEAD -- {path}")
+            }
+            Self::Restore { .. } => format!("git restore -- {path}"),
+        }
+    }
+
+    /// gitfilm operation string. `None` when the vendored gitfilm cannot simulate it.
+    pub fn gitfilm_op(&self) -> Option<String> {
+        match self {
+            Self::Restore { path } => gitfilm_quote(path).map(|quoted| format!("restore {quoted}")),
+            Self::Clean { .. } | Self::RestoreStaged { .. } => None,
+        }
+    }
+}
+
+/// Quote one token the way gitfilm's `tokenize` keeps it whole.
+///
+/// gitfilm splits an operation string on unquoted spaces and has no escapes.
+/// `None` means the path contains both quote characters, so no wrapping is safe.
+fn gitfilm_quote(token: &str) -> Option<String> {
+    let needs_quotes = token.contains([' ', '\t', '\'', '"']);
+    if !needs_quotes {
+        return Some(token.to_string());
+    }
+    if !token.contains('\'') {
+        Some(format!("'{token}'"))
+    } else if !token.contains('"') {
+        Some(format!("\"{token}\""))
+    } else {
+        None
+    }
+}
+
+fn display_quote(token: &str) -> String {
+    gitfilm_quote(token).unwrap_or_else(|| token.to_string())
+}
+
 /// Structured destructive operation.
 #[derive(Debug, Clone)]
 pub enum DestructiveOp {
-    Discard { path: String },
+    Discard { invocation: DiscardInvocation },
     UndoStage { paths: Vec<String> },
     UndoUnstage { paths: Vec<String> },
     UndoStageAll { tree_hash: Option<String> },
@@ -793,36 +870,63 @@ pub enum DestructiveOp {
 
 impl DestructiveOp {
     /// Generate operation strings for gitfilm (one per element).
-    pub fn to_gitfilm_args(&self) -> Vec<String> {
+    pub fn to_gitfilm_args(&self) -> Option<Vec<String>> {
         match self {
-            Self::Discard { path } => vec![format!("restore {}", path)],
-            Self::UndoStage { paths } => {
-                vec![format!("reset --mixed HEAD -- {}", paths.join(" "))]
-            }
-            Self::UndoUnstage { paths } => {
-                vec![format!("add {}", paths.join(" "))]
-            }
+            Self::Discard { invocation } => invocation.gitfilm_op().map(|op| vec![op]),
+            Self::UndoStage { paths } => join_gitfilm_paths(paths)
+                .map(|joined| vec![format!("reset --mixed HEAD -- {joined}")]),
+            Self::UndoUnstage { paths } => paths
+                .iter()
+                .map(|path| gitfilm_quote(path).map(|quoted| format!("add {quoted}")))
+                .collect(),
             Self::UndoStageAll { tree_hash } => {
                 if let Some(hash) = tree_hash {
-                    vec![format!("reset --mixed {}", hash)]
+                    Some(vec![format!("reset --mixed {}", hash)])
                 } else {
-                    vec!["reset".into()]
+                    Some(vec!["reset".into()])
                 }
             }
-            Self::UndoCommit => vec!["reset --soft HEAD~1".into()],
+            Self::UndoCommit => Some(vec!["reset --soft HEAD~1".into()]),
             Self::ResetSoft { head_offset, .. } => {
-                vec![format!("reset --soft HEAD~{}", head_offset)]
+                Some(vec![format!("reset --soft HEAD~{}", head_offset)])
             }
-            Self::ForcePush { .. } => vec![],
+            Self::ForcePush { .. } => None,
         }
+    }
+
+    /// Text rows for the simple confirm. Discard uses warning, file, and command.
+    pub fn simple_confirm_lines(&self) -> Vec<String> {
+        match self {
+            Self::Discard { invocation } => {
+                let warning = match invocation {
+                    DiscardInvocation::Clean { .. } => "Delete untracked file (y/n)",
+                    DiscardInvocation::Restore { .. } => "Discard changes (y/n)",
+                    DiscardInvocation::RestoreStaged { .. } => "Unstage (y/n)",
+                };
+                vec![
+                    warning.to_string(),
+                    display_quote(invocation.path()),
+                    invocation.display_command(),
+                ]
+            }
+            _ => vec![format!("{} (y/n)", self.display_command())],
+        }
+    }
+
+    /// First line of the simple confirm.
+    pub fn confirmation_label(&self) -> String {
+        self.simple_confirm_lines()
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     /// Human-readable command string for display.
     pub fn display_command(&self) -> String {
         match self {
-            Self::Discard { path } => format!("git restore -- {}", path),
-            Self::UndoStage { paths } => format!("git reset -- {}", paths.join(" ")),
-            Self::UndoUnstage { paths } => format!("git add {}", paths.join(" ")),
+            Self::Discard { invocation } => invocation.display_command(),
+            Self::UndoStage { paths } => format!("git reset -- {}", join_display_paths(paths)),
+            Self::UndoUnstage { paths } => format!("git add {}", join_display_paths(paths)),
             Self::UndoStageAll { tree_hash } => {
                 if let Some(hash) = tree_hash {
                     format!("git read-tree {}", &hash[..hash.len().min(7)])
@@ -835,6 +939,22 @@ impl DestructiveOp {
             Self::ForcePush { branch } => format!("git push --force-with-lease origin {}", branch),
         }
     }
+}
+
+fn join_gitfilm_paths(paths: &[String]) -> Option<String> {
+    paths
+        .iter()
+        .map(|path| gitfilm_quote(path))
+        .collect::<Option<Vec<_>>>()
+        .map(|quoted| quoted.join(" "))
+}
+
+fn join_display_paths(paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|path| display_quote(path))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// UI model for gitfilm simulation results.
@@ -1336,5 +1456,27 @@ mod tests {
     #[test]
     fn cockpit_is_data_state_independent() {
         assert!(AppState::Cockpit.is_data_state_independent());
+    }
+
+    #[test]
+    fn undo_unstage_gitfilm_args_are_one_quoted_add_per_path() {
+        let op = DestructiveOp::UndoUnstage {
+            paths: vec!["a.rs".to_string(), "my file.rs".to_string()],
+        };
+        assert_eq!(
+            op.to_gitfilm_args(),
+            Some(vec!["add a.rs".to_string(), "add 'my file.rs'".to_string()])
+        );
+    }
+
+    #[test]
+    fn undo_stage_gitfilm_args_quote_paths_inside_one_reset() {
+        let op = DestructiveOp::UndoStage {
+            paths: vec!["a.rs".to_string(), "my file.rs".to_string()],
+        };
+        assert_eq!(
+            op.to_gitfilm_args(),
+            Some(vec!["reset --mixed HEAD -- a.rs 'my file.rs'".to_string()])
+        );
     }
 }

@@ -1047,7 +1047,9 @@ mod tests {
         let mut ops = super::super::GitOpsState::new(Vec::new());
         ops.pending_confirm = Some(super::super::PendingGitOpsConfirm::Simple {
             op: super::super::DestructiveOp::Discard {
-                path: "a.rs".to_string(),
+                invocation: super::super::DiscardInvocation::Restore {
+                    path: "a.rs".to_string(),
+                },
             },
         });
         app.git_ops_state = Some(ops);

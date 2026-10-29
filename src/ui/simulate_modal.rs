@@ -272,8 +272,8 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::app::{
-        DestructiveOp, GitOpsState, PendingGitOpsConfirm, RepositoryAvailability,
-        SimulationPreview, SimulationResult,
+        DestructiveOp, DiscardInvocation, GitOpsState, PendingGitOpsConfirm,
+        RepositoryAvailability, SimulationPreview, SimulationResult,
     };
     use crate::config::Config;
     use crate::gitfilm::{GitfilmAreaSnapshot, GitfilmFileEntry, GitfilmRepoState};
@@ -482,7 +482,9 @@ mod tests {
         set_previewing(
             &mut app,
             DestructiveOp::Discard {
-                path: "src/main.rs".to_string(),
+                invocation: DiscardInvocation::Restore {
+                    path: "src/main.rs".to_string(),
+                },
             },
             GitfilmAreaSnapshot {
                 working_tree: vec![fe("src/main.rs", "modified")],
@@ -519,7 +521,9 @@ mod tests {
         set_previewing(
             &mut app,
             DestructiveOp::Discard {
-                path: "a.rs".to_string(),
+                invocation: DiscardInvocation::Restore {
+                    path: "a.rs".to_string(),
+                },
             },
             snapshot.clone(),
             snapshot,
