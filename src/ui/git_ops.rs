@@ -1013,6 +1013,59 @@ mod tests {
         ");
     }
 
+    fn render_git_ops_screen(app: &mut App, width: u16, height: u16) -> String {
+        app.state = crate::app::AppState::GitOpsSplitTree;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..height {
+            let mut line = String::new();
+            for x in 0..width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    fn untracked_clean_confirm_app() -> App {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![entry(
+            "untracked.txt",
+            FileStatus::Untracked,
+            FileStatus::Untracked,
+        )]);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard {
+                invocation: DiscardInvocation::Clean {
+                    path: "untracked.txt".to_string(),
+                },
+            },
+        });
+        app.git_ops_state = Some(ops);
+        app
+    }
+
+    #[test]
+    fn test_untracked_simple_confirm_shows_filename_and_key_at_120_cols() {
+        let mut app = untracked_clean_confirm_app();
+        let screen = render_git_ops_screen(&mut app, 120, 24);
+        let prompt = screen
+            .lines()
+            .find(|line| line.contains("untracked.txt") && line.contains("(y/n)"));
+        assert!(
+            prompt.is_some(),
+            "filename and (y/n) must share a visible line at 120 columns:\n{screen}"
+        );
+    }
+
     #[test]
     fn test_footer_untracked_discard_leads_with_delete_warning() {
         let (mut app, _tx) = make_app();
