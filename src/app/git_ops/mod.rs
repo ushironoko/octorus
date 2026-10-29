@@ -2722,7 +2722,7 @@ mod tests {
     }
 
     // =================================================================
-    // Confirmation prompt (Y/n) tests
+    // Confirmation prompt (y/n) tests
     // =================================================================
 
     /// Simulate confirmation dialog input without requiring a terminal
@@ -3082,7 +3082,7 @@ mod tests {
         let (preview, label, simple) = confirm_selected_discard(&repo, 2).await;
         assert!(simple, "untracked discard must skip gitfilm");
         assert!(preview.is_none(), "gitfilm must not be told to restore");
-        assert_eq!(label, "Delete untracked file: git clean -f -- new.txt");
+        assert_eq!(label, "Delete new.txt?");
         assert!(!repo.dir.path().join("new.txt").exists());
         assert!(repo.dir.path().join("keep.txt").exists());
         assert_eq!(
@@ -3097,7 +3097,7 @@ mod tests {
         let (preview, label, simple) = confirm_selected_discard(&repo, 1).await;
         assert!(simple, "staged-only discard must skip gitfilm");
         assert!(preview.is_none());
-        assert_eq!(label, "git restore --staged --source=HEAD -- staged.txt");
+        assert_eq!(label, "Unstage staged.txt?");
         assert!(
             !names(&repo, true).lines().any(|line| line == "staged.txt"),
             "index must drop staged.txt, got {}",
@@ -3119,7 +3119,7 @@ mod tests {
         let (preview, label, simple) = confirm_selected_discard(&repo, 0).await;
         assert!(!simple, "worktree restore is a gitfilm operation");
         assert_eq!(preview, Some(vec!["restore tracked.txt".to_string()]));
-        assert_eq!(label, "git restore -- tracked.txt");
+        assert_eq!(label, "Discard changes to tracked.txt?");
         assert_eq!(
             std::fs::read_to_string(repo.dir.path().join("tracked.txt")).unwrap(),
             "base\n"
@@ -3138,10 +3138,7 @@ mod tests {
         let (preview, label, simple) = confirm_selected_discard(&repo, 4).await;
         assert!(simple);
         assert!(preview.is_none());
-        assert_eq!(
-            label,
-            "Delete untracked file: git clean -f -- 'new file.txt'"
-        );
+        assert_eq!(label, "Delete 'new file.txt'?");
         assert!(!repo.dir.path().join("new file.txt").exists());
         assert!(repo.dir.path().join("new.txt").exists());
         assert!(repo.dir.path().join("keep.txt").exists());
@@ -3153,7 +3150,7 @@ mod tests {
         let (preview, label, simple) = confirm_selected_discard(&repo, 3).await;
         assert!(!simple);
         assert_eq!(preview, Some(vec!["restore 'my file.txt'".to_string()]));
-        assert_eq!(label, "git restore -- 'my file.txt'");
+        assert_eq!(label, "Discard changes to 'my file.txt'?");
         assert_eq!(
             std::fs::read_to_string(repo.dir.path().join("my file.txt")).unwrap(),
             "base\n"

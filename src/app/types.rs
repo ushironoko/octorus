@@ -894,12 +894,17 @@ impl DestructiveOp {
         }
     }
 
-    /// Text for the simple confirm line, before the `(Y/n)` suffix.
+    /// Short question for the simple confirm, before the `(y/n)` suffix.
     pub fn confirmation_label(&self) -> String {
         match self {
-            Self::Discard {
-                invocation: DiscardInvocation::Clean { .. },
-            } => format!("Delete untracked file: {}", self.display_command()),
+            Self::Discard { invocation } => {
+                let name = display_quote(invocation.path());
+                match invocation {
+                    DiscardInvocation::Clean { .. } => format!("Delete {name}?"),
+                    DiscardInvocation::Restore { .. } => format!("Discard changes to {name}?"),
+                    DiscardInvocation::RestoreStaged { .. } => format!("Unstage {name}?"),
+                }
+            }
             _ => self.display_command(),
         }
     }

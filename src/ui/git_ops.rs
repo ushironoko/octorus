@@ -19,25 +19,35 @@ use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
+    let simple_confirm = app
+        .git_ops_state
+        .as_ref()
+        .and_then(|ops| match &ops.pending_confirm {
+            Some(crate::app::PendingGitOpsConfirm::Simple { op }) => Some(op.clone()),
+            _ => None,
+        });
 
-    let outer_constraints = if has_rally {
-        vec![Constraint::Min(0), Constraint::Length(1)]
-    } else {
-        vec![Constraint::Min(0)]
-    };
+    let mut outer_constraints = vec![Constraint::Min(0)];
+    if simple_confirm.is_some() {
+        outer_constraints.push(Constraint::Length(4));
+    }
+    if has_rally {
+        outer_constraints.push(Constraint::Length(1));
+    }
 
     let outer_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(outer_constraints)
         .split(frame.area());
 
+    let body = outer_chunks[0];
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(app.config.layout.left_panel_percent()),
             Constraint::Percentage(app.config.layout.right_panel_percent()),
         ])
-        .split(outer_chunks[0]);
+        .split(body);
 
     let is_diff_focused = app.state == AppState::GitOpsSplitDiff;
     let left_focus = app
@@ -61,14 +71,43 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .set_visible_lines(diff_visible_lines);
     }
 
-    render_tree_pane(frame, app, left_chunks[0], is_tree_focused);
+    render_tree_pane(
+        frame,
+        app,
+        left_chunks[0],
+        is_tree_focused,
+        simple_confirm.is_none(),
+    );
     render_commits_pane(frame, app, left_chunks[1], is_commits_focused);
     render_diff_pane(frame, app, h_chunks[1], is_diff_focused);
-    super::split_view::register_split_divider(app, h_chunks[0], outer_chunks[0]);
+    super::split_view::register_split_divider(app, h_chunks[0], body);
+
+    if let Some(op) = simple_confirm {
+        render_simple_confirm_footer(frame, outer_chunks[1], &op);
+    }
 
     if has_rally {
-        render_rally_status_bar(frame, outer_chunks[1], app);
+        render_rally_status_bar(frame, outer_chunks[outer_chunks.len() - 1], app);
     }
+}
+
+fn render_simple_confirm_footer(frame: &mut Frame, area: Rect, op: &crate::app::DestructiveOp) {
+    let style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("{} (y/n)", op.confirmation_label()),
+            style,
+        )),
+        Line::from(Span::styled(op.display_command(), style)),
+    ];
+    let footer = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red)),
+    );
+    frame.render_widget(footer, area);
 }
 
 fn render_tree_pane(
@@ -76,6 +115,7 @@ fn render_tree_pane(
     app: &mut App,
     area: ratatui::layout::Rect,
     is_focused: bool,
+    draw_footer: bool,
 ) {
     let has_pending_confirm = app
         .git_ops_state
@@ -90,13 +130,13 @@ fn render_tree_pane(
         Color::DarkGray
     };
 
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(0)];
+    if draw_footer {
+        constraints.push(Constraint::Length(3));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
+        .constraints(constraints)
         .split(area);
 
     let Some(ref ops) = app.git_ops_state else {
@@ -211,6 +251,10 @@ fn render_tree_pane(
         }
     }
 
+    if !draw_footer {
+        return;
+    }
+
     let confirm_text;
     let pending = app
         .git_ops_state
@@ -219,7 +263,7 @@ fn render_tree_pane(
     let help_text = if let Some(confirm) = pending {
         match confirm {
             crate::app::PendingGitOpsConfirm::Simple { ref op } => {
-                confirm_text = format!("{} (Y/n)", op.confirmation_label());
+                confirm_text = format!("{} (y/n)", op.confirmation_label());
                 confirm_text.as_str()
             }
             crate::app::PendingGitOpsConfirm::Simulating { .. } => {
@@ -935,7 +979,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
         terminal
             .draw(|frame| {
-                render_tree_pane(frame, app, area, is_focused);
+                render_tree_pane(frame, app, area, is_focused, true);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -958,7 +1002,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 20);
         terminal
             .draw(|frame| {
-                render_tree_pane(frame, app, area, is_focused);
+                render_tree_pane(frame, app, area, is_focused, true);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -984,9 +1028,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        assert_snapshot!(render_screen_footer(&mut app, 100, 24), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │git restore -- src/main.rs (Y/n)                                                                  │
+        │Discard changes to src/main.rs? (y/n)                                                             │
+        │git restore -- src/main.rs                                                                        │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1006,9 +1051,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
+        assert_snapshot!(render_screen_footer(&mut app, 100, 24), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │git restore -- a.rs (Y/n)                                                                         │
+        │Discard changes to a.rs? (y/n)                                                                    │
+        │git restore -- a.rs                                                                               │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1032,6 +1078,13 @@ mod tests {
             lines.push(line.trim_end().to_string());
         }
         lines.join("\n")
+    }
+
+    fn render_screen_footer(app: &mut App, width: u16, height: u16) -> String {
+        let screen = render_git_ops_screen(app, width, height);
+        let lines: Vec<&str> = screen.lines().collect();
+        let start = lines.len().saturating_sub(4);
+        lines[start..].join("\n")
     }
 
     fn untracked_clean_confirm_app() -> App {
@@ -1064,6 +1117,19 @@ mod tests {
             prompt.is_some(),
             "filename and (y/n) must share a visible line at 120 columns:\n{screen}"
         );
+        assert_snapshot!(render_screen_footer(&mut app, 120, 24), @"
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │Delete untracked.txt? (y/n)                                                                                           │
+        │git clean -f -- untracked.txt                                                                                         │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+        let mut narrow = untracked_clean_confirm_app();
+        assert_snapshot!(render_screen_footer(&mut narrow, 80, 24), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Delete untracked.txt? (y/n)                                                   │
+        │git clean -f -- untracked.txt                                                 │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ");
     }
 
     #[test]
@@ -1084,9 +1150,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        assert_snapshot!(render_screen_footer(&mut app, 100, 24), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Delete untracked file: git clean -f -- new.txt (Y/n)                                              │
+        │Delete new.txt? (y/n)                                                                             │
+        │git clean -f -- new.txt                                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1107,9 +1174,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_pane_footer(&mut app, true), @"
+        assert_snapshot!(render_screen_footer(&mut app, 100, 24), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │git reset -- a.rs (Y/n)                                                                           │
+        │git reset -- a.rs (y/n)                                                                           │
+        │git reset -- a.rs                                                                                 │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1131,9 +1199,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_pane_footer(&mut app, false), @"
+        assert_snapshot!(render_screen_footer(&mut app, 100, 24), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │git reset --soft abc1234 (Y/n)                                                                    │
+        │git reset --soft abc1234 (y/n)                                                                    │
+        │git reset --soft abc1234                                                                          │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
