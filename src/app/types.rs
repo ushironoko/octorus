@@ -894,18 +894,20 @@ impl DestructiveOp {
         }
     }
 
-    /// Short question for the simple confirm, before the `(y/n)` suffix.
+    /// First line of the simple confirm. Discard puts the warning and `(y/n)` before the file.
     pub fn confirmation_label(&self) -> String {
         match self {
             Self::Discard { invocation } => {
                 let name = display_quote(invocation.path());
                 match invocation {
-                    DiscardInvocation::Clean { .. } => format!("Delete {name}?"),
-                    DiscardInvocation::Restore { .. } => format!("Discard changes to {name}?"),
-                    DiscardInvocation::RestoreStaged { .. } => format!("Unstage {name}?"),
+                    DiscardInvocation::Clean { .. } => {
+                        format!("Delete untracked file (y/n): {name}")
+                    }
+                    DiscardInvocation::Restore { .. } => format!("Discard changes (y/n): {name}"),
+                    DiscardInvocation::RestoreStaged { .. } => format!("Unstage (y/n): {name}"),
                 }
             }
-            _ => self.display_command(),
+            _ => format!("{} (y/n)", self.display_command()),
         }
     }
 
