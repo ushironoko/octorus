@@ -1057,6 +1057,37 @@ mod tests {
         lines.join("\n")
     }
 
+    /// Full Git Ops screen at the default layout. Rows keep every column so the
+    /// left pane can be sliced out of the 120-column terminal.
+    fn render_git_ops_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        app.state = crate::app::AppState::GitOpsSplitTree;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rows = Vec::new();
+        for y in 0..height {
+            let mut line = String::new();
+            for x in 0..width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            rows.push(line);
+        }
+        rows
+    }
+
+    /// Right edge column of the left pane, read from the Git Status border.
+    fn left_pane_right(rows: &[String]) -> usize {
+        rows[0]
+            .chars()
+            .position(|ch| ch == '┐')
+            .expect("left pane border")
+    }
+
     fn untracked_clean_confirm_app() -> App {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(vec![entry(
@@ -1076,31 +1107,78 @@ mod tests {
         app
     }
 
+    fn left_pane_inner(rows: &[String]) -> (usize, Vec<String>) {
+        let right = left_pane_right(rows);
+        let inner_width = right.saturating_sub(1);
+        let lines = rows
+            .iter()
+            .map(|row| {
+                let chars: Vec<char> = row.chars().collect();
+                chars
+                    .get(1..right)
+                    .unwrap_or(&[])
+                    .iter()
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        (inner_width, lines)
+    }
+
+    fn tree_pane_rows(rows: &[String]) -> Vec<String> {
+        let right = left_pane_right(rows);
+        let tree_bottom = rows
+            .iter()
+            .position(|row| {
+                let head: String = row.chars().take(right + 1).collect();
+                head.contains("Commits")
+            })
+            .unwrap_or(rows.len());
+        rows[..tree_bottom]
+            .iter()
+            .map(|row| {
+                row.chars()
+                    .take(right + 1)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
     #[test]
     fn test_untracked_simple_confirm_shows_filename_and_key_at_120_cols() {
         let mut app = untracked_clean_confirm_app();
-        let screen = render_tree_bottom(&mut app, 120, 24, 4);
-        let prompt = screen.lines().find(|line| {
-            line.contains("Delete untracked file")
-                && line.contains("(y/n)")
-                && line.contains("untracked.txt")
-        });
+        let rows = render_git_ops_rows(&mut app, 120, 24);
+        let (inner_width, _) = left_pane_inner(&rows);
+        let tree = tree_pane_rows(&rows);
+        let footer_top = tree
+            .iter()
+            .rposition(|line| line.starts_with('┌'))
+            .expect("footer");
+        let footer = tree[footer_top..].join("\n");
+        let inner_lines: Vec<String> = footer
+            .lines()
+            .filter(|line| line.starts_with('│'))
+            .map(|line| line.trim_matches('│').trim_end().to_string())
+            .collect();
         assert!(
-            prompt.is_some(),
-            "warning, (y/n), and filename must share a visible line at 120 columns:\n{screen}"
+            inner_lines
+                .iter()
+                .any(|line| line == "Delete untracked file (y/n)"),
+            "left pane inner width {inner_width}\n{footer}"
         );
-        assert_snapshot!(render_tree_bottom(&mut app, 120, 24, 4), @"
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Delete untracked file (y/n): untracked.txt                                                                            │
-        │git clean -f -- untracked.txt                                                                                         │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ");
-        let mut narrow = untracked_clean_confirm_app();
-        assert_snapshot!(render_tree_bottom(&mut narrow, 80, 24, 4), @"
-        ┌──────────────────────────────────────────────────────────────────────────────┐
-        │Delete untracked file (y/n): untracked.txt                                    │
-        │git clean -f -- untracked.txt                                                 │
-        └──────────────────────────────────────────────────────────────────────────────┘
+        assert!(
+            inner_lines.iter().any(|line| line == "untracked.txt"),
+            "left pane inner width {inner_width}\n{footer}"
+        );
+        assert_snapshot!(footer, @"
+        ┌────────────────────────────────────────┐
+        │Delete untracked file (y/n)             │
+        │untracked.txt                           │
+        │git clean -f -- untracked.txt           │
+        └────────────────────────────────────────┘
         ");
     }
 
@@ -1115,19 +1193,64 @@ mod tests {
         rebuild_tree(&mut ops);
         app.git_ops_state = Some(ops);
 
-        let bottom = render_tree_bottom(&mut app, 120, 24, 4);
-        let lines: Vec<&str> = bottom.lines().collect();
-        assert_eq!(lines.len(), 4);
-        assert!(
-            lines[1].starts_with('┌'),
-            "without a confirm the footer stays 3 lines:\n{bottom}"
+        let rows = render_git_ops_rows(&mut app, 120, 24);
+        let tree = tree_pane_rows(&rows);
+        let footer_top = tree
+            .iter()
+            .rposition(|line| line.starts_with('┌'))
+            .expect("footer");
+        let footer_height = tree.len() - footer_top;
+        assert_eq!(
+            footer_height,
+            3,
+            "footer must stay 3 rows when nothing is confirming:\n{}",
+            tree.join("\n")
         );
-        assert_snapshot!(bottom, @"
-        └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │? Help | ! Shell | q/Esc Back                                                                                         │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+        assert_snapshot!(tree[footer_top..].join("\n"), @"
+        ┌────────────────────────────────────────┐
+        │? Help | ! Shell | q/Esc Back           │
+        └────────────────────────────────────────┘
         ");
+    }
+
+    #[test]
+    fn test_discard_changes_confirm_uses_three_text_lines() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![entry(
+            "src/main.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
+        rebuild_tree(&mut ops);
+        ops.pending_confirm = Some(PendingGitOpsConfirm::Simple {
+            op: DestructiveOp::Discard {
+                invocation: DiscardInvocation::Restore {
+                    path: "src/main.rs".to_string(),
+                },
+            },
+        });
+        app.git_ops_state = Some(ops);
+
+        let rows = render_git_ops_rows(&mut app, 120, 24);
+        let tree = tree_pane_rows(&rows);
+        let footer_top = tree
+            .iter()
+            .rposition(|line| line.starts_with('┌'))
+            .expect("footer");
+        let inner_lines: Vec<String> = tree[footer_top..]
+            .iter()
+            .filter(|line| line.starts_with('│'))
+            .map(|line| line.trim_matches('│').trim_end().to_string())
+            .collect();
+        assert_eq!(
+            inner_lines.first().map(String::as_str),
+            Some("Discard changes (y/n)"),
+            "{inner_lines:?}"
+        );
+        assert!(inner_lines.iter().any(|line| line == "src/main.rs"));
+        assert!(inner_lines
+            .iter()
+            .any(|line| line == "git restore -- src/main.rs"));
     }
 
     #[test]
