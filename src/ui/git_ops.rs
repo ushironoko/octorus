@@ -101,7 +101,7 @@ fn render_tree_pane(
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(if simple_confirm { 4 } else { 3 }),
+            Constraint::Length(if simple_confirm { 5 } else { 3 }),
         ])
         .split(area);
 
@@ -226,10 +226,11 @@ fn render_tree_pane(
         let style = Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);
-        let lines = vec![
-            Line::from(Span::styled(op.confirmation_label(), style)),
-            Line::from(Span::styled(op.display_command(), style)),
-        ];
+        let lines: Vec<Line> = op
+            .simple_confirm_lines()
+            .into_iter()
+            .map(|text| Line::from(Span::styled(text, style)))
+            .collect();
         let footer = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -1004,9 +1005,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 4), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Discard changes (y/n): src/main.rs                                                                │
+        │Discard changes (y/n)                                                                             │
+        │src/main.rs                                                                                       │
         │git restore -- src/main.rs                                                                        │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
@@ -1027,9 +1029,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 4), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Discard changes (y/n): a.rs                                                                       │
+        │Discard changes (y/n)                                                                             │
+        │a.rs                                                                                              │
         │git restore -- a.rs                                                                               │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
@@ -1271,9 +1274,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 4), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Delete untracked file (y/n): new.txt                                                              │
+        │Delete untracked file (y/n)                                                                       │
+        │new.txt                                                                                           │
         │git clean -f -- new.txt                                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
@@ -1295,9 +1299,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 4), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │git reset -- a.rs (y/n)                                                                           │
+        │                                                                                                  │
         │git reset -- a.rs                                                                                 │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
@@ -1320,9 +1325,10 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 4), @"
+        assert_snapshot!(render_tree_bottom(&mut app, 100, 20, 5), @"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │git reset --soft abc1234 (y/n)                                                                    │
+        │                                                                                                  │
         │git reset --soft abc1234                                                                          │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");

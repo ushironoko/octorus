@@ -894,21 +894,35 @@ impl DestructiveOp {
         }
     }
 
-    /// First line of the simple confirm. Discard puts the warning and `(y/n)` before the file.
-    pub fn confirmation_label(&self) -> String {
+    /// Three text rows for the simple confirm: warning, file, then the git command.
+    pub fn simple_confirm_lines(&self) -> Vec<String> {
         match self {
             Self::Discard { invocation } => {
-                let name = display_quote(invocation.path());
-                match invocation {
-                    DiscardInvocation::Clean { .. } => {
-                        format!("Delete untracked file (y/n): {name}")
-                    }
-                    DiscardInvocation::Restore { .. } => format!("Discard changes (y/n): {name}"),
-                    DiscardInvocation::RestoreStaged { .. } => format!("Unstage (y/n): {name}"),
-                }
+                let warning = match invocation {
+                    DiscardInvocation::Clean { .. } => "Delete untracked file (y/n)",
+                    DiscardInvocation::Restore { .. } => "Discard changes (y/n)",
+                    DiscardInvocation::RestoreStaged { .. } => "Unstage (y/n)",
+                };
+                vec![
+                    warning.to_string(),
+                    display_quote(invocation.path()),
+                    invocation.display_command(),
+                ]
             }
-            _ => format!("{} (y/n)", self.display_command()),
+            _ => vec![
+                format!("{} (y/n)", self.display_command()),
+                String::new(),
+                self.display_command(),
+            ],
         }
+    }
+
+    /// First line of the simple confirm.
+    pub fn confirmation_label(&self) -> String {
+        self.simple_confirm_lines()
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     /// Human-readable command string for display.
