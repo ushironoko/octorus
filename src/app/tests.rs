@@ -5425,6 +5425,97 @@ fn left_comment_on_a_context_line_uses_the_old_line_number() {
     assert!(!row_containing(&diff, "removed-left").contains('●'));
 }
 
+#[test]
+fn comments_after_an_empty_context_line_land_on_their_diff_rows() {
+    let patch =
+        "@@ -10,5 +10,5 @@\n before\n\n after-blank\n-removed-tail\n+added-tail\n kept-end\n";
+    assert_eq!(
+        patch.lines().nth(2),
+        Some(""),
+        "the fixture's third row is an empty context line"
+    );
+
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(13), Some("LEFT"), None, "on the removed line"),
+        review_on(2, Some(13), Some("RIGHT"), None, "on the added line"),
+    ]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let mut landed = [None, None];
+    for pos in &app.cmt.file_comment_positions {
+        landed[pos.comment_index] = Some(rows[pos.diff_line_index]);
+    }
+    assert_eq!(landed, [Some("-removed-tail"), Some("+added-tail")]);
+}
+
+#[test]
+fn left_comment_after_a_removed_dashdash_line_lands_on_keep_c() {
+    let patch = "@@ -1,4 +1,3 @@\n keep-a\n--- haskell comment\n keep-b\n keep-c\n";
+    assert_eq!(patch.lines().nth(2), Some("--- haskell comment"));
+
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(4),
+        Some("LEFT"),
+        None,
+        "old line 4",
+    )]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let landed: Vec<&str> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| rows[pos.diff_line_index])
+        .collect();
+    assert_eq!(landed, vec![" keep-c"]);
+}
+
+#[test]
+fn right_comment_after_an_added_plusplus_line_lands_on_keep_c() {
+    let patch = "@@ -1,3 +1,4 @@\n keep-a\n+++ added\n keep-b\n keep-c\n";
+    assert_eq!(patch.lines().nth(2), Some("+++ added"));
+
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(4),
+        Some("RIGHT"),
+        None,
+        "new line 4",
+    )]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let landed: Vec<&str> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| rows[pos.diff_line_index])
+        .collect();
+    assert_eq!(landed, vec![" keep-c"]);
+}
+
+#[test]
+fn missing_newline_marker_does_not_accept_the_next_line_number() {
+    let patch = "@@ -1,2 +1,2 @@\n alpha\n beta\n\\ No newline at end of file\n";
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(3), Some("LEFT"), None, "past the last old line"),
+        review_on(2, Some(3), Some("RIGHT"), None, "past the last new line"),
+    ]);
+    app.update_file_comment_positions();
+    assert!(app.cmt.file_comment_positions.is_empty());
+    assert!(App::left_review_comment_is_outdated(
+        &app.cmt.review_comments.as_ref().unwrap()[0],
+        app.files(),
+    ));
+}
+
 #[tokio::test]
 async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff() {
     let mut app = make_app_with_patch(SIDE_PATCH);

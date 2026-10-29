@@ -267,8 +267,11 @@ pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
             continue;
         }
 
-        let on_old = line.starts_with('-') || line.starts_with(' ');
-        let on_new = line.starts_with('+') || line.starts_with(' ');
+        // An empty row is a context row whose prefix space was dropped.
+        // A row that starts with `---` or `+++` is still a removed or added
+        // file row, so the first character decides the side.
+        let on_old = line.starts_with('-') || line.starts_with(' ') || line.is_empty();
+        let on_new = line.starts_with('+') || line.starts_with(' ') || line.is_empty();
         if !on_old && !on_new {
             continue;
         }
