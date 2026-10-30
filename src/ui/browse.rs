@@ -7,8 +7,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
     Frame,
 };
@@ -27,8 +27,10 @@ use crate::app::{App, AppState, CachedDiffLine, DiffCache, LoadState, TreeRow};
 use crate::diff::LineType;
 use crate::github::{CommitPullRequest, CommitPullRequestState};
 use crate::symbols::Symbol;
+use crate::ui::chrome::{pane_block, PaneTitle};
 use crate::ui::common::truncate_with_width;
 use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind, TabGroup};
+use crate::ui::theme::{Attention, Theme, SELECTION_MARKER_WIDTH};
 
 /// Narrowest the line-number gutter ever gets.
 ///
@@ -61,14 +63,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_header(frame, app, chunks[0]);
     }
 
-    let tree_focused = app.state == AppState::RepoBrowseTree;
-    let graph_focused = app.state == AppState::RepoBrowseGraph;
+    let theme = app.theme;
+    let attention = app.browse_attention();
     let graph_visible = app
         .browse_state
         .as_ref()
         .is_some_and(|state| state.module_graph_pane.is_visible());
     let left_width = app.config.layout.left_panel_width;
-    let panes = Layout::default()
+    let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(left_width),
@@ -76,21 +78,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ])
         .split(body);
 
-    render_tree(frame, app, panes[0], tree_focused);
+    render_tree(frame, app, columns[0], attention.tree, theme);
     if graph_visible {
-        let right_panes = Layout::default()
+        let right = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(panes[1]);
-        render_content(
-            frame,
-            app,
-            right_panes[0],
-            app.state == AppState::RepoBrowseFile,
-        );
+            .split(columns[1]);
+        render_content(frame, app, right[0], attention.file, theme);
         if let Some(state) = app.browse_state.as_ref() {
             let kb = &app.config.keybindings;
-            let graph_help = if graph_focused {
+            let graph_help = if attention.graph.has_keys() {
                 format!(
                     " Tab/{}/{} dir | {}/{} node | {} open | {} close | Esc/{} code ",
                     kb.move_left.display_primary(),
@@ -106,14 +103,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             } else {
                 String::new()
             };
-            render_module_graph_pane(frame, state, right_panes[1], graph_focused, &graph_help);
+            render_module_graph_pane(frame, state, right[1], attention.graph, theme, &graph_help);
         }
-        register_module_graph_hits(app, right_panes[1]);
+        register_module_graph_hits(app, right[1]);
     } else {
-        render_content(frame, app, panes[1], !tree_focused);
+        render_content(frame, app, columns[1], attention.file, theme);
     }
 
-    super::split_view::register_split_divider(app, panes[0], body);
+    super::split_view::register_split_divider(app, columns[0], body);
 
     if !zen {
         render_footer(frame, app, chunks[2]);
@@ -139,35 +136,41 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         _ => "loading…".to_string(),
     };
 
+    let theme = app.theme;
+    let index_style = match state.index {
+        crate::app::browse::IndexState::Ready(_) => theme.success.style(),
+        crate::app::browse::IndexState::Failed { .. } => theme.danger.style(),
+        crate::app::browse::IndexState::Building | crate::app::browse::IndexState::Idle => {
+            theme.info.style()
+        }
+    };
     let header = Paragraph::new(Line::from(vec![
         Span::styled("Repo Browse", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" - "),
-        Span::styled(root, Style::default().fg(Color::Cyan)),
+        Span::styled(root, theme.accent.style()),
         Span::raw("  "),
-        Span::styled(file_count, Style::default().fg(Color::DarkGray)),
+        Span::styled(file_count, theme.muted.style()),
         Span::raw("  "),
-        Span::styled(
-            state.index.label(),
-            Style::default().fg(match state.index {
-                crate::app::browse::IndexState::Ready(_) => Color::Green,
-                crate::app::browse::IndexState::Failed { .. } => Color::Red,
-                _ => Color::Yellow,
-            }),
-        ),
+        Span::styled(state.index.label(), index_style),
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(header, area);
 }
 
-fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
+fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, attention: Attention, theme: Theme) {
     let Some(state) = app.browse_state.as_ref() else {
         return;
     };
 
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
+    let files_block = |detail: &str| {
+        pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Files",
+                detail,
+            },
+            attention,
+        )
     };
 
     if let LoadState::Error(ref message) = state.paths {
@@ -175,12 +178,7 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             format!("  {message}"),
             Style::default().fg(Color::Red),
         )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title("Files"),
-        );
+        .block(files_block(""));
         frame.render_widget(paragraph, area);
         return;
     }
@@ -190,12 +188,7 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             format!("  {} Listing files…", app.spinner_char()),
             Style::default().fg(Color::DarkGray),
         )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title("Files"),
-        );
+        .block(files_block(""));
         frame.render_widget(paragraph, area);
         return;
     }
@@ -253,25 +246,43 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
                 }
             };
 
-            let style = if selected {
-                base.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
-            } else {
-                base
-            };
-            ListItem::new(Line::from(Span::styled(text, style)))
+            let mark = attention.rows(theme);
+            let name_width = (area.width as usize)
+                .saturating_sub(2)
+                .saturating_sub(SELECTION_MARKER_WIDTH);
+            let shown = truncate_with_width(&text, name_width);
+            ListItem::new(Line::from(vec![
+                mark.prefix(selected),
+                Span::styled(shown.into_owned(), base.patch(mark.body_style(selected))),
+            ]))
         })
         .collect();
 
-    let title = match state.filter {
-        Some(ref filter) if filter.input_active => format!("Filter: {}_", filter.query),
-        Some(ref filter) if !filter.query.is_empty() => format!("Files (/{})", filter.query),
-        _ => "Files".to_string(),
+    let block = match state.filter {
+        Some(ref filter) if filter.input_active => {
+            let detail = format!("Filter: {}_", filter.query);
+            pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "",
+                    detail: &detail,
+                },
+                attention,
+            )
+        }
+        Some(ref filter) if !filter.query.is_empty() => {
+            let detail = format!("Files (/{})", filter.query);
+            pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "",
+                    detail: &detail,
+                },
+                attention,
+            )
+        }
+        _ => files_block(""),
     };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(title);
     let inner_area = block.inner(area);
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
@@ -307,21 +318,21 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     }
 }
 
-fn render_content(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
+fn render_content(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    attention: Attention,
+    theme: Theme,
+) {
     let bg_color = app.config.diff.bg_color;
     let spinner = app.spinner_char().to_string();
     let Some(state) = app.browse_state.as_mut() else {
         return;
     };
 
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    };
-
     if state.commit_diff.is_active() {
-        render_commit_diff(frame, state, area, border_style, bg_color, &spinner);
+        render_commit_diff(frame, state, area, attention, theme, bg_color, &spinner);
         return;
     }
 
@@ -341,12 +352,14 @@ fn render_content(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             "  Select a file to view it.",
             Style::default().fg(Color::DarkGray),
         )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title("Preview"),
-        );
+        .block(pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Preview",
+                detail: "",
+            },
+            attention,
+        ));
         frame.render_widget(paragraph, area);
         return;
     };
@@ -356,12 +369,14 @@ fn render_content(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             format!("  {notice}"),
             Style::default().fg(Color::DarkGray),
         )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(open.path.clone()),
-        );
+        .block(pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "",
+                detail: &open.path,
+            },
+            attention,
+        ));
         frame.render_widget(paragraph, area);
         return;
     }
@@ -403,12 +418,14 @@ fn render_content(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         format!("{} {}", open.path, spinner)
     };
 
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(title),
-    );
+    let paragraph = Paragraph::new(lines).block(pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "",
+            detail: &title,
+        },
+        attention,
+    ));
     frame.render_widget(paragraph, area);
 
     for (rendered_row, line) in logical_lines.into_iter().enumerate() {
@@ -446,7 +463,8 @@ fn render_commit_diff(
     frame: &mut Frame,
     state: &mut BrowseState,
     area: Rect,
-    border_style: Style,
+    attention: Attention,
+    theme: Theme,
     bg_color: bool,
     spinner: &str,
 ) {
@@ -534,12 +552,14 @@ fn render_commit_diff(
     };
 
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(title),
-        )
+        .block(pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "",
+                detail: &title,
+            },
+            attention,
+        ))
         .wrap(ratatui::widgets::Wrap { trim: false })
         .scroll((adjusted_scroll, 0));
     frame.render_widget(paragraph, area);
@@ -995,6 +1015,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_overlay(frame: &mut Frame, app: &mut App) {
+    let theme = app.theme;
     let frame_area = frame.area();
     let (browse_state, hit_map) = (&mut app.browse_state, &mut app.hit_map);
     let Some(state) = browse_state.as_mut() else {
@@ -1008,7 +1029,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
             let area = overlay_rect(frame_area, 80, 75);
             hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
             hit_map.push(area, HitTarget::OverlaySurface);
-            render_line_discussion(frame, hit_map, area, index, view);
+            render_line_discussion(frame, hit_map, area, index, view, theme);
             return;
         }
         _ => {}
@@ -1021,7 +1042,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
         let area = overlay_rect(frame_area, 70, 60);
         hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
         hit_map.push(area, HitTarget::OverlaySurface);
-        render_pr_selection(frame, hit_map, area, pulls, *selected);
+        render_pr_selection(frame, hit_map, area, pulls, *selected, theme);
         return;
     }
 
@@ -1031,7 +1052,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
             let area = overlay_rect(frame_area, 60, 70);
             hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
             hit_map.push(area, HitTarget::OverlaySurface);
-            render_outline(frame, hit_map, area, state, selected);
+            render_outline(frame, hit_map, area, state, selected, theme);
         }
         BrowseOverlay::SymbolSearch {
             ref query,
@@ -1040,7 +1061,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
             let area = overlay_rect(frame_area, 80, 70);
             hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
             hit_map.push(area, HitTarget::OverlaySurface);
-            render_symbol_search(frame, hit_map, area, state, query, selected);
+            render_symbol_search(frame, hit_map, area, state, query, selected, theme);
         }
     }
 }
@@ -1051,6 +1072,7 @@ fn render_line_discussion(
     area: Rect,
     index: &DiscussionIndex,
     view: &mut DiscussionView,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
     let content_area = if let Some(note) = index.confidence_note() {
@@ -1132,6 +1154,8 @@ fn render_line_discussion(
                     outdated_ids: &outdated_ids,
                 },
                 scroll,
+                theme,
+                Attention::Focused,
             );
             register_rows(hit_map, &item_heights, *scroll);
         }
@@ -1168,6 +1192,8 @@ fn render_line_discussion(
                 scroll,
                 &resolved,
                 &outdated_ids,
+                theme,
+                Attention::Focused,
             );
             register_rows(hit_map, &item_heights, *scroll);
         }
@@ -1180,6 +1206,7 @@ fn render_pr_selection(
     area: Rect,
     pulls: &[CommitPullRequest],
     selected: usize,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -1189,25 +1216,17 @@ fn render_pr_selection(
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, pull)| {
-            let style = if index == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+        .map(|(_, pull)| {
             let state = match pull.state {
                 CommitPullRequestState::Open => "open",
                 CommitPullRequestState::Closed => "closed",
                 CommitPullRequestState::Merged => "merged",
                 CommitPullRequestState::Unknown => "unconfirmed",
             };
-            ListItem::new(Line::from(Span::styled(
-                format!(" #{} [{}] {}", pull.number, state, pull.title),
-                style,
-            )))
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("#{} ", pull.number), theme.muted.style()),
+                Span::raw(format!("[{state}] {}", pull.title)),
+            ]))
         })
         .collect::<Vec<_>>();
     let block = Block::default()
@@ -1222,8 +1241,12 @@ fn render_pr_selection(
             Style::default().fg(Color::DarkGray),
         )));
     let inner_area = block.inner(area);
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    let visible_selected = selected.saturating_sub(offset);
+    let mut list_state = ListState::default().with_selected(Some(visible_selected));
+    let list = Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    frame.render_stateful_widget(list, area, &mut list_state);
     for visible_row in 0..pulls.len().saturating_sub(offset).min(inner_height) {
         let row = offset + visible_row;
         hit_map.push(
@@ -1281,6 +1304,7 @@ fn render_outline(
     area: Rect,
     state: &BrowseState,
     selected: usize,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
 
@@ -1293,7 +1317,7 @@ fn render_outline(
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, symbol)| ListItem::new(outline_row(symbol, index == selected)))
+        .map(|(_, symbol)| ListItem::new(outline_row(symbol)))
         .collect();
 
     let block = Block::default()
@@ -1305,8 +1329,12 @@ fn render_outline(
             Style::default().fg(Color::DarkGray),
         )));
     let inner_area = block.inner(area);
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    let visible_selected = selected.saturating_sub(offset);
+    let mut list_state = ListState::default().with_selected(Some(visible_selected));
+    let list = Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    frame.render_stateful_widget(list, area, &mut list_state);
     for visible_row in 0..symbols.len().saturating_sub(offset).min(inner_height) {
         let row = offset + visible_row;
         hit_map.push(
@@ -1329,7 +1357,8 @@ fn render_module_graph_pane(
     frame: &mut Frame,
     state: &BrowseState,
     area: Rect,
-    focused: bool,
+    attention: Attention,
+    theme: Theme,
     graph_help: &str,
 ) {
     match &state.module_graph_pane {
@@ -1339,10 +1368,8 @@ fn render_module_graph_pane(
                 frame,
                 area,
                 path,
-                "Graph (opening…)",
                 " Waiting for the current file…",
-                focused,
-                graph_help,
+                module_graph_block("", "Graph (opening…)", attention, theme, graph_help),
             );
         }
         ModuleGraphPaneState::Loading { path, .. } => {
@@ -1350,14 +1377,12 @@ fn render_module_graph_pane(
                 frame,
                 area,
                 path,
-                "Graph (loading…)",
                 " Resolving imports and importers…",
-                focused,
-                graph_help,
+                module_graph_block("Graph", "(loading…)", attention, theme, graph_help),
             );
         }
         ModuleGraphPaneState::Ready(panel) => {
-            render_module_graph_ready_pane(frame, area, panel, focused, graph_help);
+            render_module_graph_ready_pane(frame, area, panel, attention, theme, graph_help);
         }
     }
 }
@@ -1366,17 +1391,9 @@ fn render_module_graph_loading_pane(
     frame: &mut Frame,
     area: Rect,
     path: &str,
-    title: &str,
     message: &str,
-    focused: bool,
-    graph_help: &str,
+    block: Block,
 ) {
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    };
-    let block = module_graph_block(title, border_style, graph_help);
     let inner_width = area.width.saturating_sub(2) as usize;
     let mut lines = module_graph_box_lines("current module", path, inner_width, true)
         .into_iter()
@@ -1400,30 +1417,13 @@ fn render_module_graph_ready_pane(
     frame: &mut Frame,
     area: Rect,
     panel: &ModuleGraphPanel,
-    focused: bool,
+    attention: Attention,
+    theme: Theme,
     graph_help: &str,
 ) {
     let current = panel.current();
-    let direction = match panel.direction {
-        ModuleGraphDirection::Dependencies => "Imports →",
-        ModuleGraphDirection::Dependents => "Importers",
-    };
-    let guarantee = match current.guarantee {
-        crate::module_graph::DependencyGuarantee::Exact => "exact",
-        crate::module_graph::DependencyGuarantee::Approximate => "approximate",
-    };
-    let count = if current.rows.len() < current.total {
-        format!("{}/{}", current.rows.len(), current.total)
-    } else {
-        current.total.to_string()
-    };
-    let title = format!("{direction} {count} {guarantee}");
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    };
-    let block = module_graph_block(title, border_style, graph_help);
+    let title = module_graph_title(panel, usize::from(area.width.saturating_sub(2)));
+    let block = module_graph_block("", &title, attention, theme, graph_help);
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
     let current_style = Style::default()
@@ -1472,6 +1472,31 @@ fn render_module_graph_ready_pane(
     }
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn module_graph_title(panel: &ModuleGraphPanel, title_width: usize) -> String {
+    let current = panel.current();
+    let direction = match panel.direction {
+        ModuleGraphDirection::Dependencies => "IMPORTS →",
+        ModuleGraphDirection::Dependents => "IMPORTERS",
+    };
+    let guarantee = match current.guarantee {
+        crate::module_graph::DependencyGuarantee::Exact => "exact",
+        crate::module_graph::DependencyGuarantee::Approximate => "approximate",
+    };
+    let count = if current.rows.len() < current.total {
+        format!("{}/{}", current.rows.len(), current.total)
+    } else {
+        current.total.to_string()
+    };
+    let full = format!("{direction} {count} {guarantee}");
+    if format!("▶ {full}").width() <= title_width {
+        return full;
+    }
+    match current.guarantee {
+        crate::module_graph::DependencyGuarantee::Exact => format!("{direction} {count}"),
+        crate::module_graph::DependencyGuarantee::Approximate => format!("{direction} ~{count}"),
+    }
 }
 
 /// モジュールグラフペインのヒット領域を登録する。
@@ -1536,18 +1561,15 @@ fn register_module_graph_hits(app: &mut App, area: Rect) {
 }
 
 fn module_graph_block<'a>(
-    title: impl Into<Line<'a>>,
-    border_style: Style,
+    label: &'a str,
+    detail: &'a str,
+    attention: Attention,
+    theme: Theme,
     graph_help: &str,
 ) -> Block<'a> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(title)
-        .title_bottom(Line::from(Span::styled(
-            graph_help.to_string(),
-            Style::default().fg(Color::DarkGray),
-        )))
+    pane_block(theme, PaneTitle::Labeled { label, detail }, attention).title_bottom(Line::from(
+        Span::styled(graph_help.to_string(), theme.muted.style()),
+    ))
 }
 
 fn module_graph_relationship_lines(
@@ -1630,15 +1652,8 @@ fn fit_module_graph_text(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(padding))
 }
 
-fn outline_row(symbol: &Symbol, selected: bool) -> Line<'static> {
-    let style = if selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
+fn outline_row(symbol: &Symbol) -> Line<'static> {
+    let style = Style::default();
     Line::from(Span::styled(
         format!(
             " {}{} {}  :{}",
@@ -1658,6 +1673,7 @@ fn render_symbol_search(
     state: &BrowseState,
     query: &str,
     selected: usize,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
 
@@ -1688,17 +1704,9 @@ fn render_symbol_search(
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, hit)| {
-            let style = if index == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+        .map(|(_, hit)| {
             let label = hit.search_label();
-            ListItem::new(Line::from(Span::styled(format!(" {label}"), style)))
+            ListItem::new(Line::from(Span::raw(label)))
         })
         .collect();
 
@@ -1720,8 +1728,12 @@ fn render_symbol_search(
             Style::default().fg(Color::DarkGray),
         )));
     let inner_area = block.inner(rows[1]);
-    let list = List::new(items).block(block);
-    frame.render_widget(list, rows[1]);
+    let visible_selected = selected.saturating_sub(offset);
+    let mut list_state = ListState::default().with_selected(Some(visible_selected));
+    let list = Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    frame.render_stateful_widget(list, rows[1], &mut list_state);
     for visible_row in 0..hits.len().saturating_sub(offset).min(inner_height) {
         let row = offset + visible_row;
         hit_map.push(
@@ -1781,6 +1793,7 @@ mod tests {
     use crate::keybinding::{KeyBinding, KeySequence};
     use crate::module_graph::DependencyGuarantee;
     use crate::symbols::{FileSymbols, Symbol, SymbolIndex, SymbolKind};
+    use crate::ui::theme::{Attention, Theme};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
@@ -1945,22 +1958,39 @@ mod tests {
     }
 
     #[test]
+    fn focused_open_file_title_keeps_the_path() {
+        let mut app = app_with_browse(&["src/app.rs"]);
+        open_file(
+            app.browse_state.as_mut().unwrap(),
+            "src/app.rs",
+            "fn main() {}\n",
+        );
+        app.state = AppState::RepoBrowseFile;
+        let text = render_at(&mut app, 100, 16);
+        assert!(
+            text.contains("▶ src/app.rs (1/"),
+            "path title missing:\n{text}"
+        );
+        assert!(!text.contains("SRC/APP.RS"), "path was uppercased:\n{text}");
+    }
+
+    #[test]
     fn test_render_tree_and_empty_preview() {
         let mut app = app_with_browse(&["src/app.rs", "src/ui/mod.rs", "README.md"]);
-        assert_snapshot!(render_at(&mut app, 80, 14), @r"
+        assert_snapshot!(render_at(&mut app, 80, 14), @"
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  3 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌Preview───────────────────────────────────────────┐
-        │▼ src/                    ││  Select a file to view it.                       │
-        │  ▼ ui/                   ││                                                  │
-        │      mod.rs              ││                                                  │
-        │    app.rs                ││                                                  │
-        │  README.md               ││                                                  │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┏▶ FILES━━━━━━━━━━━━━━━━━━━┓┌Preview───────────────────────────────────────────┐
+        ┃▌ ▼ src/                  ┃│  Select a file to view it.                       │
+        ┃    ▼ ui/                 ┃│                                                  │
+        ┃        mod.rs            ┃│                                                  │
+        ┃      app.rs              ┃│                                                  │
+        ┃    README.md             ┃│                                                  │
+        ┃                          ┃│                                                  │
+        ┃                          ┃│                                                  │
+        ┃                          ┃│                                                  │
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────────────────────────────────┘
          Enter open | Space/ filter | s symbol search | q/Esc back
         ");
     }
@@ -1996,9 +2026,9 @@ mod tests {
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌Files─────────┌Pull requests containing this commit (3)────────────────────────────┐──────────────┐
-        │▼ src/        │ #10 [open] still open                                              │              │
-        │    app.rs    │ #20 [closed] already closed                                        │              │
-        │              │ #30 [merged] already merged                                        │              │
+        │▏ ▼ src/      │  #10 [open] still open                                             │              │
+        │      app.rs  │▌ #20 [closed] already closed                                       │              │
+        │              │  #30 [merged] already merged                                       │              │
         │              │                                                                    │              │
         │              │                                                                    │              │
         │              │                                                                    │              │
@@ -2026,14 +2056,14 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/app.rs (1/3)──────────────────────────────────┐
-        │▼ src/                    ││    1 fn main() {                                 │
-        │    app.rs                ││    2     println!("hi");                         │
-        │                          ││    3 }                                           │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┏▶ src/app.rs (1/3)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏ ▼ src/                  │┃    1 fn main() {                                 ┃
+        │      app.rs              │┃    2     println!("hi");                         ┃
+        │                          │┃    3 }                                           ┃
+        │                          │┃                                                  ┃
+        │                          │┃                                                  ┃
+        │                          │┃                                                  ┃
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         "#);
     }
@@ -2132,46 +2162,46 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌aaaaaaa baseline — Alice───────────────────────────────────────┐
-        │  main.rs                        ││  ⠋ Loading commit diff…                                       │
-        │                                 ││                                                               │
-        │                                 ││                                                               │
-        │                                 ││                                                               │
-        └─────────────────────────────────┘└───────────────────────────────────────────────────────────────┘
+        ┌Files────────────────────────────┐┏▶ aaaaaaa baseline — Alice━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                      │┃  ⠋ Loading commit diff…                                       ┃
+        │                                 │┃                                                               ┃
+        │                                 │┃                                                               ┃
+        │                                 │┃                                                               ┃
+        └─────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          ⠋ Loading commit diff… | q/Esc back
         --- ready ---
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌aaaaaaa baseline — Alice───────────────────────────────────────┐
-        │  main.rs                        ││diff --git a/main.rs b/main.rs                                 █
-        │                                 ││index 1111111..2222222 100644                                  █
-        │                                 ││--- a/main.rs                                                  █
-        │                                 ││+++ b/main.rs                                                  █
-        │                                 ││@@ -1 +1 @@                                                    █
-        │                                 ││-fn old() {}                                                   █
-        └─────────────────────────────────┘└───────────────────────────────────────────────────────────────┘
+        ┌Files────────────────────────────┐┏▶ aaaaaaa baseline — Alice━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                      │┃diff --git a/main.rs b/main.rs                                 █
+        │                                 │┃index 1111111..2222222 100644                                  █
+        │                                 │┃--- a/main.rs                                                  █
+        │                                 │┃+++ b/main.rs                                                  █
+        │                                 │┃@@ -1 +1 @@                                                    █
+        │                                 │┃-fn old() {}                                                   █
+        └─────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          j/Down/k/Up scroll | Ctrl-d/Ctrl-u page | gg/G first/last | q/Esc back
         --- empty ---
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌aaaaaaa baseline — Alice───────────────────────────────────────┐
-        │  main.rs                        ││  This commit has no diff.                                     │
-        │                                 ││                                                               │
-        │                                 ││                                                               │
-        └─────────────────────────────────┘└───────────────────────────────────────────────────────────────┘
+        ┌Files────────────────────────────┐┏▶ aaaaaaa baseline — Alice━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                      │┃  This commit has no diff.                                     ┃
+        │                                 │┃                                                               ┃
+        │                                 │┃                                                               ┃
+        └─────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          j/Down/k/Up scroll | Ctrl-d/Ctrl-u page | gg/G first/last | q/Esc back
         --- failed ---
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌aaaaaaa baseline — Alice───────────────────────────────────────┐
-        │  main.rs                        ││  Commit diff unavailable: git show failed: bad object aaaaaaa │
-        │                                 ││                                                               │
-        │                                 ││                                                               │
-        │                                 ││                                                               │
-        └─────────────────────────────────┘└───────────────────────────────────────────────────────────────┘
+        ┌Files────────────────────────────┐┏▶ aaaaaaa baseline — Alice━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                      │┃  Commit diff unavailable: git show failed: bad object aaaaaaa ┃
+        │                                 │┃                                                               ┃
+        │                                 │┃                                                               ┃
+        │                                 │┃                                                               ┃
+        └─────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          Commit diff unavailable: git show failed: bad object aaaaaaa | q/Esc back
         ");
     }
@@ -2280,12 +2310,12 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌aaaaaaa large change — Alice──────────────────────┐
-        │  large.txt               ││+line 4996                                        ║
-        │                          ││+line 4997                                        ║
-        │                          ││+line 4998                                        ║
-        │                          ││+line 4999                                        █
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┏▶ aaaaaaa large change — Alice━━━━━━━━━━━━━━━━━━━━┓
+        │▏   large.txt             │┃+line 4996                                        ║
+        │                          │┃+line 4997                                        ║
+        │                          │┃+line 4998                                        ║
+        │                          │┃+line 4999                                        █
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          j/Down/k/Up scroll | Ctrl-d/Ctrl-u page | gg/G first/last | q/Esc back
         ");
     }
@@ -2367,14 +2397,14 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/header.rs (1/3)───────────────────────────────┐
-        │▼ src/                    ││    1 first                                       │
-        │    header.rs             ││    2 @@ -1,1 +1,1 @@                             │
-        │                          ││    3 third                                       │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┏▶ src/header.rs (1/3)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏ ▼ src/                  │┃    1 first                                       ┃
+        │      header.rs           │┃    2 @@ -1,1 +1,1 @@                             ┃
+        │                          │┃    3 third                                       ┃
+        │                          │┃                                                  ┃
+        │                          │┃                                                  ┃
+        │                          │┃                                                  ┃
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         ");
     }
@@ -2413,37 +2443,37 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                                               │
         └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files───────────────────────────────────┐┌main.rs (1/1)───────────────────────────────────────────────────────────────┐
-        │  main.rs                               ││aaaaaaa Alice Example 2h ago        1 fn main() {}                          │
-        │                                        ││                                                                            │
-        └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+        ┌Files───────────────────────────────────┐┏▶ main.rs (1/1)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                             │┃aaaaaaa Alice Example 2h ago        1 fn main() {}                          ┃
+        │                                        │┃                                                                            ┃
+        └────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd def | gf edit | q/Esc back
         --- no time (90) ---
         ┌────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                 │
         └────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────────┐┌main.rs (1/1)───────────────────────────────────────────┐
-        │  main.rs                     ││aaaaaaa Alice Example      1 fn main() {}               │
-        │                              ││                                                        │
-        └──────────────────────────────┘└────────────────────────────────────────────────────────┘
+        ┌Files─────────────────────────┐┏▶ main.rs (1/1)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                   │┃aaaaaaa Alice Example      1 fn main() {}               ┃
+        │                              │┃                                                        ┃
+        └──────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd def | gf ed
         --- identity (70) ---
         ┌────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                             │
         └────────────────────────────────────────────────────────────────────┘
-        ┌Files──────────────────┐┌main.rs (1/1)──────────────────────────────┐
-        │  main.rs              ││aaaaaaa         1 fn main() {}             │
-        │                       ││                                           │
-        └───────────────────────┘└───────────────────────────────────────────┘
+        ┌Files──────────────────┐┏▶ main.rs (1/1)━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs            │┃aaaaaaa         1 fn main() {}             ┃
+        │                       │┃                                           ┃
+        └───────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr disc
         --- hidden (50) ---
         ┌────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -         │
         └────────────────────────────────────────────────┘
-        ┌Files───────────┐┌main.rs (1/1)─────────────────┐
-        │  main.rs       ││    1 fn main() {}            │
-        │                ││                              │
-        └────────────────┘└──────────────────────────────┘
+        ┌Files───────────┐┏▶ main.rs (1/1)━━━━━━━━━━━━━━━┓
+        │▏   main.rs     │┃    1 fn main() {}            ┃
+        │                │┃                              ┃
+        └────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc di
         ");
     }
@@ -2578,12 +2608,12 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                                               │
         └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files───────────────────────────────────┐┌main.rs (1/3)───────────────────────────────────────────────────────────────┐
-        │  main.rs                               ││aaaaaaa 山 田 太 郎  Long N… 2h ago     1 first                                 │
-        │                                        ││                                    2 second                                │
-        │                                        ││Uncommitted                         3 third                                 │
-        │                                        ││                                                                            │
-        └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+        ┌Files───────────────────────────────────┐┏▶ main.rs (1/3)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   main.rs                             │┃aaaaaaa 山 田 太 郎  Long N… 2h ago     1 first                                 ┃
+        │                                        │┃                                    2 second                                ┃
+        │                                        │┃Uncommitted                         3 third                                 ┃
+        │                                        │┃                                                                            ┃
+        └────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd def | gf edit | q/Esc back
         ");
     }
@@ -2637,23 +2667,23 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                                               │
         └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files───────────────────────────────────┐┌short.rs (1/4)──────────────────────────────────────────────────────────────┐
-        │  short.rs                              ││aaaaaaa Alice 2d ago                1 one                                   │
-        │                                        ││bbbbbbb Bob 2d ago                  2 two                                   │
-        │                                        ││[not blamed]                        3 three                                 │
-        │                                        ││[not blamed]                        4 four                                  │
-        │                                        ││                                                                            │
-        └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+        ┌Files───────────────────────────────────┐┏▶ short.rs (1/4)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   short.rs                            │┃aaaaaaa Alice 2d ago                1 one                                   ┃
+        │                                        │┃bbbbbbb Bob 2d ago                  2 two                                   ┃
+        │                                        │┃[not blamed]                        3 three                                 ┃
+        │                                        │┃[not blamed]                        4 four                                  ┃
+        │                                        │┃                                                                            ┃
+        └────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          blame covers 2 lines, this file shows 4 — reopen the file to refresh
         --- blame longer than buffer ---
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                                               │
         └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files───────────────────────────────────┐┌long.rs (1/2)───────────────────────────────────────────────────────────────┐
-        │  long.rs                               ││aaaaaaa Alice 2d ago                1 one                                   │
-        │                                        ││bbbbbbb Bob 2d ago                  2 two                                   │
-        │                                        ││                                                                            │
-        └────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘
+        ┌Files───────────────────────────────────┐┏▶ long.rs (1/2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   long.rs                             │┃aaaaaaa Alice 2d ago                1 one                                   ┃
+        │                                        │┃bbbbbbb Bob 2d ago                  2 two                                   ┃
+        │                                        │┃                                                                            ┃
+        └────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          blame covers 3 lines, this file shows 2 — reopen the file to refresh
         "
         );
@@ -2672,10 +2702,10 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌empty.rs (1/1)────────────────────────────────────┐
-        │  empty.rs                ││                                                  │
-        │                          ││                                                  │
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┏▶ empty.rs (1/1)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   empty.rs              │┃                                                  ┃
+        │                          │┃                                                  ┃
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         ");
     }
@@ -2695,12 +2725,12 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/long.rs (28/30)───────────────────────────────┐
-        │▼ src/                    ││   27 line 27                                     ║
-        │    long.rs               ││   28 line 28                                     ║
-        │                          ││   29 line 29                                     ║
-        │                          ││   30 line 30                                     █
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┏▶ src/long.rs (28/30)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏ ▼ src/                  │┃   27 line 27                                     ║
+        │      long.rs             │┃   28 line 28                                     ║
+        │                          │┃   29 line 29                                     ║
+        │                          │┃   30 line 30                                     █
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         ");
     }
@@ -2981,15 +3011,15 @@ mod tests {
         assert!(!non_zen.contains("4 fourth"), "{non_zen}");
 
         app.zen_mode = true;
-        assert_snapshot!(render_at(&mut app, 60, 8), @r"
-        ┌Files──────────────┐┌src/app.rs (1/4)─────────────────────┐
-        │▼ src/             ││    1 first                          │
-        │    app.rs         ││    2 second                         │
-        │                   ││    3 third                          │
-        │                   ││    4 fourth                         │
-        │                   ││                                     │
-        │                   ││                                     │
-        └───────────────────┘└─────────────────────────────────────┘
+        assert_snapshot!(render_at(&mut app, 60, 8), @"
+        ┌Files──────────────┐┏▶ src/app.rs (1/4)━━━━━━━━━━━━━━━━━━━┓
+        │▏ ▼ src/           │┃    1 first                          ┃
+        │      app.rs       │┃    2 second                         ┃
+        │                   │┃    3 third                          ┃
+        │                   │┃    4 fourth                         ┃
+        │                   │┃                                     ┃
+        │                   │┃                                     ┃
+        └───────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ");
     }
 
@@ -3070,14 +3100,14 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┌Graph (loading…)──────────────┐
-        │▼ src/                           ││    1 import './helper';       ││╔═ current module ═══════════╗│
-        │    app.ts                       ││                               ││║src/app.ts                  ║│
-        │                                 ││                               ││╚════════════════════════════╝│
-        │                                 ││                               ││ Resolving imports and importe│
-        │                                 ││                               ││                              │
-        │                                 ││                               ││                              │
-        └─────────────────────────────────┘└───────────────────────────────┘└ Tab/h/l dir | j/k node | Ente┘
+        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┏▶ GRAPH (loading…)━━━━━━━━━━━━┓
+        │▏ ▼ src/                         ││    1 import './helper';       │┃╔═ current module ═══════════╗┃
+        │      app.ts                     ││                               │┃║src/app.ts                  ║┃
+        │                                 ││                               │┃╚════════════════════════════╝┃
+        │                                 ││                               │┃ Resolving imports and importe┃
+        │                                 ││                               │┃                              ┃
+        │                                 ││                               │┃                              ┃
+        └─────────────────────────────────┘└───────────────────────────────┘┗ Tab/h/l dir | j/k node | Ente┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
         ");
     }
@@ -3096,12 +3126,12 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/helper.ts (1/1)─────┐┌Graph (opening…)────────┐
-        │▼ src/                    ││    1 export {};        ││╔═ current module ═════╗│
-        │    helper.ts             ││                        ││║src/helper.ts         ║│
-        │                          ││                        ││╚══════════════════════╝│
-        │                          ││                        ││ Waiting for the current│
-        └──────────────────────────┘└────────────────────────┘└ i/→ focus ─────────────┘
+        ┌Files─────────────────────┐┏▶ src/helper.ts (1/1)━━━┓┌Graph (opening…)────────┐
+        │▏ ▼ src/                  │┃    1 export {};        ┃│╔═ current module ═════╗│
+        │      helper.ts           │┃                        ┃│║src/helper.ts         ║│
+        │                          │┃                        ┃│╚══════════════════════╝│
+        │                          │┃                        ┃│ Waiting for the current│
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━┛└ i/→ focus ─────────────┘
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         ");
     }
@@ -3209,20 +3239,20 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  2 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┌Imports → 3/300 exact─────────┐
-        │▼ src/                           ││    1 import './helper';       ││╔═ current module ═══════════╗│
-        │    app.ts                       ││                               ││║src/app.ts                  ║│
-        │    helper.ts                    ││                               ││╚════════════════════════════╝│
-        │                                 ││                               │││  ┌─ src/helper.ts ─────────┐│
-        │                                 ││                               ││├─▶│[import] ./helper  :1    ││
-        │                                 ││                               │││  └─────────────────────────┘│
-        │                                 ││                               │││  ┌─ package react ─────────┐│
-        │                                 ││                               ││├─▶│[import] react  :2       ││
-        │                                 ││                               │││  └─────────────────────────┘│
-        │                                 ││                               │││  ┌─ unresolved (not found) ┐│
-        │                                 ││                               ││└─▶│[dynamic] ./missing  :3  ││
-        │                                 ││                               ││   └─────────────────────────┘│
-        └─────────────────────────────────┘└───────────────────────────────┘└ Tab/h/l dir | j/k node | Ente┘
+        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┏▶ IMPORTS → 3/300 exact━━━━━━━┓
+        │▏ ▼ src/                         ││    1 import './helper';       │┃╔═ current module ═══════════╗┃
+        │      app.ts                     ││                               │┃║src/app.ts                  ║┃
+        │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
+        │                                 ││                               │┃│  ┌─ src/helper.ts ─────────┐┃
+        │                                 ││                               │┃├─▶│[import] ./helper  :1    │┃
+        │                                 ││                               │┃│  └─────────────────────────┘┃
+        │                                 ││                               │┃│  ┌─ package react ─────────┐┃
+        │                                 ││                               │┃├─▶│[import] react  :2       │┃
+        │                                 ││                               │┃│  └─────────────────────────┘┃
+        │                                 ││                               │┃│  ┌─ unresolved (not found) ┐┃
+        │                                 ││                               │┃└─▶│[dynamic] ./missing  :3  │┃
+        │                                 ││                               │┃   └─────────────────────────┘┃
+        └─────────────────────────────────┘└───────────────────────────────┘┗ Tab/h/l dir | j/k node | Ente┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
         ");
     }
@@ -3270,14 +3300,266 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┌Imports → 1 exact───────┐
-        │▼ src/                    ││    1 import './依 存 先 ';││╔═ current module ═════╗│
-        │    app.ts                ││                        ││║src/app.ts            ║│
-        │                          ││                        ││╚══════════════════════╝│
-        │                          ││                        │││  ┌─ 依 存 先 依 存 先 依 … ─┐│
-        │                          ││                        ││└─▶│[import] ./依 存 先  …││
-        │                          ││                        ││   └───────────────────┘│
-        └──────────────────────────┘└────────────────────────┘└ Tab/h/l dir | j/k node ┘
+        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ IMPORTS → 1 exact━━━━━┓
+        │▏ ▼ src/                  ││    1 import './依 存 先 ';│┃╔═ current module ═════╗┃
+        │      app.ts              ││                        │┃║src/app.ts            ║┃
+        │                          ││                        │┃╚══════════════════════╝┃
+        │                          ││                        │┃│  ┌─ 依 存 先 依 存 先 依 … ─┐┃
+        │                          ││                        │┃└─▶│[import] ./依 存 先  …│┃
+        │                          ││                        │┃   └───────────────────┘┃
+        └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
+         Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
+        ");
+    }
+
+    fn graph_rows(guarantee: DependencyGuarantee) -> ModuleGraphRows {
+        ModuleGraphRows {
+            rows: (0..3)
+                .map(|index| ModuleGraphRow {
+                    node: format!("n{index}"),
+                    edge: format!("e{index}"),
+                    jump: None,
+                })
+                .collect(),
+            total: 300,
+            guarantee,
+        }
+    }
+
+    fn graph_panel(
+        direction: ModuleGraphDirection,
+        guarantee: DependencyGuarantee,
+    ) -> ModuleGraphPanel {
+        let filled = graph_rows(guarantee);
+        let empty = ModuleGraphRows {
+            rows: Vec::new(),
+            total: 0,
+            guarantee,
+        };
+        let (dependencies, dependents) = match direction {
+            ModuleGraphDirection::Dependencies => (filled, empty),
+            ModuleGraphDirection::Dependents => (empty, filled),
+        };
+        ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction,
+            selected: 0,
+            dependencies,
+            dependents,
+        }
+    }
+
+    fn render_graph_title(panel: &ModuleGraphPanel, width: u16) -> String {
+        let backend = TestBackend::new(width, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::test_default();
+        terminal
+            .draw(|frame| {
+                render_module_graph_ready_pane(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, width, 8),
+                    panel,
+                    Attention::Focused,
+                    theme,
+                    "help",
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect::<String>()
+    }
+
+    #[test]
+    fn module_graph_title_keeps_the_guarantee_word_when_the_arrow_fits() {
+        let exact = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependencies,
+                DependencyGuarantee::Exact,
+            ),
+            40,
+        );
+        assert!(exact.contains("▶ IMPORTS → 3/300 exact"), "{exact}");
+
+        let approximate = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependents,
+                DependencyGuarantee::Approximate,
+            ),
+            40,
+        );
+        assert!(
+            approximate.contains("▶ IMPORTERS 3/300 approximate"),
+            "{approximate}"
+        );
+        assert!(!approximate.contains('~'), "{approximate}");
+    }
+
+    #[test]
+    fn module_graph_title_shrinks_when_the_focused_title_does_not_fit() {
+        let exact_imports = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependencies,
+                DependencyGuarantee::Exact,
+            ),
+            22,
+        );
+        assert!(
+            exact_imports.contains("▶ IMPORTS → 3/300"),
+            "{exact_imports}"
+        );
+        assert!(!exact_imports.contains("exact"), "{exact_imports}");
+        assert!(!exact_imports.contains('~'), "{exact_imports}");
+
+        let exact_importers = render_graph_title(
+            &graph_panel(ModuleGraphDirection::Dependents, DependencyGuarantee::Exact),
+            22,
+        );
+        assert!(
+            exact_importers.contains("▶ IMPORTERS 3/300"),
+            "{exact_importers}"
+        );
+        assert!(!exact_importers.contains("exact"), "{exact_importers}");
+        assert!(!exact_importers.contains('~'), "{exact_importers}");
+
+        let approximate_imports = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependencies,
+                DependencyGuarantee::Approximate,
+            ),
+            22,
+        );
+        assert!(
+            approximate_imports.contains("▶ IMPORTS → ~3/300"),
+            "{approximate_imports}"
+        );
+        assert!(
+            !approximate_imports.contains("approximate"),
+            "{approximate_imports}"
+        );
+
+        let approximate_importers = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependents,
+                DependencyGuarantee::Approximate,
+            ),
+            22,
+        );
+        assert!(
+            approximate_importers.contains("▶ IMPORTERS ~3/300"),
+            "{approximate_importers}"
+        );
+        assert!(
+            !approximate_importers.contains("approximate"),
+            "{approximate_importers}"
+        );
+    }
+
+    #[test]
+    fn test_render_module_graph_exact_title_at_80_columns() {
+        let mut app = app_with_browse(&["src/app.ts", "src/helper.ts"]);
+        let state = app.browse_state.as_mut().unwrap();
+        open_file(state, "src/app.ts", "import './helper';\n");
+        state.module_graph_pane = ModuleGraphPaneState::Ready(ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction: ModuleGraphDirection::Dependencies,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: vec![
+                    ModuleGraphRow {
+                        node: "src/helper.ts".to_string(),
+                        edge: "[import] ./helper  :1".to_string(),
+                        jump: Some(crate::app::browse::ModuleGraphJump {
+                            path: "src/helper.ts".to_string(),
+                            line: 0,
+                        }),
+                    },
+                    ModuleGraphRow {
+                        node: "package react".to_string(),
+                        edge: "[import] react  :2".to_string(),
+                        jump: None,
+                    },
+                    ModuleGraphRow {
+                        node: "unresolved (not found)".to_string(),
+                        edge: "[dynamic] ./missing  :3".to_string(),
+                        jump: None,
+                    },
+                ],
+                total: 300,
+                guarantee: DependencyGuarantee::Exact,
+            },
+            dependents: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Exact,
+            },
+        });
+        app.state = AppState::RepoBrowseGraph;
+
+        assert_snapshot!(render_at(&mut app, 80, 18), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Repo Browse - demo  2 files  symbols: -                                       │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ IMPORTS → 3/300 exact━┓
+        │▏ ▼ src/                  ││    1 import './helper';│┃╔═ current module ═════╗┃
+        │      app.ts              ││                        │┃║src/app.ts            ║┃
+        │      helper.ts           ││                        │┃╚══════════════════════╝┃
+        │                          ││                        │┃│  ┌─ src/helper.ts ───┐┃
+        │                          ││                        │┃├─▶│[import] ./helper …│┃
+        │                          ││                        │┃│  └───────────────────┘┃
+        │                          ││                        │┃│  ┌─ package react ───┐┃
+        │                          ││                        │┃├─▶│[import] react  :2 │┃
+        │                          ││                        │┃│  └───────────────────┘┃
+        │                          ││                        │┃│  ┌─ unresolved (not… ┐┃
+        │                          ││                        │┃└─▶│[dynamic] ./missin…│┃
+        │                          ││                        │┃   └───────────────────┘┃
+        └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
+         Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
+        ");
+    }
+
+    #[test]
+    fn test_render_module_graph_approximate_title_at_80_columns() {
+        let mut app = app_with_browse(&["src/app.ts", "src/helper.ts"]);
+        let state = app.browse_state.as_mut().unwrap();
+        open_file(state, "src/helper.ts", "export const helper = 1;\n");
+        state.module_graph_pane = ModuleGraphPaneState::Ready(ModuleGraphPanel {
+            path: "src/helper.ts".to_string(),
+            display_path: "src/helper.ts".to_string(),
+            direction: ModuleGraphDirection::Dependents,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Approximate,
+            },
+            dependents: ModuleGraphRows {
+                rows: vec![ModuleGraphRow {
+                    node: "src/app.rs".to_string(),
+                    edge: "[use] crate::helper  :4".to_string(),
+                    jump: None,
+                }],
+                total: 1,
+                guarantee: DependencyGuarantee::Approximate,
+            },
+        });
+        app.state = AppState::RepoBrowseGraph;
+
+        assert_snapshot!(render_at(&mut app, 80, 14), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Repo Browse - demo  2 files  symbols: -                                       │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┌src/helper.ts (1/1)─────┐┏▶ IMPORTERS ~1━━━━━━━━━━┓
+        │▏ ▼ src/                  ││    1 export const helpe│┃╔═ current module ═════╗┃
+        │      app.ts              ││      r = 1;            │┃║src/helper.ts         ║┃
+        │      helper.ts           ││                        │┃╚══════════════════════╝┃
+        │                          ││                        │┃│  ┌─ src/app.rs ──────┐┃
+        │                          ││                        │┃▲─┘│[use] crate::helpe…│┃
+        │                          ││                        │┃   └───────────────────┘┃
+        │                          ││                        │┃                        ┃
+        │                          ││                        │┃                        ┃
+        └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
         ");
     }
@@ -3313,16 +3595,16 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  2 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌src/helper.ts (1/1)────────────┐┌Importers 1 approximate───────┐
-        │▼ src/                           ││    1 export const helper = 1; ││╔═ current module ═══════════╗│
-        │    app.ts                       ││                               ││║src/helper.ts               ║│
-        │    helper.ts                    ││                               ││╚════════════════════════════╝│
-        │                                 ││                               │││  ┌─ src/app.rs ────────────┐│
-        │                                 ││                               ││▲─┘│[use] crate::helper  :4  ││
-        │                                 ││                               ││   └─────────────────────────┘│
-        │                                 ││                               ││                              │
-        │                                 ││                               ││                              │
-        └─────────────────────────────────┘└───────────────────────────────┘└ Tab/h/l dir | j/k node | Ente┘
+        ┌Files────────────────────────────┐┌src/helper.ts (1/1)────────────┐┏▶ IMPORTERS 1 approximate━━━━━┓
+        │▏ ▼ src/                         ││    1 export const helper = 1; │┃╔═ current module ═══════════╗┃
+        │      app.ts                     ││                               │┃║src/helper.ts               ║┃
+        │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
+        │                                 ││                               │┃│  ┌─ src/app.rs ────────────┐┃
+        │                                 ││                               │┃▲─┘│[use] crate::helper  :4  │┃
+        │                                 ││                               │┃   └─────────────────────────┘┃
+        │                                 ││                               │┃                              ┃
+        │                                 ││                               │┃                              ┃
+        └─────────────────────────────────┘└───────────────────────────────┘┗ Tab/h/l dir | j/k node | Ente┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
         ");
     }
@@ -3354,7 +3636,7 @@ mod tests {
         ┌──────────────────┐
         │Repo Browse - demo│
         └──────────────────┘
-        ┌Files┐┌src/e┐┌ Tab┐
+        ┌Files┐┌src/e┐┏ Tab┓
          Tab/h/l direction |
         ");
     }
@@ -3388,11 +3670,18 @@ mod tests {
     /// The text of the one row the symbol-search overlay paints as selected.
     fn highlighted_row(buffer: &Buffer, height: u16) -> Option<String> {
         (0..height).find_map(|y| {
-            let row: String = (0..buffer.area.width)
-                .filter(|x| buffer[(*x, y)].bg == Color::Cyan)
+            let start = (0..buffer.area.width).find(|x| buffer[(*x, y)].symbol() == "▌")?;
+            let row: String = (start..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol())
+                .take_while(|symbol| {
+                    !matches!(
+                        *symbol,
+                        "│" | "┃" | "┌" | "┐" | "└" | "┘" | "┏" | "┓" | "┗" | "┛"
+                    )
+                })
                 .collect();
-            (!row.trim().is_empty()).then(|| row.trim().to_string())
+            let row = row.trim();
+            (!row.is_empty()).then(|| row.to_string())
         })
     }
 
@@ -3702,7 +3991,7 @@ mod tests {
             let border_x = 79;
             assert_eq!(
                 buf[(border_x, content_y)].symbol(),
-                "│",
+                "┃",
                 "the pane border was overwritten by the overflowing line: {source}"
             );
 
@@ -3762,14 +4051,14 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌notes.md (1/2)────────────────────────────────────┐
-        │  notes.md                ││    1 word word word word word word word word word│
-        │                          ││       word word word word word word word word wor│
-        │                          ││      d tail-sentinel                             │
-        │                          ││    2 short line                                  │
-        │                          ││                                                  │
-        │                          ││                                                  │
-        └──────────────────────────┘└──────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┏▶ notes.md (1/2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        │▏   notes.md              │┃    1 word word word word word word word word word┃
+        │                          │┃       word word word word word word word word wor┃
+        │                          │┃      d tail-sentinel                             ┃
+        │                          │┃    2 short line                                  ┃
+        │                          │┃                                                  ┃
+        │                          │┃                                                  ┃
+        └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         ");
     }
@@ -3785,10 +4074,7 @@ mod tests {
     /// The assertions therefore read cells.
     #[test]
     fn test_overlay_left_border_survives_a_wide_glyph_straddling_it() {
-        // Tree rows start their name in column 3, so twelve leading ASCII
-        // columns put the first wide glyph on columns 15-16 — and the 60%-wide
-        // overlay's left border lands on column 16 of an 80-column frame.
-        let paths: Vec<String> = (0..8).map(|i| format!("{i:0>12}日本語")).collect();
+        let paths: Vec<String> = (0..8).map(|i| format!("{i:0>10}日本語")).collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         let mut app = app_with_browse(&refs);
 
@@ -3836,10 +4122,7 @@ mod tests {
     /// its call for a bare `Clear` is invisible to every other test.
     #[test]
     fn test_symbol_search_left_border_survives_a_wide_glyph_straddling_it() {
-        // The 80%-wide overlay's left border lands on column 8 of an 80-column
-        // frame, and tree rows start their name in column 3 — so four leading
-        // ASCII columns put the first wide glyph on columns 7-8.
-        let paths: Vec<String> = (0..8).map(|i| format!("{i:0>4}日本語")).collect();
+        let paths: Vec<String> = (0..8).map(|i| format!("{i:0>2}日本語")).collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         let mut app = app_with_browse(&refs);
 
@@ -3970,12 +4253,12 @@ mod tests {
         }
         app.state = AppState::RepoBrowseFile;
 
-        assert_snapshot!(render_at(&mut app, 12, 6), @r"
+        assert_snapshot!(render_at(&mut app, 12, 6), @"
         ┌──────────┐
         │Repo Brows│
         └──────────┘
-        ┌Fi┐┌src/ap┐
-        └──┘└──────┘
+        ┌Fi┐┏▶ src/┓
+        └──┘┗━━━━━━┛
          o outline |
         ");
 

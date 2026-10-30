@@ -1246,8 +1246,16 @@ pub(crate) fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout:
         })
         .unwrap_or_else(|| "No file selected".to_string());
 
-    let header =
-        Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("Diff"));
+    let theme = app.theme;
+    let attention = app.diff_attention().diff;
+    let header = Paragraph::new(header_text).block(super::chrome::pane_block(
+        theme,
+        super::chrome::PaneTitle::Labeled {
+            label: "Diff",
+            detail: "",
+        },
+        attention,
+    ));
     frame.render_widget(header, area);
 }
 
@@ -1306,7 +1314,9 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &mut App, area: ratatu
         (rendered, app.diff_scroll.scroll_offset as u16, 0)
     };
 
-    let block = Block::default().borders(Borders::ALL);
+    let theme = app.theme;
+    let attention = app.diff_attention().diff;
+    let block = attention.frame(theme);
     let inner_area = block.inner(area);
     register_diff_hit_regions(
         &mut app.hit_map,
@@ -1549,12 +1559,9 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
                 )));
             }
 
+            let mark = app.diff_attention().comments.rows(app.theme);
             let indicator = if has_multiple {
-                if i == app.cmt.selected_inline_comment {
-                    Span::styled("> ", Style::default().fg(Color::Yellow))
-                } else {
-                    Span::styled("  ", Style::default())
-                }
+                mark.prefix(i == app.cmt.selected_inline_comment)
             } else {
                 Span::raw("")
             };
@@ -1579,12 +1586,18 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     }
 
     let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let theme = app.theme;
+    let comments = app.diff_attention().comments;
     let total_lines = lines.len();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
-        .title(title);
+    let block = super::chrome::pane_block(
+        theme,
+        super::chrome::PaneTitle::Labeled {
+            label: "",
+            detail: title,
+        },
+        comments,
+    );
     let inner_area = block.inner(area);
 
     let paragraph = Paragraph::new(lines)

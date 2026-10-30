@@ -253,6 +253,10 @@ fn setup_panic_hook() {
     }));
 }
 
+fn no_color_from_env() -> bool {
+    octorus::ui::theme::no_color_from_value(std::env::var("NO_COLOR").ok().as_deref())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Set up panic hook before anything else
@@ -378,6 +382,7 @@ async fn main() -> Result<()> {
             config::Config::load()?
         };
         apply_cli_config_overrides(&mut config, &args);
+        config.no_color = no_color_from_env();
         return run_with_cockpit(&repo, config, &args, repo_available).await;
     }
 
@@ -393,6 +398,7 @@ async fn main() -> Result<()> {
         config::Config::load()?
     };
     apply_cli_config_overrides(&mut config, &args);
+    config.no_color = no_color_from_env();
 
     // Headless mode: --ai-rally with --pr <number> or --local bypasses TUI entirely
     if args.ai_rally && matches!(args.pr, Some(pr) if pr > 0) {

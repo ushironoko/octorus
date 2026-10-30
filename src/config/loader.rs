@@ -3,7 +3,134 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::schema::{ThemePreset, THEME_COLOR_KEYS};
 use super::Config;
+
+/// Remove theme values the config parser would reject.
+///
+/// `global_has` is true when the already-sanitized global table still has that
+/// key (`preset`, or `colors.accent` and the other color keys). The global
+/// file passes `|_| false` because a bad global value falls back to the preset.
+pub(super) fn sanitize_theme_table(
+    path: &Path,
+    value: &mut toml::Value,
+    global_has: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Some(root) = value.as_table_mut() else {
+        return warnings;
+    };
+    let drop_theme = {
+        let Some(theme) = root.get_mut("theme").and_then(|theme| theme.as_table_mut()) else {
+            return warnings;
+        };
+
+        let bad_preset = theme.get("preset").and_then(|preset| {
+            if known_preset(preset) {
+                None
+            } else {
+                Some(theme_value_text(preset))
+            }
+        });
+        if let Some(shown) = bad_preset {
+            let fallback = fallback_label(global_has("preset"));
+            warnings.push(format!(
+                "{}: theme.preset: unknown preset {shown:?} ({fallback})",
+                warning_path(path)
+            ));
+            theme.remove("preset");
+        }
+
+        if let Some(colors) = theme
+            .get_mut("colors")
+            .and_then(|colors| colors.as_table_mut())
+        {
+            let bad_colors: Vec<(String, String)> = THEME_COLOR_KEYS
+                .iter()
+                .filter_map(|key| {
+                    let color = colors.get(*key)?;
+                    if known_color(color) {
+                        None
+                    } else {
+                        Some(((*key).to_string(), theme_value_text(color)))
+                    }
+                })
+                .collect();
+            for (key, shown) in bad_colors {
+                let fallback = fallback_label(global_has(&format!("colors.{key}")));
+                warnings.push(format!(
+                    "{}: theme.colors.{key}: invalid color {shown:?} ({fallback})",
+                    warning_path(path)
+                ));
+                colors.remove(&key);
+            }
+        }
+        if theme
+            .get("colors")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|colors| colors.is_empty())
+        {
+            theme.remove("colors");
+        }
+        theme.is_empty()
+    };
+    if drop_theme {
+        root.remove("theme");
+    }
+    warnings
+}
+
+pub(super) fn theme_key_held(global: &toml::Value, key: &str) -> bool {
+    let Some(theme) = global.get("theme").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    if let Some(color_key) = key.strip_prefix("colors.") {
+        return theme
+            .get("colors")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|colors| colors.contains_key(color_key));
+    }
+    key == "preset" && theme.contains_key("preset")
+}
+
+fn known_preset(value: &toml::Value) -> bool {
+    value.clone().try_into::<ThemePreset>().is_ok()
+}
+
+fn known_color(value: &toml::Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|text| text.parse::<ratatui::style::Color>().is_ok())
+}
+
+fn warning_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if text.chars().any(char::is_control) {
+        format!("{text:?}")
+    } else {
+        text
+    }
+}
+
+fn theme_value_text(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => text.clone(),
+        toml::Value::Integer(number) => number.to_string(),
+        toml::Value::Float(number) => number.to_string(),
+        toml::Value::Boolean(flag) => flag.to_string(),
+        toml::Value::Datetime(datetime) => datetime.to_string(),
+        toml::Value::Array(_) => "array".to_string(),
+        toml::Value::Table(_) => "table".to_string(),
+    }
+}
+
+fn fallback_label(global_has_key: bool) -> &'static str {
+    if global_has_key {
+        "using global"
+    } else {
+        "using default"
+    }
+}
 
 /// Deep merge two TOML values.
 /// Tables are merged recursively; all other types are replaced by the override value.
@@ -108,6 +235,7 @@ impl Config {
         } else {
             toml::Value::Table(toml::map::Map::new())
         };
+        let mut theme_warnings = sanitize_theme_table(global_path, &mut base_value, |_| false);
 
         let mut stripped_local_value: Option<toml::Value> = None;
         if local_path.exists() {
@@ -126,6 +254,9 @@ impl Config {
                 }
             }
 
+            theme_warnings.extend(sanitize_theme_table(local_path, &mut local_value, |key| {
+                theme_key_held(&base_value, key)
+            }));
             stripped_local_value = Some(local_value.clone());
             deep_merge_toml(&mut base_value, local_value);
         }
@@ -169,9 +300,18 @@ impl Config {
         config.ai.timeout_secs = config.ai.timeout_secs.min(MAX_TIMEOUT_SECS_LIMIT);
 
         // Validate keybindings and warn on conflicts
+        for warning in theme_warnings {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("Warning: {}", warning);
+            }
+        }
         if let Err(errors) = config.keybindings.validate() {
             for error in errors {
-                eprintln!("Warning: {}", error);
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("Warning: {}", error);
+                }
             }
         }
 
@@ -188,7 +328,7 @@ impl Config {
         if table.contains_key("editor") {
             overrides.insert("editor".to_string());
         }
-        for section in ["diff", "ai", "keybindings", "layout"] {
+        for section in ["diff", "ai", "keybindings", "layout", "theme"] {
             if let Some(toml::Value::Table(sub)) = table.get(section) {
                 for key in sub.keys() {
                     overrides.insert(format!("{}.{}", section, key));
