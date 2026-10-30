@@ -12,8 +12,8 @@ use crate::ai::RallyState;
 use crate::diff::LineType;
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
-    ChangedFile, CommitListPage, IssueComment, IssueDetail, IssueListPage, IssueStateFilter,
-    IssueSummary, LinkedPr, PrCommit, PullRequest,
+    ChangedFile, CommitListPage, GhFailure, IssueComment, IssueDetail, IssueListPage,
+    IssueStateFilter, IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
 use crate::loader::SingleFileDiffResult;
 
@@ -539,16 +539,16 @@ pub enum DataState {
 }
 
 #[derive(Debug, Clone, Default)]
-pub enum LoadState<T> {
+pub enum LoadState<T, E = String> {
     #[default]
     NotLoaded,
     Loading,
     LoadingMore(T),
     Loaded(T),
-    Error(String),
+    Error(E),
 }
 
-impl<T> LoadState<T> {
+impl<T, E> LoadState<T, E> {
     pub fn as_loaded(&self) -> Option<&T> {
         match self {
             Self::Loaded(t) | Self::LoadingMore(t) => Some(t),
@@ -578,8 +578,23 @@ impl<T> LoadState<T> {
         }
     }
 
-    /// Recover from a failed load-more by transitioning back to Loaded.
-    /// Preserves existing data from LoadingMore/Loaded; uses fallback otherwise.
+    pub fn fail(&mut self, msg: E) -> Option<E> {
+        let taken = std::mem::take(self);
+        match taken {
+            Self::LoadingMore(t) => {
+                *self = Self::Loaded(t);
+                Some(msg)
+            }
+            _ => {
+                *self = Self::Error(msg);
+                None
+            }
+        }
+    }
+
+    /// Load-more helper. `LoadingMore` and `Loaded` keep their rows.
+    /// Every other phase becomes `Loaded(fallback)`.
+    /// A failed first fetch must call [`Self::fail`].
     pub fn recover_or(&mut self, fallback: T) {
         let taken = std::mem::take(self);
         match taken {
@@ -1219,6 +1234,7 @@ impl IssueState {
 #[derive(Default)]
 pub struct CommentState {
     pub review_comments: Option<Vec<crate::github::comment::ReviewComment>>,
+    pub comment_error: Option<String>,
     /// Local-only metadata (resolved state) keyed by comment id. Populated from
     /// the on-disk [`crate::cache::LocalReviewComment`] records when in local
     /// mode; empty otherwise.
@@ -1240,6 +1256,7 @@ pub struct CommentState {
     pub comment_panel_scroll: u16,
     pub comment_tab: CommentTab,
     pub discussion_comments: Option<Vec<crate::github::comment::DiscussionComment>>,
+    pub discussion_error: Option<String>,
     pub selected_discussion_comment: usize,
     pub discussion_comment_list_scroll_offset: usize,
     pub discussion_comments_loading: bool,
@@ -1271,14 +1288,14 @@ impl CommentState {
 
 #[derive(Default)]
 pub struct PrListState {
-    pub pr_list: LoadState<Vec<crate::github::PullRequestSummary>>,
+    pub pr_list: LoadState<Vec<crate::github::PullRequestSummary>, GhFailure>,
     pub selected_pr: usize,
     pub pr_list_scroll_offset: usize,
     pub pr_list_has_more: bool,
     pub pr_list_state_filter: crate::github::PrStateFilter,
     pub pr_list_filter: Option<crate::filter::ListFilter>,
     pub(crate) pr_list_receiver:
-        Option<tokio::sync::mpsc::Receiver<Result<crate::github::PrListPage, String>>>,
+        Option<tokio::sync::mpsc::Receiver<Result<crate::github::PrListPage, GhFailure>>>,
 }
 
 pub struct ChecksState {

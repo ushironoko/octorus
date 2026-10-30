@@ -277,7 +277,9 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::fetch_pr_list(&repo, state, 30).await;
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx
+                .send(result.map_err(|error| github::GhFailure::from_error(&error)))
+                .await;
         });
     }
 
@@ -301,7 +303,9 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::fetch_pr_list_with_offset(&repo, state, offset, 30).await;
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx
+                .send(result.map_err(|error| github::GhFailure::from_error(&error)))
+                .await;
         });
     }
     pub(crate) fn select_pr(&mut self, pr_number: u32) {
@@ -311,6 +315,8 @@ impl App {
         self.file_list_filter = None;
         self.cmt.pending_approve_body = None;
         self.cmt.review_comments = None;
+        self.cmt.comment_error = None;
+        self.cmt.discussion_error = None;
         self.cmt.file_comment_counts.clear();
         self.cmt.reset_threads();
 
@@ -387,6 +393,8 @@ impl App {
         self.data_state = DataState::Loading;
         self.cmt.review_comments = None;
         self.cmt.discussion_comments = None;
+        self.cmt.comment_error = None;
+        self.cmt.discussion_error = None;
         self.cmt.file_comment_counts.clear();
         self.cmt.reset_threads();
         self.diff_store.clear();

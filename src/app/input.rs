@@ -725,6 +725,8 @@ impl App {
         self.session_cache.invalidate_all();
         self.cmt.review_comments = None;
         self.cmt.discussion_comments = None;
+        self.cmt.comment_error = None;
+        self.cmt.discussion_error = None;
         self.cmt.comments_loading = false;
         self.cmt.discussion_comments_loading = false;
         self.chk.ci_status = None;

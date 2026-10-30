@@ -187,6 +187,7 @@ enum Commands {
 }
 
 /// Print ASCII art logo with nebula gradient (#eaafc8 → #654ea3)
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn print_logo() {
     use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
     use std::io::IsTerminal;
@@ -282,7 +283,10 @@ async fn main() -> Result<()> {
         use clap::CommandFactory;
         print_logo();
         Args::command().print_help()?;
-        println!();
+        #[allow(clippy::print_stdout, clippy::print_stderr)]
+        {
+            println!();
+        }
         return Ok(());
     }
 
@@ -295,7 +299,10 @@ async fn main() -> Result<()> {
             Commands::Clean => {
                 cache::cleanup_rally_sessions();
                 let rally_dir = cache::cache_dir().join("rally");
-                println!("Rally sessions cleaned: {}", rally_dir.display());
+                #[allow(clippy::print_stdout, clippy::print_stderr)]
+                {
+                    println!("Rally sessions cleaned: {}", rally_dir.display());
+                }
                 Ok(())
             }
             Commands::LocalComments {
@@ -363,7 +370,10 @@ async fn main() -> Result<()> {
                 match github::detect_repo().await {
                     Ok(r) => (r, true),
                     Err(e) => {
-                        eprintln!("Error: {}", e);
+                        #[allow(clippy::print_stdout, clippy::print_stderr)]
+                        {
+                            eprintln!("Error: {}", e);
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -411,7 +421,10 @@ async fn main() -> Result<()> {
             Ok(approved) => std::process::exit(if approved { 0 } else { 1 }),
             Err(e) => {
                 headless::write_error_json(&e.to_string(), args.output.as_deref());
-                eprintln!("Error: {}", e);
+                #[allow(clippy::print_stdout, clippy::print_stderr)]
+                {
+                    eprintln!("Error: {}", e);
+                }
                 std::process::exit(1);
             }
         }
@@ -430,7 +443,10 @@ async fn main() -> Result<()> {
             Ok(approved) => std::process::exit(if approved { 0 } else { 1 }),
             Err(e) => {
                 headless::write_error_json(&e.to_string(), args.output.as_deref());
-                eprintln!("Error: {}", e);
+                #[allow(clippy::print_stdout, clippy::print_stderr)]
+                {
+                    eprintln!("Error: {}", e);
+                }
                 std::process::exit(1);
             }
         }
@@ -528,7 +544,10 @@ async fn run_with_local_diff(
 
     if let Err(ref e) = result {
         restore_terminal();
-        eprintln!("Error: {:#}", e);
+        #[allow(clippy::print_stdout, clippy::print_stderr)]
+        {
+            eprintln!("Error: {:#}", e);
+        }
     }
 
     let exit_code = if result.is_ok() { 0 } else { 1 };
@@ -681,7 +700,10 @@ async fn run_with_pr(
 
     if let Err(ref e) = result {
         restore_terminal();
-        eprintln!("Error: {:#}", e);
+        #[allow(clippy::print_stdout, clippy::print_stderr)]
+        {
+            eprintln!("Error: {:#}", e);
+        }
     }
 
     // Immediate exit to avoid hanging on spawn_blocking tasks (e.g. tree-sitter
@@ -741,7 +763,9 @@ async fn run_with_pr_list(
 
     tokio::spawn(async move {
         let result = github::fetch_pr_list(&repo_clone, state_filter, 30).await;
-        let _ = pr_list_tx.send(result.map_err(|e| e.to_string())).await;
+        let _ = pr_list_tx
+            .send(result.map_err(|error| github::GhFailure::from_error(&error)))
+            .await;
     });
 
     // Data channel for local-mode transitions from the PR list screen.
@@ -785,7 +809,10 @@ async fn run_with_pr_list(
 
     if let Err(ref e) = result {
         restore_terminal();
-        eprintln!("Error: {:#}", e);
+        #[allow(clippy::print_stdout, clippy::print_stderr)]
+        {
+            eprintln!("Error: {:#}", e);
+        }
     }
 
     // Same immediate-exit rationale as run_with_pr.
@@ -851,7 +878,10 @@ async fn run_with_cockpit(
 
     if let Err(ref e) = result {
         restore_terminal();
-        eprintln!("Error: {:#}", e);
+        #[allow(clippy::print_stdout, clippy::print_stderr)]
+        {
+            eprintln!("Error: {:#}", e);
+        }
     }
 
     let exit_code = if result.is_ok() { 0 } else { 1 };
@@ -903,10 +933,13 @@ fn setup_working_dir(app: &mut app::App, args: &Args) {
             }
             Err(e) => {
                 if args.ai_rally {
-                    eprintln!(
-                        "Warning: Failed to get current directory: {}. AI Rally may not work correctly without --working-dir.",
-                        e
-                    );
+                    #[allow(clippy::print_stdout, clippy::print_stderr)]
+                    {
+                        eprintln!(
+                            "Warning: Failed to get current directory: {}. AI Rally may not work correctly without --working-dir.",
+                            e
+                        );
+                    }
                 }
                 // Continue without setting working_dir; it's optional for non-AI-Rally usage
             }

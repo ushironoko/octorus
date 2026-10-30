@@ -552,8 +552,8 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
                 Ok(content) => Some(content),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to read prompt '{}' from {}: {}",
+                    tracing::warn!(
+                        "Failed to read prompt '{}' from {}: {}",
                         filename,
                         path.display(),
                         e

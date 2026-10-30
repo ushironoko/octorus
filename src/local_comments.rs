@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use anyhow::Result;
 use chrono::DateTime;
 use serde::Serialize;

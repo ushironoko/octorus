@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use anyhow::{bail, Context, Result};
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
