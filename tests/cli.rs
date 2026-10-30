@@ -435,7 +435,7 @@ async fn git_ops_screen_works_in_a_repo_less_session() {
     // repository there is no PR data to wait on, and `GitOpsSplitTree` is
     // data-state independent, so nothing about `repo = "local"` reaches it.
     let rendered = render_app(&mut app, 100, 24);
-    for pane in ["Git Status", "Files (0)", "Commits", "Diff Preview"] {
+    for pane in ["Git Status", "FILES (0)", "Commits", "Diff"] {
         assert!(rendered.contains(pane), "no {pane} pane:\n{rendered}");
     }
     assert!(rendered.contains("No changes"), "{rendered}");

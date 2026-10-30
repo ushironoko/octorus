@@ -233,6 +233,7 @@ impl App {
     fn base_app(repo: String, config: Config) -> Self {
         let submit_key = config.keybindings.submit.clone();
         let mouse_capture_active = config.mouse.enabled;
+        let theme = Theme::resolve(&config.theme, config.no_color);
         Self {
             repo,
             repository_availability: RepositoryAvailability::Unavailable,
@@ -312,7 +313,7 @@ impl App {
             pending_events: std::collections::VecDeque::new(),
             hit_map: crate::ui::hit::HitMap::default(),
             drag_state: input_mouse::DragState::default(),
-            theme: Theme::test_default(),
+            theme,
         }
     }
 

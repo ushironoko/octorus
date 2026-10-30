@@ -444,6 +444,35 @@ mod tests {
     }
 
     #[test]
+    fn no_color_flag_resolves_before_the_pr_list_is_drawn() {
+        use crate::app::RepositoryAvailability;
+        use crate::config::Config;
+        use ratatui::style::Modifier;
+
+        let config = Config {
+            no_color: true,
+            theme: crate::config::ThemeConfig {
+                colors: crate::config::ThemeColors {
+                    accent: Some(Color::Magenta),
+                    ..crate::config::ThemeColors::default()
+                },
+                ..crate::config::ThemeConfig::default()
+            },
+            ..Config::default()
+        };
+        let app = App::new_pr_list("owner/repo", config, RepositoryAvailability::Available);
+        assert_eq!(app.theme.accent.style().fg, None);
+        assert_eq!(app.theme.muted.style().fg, None);
+        assert!(app
+            .theme
+            .accent
+            .style()
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(app.theme.muted.style().add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
     fn focused_selected_row_uses_bar_bold_and_no_background() {
         let buf = render_screen(vec![
             sample_pr(1, "Fix login bug", "alice"),

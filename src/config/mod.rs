@@ -41,6 +41,11 @@ pub struct Config {
     pub git_ops: GitOpsConfig,
     pub shell: ShellConfig,
     pub mouse: MouseConfig,
+    #[serde(default, skip_serializing_if = "ThemeConfig::is_untouched")]
+    pub theme: ThemeConfig,
+    /// Set by `main` from `NO_COLOR`. Tests set this field. It is not a config key.
+    #[serde(skip)]
+    pub no_color: bool,
     #[serde(skip)]
     pub project_root: PathBuf,
     /// Path of the global config file if it was loaded successfully.
@@ -64,6 +69,65 @@ mod tests {
 
     // Re-import loader internals for testing
     use super::loader::is_safe_local_prompt_dir;
+
+    #[test]
+    fn empty_config_still_deserializes() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.theme.is_untouched());
+        assert!(!config.no_color);
+    }
+
+    #[test]
+    fn old_diff_theme_config_still_loads() {
+        let config: Config = toml::from_str(
+            r#"
+            [diff]
+            theme = "Dracula"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.diff.theme, "Dracula");
+        assert!(config.theme.is_untouched());
+    }
+
+    #[test]
+    fn invalid_theme_color_names_the_key() {
+        let err = toml::from_str::<Config>("[theme.colors]\naccent = \"cyann\"").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("theme.colors.accent: invalid color \"cyann\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unknown_theme_preset_fails() {
+        let err = toml::from_str::<Config>("[theme]\npreset = \"nope\"").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("nope"), "{message}");
+    }
+
+    #[test]
+    fn theme_color_override_parses_without_changing_other_keys() {
+        let config: Config = toml::from_str(
+            "[theme.colors]\naccent = \"magenta\"\nmuted = \"#6c7a89\"\nwarning = \"#b58900\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.theme.colors.accent,
+            Some(ratatui::style::Color::Magenta)
+        );
+        assert_eq!(
+            config.theme.colors.muted,
+            Some(ratatui::style::Color::Rgb(0x6c, 0x7a, 0x89))
+        );
+        assert_eq!(
+            config.theme.colors.warning,
+            Some(ratatui::style::Color::Rgb(0xb5, 0x89, 0x00))
+        );
+        assert!(config.theme.colors.info.is_none());
+        assert!(!config.theme.is_untouched());
+    }
 
     #[test]
     fn test_default_keybindings() {

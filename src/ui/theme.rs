@@ -141,6 +141,13 @@ fn preset(preset: ThemePreset) -> Theme {
     }
 }
 
+/// Non-empty UTF-8 means `NO_COLOR` is on. Missing or empty means off.
+///
+/// `main` is the only caller of `std::env::var("NO_COLOR")`.
+pub fn no_color_from_value(value: Option<&str>) -> bool {
+    matches!(value, Some(text) if !text.is_empty())
+}
+
 fn apply_fg(ink: &mut Ink, color: Option<Color>) {
     if let Some(color) = color {
         *ink = Ink::plain(color);
@@ -316,6 +323,14 @@ mod tests {
                 assert_eq!(ink, base_ink, "{name} changed");
             }
         }
+    }
+
+    #[test]
+    fn no_color_value_is_on_only_when_the_string_is_non_empty() {
+        assert!(!no_color_from_value(None));
+        assert!(!no_color_from_value(Some("")));
+        assert!(no_color_from_value(Some("1")));
+        assert!(no_color_from_value(Some(" ")));
     }
 
     fn fg(ink: Ink) -> Option<Color> {

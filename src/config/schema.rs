@@ -251,8 +251,9 @@ impl Default for ShellConfig {
     }
 }
 
-/// Named palette. Serde rename and color parsing land with `[theme]`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Named palette. Unknown names stay serde's unknown-variant error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ThemePreset {
     #[default]
     Dark,
@@ -294,5 +295,114 @@ impl ThemeConfig {
             && self.colors.info.is_none()
             && self.colors.draft_you.is_none()
             && self.colors.draft_agent.is_none()
+    }
+}
+
+#[derive(Deserialize)]
+struct RawThemeConfig {
+    #[serde(default)]
+    preset: ThemePreset,
+    #[serde(default)]
+    colors: RawThemeColors,
+}
+
+#[derive(Deserialize, Default)]
+struct RawThemeColors {
+    #[serde(default)]
+    accent: Option<String>,
+    #[serde(default)]
+    muted: Option<String>,
+    #[serde(default)]
+    warning: Option<String>,
+    #[serde(default)]
+    danger: Option<String>,
+    #[serde(default)]
+    success: Option<String>,
+    #[serde(default)]
+    info: Option<String>,
+    #[serde(default)]
+    draft_you: Option<String>,
+    #[serde(default)]
+    draft_agent: Option<String>,
+}
+
+fn parse_color(key: &str, raw: &str) -> Result<Color, String> {
+    raw.parse::<Color>()
+        .map_err(|_| format!("{key}: invalid color \"{raw}\""))
+}
+
+fn optional_color<E: serde::de::Error>(key: &str, raw: Option<String>) -> Result<Option<Color>, E> {
+    raw.map(|value| parse_color(key, &value).map_err(E::custom))
+        .transpose()
+}
+
+impl<'de> Deserialize<'de> for ThemeConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawThemeConfig::deserialize(deserializer)?;
+        Ok(Self {
+            preset: raw.preset,
+            colors: ThemeColors {
+                accent: optional_color("theme.colors.accent", raw.colors.accent)?,
+                muted: optional_color("theme.colors.muted", raw.colors.muted)?,
+                warning: optional_color("theme.colors.warning", raw.colors.warning)?,
+                danger: optional_color("theme.colors.danger", raw.colors.danger)?,
+                success: optional_color("theme.colors.success", raw.colors.success)?,
+                info: optional_color("theme.colors.info", raw.colors.info)?,
+                draft_you: optional_color("theme.colors.draft_you", raw.colors.draft_you)?,
+                draft_agent: optional_color("theme.colors.draft_agent", raw.colors.draft_agent)?,
+            },
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct SerializedThemeColors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    muted: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    danger: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    success: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    info: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    draft_you: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    draft_agent: Option<String>,
+}
+
+fn color_name(color: Option<Color>) -> Option<String> {
+    color.map(|color| color.to_string())
+}
+
+impl Serialize for ThemeConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ThemeConfig", 2)?;
+        state.serialize_field("preset", &self.preset)?;
+        state.serialize_field(
+            "colors",
+            &SerializedThemeColors {
+                accent: color_name(self.colors.accent),
+                muted: color_name(self.colors.muted),
+                warning: color_name(self.colors.warning),
+                danger: color_name(self.colors.danger),
+                success: color_name(self.colors.success),
+                info: color_name(self.colors.info),
+                draft_you: color_name(self.colors.draft_you),
+                draft_agent: color_name(self.colors.draft_agent),
+            },
+        )?;
+        state.end()
     }
 }

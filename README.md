@@ -413,6 +413,33 @@ All octorus settings are configurable. Settings can be global or project-local.
 | `tab_width` | `u8` | `4` | Tab display width. Minimum `1` (values below are clamped) |
 | `bg_color` | `bool` | `true` | Show background color on added/deleted lines |
 
+#### `[theme]`
+
+UI colors for lists, pane focus, and status text. This palette does not change syntax highlighting. `preset = "light"` leaves `[diff] theme` alone. For a light diff, set `[diff] theme` to `base16-ocean.light`.
+
+A non-empty `NO_COLOR` environment variable turns these colors off and ignores `[theme.colors]`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `preset` | `string` | `"dark"` | `dark`, `light`, or `ansi16` |
+| `colors.muted` | `string` | DarkGray | Muted text. Named colors, `#rrggbb`, or a palette index such as `244` |
+| `colors.accent` | `string` | Cyan | Focused titles, borders, and the selection marker |
+| `colors.warning` | `string` | Yellow | Pending CI and other warnings |
+| `colors.danger` | `string` | Red | Failures and the git-ops confirm footer |
+| `colors.success` | `string` | Green | Ready and success marks |
+| `colors.info` | `string` | same as accent | Building, idle, and other status text. An `accent` override does not change this |
+| `colors.draft_you` | `string` | LightBlue | Reserved for draft text you wrote |
+| `colors.draft_agent` | `string` | Magenta | Reserved for draft text from an agent |
+
+```toml
+[theme]
+preset = "dark"
+
+[theme.colors]
+muted = "#6c7a89"
+warning = "#b58900"
+```
+
 #### `[layout]`
 
 | Key | Type | Default | Description |
