@@ -315,6 +315,8 @@ impl App {
         self.file_list_filter = None;
         self.cmt.pending_approve_body = None;
         self.cmt.review_comments = None;
+        self.cmt.comment_error = None;
+        self.cmt.discussion_error = None;
         self.cmt.file_comment_counts.clear();
         self.cmt.reset_threads();
 
@@ -391,6 +393,8 @@ impl App {
         self.data_state = DataState::Loading;
         self.cmt.review_comments = None;
         self.cmt.discussion_comments = None;
+        self.cmt.comment_error = None;
+        self.cmt.discussion_error = None;
         self.cmt.file_comment_counts.clear();
         self.cmt.reset_threads();
         self.diff_store.clear();

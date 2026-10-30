@@ -60,10 +60,7 @@ impl App {
     }
 
     fn record_pr_list_fetch_failure(&mut self, failure: GhFailure) {
-        if let Some(failure) = self.prs.pr_list.fail(failure) {
-            self.cmt.submission_result = Some((false, failure.message));
-            self.cmt.submission_result_time = Some(Instant::now());
-        }
+        self.prs.pr_list.fail(failure);
         self.prs.pr_list_receiver = None;
     }
 

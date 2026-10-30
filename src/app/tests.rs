@@ -8337,61 +8337,6 @@ fn sample_review_comment(id: u64, body: &str) -> ReviewComment {
     }
 }
 
-#[cfg(unix)]
-struct CapturedStderr {
-    saved_fd: std::os::raw::c_int,
-    file: std::fs::File,
-}
-
-#[cfg(unix)]
-extern "C" {
-    fn dup(fd: std::os::raw::c_int) -> std::os::raw::c_int;
-    fn dup2(oldfd: std::os::raw::c_int, newfd: std::os::raw::c_int) -> std::os::raw::c_int;
-    fn close(fd: std::os::raw::c_int) -> std::os::raw::c_int;
-}
-
-#[cfg(unix)]
-impl CapturedStderr {
-    fn new() -> Self {
-        use std::os::fd::AsRawFd;
-        let file = tempfile::tempfile().expect("stderr capture file");
-        let saved_fd = unsafe { dup(2) };
-        assert!(saved_fd >= 0, "dup stderr");
-        let redirected = unsafe { dup2(file.as_raw_fd(), 2) };
-        assert!(redirected >= 0, "dup2 stderr");
-        Self { saved_fd, file }
-    }
-
-    fn read_and_restore(mut self) -> String {
-        use std::io::{Read, Seek, SeekFrom, Write};
-        let _ = std::io::stderr().flush();
-        self.restore();
-        self.file.seek(SeekFrom::Start(0)).expect("seek capture");
-        let mut captured = String::new();
-        self.file
-            .read_to_string(&mut captured)
-            .expect("read capture");
-        captured
-    }
-
-    fn restore(&mut self) {
-        if self.saved_fd >= 0 {
-            unsafe {
-                dup2(self.saved_fd, 2);
-                close(self.saved_fd);
-            }
-            self.saved_fd = -1;
-        }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for CapturedStderr {
-    fn drop(&mut self) {
-        self.restore();
-    }
-}
-
 #[tokio::test]
 async fn test_poll_pr_list_error_recovers_from_loading_more() {
     use tokio::sync::mpsc;
@@ -8448,10 +8393,8 @@ async fn test_poll_pr_list_disconnect_recovers_from_loading_more() {
     assert!(app.cmt.submission_result.is_none());
 }
 
-#[cfg(unix)]
 #[tokio::test]
-#[serial]
-async fn test_poll_pr_list_unauthenticated_is_error_and_writes_no_stderr() {
+async fn test_poll_pr_list_unauthenticated_is_error() {
     use tokio::sync::mpsc;
 
     let mut app = App::new_for_test();
@@ -8466,11 +8409,8 @@ async fn test_poll_pr_list_unauthenticated_is_error_and_writes_no_stderr() {
         .await
         .unwrap();
 
-    let capture = CapturedStderr::new();
     app.poll_pr_list_updates();
-    let stderr = capture.read_and_restore();
 
-    assert!(stderr.is_empty(), "{stderr}");
     match &app.prs.pr_list {
         LoadState::Error(failure) => {
             assert_eq!(failure.kind, crate::github::GhFailureKind::Unauthenticated);
@@ -8510,10 +8450,8 @@ async fn test_poll_pr_list_disconnect_from_loading_is_other_error() {
     assert!(app.cmt.submission_result.is_none());
 }
 
-#[cfg(unix)]
 #[tokio::test]
-#[serial]
-async fn test_poll_comment_error_keeps_comments_and_writes_no_stderr() {
+async fn test_poll_comment_error_keeps_existing_comments() {
     use tokio::sync::mpsc;
 
     let mut app = App::new_for_test();
@@ -8525,11 +8463,8 @@ async fn test_poll_comment_error_keeps_comments_and_writes_no_stderr() {
     app.cmt.comment_receiver = Some((4, rx));
     tx.send(Err("comments failed".to_string())).await.unwrap();
 
-    let capture = CapturedStderr::new();
     app.poll_comment_updates();
-    let stderr = capture.read_and_restore();
 
-    assert!(stderr.is_empty(), "{stderr}");
     assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
     let comments = app.cmt.review_comments.as_ref().expect("comments stay");
     assert_eq!(comments.len(), 1);
@@ -8579,10 +8514,8 @@ async fn test_poll_comment_success_clears_comment_error() {
     assert_eq!(comments[0].id, 3);
 }
 
-#[cfg(unix)]
 #[tokio::test]
-#[serial]
-async fn test_poll_discussion_error_keeps_comments_and_writes_no_stderr() {
+async fn test_poll_discussion_error_keeps_existing_comments() {
     use tokio::sync::mpsc;
 
     let mut app = App::new_for_test();
@@ -8601,11 +8534,8 @@ async fn test_poll_discussion_error_keeps_comments_and_writes_no_stderr() {
     app.cmt.discussion_comment_receiver = Some((4, rx));
     tx.send(Err("discussion failed".to_string())).await.unwrap();
 
-    let capture = CapturedStderr::new();
     app.poll_discussion_comment_updates();
-    let stderr = capture.read_and_restore();
 
-    assert!(stderr.is_empty(), "{stderr}");
     assert_eq!(
         app.cmt.discussion_error.as_deref(),
         Some("discussion failed")

@@ -140,7 +140,12 @@ pub enum GhFailureKind {
     Other,
 }
 
-const RATE_LIMIT_MARKERS: &[&str] = &["rate limit exceeded", "secondary rate limit", "http 429"];
+const RATE_LIMIT_MARKERS: &[&str] = &[
+    "rate limit exceeded",
+    "rate limit already exceeded",
+    "secondary rate limit",
+    "http 429",
+];
 
 const UNAUTHENTICATED_MARKERS: &[&str] = &[
     "not logged into any github hosts",
@@ -159,6 +164,8 @@ const OFFLINE_MARKERS: &[&str] = &[
     "tls handshake timeout",
     "temporary failure in name resolution",
     "could not resolve host",
+    "error connecting to",
+    "check your internet connection",
 ];
 
 pub fn classify_gh_failure(error: &anyhow::Error) -> GhFailureKind {
