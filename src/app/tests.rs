@@ -6031,6 +6031,24 @@ fn test_load_more_prs_skips_when_loading() {
 }
 
 #[tokio::test]
+async fn test_select_pr_clears_comment_and_discussion_errors() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    app.pr_number = Some(7);
+    app.cmt.comment_error = Some("comments failed".to_string());
+    app.cmt.discussion_error = Some("discussion failed".to_string());
+
+    app.select_pr(42);
+
+    assert_eq!(app.pr_number, Some(42));
+    assert!(app.cmt.comment_error.is_none());
+    assert!(app.cmt.discussion_error.is_none());
+}
+
+#[tokio::test]
 async fn test_select_pr_cache_miss_sets_loading() {
     let mut app = App::new_for_test();
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
@@ -8395,10 +8413,7 @@ async fn test_poll_pr_list_error_recovers_from_loading_more() {
     let items = app.prs.pr_list.as_loaded().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].number, 1);
-    assert_eq!(
-        app.cmt.submission_result,
-        Some((false, "network error".to_string()))
-    );
+    assert!(app.cmt.submission_result.is_none());
 }
 
 #[tokio::test]
@@ -8430,10 +8445,7 @@ async fn test_poll_pr_list_disconnect_recovers_from_loading_more() {
     let items = app.prs.pr_list.as_loaded().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].number, 2);
-    assert_eq!(
-        app.cmt.submission_result,
-        Some((false, "PR list fetch disconnected".to_string()))
-    );
+    assert!(app.cmt.submission_result.is_none());
 }
 
 #[cfg(unix)]

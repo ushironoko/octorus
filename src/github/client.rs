@@ -518,6 +518,38 @@ mod tests {
     }
 
     #[test]
+    fn classify_gh_failure_marks_gh_dns_error_offline() {
+        // gh printError for *net.DNSError, cli/cli internal/ghcmd/cmd.go.
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("error connecting to api.github.com")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "check your internet connection or https://githubstatus.com"
+            )),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "error connecting to api.github.com\n\
+                 check your internet connection or https://githubstatus.com"
+            )),
+            GhFailureKind::Offline
+        );
+    }
+
+    #[test]
+    fn classify_gh_failure_marks_graphql_rate_limit_already_exceeded() {
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "gh: API rate limit already exceeded for user ID 583231."
+            )),
+            GhFailureKind::RateLimited
+        );
+    }
+
+    #[test]
     fn classify_gh_failure_leaves_eof_and_http_404_as_other() {
         assert_eq!(
             classify_gh_failure(&anyhow::anyhow!("eof")),
