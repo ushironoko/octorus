@@ -2477,6 +2477,55 @@ mod tests {
     }
 
     #[test]
+    fn test_plain_cache_renders_hunk_dashdash_as_removed() {
+        let patch = concat!(
+            "diff --git a/q.sql b/q.sql\n",
+            "--- a/q.sql\n",
+            "+++ b/q.sql\n",
+            "@@ -1,3 +1,4 @@\n",
+            " keep\n",
+            "--- comment\n",
+            " context after remove\n",
+            "+++x\n",
+            " next\n",
+        );
+        let cache = build_plain_diff_cache(patch, 4);
+
+        let file_minus = &cache.lines[1];
+        assert_eq!(file_minus.line_type, LineType::Meta);
+        assert_eq!(cache.resolve(file_minus.spans[0].content), "--- a/q.sql");
+
+        let file_plus = &cache.lines[2];
+        assert_eq!(file_plus.line_type, LineType::Meta);
+        assert_eq!(cache.resolve(file_plus.spans[0].content), "+++ b/q.sql");
+
+        let removed = &cache.lines[5];
+        assert_eq!(removed.line_type, LineType::Removed);
+        assert_eq!(removed.spans.len(), 2);
+        assert_eq!(cache.resolve(removed.spans[0].content), "-");
+        assert_eq!(cache.resolve(removed.spans[1].content), "-- comment");
+        assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
+
+        let added = &cache.lines[7];
+        assert_eq!(added.line_type, LineType::Added);
+        assert_eq!(added.spans.len(), 2);
+        assert_eq!(cache.resolve(added.spans[0].content), "+");
+        assert_eq!(cache.resolve(added.spans[1].content), "++x");
+        assert_eq!(added.spans[0].style.fg, Some(Color::Green));
+
+        // The diff pane renders marker plus content. It does not print a
+        // file line number, so a number cannot drift in this text.
+        let after_add = &cache.lines[8];
+        let rendered = format!(
+            "{}{}",
+            cache.resolve(after_add.spans[0].content),
+            cache.resolve(after_add.spans[1].content),
+        );
+        assert_eq!(rendered, " next");
+        assert!(rendered.chars().all(|c| !c.is_ascii_digit()));
+    }
+
+    #[test]
     fn test_parse_patch_to_lines_basic() {
         let patch = r#"@@ -1,3 +1,3 @@
  context line

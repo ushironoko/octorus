@@ -790,6 +790,64 @@ Binary files /dev/null and b/image.png differ
         assert_eq!(content, "");
     }
 
+    /// A hunk body can contain a removed `-- comment` (SQL, Lua, Haskell) or an
+    /// added `++x`. Those rows are real file lines. Only the file header
+    /// `--- a/...` and `+++ b/...`, which sit before the first `@@`, are meta.
+    #[test]
+    fn test_hunk_body_dashdash_and_plusplus_keep_line_numbers() {
+        let patch = concat!(
+            "diff --git a/q.sql b/q.sql\n",
+            "index 111..222 100644\n",
+            "--- a/q.sql\n",
+            "+++ b/q.sql\n",
+            "@@ -1,3 +1,4 @@\n",
+            " keep\n",
+            "--- comment\n",
+            " context after remove\n",
+            "+++x\n",
+            " next\n",
+        );
+        let rows: Vec<_> = (0..patch.lines().count())
+            .map(|index| {
+                let info = get_line_info(patch, index).unwrap();
+                (
+                    info.line_type,
+                    info.line_content,
+                    info.new_line_number,
+                    info.diff_position,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (LineType::Meta, "diff --git a/q.sql b/q.sql".to_string(), None, None),
+                (LineType::Meta, "index 111..222 100644".to_string(), None, None),
+                (LineType::Meta, "--- a/q.sql".to_string(), None, None),
+                (LineType::Meta, "+++ b/q.sql".to_string(), None, None),
+                (LineType::Header, "@@ -1,3 +1,4 @@".to_string(), None, None),
+                (LineType::Context, "keep".to_string(), Some(1), Some(1)),
+                (LineType::Removed, "-- comment".to_string(), None, Some(2)),
+                (
+                    LineType::Context,
+                    "context after remove".to_string(),
+                    Some(2),
+                    Some(3),
+                ),
+                (LineType::Added, "++x".to_string(), Some(3), Some(4)),
+                (LineType::Context, "next".to_string(), Some(4), Some(5)),
+            ]
+        );
+
+        assert!(validate_multiline_range(patch, 8, 9));
+
+        // #218 places comments by the first character. That path already
+        // treats these rows as file lines and must stay put.
+        assert_eq!(find_diff_line_index(patch, SideLine::left(2)), Some(6));
+        assert_eq!(find_diff_line_index(patch, SideLine::right(3)), Some(8));
+        assert_eq!(find_diff_line_index(patch, SideLine::right(4)), Some(9));
+    }
+
     #[test]
     fn test_parse_hunk_header_no_comma_no_space() {
         // "@@ -1 +42\ntest" → after_plus = "42" で find([',', ' ']) が None
