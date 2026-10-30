@@ -7,8 +7,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
     Frame,
 };
@@ -1042,7 +1042,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
         let area = overlay_rect(frame_area, 70, 60);
         hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
         hit_map.push(area, HitTarget::OverlaySurface);
-        render_pr_selection(frame, hit_map, area, pulls, *selected);
+        render_pr_selection(frame, hit_map, area, pulls, *selected, theme);
         return;
     }
 
@@ -1052,7 +1052,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
             let area = overlay_rect(frame_area, 60, 70);
             hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
             hit_map.push(area, HitTarget::OverlaySurface);
-            render_outline(frame, hit_map, area, state, selected);
+            render_outline(frame, hit_map, area, state, selected, theme);
         }
         BrowseOverlay::SymbolSearch {
             ref query,
@@ -1061,7 +1061,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App) {
             let area = overlay_rect(frame_area, 80, 70);
             hit_map.push(frame_area, HitTarget::Backdrop { dismiss: true });
             hit_map.push(area, HitTarget::OverlaySurface);
-            render_symbol_search(frame, hit_map, area, state, query, selected);
+            render_symbol_search(frame, hit_map, area, state, query, selected, theme);
         }
     }
 }
@@ -1206,6 +1206,7 @@ fn render_pr_selection(
     area: Rect,
     pulls: &[CommitPullRequest],
     selected: usize,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -1215,25 +1216,17 @@ fn render_pr_selection(
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, pull)| {
-            let style = if index == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+        .map(|(_, pull)| {
             let state = match pull.state {
                 CommitPullRequestState::Open => "open",
                 CommitPullRequestState::Closed => "closed",
                 CommitPullRequestState::Merged => "merged",
                 CommitPullRequestState::Unknown => "unconfirmed",
             };
-            ListItem::new(Line::from(Span::styled(
-                format!(" #{} [{}] {}", pull.number, state, pull.title),
-                style,
-            )))
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("#{} ", pull.number), theme.muted.style()),
+                Span::raw(format!("[{state}] {}", pull.title)),
+            ]))
         })
         .collect::<Vec<_>>();
     let block = Block::default()
@@ -1248,8 +1241,12 @@ fn render_pr_selection(
             Style::default().fg(Color::DarkGray),
         )));
     let inner_area = block.inner(area);
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    let visible_selected = selected.saturating_sub(offset);
+    let mut list_state = ListState::default().with_selected(Some(visible_selected));
+    let list = Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    frame.render_stateful_widget(list, area, &mut list_state);
     for visible_row in 0..pulls.len().saturating_sub(offset).min(inner_height) {
         let row = offset + visible_row;
         hit_map.push(
@@ -1307,6 +1304,7 @@ fn render_outline(
     area: Rect,
     state: &BrowseState,
     selected: usize,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
 
@@ -1319,7 +1317,7 @@ fn render_outline(
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, symbol)| ListItem::new(outline_row(symbol, index == selected)))
+        .map(|(_, symbol)| ListItem::new(outline_row(symbol)))
         .collect();
 
     let block = Block::default()
@@ -1331,8 +1329,12 @@ fn render_outline(
             Style::default().fg(Color::DarkGray),
         )));
     let inner_area = block.inner(area);
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    let visible_selected = selected.saturating_sub(offset);
+    let mut list_state = ListState::default().with_selected(Some(visible_selected));
+    let list = Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    frame.render_stateful_widget(list, area, &mut list_state);
     for visible_row in 0..symbols.len().saturating_sub(offset).min(inner_height) {
         let row = offset + visible_row;
         hit_map.push(
@@ -1646,15 +1648,8 @@ fn fit_module_graph_text(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(padding))
 }
 
-fn outline_row(symbol: &Symbol, selected: bool) -> Line<'static> {
-    let style = if selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
+fn outline_row(symbol: &Symbol) -> Line<'static> {
+    let style = Style::default();
     Line::from(Span::styled(
         format!(
             " {}{} {}  :{}",
@@ -1674,6 +1669,7 @@ fn render_symbol_search(
     state: &BrowseState,
     query: &str,
     selected: usize,
+    theme: Theme,
 ) {
     clear_overlay_area(frame, area);
 
@@ -1704,17 +1700,9 @@ fn render_symbol_search(
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, hit)| {
-            let style = if index == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+        .map(|(_, hit)| {
             let label = hit.search_label();
-            ListItem::new(Line::from(Span::styled(format!(" {label}"), style)))
+            ListItem::new(Line::from(Span::raw(label)))
         })
         .collect();
 
@@ -1736,8 +1724,12 @@ fn render_symbol_search(
             Style::default().fg(Color::DarkGray),
         )));
     let inner_area = block.inner(rows[1]);
-    let list = List::new(items).block(block);
-    frame.render_widget(list, rows[1]);
+    let visible_selected = selected.saturating_sub(offset);
+    let mut list_state = ListState::default().with_selected(Some(visible_selected));
+    let list = Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    frame.render_stateful_widget(list, rows[1], &mut list_state);
     for visible_row in 0..hits.len().saturating_sub(offset).min(inner_height) {
         let row = offset + visible_row;
         hit_map.push(
@@ -2029,9 +2021,9 @@ mod tests {
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌Files─────────┌Pull requests containing this commit (3)────────────────────────────┐──────────────┐
-        │▏ ▼ src/      │ #10 [open] still open                                              │              │
-        │      app.rs  │ #20 [closed] already closed                                        │              │
-        │              │ #30 [merged] already merged                                        │              │
+        │▏ ▼ src/      │  #10 [open] still open                                             │              │
+        │      app.rs  │▌ #20 [closed] already closed                                       │              │
+        │              │  #30 [merged] already merged                                       │              │
         │              │                                                                    │              │
         │              │                                                                    │              │
         │              │                                                                    │              │
@@ -3421,11 +3413,18 @@ mod tests {
     /// The text of the one row the symbol-search overlay paints as selected.
     fn highlighted_row(buffer: &Buffer, height: u16) -> Option<String> {
         (0..height).find_map(|y| {
-            let row: String = (0..buffer.area.width)
-                .filter(|x| buffer[(*x, y)].bg == Color::Cyan)
+            let start = (0..buffer.area.width).find(|x| buffer[(*x, y)].symbol() == "▌")?;
+            let row: String = (start..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol())
+                .take_while(|symbol| {
+                    !matches!(
+                        *symbol,
+                        "│" | "┃" | "┌" | "┐" | "└" | "┘" | "┏" | "┓" | "┗" | "┛"
+                    )
+                })
                 .collect();
-            (!row.trim().is_empty()).then(|| row.trim().to_string())
+            let row = row.trim();
+            (!row.is_empty()).then(|| row.to_string())
         })
     }
 
