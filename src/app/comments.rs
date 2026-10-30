@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
 use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
-use crate::github::{self, comment::ReviewComment, ChangedFile};
+use crate::github::comment::{Review, ReviewComment};
+use crate::github::{self, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::ui;
 
@@ -28,6 +29,58 @@ pub(crate) fn split_local_comments(
         }
     }
     (comments, meta)
+}
+
+pub(crate) fn combine_review_fetch_results<EComments, EReviews>(
+    review_comments_result: Result<Vec<ReviewComment>, EComments>,
+    reviews_result: Result<Vec<Review>, EReviews>,
+) -> Result<Vec<ReviewComment>, String>
+where
+    EComments: std::fmt::Display,
+    EReviews: std::fmt::Display,
+{
+    let mut all_comments = Vec::new();
+    let comments_error = match review_comments_result {
+        Ok(comments) => {
+            all_comments.extend(comments);
+            None
+        }
+        Err(error) => Some(error.to_string()),
+    };
+    let reviews_error = match reviews_result {
+        Ok(reviews) => {
+            for review in reviews {
+                if let Some(body) = review.body {
+                    if !body.trim().is_empty() {
+                        all_comments.push(ReviewComment {
+                            id: review.id,
+                            path: "[PR Review]".to_string(),
+                            line: None,
+                            start_line: None,
+                            body,
+                            user: review.user,
+                            created_at: review.submitted_at.unwrap_or_default(),
+                            in_reply_to_id: None,
+                            location: Default::default(),
+                        });
+                    }
+                }
+            }
+            None
+        }
+        Err(error) => Some(error.to_string()),
+    };
+
+    all_comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    match (comments_error, reviews_error) {
+        (Some(message), Some(_)) => Err(message),
+        (Some(message), None) | (None, Some(message)) => {
+            tracing::warn!(error = %message, "Failed to fetch part of the review comments");
+            Ok(all_comments)
+        }
+        (None, None) => Ok(all_comments),
+    }
 }
 
 fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
@@ -627,44 +680,11 @@ impl App {
         let repo = self.repo.clone();
 
         tokio::spawn(async move {
-            // Fetch both review comments and reviews
             let review_comments_result =
                 github::comment::fetch_review_comments(&repo, pr_number).await;
             let reviews_result = github::comment::fetch_reviews(&repo, pr_number).await;
-
-            // Combine results
-            let mut all_comments: Vec<ReviewComment> = Vec::new();
-
-            // Add review comments (inline comments)
-            if let Ok(comments) = review_comments_result {
-                all_comments.extend(comments);
-            }
-
-            // Convert reviews to ReviewComment format (only those with body)
-            if let Ok(reviews) = reviews_result {
-                for review in reviews {
-                    if let Some(body) = review.body {
-                        if !body.trim().is_empty() {
-                            all_comments.push(ReviewComment {
-                                id: review.id,
-                                path: "[PR Review]".to_string(),
-                                line: None,
-                                start_line: None,
-                                body,
-                                user: review.user,
-                                created_at: review.submitted_at.unwrap_or_default(),
-                                in_reply_to_id: None,
-                                location: Default::default(),
-                            });
-                        }
-                    }
-                }
-            }
-
-            // Sort by created_at
-            all_comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-
-            let _ = tx.send(Ok(all_comments)).await;
+            let combined = combine_review_fetch_results(review_comments_result, reviews_result);
+            let _ = tx.send(combined).await;
         });
     }
 

@@ -51,7 +51,9 @@ pub use blame::{
     MAX_BLAME_LINES, MAX_BLAME_STDOUT_BYTES, UNCOMMITTED_SHA,
 };
 pub(crate) use blame::{blame_file_at_revision_range, short_sha};
-pub use client::{classify_gh_failure, detect_repo, gh_command, DetectRepoError, GhFailureKind};
+pub use client::{
+    classify_gh_failure, detect_repo, gh_command, DetectRepoError, GhFailure, GhFailureKind,
+};
 pub use comment::{create_multiline_review_comment, create_reply_comment, create_review_comment};
 pub use commit::{
     fetch_commit_diff, fetch_local_commit_diff, fetch_local_commits, fetch_pr_commits,

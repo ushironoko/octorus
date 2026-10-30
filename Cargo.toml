@@ -12,6 +12,10 @@ license = "MIT"
 repository = "https://github.com/ushironoko/octorus"
 exclude = ["benches/", ".github/", ".claude/", "assets/", "docs/", "*.pending-snap", "**/snapshots/"]
 
+[lints.clippy]
+print_stdout = "deny"
+print_stderr = "deny"
+
 [[bin]]
 name = "or"
 path = "src/main.rs"

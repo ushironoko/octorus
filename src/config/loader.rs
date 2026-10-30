@@ -171,7 +171,11 @@ impl Config {
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
             for error in errors {
-                eprintln!("Warning: {}", error);
+                // Runs before the alternate screen, and tracing has no subscriber yet.
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("Warning: {}", error);
+                }
             }
         }
 

@@ -8202,7 +8202,7 @@ fn load_state_loading_transitions() {
 
 #[test]
 fn load_state_loaded_accessors() {
-    let state = super::types::LoadState::Loaded(vec![1, 2, 3]);
+    let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loaded(vec![1, 2, 3]);
     assert!(!state.is_loading());
     assert!(state.is_loaded());
     assert_eq!(state.as_loaded(), Some(&vec![1, 2, 3]));
@@ -8210,7 +8210,7 @@ fn load_state_loaded_accessors() {
 
 #[test]
 fn load_state_loading_more_preserves_data() {
-    let state = super::types::LoadState::LoadingMore(vec![1, 2]);
+    let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::LoadingMore(vec![1, 2]);
     assert!(state.is_loading());
     assert!(!state.is_loaded());
     assert_eq!(state.as_loaded(), Some(&vec![1, 2]));
@@ -8227,7 +8227,7 @@ fn load_state_error_accessors() {
 
 #[test]
 fn load_state_as_loaded_mut() {
-    let mut state = super::types::LoadState::Loaded(vec![1]);
+    let mut state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loaded(vec![1]);
     if let Some(data) = state.as_loaded_mut() {
         data.push(2);
     }
@@ -8236,10 +8236,10 @@ fn load_state_as_loaded_mut() {
 
 #[test]
 fn load_state_into_loaded() {
-    let state = super::types::LoadState::Loaded(vec![42]);
+    let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loaded(vec![42]);
     assert_eq!(state.into_loaded(), Some(vec![42]));
 
-    let state = super::types::LoadState::LoadingMore(vec![99]);
+    let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::LoadingMore(vec![99]);
     assert_eq!(state.into_loaded(), Some(vec![99]));
 
     let state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loading;
@@ -8248,7 +8248,8 @@ fn load_state_into_loaded() {
 
 #[test]
 fn load_state_recover_or_preserves_loading_more() {
-    let mut state = super::types::LoadState::LoadingMore(vec![1, 2, 3]);
+    let mut state: super::types::LoadState<Vec<i32>> =
+        super::types::LoadState::LoadingMore(vec![1, 2, 3]);
     state.recover_or(vec![]);
     assert_eq!(state.as_loaded(), Some(&vec![1, 2, 3]));
     assert!(state.is_loaded());
@@ -8256,7 +8257,7 @@ fn load_state_recover_or_preserves_loading_more() {
 
 #[test]
 fn load_state_recover_or_preserves_loaded() {
-    let mut state = super::types::LoadState::Loaded(vec![4, 5]);
+    let mut state: super::types::LoadState<Vec<i32>> = super::types::LoadState::Loaded(vec![4, 5]);
     state.recover_or(vec![]);
     assert_eq!(state.as_loaded(), Some(&vec![4, 5]));
 }
@@ -8269,13 +8270,27 @@ fn load_state_recover_or_uses_fallback_for_loading() {
     assert!(state.is_loaded());
 }
 
-#[tokio::test]
-async fn test_poll_pr_list_error_recovers_from_loading_more() {
-    use tokio::sync::mpsc;
+#[test]
+fn load_state_fail_on_loading_becomes_error() {
+    let mut state: LoadState<Vec<i32>> = LoadState::Loading;
+    assert!(state.fail("boom".to_string()).is_none());
+    match state {
+        LoadState::Error(message) => assert_eq!(message, "boom"),
+        _ => panic!("expected Error"),
+    }
+}
 
-    let mut app = App::new_for_test();
-    let existing = vec![crate::github::PullRequestSummary {
-        number: 1,
+#[test]
+fn load_state_fail_on_loading_more_keeps_rows() {
+    let mut state: LoadState<Vec<i32>> = LoadState::LoadingMore(vec![1, 2]);
+    assert_eq!(state.fail("later".to_string()), Some("later".to_string()));
+    assert!(state.is_loaded());
+    assert_eq!(state.as_loaded(), Some(&vec![1, 2]));
+}
+
+fn sample_pr(number: u32) -> crate::github::PullRequestSummary {
+    crate::github::PullRequestSummary {
+        number,
         title: "existing".to_string(),
         state: "OPEN".to_string(),
         author: crate::github::User {
@@ -8285,12 +8300,93 @@ async fn test_poll_pr_list_error_recovers_from_loading_more() {
         labels: vec![],
         updated_at: "".to_string(),
         status_check_rollup: vec![],
-    }];
+    }
+}
+
+fn sample_review_comment(id: u64, body: &str) -> ReviewComment {
+    ReviewComment {
+        id,
+        path: "src/app.rs".to_string(),
+        line: Some(1),
+        start_line: None,
+        body: body.to_string(),
+        user: crate::github::User {
+            login: "reviewer".to_string(),
+        },
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+        in_reply_to_id: None,
+        location: Default::default(),
+    }
+}
+
+#[cfg(unix)]
+struct CapturedStderr {
+    saved_fd: std::os::raw::c_int,
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn dup(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+    fn dup2(oldfd: std::os::raw::c_int, newfd: std::os::raw::c_int) -> std::os::raw::c_int;
+    fn close(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+}
+
+#[cfg(unix)]
+impl CapturedStderr {
+    fn new() -> Self {
+        use std::os::fd::AsRawFd;
+        let file = tempfile::tempfile().expect("stderr capture file");
+        let saved_fd = unsafe { dup(2) };
+        assert!(saved_fd >= 0, "dup stderr");
+        let redirected = unsafe { dup2(file.as_raw_fd(), 2) };
+        assert!(redirected >= 0, "dup2 stderr");
+        Self { saved_fd, file }
+    }
+
+    fn read_and_restore(mut self) -> String {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let _ = std::io::stderr().flush();
+        self.restore();
+        self.file.seek(SeekFrom::Start(0)).expect("seek capture");
+        let mut captured = String::new();
+        self.file
+            .read_to_string(&mut captured)
+            .expect("read capture");
+        captured
+    }
+
+    fn restore(&mut self) {
+        if self.saved_fd >= 0 {
+            unsafe {
+                dup2(self.saved_fd, 2);
+                close(self.saved_fd);
+            }
+            self.saved_fd = -1;
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CapturedStderr {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+#[tokio::test]
+async fn test_poll_pr_list_error_recovers_from_loading_more() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let existing = vec![sample_pr(1)];
     app.prs.pr_list = LoadState::LoadingMore(existing);
 
     let (tx, rx) = mpsc::channel(1);
     app.prs.pr_list_receiver = Some(rx);
-    tx.send(Err("network error".to_string())).await.unwrap();
+    tx.send(Err(crate::github::GhFailure::other("network error")))
+        .await
+        .unwrap();
 
     app.poll_pr_list_updates();
 
@@ -8299,6 +8395,10 @@ async fn test_poll_pr_list_error_recovers_from_loading_more() {
     let items = app.prs.pr_list.as_loaded().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].number, 1);
+    assert_eq!(
+        app.cmt.submission_result,
+        Some((false, "network error".to_string()))
+    );
 }
 
 #[tokio::test]
@@ -8330,6 +8430,225 @@ async fn test_poll_pr_list_disconnect_recovers_from_loading_more() {
     let items = app.prs.pr_list.as_loaded().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].number, 2);
+    assert_eq!(
+        app.cmt.submission_result,
+        Some((false, "PR list fetch disconnected".to_string()))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn test_poll_pr_list_unauthenticated_is_error_and_writes_no_stderr() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.prs.pr_list = LoadState::Loading;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.prs.pr_list_receiver = Some(rx);
+    let error = anyhow::anyhow!(
+        "GitHub CLI command failed: not logged into any GitHub hosts; run gh auth login"
+    );
+    tx.send(Err(crate::github::GhFailure::from_error(&error)))
+        .await
+        .unwrap();
+
+    let capture = CapturedStderr::new();
+    app.poll_pr_list_updates();
+    let stderr = capture.read_and_restore();
+
+    assert!(stderr.is_empty(), "{stderr}");
+    match &app.prs.pr_list {
+        LoadState::Error(failure) => {
+            assert_eq!(failure.kind, crate::github::GhFailureKind::Unauthenticated);
+            assert_eq!(
+                failure.message,
+                "GitHub CLI command failed: not logged into any GitHub hosts; run gh auth login"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    assert!(app.prs.pr_list.as_loaded().is_none());
+    assert!(app.prs.pr_list_receiver.is_none());
+    assert!(app.cmt.submission_result.is_none());
+}
+
+#[tokio::test]
+async fn test_poll_pr_list_disconnect_from_loading_is_other_error() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.prs.pr_list = LoadState::Loading;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.prs.pr_list_receiver = Some(rx);
+    drop(tx);
+
+    app.poll_pr_list_updates();
+
+    match &app.prs.pr_list {
+        LoadState::Error(failure) => {
+            assert_eq!(failure.kind, crate::github::GhFailureKind::Other);
+            assert_eq!(failure.message, "PR list fetch disconnected");
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    assert!(app.prs.pr_list.as_loaded().is_none());
+    assert!(app.cmt.submission_result.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn test_poll_comment_error_keeps_comments_and_writes_no_stderr() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.comments_loading = true;
+    app.cmt.review_comments = Some(vec![sample_review_comment(9, "kept")]);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Err("comments failed".to_string())).await.unwrap();
+
+    let capture = CapturedStderr::new();
+    app.poll_comment_updates();
+    let stderr = capture.read_and_restore();
+
+    assert!(stderr.is_empty(), "{stderr}");
+    assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
+    let comments = app.cmt.review_comments.as_ref().expect("comments stay");
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].id, 9);
+    assert_eq!(comments[0].body, "kept");
+    assert!(!app.cmt.comments_loading);
+}
+
+#[tokio::test]
+async fn test_poll_comment_error_leaves_missing_comments_none() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.comments_loading = true;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Err("comments failed".to_string())).await.unwrap();
+
+    app.poll_comment_updates();
+
+    assert!(app.cmt.review_comments.is_none());
+    assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
+    assert!(!app.cmt.comments_loading);
+}
+
+#[tokio::test]
+async fn test_poll_comment_success_clears_comment_error() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.comment_error = Some("old failure".to_string());
+    app.cmt.comments_loading = true;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Ok(vec![sample_review_comment(3, "fresh")]))
+        .await
+        .unwrap();
+
+    app.poll_comment_updates();
+
+    assert!(app.cmt.comment_error.is_none());
+    let comments = app.cmt.review_comments.as_ref().expect("loaded comments");
+    assert_eq!(comments[0].id, 3);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn test_poll_discussion_error_keeps_comments_and_writes_no_stderr() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.discussion_comments_loading = true;
+    app.cmt.discussion_comments = Some(vec![crate::github::comment::DiscussionComment {
+        id: 11,
+        body: "kept".to_string(),
+        user: crate::github::User {
+            login: "commenter".to_string(),
+        },
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.discussion_comment_receiver = Some((4, rx));
+    tx.send(Err("discussion failed".to_string())).await.unwrap();
+
+    let capture = CapturedStderr::new();
+    app.poll_discussion_comment_updates();
+    let stderr = capture.read_and_restore();
+
+    assert!(stderr.is_empty(), "{stderr}");
+    assert_eq!(
+        app.cmt.discussion_error.as_deref(),
+        Some("discussion failed")
+    );
+    let comments = app
+        .cmt
+        .discussion_comments
+        .as_ref()
+        .expect("discussion comments stay");
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].id, 11);
+    assert!(!app.cmt.discussion_comments_loading);
+}
+
+#[tokio::test]
+async fn test_poll_discussion_error_leaves_missing_comments_none() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.discussion_comments_loading = true;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.discussion_comment_receiver = Some((4, rx));
+    tx.send(Err("discussion failed".to_string())).await.unwrap();
+
+    app.poll_discussion_comment_updates();
+
+    assert!(app.cmt.discussion_comments.is_none());
+    assert_eq!(
+        app.cmt.discussion_error.as_deref(),
+        Some("discussion failed")
+    );
+    assert!(!app.cmt.discussion_comments_loading);
+}
+
+#[test]
+fn both_failed_review_fetches_send_the_first_error() {
+    let comments: Result<Vec<ReviewComment>, &str> = Err("inline failed");
+    let reviews: Result<Vec<crate::github::comment::Review>, &str> = Err("reviews failed");
+    assert_eq!(
+        super::comments::combine_review_fetch_results(comments, reviews).unwrap_err(),
+        "inline failed"
+    );
+}
+
+#[test]
+fn one_failed_review_fetch_keeps_what_the_other_gathered() {
+    let comments: Result<Vec<ReviewComment>, &str> = Ok(vec![sample_review_comment(3, "inline")]);
+    let reviews: Result<Vec<crate::github::comment::Review>, &str> = Err("reviews failed");
+    let gathered = super::comments::combine_review_fetch_results(comments, reviews)
+        .expect("one success stays Ok");
+    assert_eq!(gathered.len(), 1);
+    assert_eq!(gathered[0].id, 3);
+    assert_eq!(gathered[0].body, "inline");
 }
 
 #[tokio::test]

@@ -277,7 +277,9 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::fetch_pr_list(&repo, state, 30).await;
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx
+                .send(result.map_err(|error| github::GhFailure::from_error(&error)))
+                .await;
         });
     }
 
@@ -301,7 +303,9 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::fetch_pr_list_with_offset(&repo, state, offset, 30).await;
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx
+                .send(result.map_err(|error| github::GhFailure::from_error(&error)))
+                .await;
         });
     }
     pub(crate) fn select_pr(&mut self, pr_number: u32) {

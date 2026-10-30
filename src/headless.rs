@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use anyhow::Result;
 use serde::Serialize;
 use tokio::sync::mpsc;

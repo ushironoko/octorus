@@ -196,6 +196,28 @@ fn message_has_any(message: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| message.contains(marker))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhFailure {
+    pub kind: GhFailureKind,
+    pub message: String,
+}
+
+impl GhFailure {
+    pub fn from_error(error: &anyhow::Error) -> Self {
+        Self {
+            kind: classify_gh_failure(error),
+            message: error.to_string(),
+        }
+    }
+
+    pub fn other(message: impl Into<String>) -> Self {
+        Self {
+            kind: GhFailureKind::Other,
+            message: message.into(),
+        }
+    }
+}
+
 /// Execute gh api command with JSON output
 pub async fn gh_api(endpoint: &str) -> Result<serde_json::Value> {
     let output = gh_command(&["api", endpoint]).await?;
