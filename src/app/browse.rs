@@ -3961,7 +3961,7 @@ mod tests {
         app.browse_state = Some(state);
         app.state = AppState::RepoBrowseGraph;
         let rendered = render_at(&mut app, 80, 12);
-        assert!(rendered.contains("Importers 200/250 exact"), "{rendered}");
+        assert!(rendered.contains("200/250"), "{rendered}");
     }
 
     // ===== cursor and scrolling =====

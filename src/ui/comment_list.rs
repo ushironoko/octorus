@@ -1,4 +1,6 @@
+use super::chrome::{pane_block, PaneTitle};
 use super::common::{render_rally_status_bar, wrap_text};
+use super::theme::{Attention, Theme, SELECTION_MARKER_WIDTH};
 use crate::app::{App, CommentTab};
 use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind, TabGroup};
 use ratatui::{
@@ -184,6 +186,8 @@ fn render_comment_list_generic<T, F>(
     scroll_offset: &mut usize,
     hit_map: &mut HitMap,
     label: &str,
+    theme: Theme,
+    attention: Attention,
     format_item: F,
 ) where
     F: Fn(&T, usize, bool, usize) -> ListItem<'static>,
@@ -215,7 +219,7 @@ fn render_comment_list_generic<T, F>(
         return;
     }
 
-    let available_width = area.width.saturating_sub(4) as usize;
+    let available_width = area.width.saturating_sub(2 + SELECTION_MARKER_WIDTH as u16) as usize;
     let body_width = available_width.saturating_sub(4);
 
     let items: Vec<ListItem> = items_data
@@ -232,14 +236,10 @@ fn render_comment_list_generic<T, F>(
         .with_offset(*scroll_offset)
         .with_selected(Some(selected_index));
 
-    let block = Block::default().borders(Borders::ALL);
+    let block = attention.frame(theme);
     let total_items = items_data.len();
 
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
 
     *scroll_offset = list_state.offset();
@@ -418,6 +418,8 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         return;
     };
 
+    let theme = app.theme;
+    let attention = app.sole_attention();
     render_review_thread_list_data_with_hits(
         frame,
         area,
@@ -431,6 +433,8 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         },
         &mut app.cmt.thread_scroll_offset,
         Some(&mut app.hit_map),
+        theme,
+        attention,
     );
 }
 
@@ -448,8 +452,18 @@ pub(crate) fn render_review_thread_list_data(
     area: Rect,
     data: ReviewThreadListData<'_>,
     scroll_offset: &mut usize,
+    theme: Theme,
+    attention: Attention,
 ) {
-    render_review_thread_list_data_with_hits(frame, area, data, scroll_offset, None);
+    render_review_thread_list_data_with_hits(
+        frame,
+        area,
+        data,
+        scroll_offset,
+        None,
+        theme,
+        attention,
+    );
 }
 
 fn render_review_thread_list_data_with_hits(
@@ -458,8 +472,10 @@ fn render_review_thread_list_data_with_hits(
     data: ReviewThreadListData<'_>,
     scroll_offset: &mut usize,
     hit_map: Option<&mut HitMap>,
+    theme: Theme,
+    attention: Attention,
 ) {
-    let available_width = area.width.saturating_sub(4) as usize;
+    let available_width = area.width.saturating_sub(2 + SELECTION_MARKER_WIDTH as u16) as usize;
     let body_width = available_width.saturating_sub(4);
     let total_items = data
         .visible_threads
@@ -469,9 +485,7 @@ fn render_review_thread_list_data_with_hits(
         .filter_map(|i| {
             let thread_index = data.visible_threads.map_or(i, |indices| indices[i]);
             let thread = data.threads.get(thread_index)?;
-            let is_selected = i == data.selected;
             let comment = &data.comments[thread.root];
-            let prefix = if is_selected { "> " } else { "  " };
             let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let resolved = data.resolved_ids.contains(&comment.id);
 
@@ -487,7 +501,6 @@ fn render_review_thread_list_data_with_hits(
             };
 
             let header_line = Line::from(vec![
-                Span::raw(prefix),
                 Span::styled(
                     format!("@{}", comment.user.login),
                     Style::default().fg(Color::Cyan),
@@ -508,7 +521,7 @@ fn render_review_thread_list_data_with_hits(
                     Style::default().fg(Color::Green),
                 ),
                 if data.outdated_ids.contains(&comment.id) {
-                    Span::styled(" outdated", Style::default().fg(Color::DarkGray))
+                    Span::styled(" outdated", theme.muted.style())
                 } else {
                     Span::raw("")
                 },
@@ -519,7 +532,7 @@ fn render_review_thread_list_data_with_hits(
             for body_line in comment.body.lines() {
                 let wrapped = wrap_text(body_line, body_width);
                 for wrapped_line in wrapped {
-                    lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+                    lines.push(Line::from(vec![Span::raw("  "), Span::raw(wrapped_line)]));
                 }
             }
             lines.push(Line::from(""));
@@ -533,12 +546,8 @@ fn render_review_thread_list_data_with_hits(
         .with_offset(*scroll_offset)
         .with_selected(Some(data.selected));
 
-    let block = Block::default().borders(Borders::ALL);
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    let block = attention.frame(theme);
+    let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
 
     *scroll_offset = list_state.offset();
@@ -572,6 +581,9 @@ fn render_expanded_thread(
     outdated_ids: &HashSet<u64>,
 ) {
     use std::collections::HashSet;
+
+    let theme = app.theme;
+    let attention = app.sole_attention();
 
     let Some(thread_idx) = app.cmt.expanded_thread else {
         return;
@@ -607,6 +619,8 @@ fn render_expanded_thread(
         &resolved_ids,
         outdated_ids,
         Some(&mut app.hit_map),
+        theme,
+        attention,
     );
 }
 
@@ -620,6 +634,8 @@ pub(crate) fn render_review_thread_data(
     scroll_offset: &mut usize,
     resolved_ids: &std::collections::HashSet<u64>,
     outdated_ids: &HashSet<u64>,
+    theme: Theme,
+    attention: Attention,
 ) {
     render_review_thread_data_with_hits(
         frame,
@@ -631,6 +647,8 @@ pub(crate) fn render_review_thread_data(
         resolved_ids,
         outdated_ids,
         None,
+        theme,
+        attention,
     );
 }
 
@@ -645,8 +663,10 @@ fn render_review_thread_data_with_hits(
     resolved_ids: &std::collections::HashSet<u64>,
     outdated_ids: &HashSet<u64>,
     hit_map: Option<&mut HitMap>,
+    theme: Theme,
+    attention: Attention,
 ) {
-    let available_width = area.width.saturating_sub(4) as usize;
+    let available_width = area.width.saturating_sub(2 + SELECTION_MARKER_WIDTH as u16) as usize;
     let body_width = available_width.saturating_sub(6);
 
     // Build flat list: index 0 = root, 1..=N = replies
@@ -659,8 +679,6 @@ fn render_review_thread_data_with_hits(
         .enumerate()
         .map(|(i, &ci)| {
             let comment = &all_comments[ci];
-            let is_selected = i == selected;
-            let prefix = if is_selected { "> " } else { "  " };
             let is_root = i == 0;
             let resolved = resolved_ids.contains(&comment.id);
             let resolved_badge = if resolved {
@@ -672,7 +690,6 @@ fn render_review_thread_data_with_hits(
             let header_line = if is_root {
                 let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
                 Line::from(vec![
-                    Span::raw(prefix),
                     Span::styled(
                         format!("@{}", comment.user.login),
                         Style::default().fg(Color::Cyan),
@@ -684,7 +701,7 @@ fn render_review_thread_data_with_hits(
                         Style::default().fg(Color::Green),
                     ),
                     if outdated_ids.contains(&comment.id) {
-                        Span::styled(" outdated", Style::default().fg(Color::DarkGray))
+                        Span::styled(" outdated", theme.muted.style())
                     } else {
                         Span::raw("")
                     },
@@ -696,7 +713,6 @@ fn render_review_thread_data_with_hits(
                     .next()
                     .unwrap_or(&comment.created_at);
                 Line::from(vec![
-                    Span::raw(prefix),
                     Span::styled("  ", Style::default()),
                     Span::styled(
                         format!("@{}", comment.user.login),
@@ -708,7 +724,7 @@ fn render_review_thread_data_with_hits(
                 ])
             };
 
-            let indent = if is_root { "    " } else { "      " };
+            let indent = if is_root { "  " } else { "    " };
             let mut lines = vec![header_line];
             for body_line in comment.body.lines() {
                 let wrapped = wrap_text(body_line, body_width);
@@ -738,12 +754,15 @@ fn render_review_thread_data_with_hits(
         .with_offset(*scroll_offset)
         .with_selected(Some(selected));
 
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+    let block = pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "",
+            detail: &title,
+        },
+        attention,
     );
+    let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
 
     *scroll_offset = list_state.offset();
@@ -773,6 +792,8 @@ fn render_review_thread_data_with_hits(
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     use crate::github::comment::DiscussionComment;
 
+    let theme = app.theme;
+    let attention = app.sole_attention();
     render_comment_list_generic(
         frame,
         area,
@@ -782,9 +803,9 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
         &mut app.cmt.discussion_comment_list_scroll_offset,
         &mut app.hit_map,
         "discussion comments",
-        |comment: &DiscussionComment, _i: usize, is_selected: bool, body_width: usize| {
-            let prefix = if is_selected { "> " } else { "  " };
-
+        theme,
+        attention,
+        |comment: &DiscussionComment, _i: usize, _is_selected: bool, body_width: usize| {
             let date = comment
                 .created_at
                 .split('T')
@@ -792,7 +813,6 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
                 .unwrap_or(&comment.created_at);
 
             let header_line = Line::from(vec![
-                Span::raw(prefix),
                 Span::styled(
                     format!("@{}", comment.user.login),
                     Style::default().fg(Color::Cyan),
@@ -809,12 +829,12 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
                 for wrapped_line in wrapped {
                     if line_count >= max_preview_lines {
                         lines.push(Line::from(vec![
-                            Span::raw("    "),
+                            Span::raw("  "),
                             Span::styled("...", Style::default().fg(Color::DarkGray)),
                         ]));
                         break 'outer;
                     }
-                    lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+                    lines.push(Line::from(vec![Span::raw("  "), Span::raw(wrapped_line)]));
                     line_count += 1;
                 }
             }
@@ -1038,24 +1058,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │> @reviewer1 on src/main.rs:10                                                                    │
-        │    This looks good.                                                                              │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ @reviewer1 on src/main.rs:10                                                                    ┃
+        ┃    This looks good.                                                                              ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -1115,24 +1135,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (0)]  [Discussion (1)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │> @commenter  2025-03-01                                                                          │
-        │    Thanks for the fix!                                                                           │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ @commenter  2025-03-01                                                                          ┃
+        ┃    Thanks for the fix!                                                                           ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -1186,24 +1206,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Local Comments (2)]                                                                             │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │> @dacuna on src/main.rs:10                                                                       ▲
-        │    Fix this variable naming                                                                      █
-        │                                                                                                  █
-        │  @dacuna [resolved] on src/lib.rs:42                                                             █
-        │    Consider error handling                                                                       █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  ▼
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ @dacuna on src/main.rs:10                                                                       ▲
+        ┃    Fix this variable naming                                                                      █
+        ┃                                                                                                  █
+        ┃  @dacuna [resolved] on src/lib.rs:42                                                             █
+        ┃    Consider error handling                                                                       █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  ▼
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -1356,24 +1376,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │> @alice on src/main.rs:10  (1 reply)                                                             │
-        │    Needs refactoring                                                                             │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ @alice on src/main.rs:10  (1 reply)                                                             ┃
+        ┃    Needs refactoring                                                                             ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -1434,24 +1454,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Thread: src/main.rs:10 (3 comments)───────────────────────────────────────────────────────────────┐
-        │> @alice on src/main.rs:10                                                                        ▲
-        │    Needs refactoring                                                                             █
-        │                                                                                                  █
-        │    @bob  2025-01-02                                                                              █
-        │      Agreed, will fix                                                                            █
-        │                                                                                                  █
-        │    @alice  2025-01-03                                                                            █
-        │      Done in latest push                                                                         █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  ║
-        │                                                                                                  ▼
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ Thread: src/main.rs:10 (3 comments)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ @alice on src/main.rs:10                                                                        ▲
+        ┃    Needs refactoring                                                                             █
+        ┃                                                                                                  █
+        ┃    @bob  2025-01-02                                                                              █
+        ┃      Agreed, will fix                                                                            █
+        ┃                                                                                                  █
+        ┃    @alice  2025-01-03                                                                            █
+        ┃      Done in latest push                                                                         █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  ║
+        ┃                                                                                                  ▼
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -1,6 +1,7 @@
 mod ai_rally;
 mod browse;
 mod checks_list;
+pub(crate) mod chrome;
 mod cockpit;
 mod comment_list;
 pub(crate) mod common;

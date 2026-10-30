@@ -5,8 +5,16 @@
 //! `theme.draft_you`, and `theme.draft_agent`.
 
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, HighlightSpacing, List};
 
 use crate::config::{ThemeConfig, ThemePreset};
+
+/// Columns reserved for `▌ ` and `▏ `, including the trailing space.
+pub const SELECTION_MARKER_WIDTH: usize = 2;
+
+const FOCUSED_MARKER: &str = "▌ ";
+const DIM_MARKER: &str = "▏ ";
 
 /// Semantic color plus the modifier that must travel with it.
 ///
@@ -139,6 +147,138 @@ fn apply_fg(ink: &mut Ink, color: Option<Color>) {
     }
 }
 
+/// Who the pane is for this frame.
+///
+/// Draw code passes the value through. `rows` and `pane_block` are the match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attention {
+    /// Keys come here. Marker `▌`, title `▶` plus an uppercased label, thick accent border.
+    Focused,
+    /// A sibling has the keys, or a modal covers this pane.
+    Dim,
+}
+
+impl Attention {
+    pub(crate) fn when(focused: bool) -> Self {
+        if focused {
+            Self::Focused
+        } else {
+            Self::Dim
+        }
+    }
+
+    pub fn rows(self, theme: Theme) -> RowMark {
+        match self {
+            // The symbol is painted after highlight_style, so it has to carry
+            // BOLD itself or the gutter cell loses it.
+            Self::Focused => RowMark {
+                symbol: FOCUSED_MARKER,
+                symbol_style: theme.accent.bold(),
+                row_style: Style::new().add_modifier(Modifier::BOLD),
+            },
+            Self::Dim => RowMark {
+                symbol: DIM_MARKER,
+                symbol_style: theme.muted.style(),
+                row_style: Style::new(),
+            },
+        }
+    }
+
+    pub fn frame(self, theme: Theme) -> Block<'static> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(self.border_type())
+            .border_style(self.border_style(theme))
+    }
+
+    pub fn border_style(self, theme: Theme) -> Style {
+        match self {
+            Self::Focused => theme.accent.style(),
+            Self::Dim => theme.muted.style(),
+        }
+    }
+
+    fn border_type(self) -> BorderType {
+        match self {
+            Self::Focused => BorderType::Thick,
+            Self::Dim => BorderType::Plain,
+        }
+    }
+
+    pub fn has_keys(self) -> bool {
+        matches!(self, Self::Focused)
+    }
+}
+
+/// One marker policy. `apply` is for `ListState` lists. `prefix` and
+/// `body_style` are for the hand-drawn browse tree. Calling both on one
+/// list reserves four columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowMark {
+    symbol: &'static str,
+    symbol_style: Style,
+    row_style: Style,
+}
+
+impl RowMark {
+    pub fn apply<'a>(self, list: List<'a>) -> List<'a> {
+        list.highlight_symbol(Line::from(Span::styled(self.symbol, self.symbol_style)))
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_style(self.row_style)
+    }
+
+    pub fn prefix(self, selected: bool) -> Span<'static> {
+        if selected {
+            Span::styled(self.symbol, self.symbol_style)
+        } else {
+            Span::raw("  ")
+        }
+    }
+
+    pub fn body_style(self, selected: bool) -> Style {
+        if selected {
+            self.row_style
+        } else {
+            Style::new()
+        }
+    }
+}
+
+/// Returned by `App::split_attention`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplitAttention {
+    pub files: Attention,
+    pub diff: Attention,
+    pub comments: Attention,
+}
+
+/// Fullscreen diff. Same comment-panel rule as [`SplitAttention`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffAttention {
+    pub diff: Attention,
+    pub comments: Attention,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BrowseAttention {
+    pub tree: Attention,
+    pub file: Attention,
+    pub graph: Attention,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GitOpsAttention {
+    pub tree: Attention,
+    pub commits: Attention,
+    pub diff: Attention,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IssueDetailAttention {
+    pub body: Attention,
+    pub linked_prs: Attention,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +320,39 @@ mod tests {
 
     fn fg(ink: Ink) -> Option<Color> {
         ink.style().fg
+    }
+
+    #[test]
+    fn marker_display_width_equals_selection_marker_width() {
+        use unicode_width::UnicodeWidthStr;
+
+        let theme = Theme::test_default();
+        let focused = Attention::Focused.rows(theme);
+        let dim = Attention::Dim.rows(theme);
+        assert_eq!(focused.prefix(true).content.width(), SELECTION_MARKER_WIDTH);
+        assert_eq!(
+            focused.prefix(false).content.width(),
+            SELECTION_MARKER_WIDTH
+        );
+        assert_eq!(dim.prefix(true).content.width(), SELECTION_MARKER_WIDTH);
+        assert_eq!(dim.prefix(false).content.width(), SELECTION_MARKER_WIDTH);
+        assert_eq!(focused.prefix(true).content.as_ref(), "▌ ");
+        assert_eq!(dim.prefix(true).content.as_ref(), "▏ ");
+        assert_eq!(focused.prefix(false).content.as_ref(), "  ");
+        assert!(focused
+            .prefix(true)
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(!dim.prefix(true).style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(focused.body_style(true).fg, None);
+        assert_eq!(focused.body_style(true).bg, None);
+        assert!(focused
+            .body_style(true)
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert_eq!(dim.body_style(true).add_modifier, Modifier::empty());
+        assert_eq!(focused.body_style(false).add_modifier, Modifier::empty());
     }
 
     #[test]

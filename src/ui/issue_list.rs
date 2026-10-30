@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -11,7 +11,9 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
+use super::chrome::{pane_block, PaneTitle};
 use super::common::fit_to_width;
+use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
 use crate::github::IssueSummary;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -87,28 +89,38 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 };
 
             let total_issues = issues.len();
-            let title = if let Some(ref filter) = state.issue_list_filter {
-                format!("Issues ({}/{})", filter.matched_indices.len(), total_issues)
+            let detail = if let Some(ref filter) = state.issue_list_filter {
+                format!("({}/{})", filter.matched_indices.len(), total_issues)
             } else if state.issues.is_loading() {
-                format!("Issues ({}) {}", total_issues, app.spinner_char())
+                format!("({}) {}", total_issues, app.spinner_char())
             } else if state.issue_list_has_more {
-                format!("Issues ({}+)", total_issues)
+                format!("({}+)", total_issues)
             } else {
-                format!("Issues ({})", total_issues)
+                format!("({})", total_issues)
             };
 
-            let inner_width = chunks[1].width.saturating_sub(3) as usize;
-            let items = build_issue_list_items(&display_issues, display_selected, inner_width);
+            let theme = app.theme;
+            let attention = app.sole_attention();
+            let inner_width = chunks[1]
+                .width
+                .saturating_sub(3 + SELECTION_MARKER_WIDTH as u16)
+                as usize;
+            let items = build_issue_list_items(&display_issues, inner_width, theme);
 
             let mut list_state = ListState::default()
                 .with_offset(state.issue_list_scroll_offset)
                 .with_selected(Some(display_selected));
 
-            let block = Block::default().borders(Borders::ALL).title(title);
+            let block = pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "Issues",
+                    detail: &detail,
+                },
+                attention,
+            );
             let inner_area = block.inner(chunks[1]);
-            let list = List::new(items)
-                .block(block)
-                .highlight_style(Style::default().bg(Color::DarkGray));
+            let list = attention.rows(theme).apply(List::new(items).block(block));
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
             let final_offset = list_state.offset();
@@ -190,43 +202,26 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
 fn build_issue_list_items(
     issues: &[&IssueSummary],
-    selected: usize,
     area_width: usize,
+    theme: Theme,
 ) -> Vec<ListItem<'static>> {
     issues
         .iter()
-        .enumerate()
-        .map(|(i, issue)| {
-            let is_selected = i == selected;
-
+        .map(|issue| {
             let state_icon = if issue.state.to_lowercase() == "open" {
                 Span::styled("● ", Style::default().fg(Color::Green))
             } else {
                 Span::styled("● ", Style::default().fg(Color::Magenta))
             };
 
-            let number_style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Yellow)
-            };
-            let number_span = Span::styled(format!("#{:<5}", issue.number), number_style);
+            let number_span = Span::styled(format!("#{:<5}", issue.number), theme.muted.style());
 
             let author_width = 4 + issue.author.login.width();
             let fixed_width = 2 + 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
             let title_span = Span::styled(
                 fit_to_width(&issue.title, title_width).into_owned(),
-                title_style,
+                Style::default(),
             );
 
             let author_span = Span::styled(
@@ -280,6 +275,7 @@ fn build_issue_list_items(
 #[cfg(test)]
 mod tests {
     use super::super::test_buffer::{find_column, row_text};
+    use super::super::theme::Attention;
     use super::*;
     use crate::app::{App, AppState, IssueState};
     use crate::github::{IssueSummary, Label, User};
@@ -374,24 +370,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │Issue List: test/repo (open)                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Issues (2)────────────────────────────────────────────────────────────────────────────────────────┐
-        │● #10     Fix login bug                                                                 by @alice ▲
-        │● #9      Add dark mode                                                                   by @bob █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  ▼
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ ISSUES (2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ ● #10     Fix login bug                                                               by @alice ▲
+        ┃  ● #9      Add dark mode                                                                 by @bob █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  ▼
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -419,24 +415,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │Issue List: test/repo (open)                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Issues (1)────────────────────────────────────────────────────────────────────────────────────────┐
-        │● #5      Bug report                                                                    by @carol │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ ISSUES (1)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ ● #5      Bug report                                                                  by @carol ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -445,14 +441,15 @@ mod tests {
 
     fn render_issue_rows(issues: &[IssueSummary], area_width: usize) -> Buffer {
         let refs: Vec<&IssueSummary> = issues.iter().collect();
-        let items = build_issue_list_items(&refs, 0, area_width);
+        let theme = Theme::test_default();
+        let items = build_issue_list_items(&refs, area_width, theme);
         let width = 160;
         let height = u16::try_from(items.len()).unwrap_or(1).max(1);
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+                let list = Attention::Focused.rows(theme).apply(List::new(items));
                 let mut state = ListState::default().with_selected(Some(0));
                 frame.render_stateful_widget(list, frame.area(), &mut state);
             })

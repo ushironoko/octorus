@@ -18,6 +18,10 @@ use crate::keybinding::KeyBinding;
 use crate::loader::{DataLoadResult, SingleFileDiffResult};
 use crate::ui;
 use crate::ui::text_area::TextArea;
+use crate::ui::theme::{
+    Attention, BrowseAttention, DiffAttention, GitOpsAttention, IssueDetailAttention,
+    SplitAttention, Theme,
+};
 use std::time::Instant;
 
 mod types;
@@ -213,6 +217,8 @@ pub struct App {
     pub hit_map: crate::ui::hit::HitMap,
     /// マウスドラッグの状態機械
     pub(crate) drag_state: input_mouse::DragState,
+    /// Resolved palette. Draw code copies it with `let theme = app.theme`.
+    pub theme: Theme,
 }
 
 /// 入力ハンドラ用の画面サイズ。`Terminal::size()` は実端末への問い合わせのため
@@ -306,6 +312,186 @@ impl App {
             pending_events: std::collections::VecDeque::new(),
             hit_map: crate::ui::hit::HitMap::default(),
             drag_state: input_mouse::DragState::default(),
+            theme: Theme::test_default(),
+        }
+    }
+
+    /// True when a modal covers the panes underneath it.
+    ///
+    /// The 3-line git-ops confirm, the symbol popup, and the shell popup do
+    /// not count. The module graph is a pane, not an overlay.
+    fn modal_open(&self) -> bool {
+        if self.state == AppState::Help {
+            return true;
+        }
+        if matches!(
+            self.state,
+            AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff
+        ) && self.git_ops_state.as_ref().is_some_and(|ops| {
+            matches!(
+                ops.pending_confirm,
+                Some(
+                    PendingGitOpsConfirm::Simulating { .. }
+                        | PendingGitOpsConfirm::Previewing { .. }
+                )
+            )
+        }) {
+            return true;
+        }
+        if self.state.is_repo_browse() {
+            if let Some(state) = &self.browse_state {
+                if !matches!(state.overlay, browse::BrowseOverlay::None) {
+                    return true;
+                }
+                if matches!(state.pr_lookup, browse::PrLookupState::Selecting { .. }) {
+                    return true;
+                }
+                if let browse_discussion::LineDiscussionState::Ready { view, .. } =
+                    &state.line_discussion
+                {
+                    if !matches!(view, browse_discussion::DiscussionView::Closed) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// PR list, issue list, file list, cockpit, checks, and comment lists.
+    pub fn sole_attention(&self) -> Attention {
+        Attention::when(!self.modal_open())
+    }
+
+    /// File pane, diff, and the inline comment panel.
+    pub fn split_attention(&self) -> SplitAttention {
+        if self.modal_open() {
+            return SplitAttention {
+                files: Attention::Dim,
+                diff: Attention::Dim,
+                comments: Attention::Dim,
+            };
+        }
+        match self.state {
+            AppState::SplitViewFileList => SplitAttention {
+                files: Attention::Focused,
+                diff: Attention::Dim,
+                comments: Attention::Dim,
+            },
+            AppState::SplitViewDiff if self.cmt.comment_panel_open => SplitAttention {
+                files: Attention::Dim,
+                diff: Attention::Dim,
+                comments: Attention::Focused,
+            },
+            AppState::SplitViewDiff => SplitAttention {
+                files: Attention::Dim,
+                diff: Attention::Focused,
+                comments: Attention::Dim,
+            },
+            _ => SplitAttention {
+                files: Attention::Dim,
+                diff: Attention::Dim,
+                comments: Attention::Dim,
+            },
+        }
+    }
+
+    /// Fullscreen diff. The comment panel takes the keys from the diff.
+    pub fn diff_attention(&self) -> DiffAttention {
+        if self.modal_open() || self.state != AppState::DiffView {
+            return DiffAttention {
+                diff: Attention::Dim,
+                comments: Attention::Dim,
+            };
+        }
+        if self.cmt.comment_panel_open {
+            DiffAttention {
+                diff: Attention::Dim,
+                comments: Attention::Focused,
+            }
+        } else {
+            DiffAttention {
+                diff: Attention::Focused,
+                comments: Attention::Dim,
+            }
+        }
+    }
+
+    /// Repository browser panes. An overlay list is not one of these panes.
+    pub fn browse_attention(&self) -> BrowseAttention {
+        let dim = BrowseAttention {
+            tree: Attention::Dim,
+            file: Attention::Dim,
+            graph: Attention::Dim,
+        };
+        if self.modal_open() || !self.state.is_repo_browse() {
+            return dim;
+        }
+        let graph_visible = self
+            .browse_state
+            .as_ref()
+            .is_some_and(|state| state.module_graph_pane.is_visible());
+        match self.state {
+            AppState::RepoBrowseTree => BrowseAttention {
+                tree: Attention::Focused,
+                ..dim
+            },
+            AppState::RepoBrowseGraph if graph_visible => BrowseAttention {
+                graph: Attention::Focused,
+                ..dim
+            },
+            AppState::RepoBrowseFile | AppState::RepoBrowseGraph => BrowseAttention {
+                file: Attention::Focused,
+                ..dim
+            },
+            _ => dim,
+        }
+    }
+
+    /// Git-ops panes. A simple confirm keeps the focused tree pane focused.
+    /// Simulate and preview are modals, so every pane is dim.
+    pub fn git_ops_attention(&self) -> GitOpsAttention {
+        let dim = GitOpsAttention {
+            tree: Attention::Dim,
+            commits: Attention::Dim,
+            diff: Attention::Dim,
+        };
+        if self.modal_open()
+            || !matches!(
+                self.state,
+                AppState::GitOpsSplitTree | AppState::GitOpsSplitDiff
+            )
+        {
+            return dim;
+        }
+        let left = self
+            .git_ops_state
+            .as_ref()
+            .map(|ops| ops.left_focus)
+            .unwrap_or(LeftPaneFocus::Tree);
+        let diff_focused = self.state == AppState::GitOpsSplitDiff;
+        GitOpsAttention {
+            tree: Attention::when(!diff_focused && left == LeftPaneFocus::Tree),
+            commits: Attention::when(!diff_focused && left == LeftPaneFocus::Commits),
+            diff: Attention::when(diff_focused),
+        }
+    }
+
+    /// Issue body and the linked-PR list.
+    pub fn issue_detail_attention(&self) -> IssueDetailAttention {
+        if self.modal_open() || self.state != AppState::IssueDetail {
+            return IssueDetailAttention {
+                body: Attention::Dim,
+                linked_prs: Attention::Dim,
+            };
+        }
+        let linked = self
+            .issue_state
+            .as_ref()
+            .is_some_and(|state| state.detail_focus == IssueDetailFocus::LinkedPrs);
+        IssueDetailAttention {
+            body: Attention::when(!linked),
+            linked_prs: Attention::when(linked),
         }
     }
 

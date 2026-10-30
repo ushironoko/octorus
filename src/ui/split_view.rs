@@ -9,10 +9,12 @@ use ratatui::{
     Frame,
 };
 
+use super::chrome::{pane_block, PaneTitle};
 use super::common::render_rally_status_bar;
 use super::diff_view;
 use super::file_list::{build_file_list_items, build_file_list_items_ref, build_tree_row_item};
-use crate::app::{App, AppState, DataState};
+use super::theme::{Attention, SplitAttention, Theme};
+use crate::app::{App, DataState};
 use crate::github::ChangedFile;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -37,11 +39,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ])
         .split(outer_chunks[0]);
 
-    let is_file_focused = app.state == AppState::SplitViewFileList;
-    let is_diff_focused = app.state == AppState::SplitViewDiff;
+    let theme = app.theme;
+    let panes = app.split_attention();
 
-    render_file_list_pane(frame, app, h_chunks[0], is_file_focused);
-    render_diff_pane(frame, app, h_chunks[1], is_diff_focused);
+    render_file_list_pane(frame, app, h_chunks[0], panes.files, theme);
+    render_diff_pane(frame, app, h_chunks[1], panes, theme);
     register_split_divider(app, h_chunks[0], outer_chunks[0]);
 
     if has_rally {
@@ -75,13 +77,10 @@ fn render_file_list_pane(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    is_focused: bool,
+    attention: Attention,
+    theme: Theme,
 ) {
-    let border_color = if is_focused {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
+    let is_focused = attention.has_keys();
 
     let has_filter_bar = app
         .file_list_filter
@@ -109,12 +108,8 @@ fn render_file_list_pane(
         },
     };
 
-    let header = Paragraph::new(pr_info).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title("octorus"),
-    );
+    let header =
+        Paragraph::new(pr_info).block(pane_block(theme, PaneTitle::AsIs("octorus"), attention));
     frame.render_widget(header, chunks[0]);
 
     let files = app.files();
@@ -123,14 +118,17 @@ fn render_file_list_pane(
     if let Some(ref filter) = app.file_list_filter {
         if filter.matched_indices.is_empty() {
             let empty_msg = format!("No matches for '{}'", filter.query);
+            let detail = format!("(0/{total_files})");
             let empty = Paragraph::new(empty_msg)
                 .style(Style::default().fg(Color::DarkGray))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(border_color))
-                        .title(format!("Files (0/{})", total_files)),
-                );
+                .block(pane_block(
+                    theme,
+                    PaneTitle::Labeled {
+                        label: "Files",
+                        detail: &detail,
+                    },
+                    attention,
+                ));
             frame.render_widget(empty, chunks[1]);
         } else {
             let filtered: Vec<&ChangedFile> =
@@ -138,20 +136,17 @@ fn render_file_list_pane(
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(
-                &filtered,
-                display_selected,
-                &app.cmt.file_comment_counts,
+            let items = build_file_list_items_ref(&filtered, &app.cmt.file_comment_counts);
+            let detail = format!("({display_count}/{total_files})");
+            let block = pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "Files",
+                    detail: &detail,
+                },
+                attention,
             );
-
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(border_color))
-                        .title(format!("Files ({}/{})", display_count, total_files)),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray));
+            let list = attention.rows(theme).apply(List::new(items).block(block));
 
             let mut list_state = ListState::default()
                 .with_offset(app.file_list_scroll_offset)
@@ -191,27 +186,19 @@ fn render_file_list_pane(
         let items: Vec<ListItem> = tree
             .visible_rows
             .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                build_tree_row_item(
-                    files,
-                    row,
-                    i == tree.selected_row,
-                    &app.cmt.file_comment_counts,
-                    col_width,
-                )
-            })
+            .map(|row| build_tree_row_item(files, row, &app.cmt.file_comment_counts, col_width))
             .collect();
 
-        let title = format!("Files ({}) [tree]", total_files);
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color))
-                    .title(title),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let detail = format!("({total_files}) [tree]");
+        let block = pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Files",
+                detail: &detail,
+            },
+            attention,
+        );
+        let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
             .with_offset(tree.scroll_offset)
@@ -240,16 +227,17 @@ fn render_file_list_pane(
             );
         }
     } else {
-        let items = build_file_list_items(files, app.selected_file, &app.cmt.file_comment_counts);
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color))
-                    .title(format!("Files ({})", total_files)),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let items = build_file_list_items(files, &app.cmt.file_comment_counts);
+        let detail = format!("({total_files})");
+        let block = pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Files",
+                detail: &detail,
+            },
+            attention,
+        );
+        let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
             .with_offset(app.file_list_scroll_offset)
@@ -313,8 +301,8 @@ fn render_file_list_pane(
     let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
-        Style::default().fg(border_color),
-        is_focused,
+        attention.border_style(theme),
+        attention.has_keys(),
     ));
     frame.render_widget(footer, chunks[next_chunk]);
 }
@@ -323,20 +311,13 @@ fn render_diff_pane(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    is_focused: bool,
+    panes: SplitAttention,
+    theme: Theme,
 ) {
-    let border_color = if is_focused {
-        Color::Yellow
+    if panes.comments.has_keys() {
+        render_diff_pane_with_comments(frame, app, area, panes, theme);
     } else {
-        Color::DarkGray
-    };
-
-    let has_inline_comment = is_focused && app.cmt.comment_panel_open;
-
-    if has_inline_comment {
-        render_diff_pane_with_comments(frame, app, area, border_color);
-    } else {
-        render_diff_pane_normal(frame, app, area, border_color, is_focused);
+        render_diff_pane_normal(frame, app, area, panes.diff, theme);
     }
 }
 
@@ -344,8 +325,8 @@ fn render_diff_pane_normal(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    border_color: Color,
-    is_focused: bool,
+    attention: Attention,
+    theme: Theme,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -356,18 +337,18 @@ fn render_diff_pane_normal(
         ])
         .split(area);
 
-    render_diff_header(frame, app, chunks[0], border_color);
-    render_diff_body(frame, app, chunks[1], border_color);
+    render_diff_header(frame, app, chunks[0], attention, theme);
+    render_diff_body(frame, app, chunks[1], attention, theme);
 
     let footer_text_owned;
-    let footer_text = if is_focused {
+    let footer_text = if attention.has_keys() {
         footer_text_owned = super::footer::footer_hint_back(&app.config.keybindings);
         footer_text_owned.as_str()
     } else {
         "Enter/→: focus diff"
     };
 
-    render_diff_footer(frame, app, chunks[2], footer_text, border_color, is_focused);
+    render_diff_footer(frame, app, chunks[2], footer_text, attention, theme);
 }
 
 fn render_diff_footer(
@@ -375,14 +356,15 @@ fn render_diff_footer(
     app: &App,
     area: ratatui::layout::Rect,
     help_text: &str,
-    border_color: Color,
-    is_focused: bool,
+    attention: Attention,
+    theme: Theme,
 ) {
-    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer_line =
+        super::footer::build_footer_line_with_focus(app, help_text, attention.has_keys());
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
-        Style::default().fg(border_color),
-        is_focused,
+        attention.border_style(theme),
+        attention.has_keys(),
     ));
     frame.render_widget(footer, area);
 }
@@ -391,7 +373,8 @@ fn render_diff_pane_with_comments(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    border_color: Color,
+    panes: SplitAttention,
+    theme: Theme,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -403,8 +386,8 @@ fn render_diff_pane_with_comments(
         ])
         .split(area);
 
-    render_diff_header(frame, app, chunks[0], border_color);
-    render_diff_body(frame, app, chunks[1], border_color);
+    render_diff_header(frame, app, chunks[0], panes.diff, theme);
+    render_diff_body(frame, app, chunks[1], panes.diff, theme);
 
     let indices = app.get_comment_indices_at_current_line();
     let mut lines: Vec<Line> = vec![];
@@ -448,10 +431,14 @@ fn render_diff_pane_with_comments(
     let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
     let total_lines = lines.len();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
-        .title(title);
+    let block = pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "",
+            detail: title,
+        },
+        panes.comments,
+    );
     let inner_area = block.inner(chunks[2]);
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -485,14 +472,15 @@ fn render_diff_pane_with_comments(
     }
 
     let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
-    render_diff_footer(frame, app, chunks[3], footer_text, border_color, true);
+    render_diff_footer(frame, app, chunks[3], footer_text, panes.comments, theme);
 }
 
 fn render_diff_header(
     frame: &mut Frame,
     app: &App,
     area: ratatui::layout::Rect,
-    border_color: Color,
+    attention: Attention,
+    theme: Theme,
 ) {
     let header_text = app
         .files()
@@ -505,12 +493,14 @@ fn render_diff_header(
         })
         .unwrap_or_else(|| "No file selected".to_string());
 
-    let header = Paragraph::new(header_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title("Diff Preview"),
-    );
+    let header = Paragraph::new(header_text).block(pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "Diff",
+            detail: "",
+        },
+        attention,
+    ));
     frame.render_widget(header, area);
 }
 
@@ -518,7 +508,8 @@ fn render_diff_body(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    border_color: Color,
+    attention: Attention,
+    theme: Theme,
 ) {
     let visible_height = area.height.saturating_sub(2) as usize;
     app.diff_scroll.set_visible_lines(visible_height);
@@ -560,9 +551,7 @@ fn render_diff_body(
         (rendered, app.diff_scroll.scroll_offset as u16, 0)
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+    let block = attention.frame(theme);
     let inner_area = block.inner(area);
     diff_view::register_diff_hit_regions(
         &mut app.hit_map,
@@ -599,5 +588,104 @@ fn render_diff_body(
                 &mut scrollbar_state,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, AppState, DataState};
+    use crate::github::{Branch, ChangedFile, PullRequest, User};
+    use crate::ui::test_buffer::screen_text;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn changed(name: &str) -> ChangedFile {
+        ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }
+    }
+
+    fn loaded_app() -> App {
+        let mut app = App::new_for_test();
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 1,
+                node_id: None,
+                title: "Title".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc".to_string(),
+                },
+                base: Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def".to_string(),
+                },
+                user: User {
+                    login: "alice".to_string(),
+                },
+                updated_at: "2025-01-01T00:00:00Z".to_string(),
+            }),
+            files: vec![
+                changed("src/a.rs"),
+                changed("src/b.rs"),
+                changed("src/c.rs"),
+            ],
+        };
+        app.toggle_file_tree();
+        app
+    }
+
+    fn draw(app: &mut App) -> String {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn file_pane_title_shows_the_arrow_only_when_focused() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewFileList;
+        let focused = draw(&mut app);
+        assert!(
+            focused.contains("▶ FILES (3) [tree]"),
+            "focused title missing:\n{focused}"
+        );
+
+        app.state = AppState::SplitViewDiff;
+        let dim = draw(&mut app);
+        assert!(
+            dim.contains("Files (3) [tree]"),
+            "dim title missing:\n{dim}"
+        );
+        assert!(!dim.contains("▶ FILES"), "dim title drew an arrow:\n{dim}");
+    }
+
+    #[test]
+    fn comment_panel_takes_the_arrow_from_the_diff() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewDiff;
+        app.cmt.comment_panel_open = true;
+        let text = draw(&mut app);
+        assert!(
+            text.contains("▶ Comments ("),
+            "comment panel is not focused:\n{text}"
+        );
+        assert!(
+            !text.contains("▶ DIFF"),
+            "diff kept the arrow while comments are open:\n{text}"
+        );
     }
 }

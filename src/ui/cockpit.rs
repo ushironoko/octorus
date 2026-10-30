@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::{App, CockpitMenuItem, LoadState};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
+use super::chrome::{pane_block, PaneTitle};
 use super::footer;
 
 const LOGO_LINES: [&str; 6] = [
@@ -124,16 +125,18 @@ fn render_menu(
     repo_available: bool,
     area: Rect,
 ) {
+    let theme = app.theme;
+    let attention = app.sole_attention();
     let items: Vec<ListItem> = CockpitMenuItem::ALL
         .iter()
         .map(|item| {
             let disabled = item.requires_repo() && !repo_available;
             let style = if disabled {
-                Style::default().fg(Color::DarkGray)
+                theme.muted.style()
             } else {
                 Style::default()
             };
-            let label = format!("  {:<14} {}", item.label(), item.description());
+            let label = format!("{:<14} {}", item.label(), item.description());
             ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
@@ -141,16 +144,16 @@ fn render_menu(
     let mut list_state = ListState::default();
     list_state.select(Some(selected.index()));
 
-    let block = Block::default().borders(Borders::ALL).title("Navigation");
+    let block = pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "Navigation",
+            detail: "",
+        },
+        attention,
+    );
     let inner_area = block.inner(area);
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
+    let list = attention.rows(theme).apply(List::new(items).block(block));
 
     frame.render_stateful_widget(list, area, &mut list_state);
 
@@ -232,17 +235,17 @@ mod tests {
         │                                                                                                  │
         │                                      Issues: 3  Review PRs: 5                                    │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Navigation────────────────────────────────────────────────────────────────────────────────────────┐
-        │>   PR List        Browse pull requests                                                           │
-        │    Issue List     Browse issues                                                                  │
-        │    Local Diff     View local git diff                                                            │
-        │    Git Ops        Git operations (stage, commit, push)                                           │
-        │    Repo Browse    Browse the repository and jump by symbol                                       │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ NAVIGATION━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ PR List        Browse pull requests                                                             ┃
+        ┃  Issue List     Browse issues                                                                    ┃
+        ┃  Local Diff     View local git diff                                                              ┃
+        ┃  Git Ops        Git operations (stage, commit, push)                                             ┃
+        ┃  Repo Browse    Browse the repository and jump by symbol                                         ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │q: quit  ?: help  r: refresh                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -264,17 +267,17 @@ mod tests {
         │                                                                                                  │
         │                                      Issues: ⠋  Review PRs: ⠋                                    │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Navigation────────────────────────────────────────────────────────────────────────────────────────┐
-        │>   PR List        Browse pull requests                                                           │
-        │    Issue List     Browse issues                                                                  │
-        │    Local Diff     View local git diff                                                            │
-        │    Git Ops        Git operations (stage, commit, push)                                           │
-        │    Repo Browse    Browse the repository and jump by symbol                                       │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ NAVIGATION━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ PR List        Browse pull requests                                                             ┃
+        ┃  Issue List     Browse issues                                                                    ┃
+        ┃  Local Diff     View local git diff                                                              ┃
+        ┃  Git Ops        Git operations (stage, commit, push)                                             ┃
+        ┃  Repo Browse    Browse the repository and jump by symbol                                         ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │q: quit  ?: help  r: refresh                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -296,17 +299,17 @@ mod tests {
         │                                                                                                  │
         │                                      Issues: -  Review PRs: -                                    │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Navigation────────────────────────────────────────────────────────────────────────────────────────┐
-        │>   PR List        Browse pull requests                                                           │
-        │    Issue List     Browse issues                                                                  │
-        │    Local Diff     View local git diff                                                            │
-        │    Git Ops        Git operations (stage, commit, push)                                           │
-        │    Repo Browse    Browse the repository and jump by symbol                                       │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ NAVIGATION━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ PR List        Browse pull requests                                                             ┃
+        ┃  Issue List     Browse issues                                                                    ┃
+        ┃  Local Diff     View local git diff                                                              ┃
+        ┃  Git Ops        Git operations (stage, commit, push)                                             ┃
+        ┃  Repo Browse    Browse the repository and jump by symbol                                         ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │q: quit  ?: help  r: refresh                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -332,17 +335,17 @@ mod tests {
         │                                                                                                  │
         │                                      Issues: 0  Review PRs: 0                                    │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Navigation────────────────────────────────────────────────────────────────────────────────────────┐
-        │    PR List        Browse pull requests                                                           │
-        │    Issue List     Browse issues                                                                  │
-        │    Local Diff     View local git diff                                                            │
-        │>   Git Ops        Git operations (stage, commit, push)                                           │
-        │    Repo Browse    Browse the repository and jump by symbol                                       │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ NAVIGATION━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃  PR List        Browse pull requests                                                             ┃
+        ┃  Issue List     Browse issues                                                                    ┃
+        ┃  Local Diff     View local git diff                                                              ┃
+        ┃▌ Git Ops        Git operations (stage, commit, push)                                             ┃
+        ┃  Repo Browse    Browse the repository and jump by symbol                                         ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │q: quit  ?: help  r: refresh                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
