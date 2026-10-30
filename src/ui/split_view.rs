@@ -644,7 +644,11 @@ mod tests {
     }
 
     fn draw(app: &mut App) -> String {
-        let backend = TestBackend::new(120, 24);
+        draw_sized(app, 120, 24)
+    }
+
+    fn draw_sized(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -652,6 +656,29 @@ mod tests {
             })
             .unwrap();
         screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn focused_diff_title_is_the_label_and_the_path_stays_in_the_header() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewDiff;
+        for width in [120u16, 40] {
+            let text = draw_sized(&mut app, width, 16);
+            let lines: Vec<&str> = text.lines().collect();
+            let title_at = lines
+                .iter()
+                .position(|line| line.contains("▶ DIFF"))
+                .unwrap_or_else(|| panic!("focused diff title missing at width {width}:\n{text}"));
+            assert!(
+                !lines[title_at].contains("src/a.rs"),
+                "filename leaked into the diff title at width {width}:\n{}\n{text}",
+                lines[title_at]
+            );
+            assert!(
+                lines[title_at + 1].contains("src/a.rs"),
+                "diff header dropped the path at width {width}:\n{text}"
+            );
+        }
     }
 
     #[test]

@@ -317,6 +317,9 @@ impl App {
     }
 
     fn modal_open(&self) -> bool {
+        if self.symbol_popup.is_some() || self.shell_state.is_some() {
+            return true;
+        }
         if self.state == AppState::Help {
             return true;
         }

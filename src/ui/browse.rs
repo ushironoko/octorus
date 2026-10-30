@@ -1422,20 +1422,7 @@ fn render_module_graph_ready_pane(
     graph_help: &str,
 ) {
     let current = panel.current();
-    let direction = match panel.direction {
-        ModuleGraphDirection::Dependencies => "Imports →",
-        ModuleGraphDirection::Dependents => "Importers",
-    };
-    let guarantee = match current.guarantee {
-        crate::module_graph::DependencyGuarantee::Exact => "exact",
-        crate::module_graph::DependencyGuarantee::Approximate => "approximate",
-    };
-    let count = if current.rows.len() < current.total {
-        format!("{}/{}", current.rows.len(), current.total)
-    } else {
-        current.total.to_string()
-    };
-    let title = format!("{direction} {count} {guarantee}");
+    let title = module_graph_title(panel, usize::from(area.width.saturating_sub(2)));
     let block = module_graph_block(&title, attention, theme, graph_help);
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -1485,6 +1472,35 @@ fn render_module_graph_ready_pane(
     }
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn module_graph_title(panel: &ModuleGraphPanel, title_width: usize) -> String {
+    let current = panel.current();
+    let direction = match panel.direction {
+        ModuleGraphDirection::Dependencies => "Imports →",
+        ModuleGraphDirection::Dependents => "Importers",
+    };
+    let guarantee = match current.guarantee {
+        crate::module_graph::DependencyGuarantee::Exact => "exact",
+        crate::module_graph::DependencyGuarantee::Approximate => "approximate",
+    };
+    let count = if current.rows.len() < current.total {
+        format!("{}/{}", current.rows.len(), current.total)
+    } else {
+        current.total.to_string()
+    };
+    let full = format!("{direction} {count} {guarantee}");
+    if format!("▶ {full}").width() <= title_width {
+        return full;
+    }
+    let direction = match panel.direction {
+        ModuleGraphDirection::Dependencies => "IMPORTS →",
+        ModuleGraphDirection::Dependents => "IMPORTERS",
+    };
+    match current.guarantee {
+        crate::module_graph::DependencyGuarantee::Exact => format!("{direction} {count}"),
+        crate::module_graph::DependencyGuarantee::Approximate => format!("{direction} ~{count}"),
+    }
 }
 
 /// モジュールグラフペインのヒット領域を登録する。
@@ -1789,6 +1805,7 @@ mod tests {
     use crate::keybinding::{KeyBinding, KeySequence};
     use crate::module_graph::DependencyGuarantee;
     use crate::symbols::{FileSymbols, Symbol, SymbolIndex, SymbolKind};
+    use crate::ui::theme::{Attention, Theme};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
@@ -3302,6 +3319,259 @@ mod tests {
         │                          ││                        │┃│  ┌─ 依 存 先 依 存 先 依 … ─┐┃
         │                          ││                        │┃└─▶│[import] ./依 存 先  …│┃
         │                          ││                        │┃   └───────────────────┘┃
+        └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
+         Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
+        ");
+    }
+
+    fn graph_rows(guarantee: DependencyGuarantee) -> ModuleGraphRows {
+        ModuleGraphRows {
+            rows: (0..3)
+                .map(|index| ModuleGraphRow {
+                    node: format!("n{index}"),
+                    edge: format!("e{index}"),
+                    jump: None,
+                })
+                .collect(),
+            total: 300,
+            guarantee,
+        }
+    }
+
+    fn graph_panel(
+        direction: ModuleGraphDirection,
+        guarantee: DependencyGuarantee,
+    ) -> ModuleGraphPanel {
+        let filled = graph_rows(guarantee);
+        let empty = ModuleGraphRows {
+            rows: Vec::new(),
+            total: 0,
+            guarantee,
+        };
+        let (dependencies, dependents) = match direction {
+            ModuleGraphDirection::Dependencies => (filled, empty),
+            ModuleGraphDirection::Dependents => (empty, filled),
+        };
+        ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction,
+            selected: 0,
+            dependencies,
+            dependents,
+        }
+    }
+
+    fn render_graph_title(panel: &ModuleGraphPanel, width: u16) -> String {
+        let backend = TestBackend::new(width, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::test_default();
+        terminal
+            .draw(|frame| {
+                render_module_graph_ready_pane(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, width, 8),
+                    panel,
+                    Attention::Focused,
+                    theme,
+                    "help",
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect::<String>()
+    }
+
+    #[test]
+    fn module_graph_title_keeps_the_guarantee_word_when_the_arrow_fits() {
+        let exact = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependencies,
+                DependencyGuarantee::Exact,
+            ),
+            40,
+        );
+        assert!(exact.contains("▶ Imports → 3/300 exact"), "{exact}");
+        assert!(!exact.contains("IMPORTS"), "{exact}");
+
+        let approximate = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependents,
+                DependencyGuarantee::Approximate,
+            ),
+            40,
+        );
+        assert!(
+            approximate.contains("▶ Importers 3/300 approximate"),
+            "{approximate}"
+        );
+        assert!(!approximate.contains('~'), "{approximate}");
+    }
+
+    #[test]
+    fn module_graph_title_shrinks_when_the_focused_title_does_not_fit() {
+        let exact_imports = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependencies,
+                DependencyGuarantee::Exact,
+            ),
+            22,
+        );
+        assert!(
+            exact_imports.contains("▶ IMPORTS → 3/300"),
+            "{exact_imports}"
+        );
+        assert!(!exact_imports.contains("exact"), "{exact_imports}");
+        assert!(!exact_imports.contains('~'), "{exact_imports}");
+
+        let exact_importers = render_graph_title(
+            &graph_panel(ModuleGraphDirection::Dependents, DependencyGuarantee::Exact),
+            22,
+        );
+        assert!(
+            exact_importers.contains("▶ IMPORTERS 3/300"),
+            "{exact_importers}"
+        );
+        assert!(!exact_importers.contains("exact"), "{exact_importers}");
+        assert!(!exact_importers.contains('~'), "{exact_importers}");
+
+        let approximate_imports = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependencies,
+                DependencyGuarantee::Approximate,
+            ),
+            22,
+        );
+        assert!(
+            approximate_imports.contains("▶ IMPORTS → ~3/300"),
+            "{approximate_imports}"
+        );
+        assert!(
+            !approximate_imports.contains("approximate"),
+            "{approximate_imports}"
+        );
+
+        let approximate_importers = render_graph_title(
+            &graph_panel(
+                ModuleGraphDirection::Dependents,
+                DependencyGuarantee::Approximate,
+            ),
+            22,
+        );
+        assert!(
+            approximate_importers.contains("▶ IMPORTERS ~3/300"),
+            "{approximate_importers}"
+        );
+        assert!(
+            !approximate_importers.contains("approximate"),
+            "{approximate_importers}"
+        );
+    }
+
+    #[test]
+    fn test_render_module_graph_exact_title_at_80_columns() {
+        let mut app = app_with_browse(&["src/app.ts", "src/helper.ts"]);
+        let state = app.browse_state.as_mut().unwrap();
+        open_file(state, "src/app.ts", "import './helper';\n");
+        state.module_graph_pane = ModuleGraphPaneState::Ready(ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction: ModuleGraphDirection::Dependencies,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: vec![
+                    ModuleGraphRow {
+                        node: "src/helper.ts".to_string(),
+                        edge: "[import] ./helper  :1".to_string(),
+                        jump: Some(crate::app::browse::ModuleGraphJump {
+                            path: "src/helper.ts".to_string(),
+                            line: 0,
+                        }),
+                    },
+                    ModuleGraphRow {
+                        node: "package react".to_string(),
+                        edge: "[import] react  :2".to_string(),
+                        jump: None,
+                    },
+                    ModuleGraphRow {
+                        node: "unresolved (not found)".to_string(),
+                        edge: "[dynamic] ./missing  :3".to_string(),
+                        jump: None,
+                    },
+                ],
+                total: 300,
+                guarantee: DependencyGuarantee::Exact,
+            },
+            dependents: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Exact,
+            },
+        });
+        app.state = AppState::RepoBrowseGraph;
+
+        assert_snapshot!(render_at(&mut app, 80, 18), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Repo Browse - demo  2 files  symbols: -                                       │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ Imports → 3/300 exact━┓
+        │▏ ▼ src/                  ││    1 import './helper';│┃╔═ current module ═════╗┃
+        │      app.ts              ││                        │┃║src/app.ts            ║┃
+        │      helper.ts           ││                        │┃╚══════════════════════╝┃
+        │                          ││                        │┃│  ┌─ src/helper.ts ───┐┃
+        │                          ││                        │┃├─▶│[import] ./helper …│┃
+        │                          ││                        │┃│  └───────────────────┘┃
+        │                          ││                        │┃│  ┌─ package react ───┐┃
+        │                          ││                        │┃├─▶│[import] react  :2 │┃
+        │                          ││                        │┃│  └───────────────────┘┃
+        │                          ││                        │┃│  ┌─ unresolved (not… ┐┃
+        │                          ││                        │┃└─▶│[dynamic] ./missin…│┃
+        │                          ││                        │┃   └───────────────────┘┃
+        └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
+         Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
+        ");
+    }
+
+    #[test]
+    fn test_render_module_graph_approximate_title_at_80_columns() {
+        let mut app = app_with_browse(&["src/app.ts", "src/helper.ts"]);
+        let state = app.browse_state.as_mut().unwrap();
+        open_file(state, "src/helper.ts", "export const helper = 1;\n");
+        state.module_graph_pane = ModuleGraphPaneState::Ready(ModuleGraphPanel {
+            path: "src/helper.ts".to_string(),
+            display_path: "src/helper.ts".to_string(),
+            direction: ModuleGraphDirection::Dependents,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Approximate,
+            },
+            dependents: ModuleGraphRows {
+                rows: vec![ModuleGraphRow {
+                    node: "src/app.rs".to_string(),
+                    edge: "[use] crate::helper  :4".to_string(),
+                    jump: None,
+                }],
+                total: 1,
+                guarantee: DependencyGuarantee::Approximate,
+            },
+        });
+        app.state = AppState::RepoBrowseGraph;
+
+        assert_snapshot!(render_at(&mut app, 80, 14), @"
+        ┌──────────────────────────────────────────────────────────────────────────────┐
+        │Repo Browse - demo  2 files  symbols: -                                       │
+        └──────────────────────────────────────────────────────────────────────────────┘
+        ┌Files─────────────────────┐┌src/helper.ts (1/1)─────┐┏▶ IMPORTERS ~1━━━━━━━━━━┓
+        │▏ ▼ src/                  ││    1 export const helpe│┃╔═ current module ═════╗┃
+        │      app.ts              ││      r = 1;            │┃║src/helper.ts         ║┃
+        │      helper.ts           ││                        │┃╚══════════════════════╝┃
+        │                          ││                        │┃│  ┌─ src/app.rs ──────┐┃
+        │                          ││                        │┃▲─┘│[use] crate::helpe…│┃
+        │                          ││                        │┃   └───────────────────┘┃
+        │                          ││                        │┃                        ┃
+        │                          ││                        │┃                        ┃
         └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
         ");

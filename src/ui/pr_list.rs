@@ -443,33 +443,127 @@ mod tests {
         found
     }
 
+    fn draw_pr_list(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::render(frame, app);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn pr_list_app() -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Loaded(vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "bob"),
+        ]);
+        app
+    }
+
+    fn title_line(text: &str) -> &str {
+        text.lines()
+            .find(|line| line.contains("REQUESTS") || line.contains("Requests"))
+            .expect("pr list title missing")
+    }
+
     #[test]
-    fn no_color_flag_resolves_before_the_pr_list_is_drawn() {
-        use crate::app::RepositoryAvailability;
-        use crate::config::Config;
+    fn no_color_dim_marker_is_the_glyph_only() {
         use ratatui::style::Modifier;
 
-        let config = Config {
-            no_color: true,
-            theme: crate::config::ThemeConfig {
-                colors: crate::config::ThemeColors {
-                    accent: Some(Color::Magenta),
-                    ..crate::config::ThemeColors::default()
-                },
-                ..crate::config::ThemeConfig::default()
-            },
-            ..Config::default()
+        let mut app = pr_list_app();
+        app.state = AppState::Help;
+        app.config.no_color = true;
+        app.theme = Theme::resolve(&crate::config::ThemeConfig::default(), true);
+        let buf = {
+            let backend = TestBackend::new(100, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    render(frame, &mut app);
+                })
+                .unwrap();
+            terminal.backend().buffer().clone()
         };
-        let app = App::new_pr_list("owner/repo", config, RepositoryAvailability::Available);
-        assert_eq!(app.theme.accent.style().fg, None);
-        assert_eq!(app.theme.muted.style().fg, None);
-        assert!(app
-            .theme
-            .accent
-            .style()
-            .add_modifier
-            .contains(Modifier::BOLD));
-        assert!(app.theme.muted.style().add_modifier.contains(Modifier::DIM));
+        let marks = cells_with(&buf, "▏");
+        assert!(!marks.is_empty(), "dim row did not draw ▏");
+        assert!(
+            marks.iter().all(|cell| {
+                !cell.modifier.contains(Modifier::DIM)
+                    && !cell.modifier.contains(Modifier::BOLD)
+                    && cell.bg == Color::Reset
+            }),
+            "▏ cell is not the glyph only: {:?}",
+            marks
+                .iter()
+                .map(|cell| (cell.modifier, cell.fg, cell.bg))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn symbol_popup_removes_the_pr_list_focus_arrow() {
+        use crate::app::SymbolPopupState;
+
+        let mut app = pr_list_app();
+        app.symbol_popup = Some(SymbolPopupState {
+            symbols: vec![("foo".to_string(), 1, 4), ("bar".to_string(), 6, 9)],
+            selected: 0,
+        });
+        let text = screen_text(&draw_pr_list(&mut app));
+        let title = title_line(&text);
+        assert!(
+            !title.contains('▶'),
+            "symbol popup left the focus arrow on the pane title:\n{title}\n{text}"
+        );
+        assert!(
+            title.contains("Pull Requests"),
+            "pane title changed:\n{title}"
+        );
+    }
+
+    #[test]
+    fn shell_overlay_removes_the_pr_list_focus_arrow() {
+        use crate::app::{CachedShellLine, ShellCommandResult, ShellPhase, ShellState};
+
+        let phases = [
+            ShellPhase::Input,
+            ShellPhase::Running,
+            ShellPhase::Cancelling,
+            ShellPhase::Done(ShellCommandResult {
+                command: "echo hi".to_string(),
+                stdout: "hi\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                cached_lines: vec![CachedShellLine {
+                    text: "hi".to_string(),
+                    is_stderr: false,
+                }],
+                total_lines: 1,
+            }),
+        ];
+        for phase in phases {
+            let mut app = pr_list_app();
+            app.shell_state = Some(ShellState {
+                input: String::new(),
+                cursor: 0,
+                phase,
+                scroll_offset: 0,
+            });
+            let text = screen_text(&draw_pr_list(&mut app));
+            let title = title_line(&text);
+            assert!(
+                !title.contains('▶'),
+                "shell overlay left the focus arrow on the pane title:\n{title}\n{text}"
+            );
+            assert!(
+                title.contains("Pull Requests"),
+                "pane title changed:\n{title}"
+            );
+        }
     }
 
     #[test]

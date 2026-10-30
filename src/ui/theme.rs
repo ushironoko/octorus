@@ -147,11 +147,20 @@ impl Attention {
                 symbol_style: theme.accent.bold(),
                 row_style: Style::new().add_modifier(Modifier::BOLD),
             },
-            Self::Dim => RowMark {
-                symbol: DIM_MARKER,
-                symbol_style: theme.muted.style(),
-                row_style: Style::new(),
-            },
+            Self::Dim => {
+                let muted = theme.muted.style();
+                // no_color muted is DIM with no foreground. The unfocused marker is the glyph only.
+                let symbol_style = if muted.fg.is_none() {
+                    Style::new()
+                } else {
+                    muted
+                };
+                RowMark {
+                    symbol: DIM_MARKER,
+                    symbol_style,
+                    row_style: Style::new(),
+                }
+            }
         }
     }
 

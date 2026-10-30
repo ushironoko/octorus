@@ -1327,8 +1327,43 @@ mod tests {
         ");
     }
 
+    fn render_tree_and_footer_border_colors(app: &mut App, is_focused: bool) -> (Color, Color) {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 80, 20);
+        let theme = app.theme;
+        let attention = if is_focused {
+            Attention::Focused
+        } else {
+            Attention::Dim
+        };
+        terminal
+            .draw(|frame| {
+                render_tree_pane(frame, app, area, attention, theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row_text = |y: u16| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let text_row = (0..area.height).find(|y| row_text(*y).contains("git reset"));
+        let text_row = text_row.unwrap_or_else(|| {
+            panic!(
+                "confirm text missing:\n{}",
+                (0..area.height)
+                    .map(row_text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
+        let footer_border = buf[(0, text_row.saturating_sub(1))].fg;
+        (buf[(0, 0)].fg, footer_border)
+    }
+
     #[test]
-    fn test_border_red_on_pending_confirm() {
+    fn test_footer_border_is_danger_on_pending_confirm() {
         let (mut app, _tx) = make_app();
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
@@ -1338,11 +1373,9 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_eq!(
-            render_tree_pane_border_color(&mut app, false),
-            Color::DarkGray
-        );
-        assert_ne!(render_tree_pane_border_color(&mut app, true), Color::Red);
+        let (tree, footer) = render_tree_and_footer_border_colors(&mut app, true);
+        assert_eq!(tree, Color::Cyan);
+        assert_eq!(footer, Color::Red);
     }
 
     #[test]
