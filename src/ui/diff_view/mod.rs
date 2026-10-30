@@ -2524,10 +2524,6 @@ mod tests {
             cache.resolve(after_add.spans[1].content),
         );
         assert_eq!(rendered, " next");
-        assert!(
-            rendered.chars().all(|c| !c.is_ascii_digit()),
-            "diff row text has no file line number, got {rendered:?}"
-        );
     }
 
     #[test]

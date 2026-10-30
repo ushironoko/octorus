@@ -11,10 +11,6 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use common::{generate_diff_patch, generate_simple_patch};
 use octorus::{get_line_info, PatchClassifier};
 
-/// Benchmark line classification.
-///
-/// Tests PatchClassifier, which determines line type (Added, Removed, Context, etc.)
-/// and extracts content without the prefix.
 fn bench_classify_line(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff_parsing/classify_line");
 
@@ -41,9 +37,6 @@ fn bench_classify_line(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark line classification on patch lines.
-///
-/// Measures PatchClassifier performance when iterating over entire patches.
 fn bench_classify_line_batch(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff_parsing/classify_line_batch");
 

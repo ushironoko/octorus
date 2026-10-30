@@ -422,7 +422,6 @@ impl PatchClassifier {
         if let Some(content) = line.strip_prefix(' ') {
             return (LineType::Context, content);
         }
-        // A patch row with no prefix is context. `\ No newline at end of file` lands here.
         (LineType::Context, line)
     }
 }
@@ -828,9 +827,6 @@ Binary files /dev/null and b/image.png differ
         assert_eq!(content, "");
     }
 
-    /// A hunk body can contain a removed `-- comment` (SQL, Lua, Haskell) or an
-    /// added `++x`. Those rows are real file lines. Only the file header
-    /// `--- a/...` and `+++ b/...`, which sit before the first `@@`, are meta.
     #[test]
     fn test_hunk_body_dashdash_and_plusplus_keep_line_numbers() {
         let patch = concat!(
@@ -889,8 +885,6 @@ Binary files /dev/null and b/image.png differ
 
         assert!(validate_multiline_range(patch, 8, 9));
 
-        // #218 places comments by the first character. That path already
-        // treats these rows as file lines and must stay put.
         assert_eq!(find_diff_line_index(patch, SideLine::left(2)), Some(6));
         assert_eq!(find_diff_line_index(patch, SideLine::right(3)), Some(8));
         assert_eq!(find_diff_line_index(patch, SideLine::right(4)), Some(9));
