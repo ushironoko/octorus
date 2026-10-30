@@ -170,7 +170,6 @@ pub fn classify_gh_command_error(error: &Error) -> CommitPrLookupError {
         GhFailureKind::CliMissing => CommitPrLookupError::CliMissing,
         GhFailureKind::Unauthenticated => CommitPrLookupError::Unauthenticated,
         GhFailureKind::RateLimited => CommitPrLookupError::RateLimited,
-        // 404 is commit-specific and is not a GhFailureKind.
         GhFailureKind::Offline | GhFailureKind::Other => {
             if commit_not_on_github(&error_chain_lowercased(error)) {
                 CommitPrLookupError::CommitNotOnGitHub

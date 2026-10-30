@@ -171,7 +171,7 @@ impl Config {
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
             for error in errors {
-                // Runs before the alternate screen, and tracing has no subscriber yet.
+                // Print on the terminal. tracing writes debug.log only when OR_DEBUG=1.
                 #[allow(clippy::print_stderr)]
                 {
                     eprintln!("Warning: {}", error);

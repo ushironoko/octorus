@@ -182,7 +182,6 @@ pub fn classify_gh_failure(error: &anyhow::Error) -> GhFailureKind {
     }
 }
 
-/// Commit lookup checks 404 phrases against this same text.
 pub(super) fn error_chain_lowercased(error: &anyhow::Error) -> String {
     error
         .chain()
