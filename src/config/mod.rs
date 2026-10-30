@@ -6,7 +6,7 @@ pub use keybindings::KeybindingsConfig;
 pub use loader::{find_project_root, find_project_root_in};
 pub use schema::{
     AiConfig, DiffConfig, GitOpsConfig, LayoutConfig, MouseConfig, ProposalPostStrategy,
-    ShellConfig,
+    ShellConfig, ThemeColors, ThemeConfig, ThemePreset,
 };
 
 use serde::{Deserialize, Serialize};

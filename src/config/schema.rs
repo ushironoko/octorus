@@ -1,3 +1,4 @@
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,5 +248,51 @@ impl Default for ShellConfig {
         Self {
             timeout_secs: default_shell_timeout(),
         }
+    }
+}
+
+/// Named palette. Serde rename and color parsing land with `[theme]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThemePreset {
+    #[default]
+    Dark,
+    Light,
+    Ansi16,
+}
+
+/// Foreground overrides. `None` keeps the preset color.
+///
+/// A string never lives here. Parsing happens when `[theme]` is deserialized.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeColors {
+    pub accent: Option<Color>,
+    pub muted: Option<Color>,
+    pub warning: Option<Color>,
+    pub danger: Option<Color>,
+    pub success: Option<Color>,
+    pub info: Option<Color>,
+    pub draft_you: Option<Color>,
+    pub draft_agent: Option<Color>,
+}
+
+/// Palette request. `Theme::resolve` turns this into inks and does not fail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeConfig {
+    pub preset: ThemePreset,
+    pub colors: ThemeColors,
+}
+
+impl ThemeConfig {
+    /// True when the preset is dark and every override is unset.
+    pub fn is_untouched(&self) -> bool {
+        self.preset == ThemePreset::Dark
+            && self.colors.accent.is_none()
+            && self.colors.muted.is_none()
+            && self.colors.warning.is_none()
+            && self.colors.danger.is_none()
+            && self.colors.success.is_none()
+            && self.colors.info.is_none()
+            && self.colors.draft_you.is_none()
+            && self.colors.draft_agent.is_none()
     }
 }

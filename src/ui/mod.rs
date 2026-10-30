@@ -18,6 +18,7 @@ mod pr_list;
 mod simulate_modal;
 mod split_view;
 pub mod text_area;
+pub mod theme;
 
 #[cfg(test)]
 mod test_buffer;
