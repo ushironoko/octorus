@@ -918,6 +918,91 @@ Binary files /dev/null and b/image.png differ
         assert_eq!(added.new_line_number, Some(1));
     }
 
+    fn classified_rows(patch: &str) -> Vec<(LineType, String)> {
+        let mut classifier = PatchClassifier::new();
+        patch
+            .lines()
+            .map(|line| {
+                let (line_type, content) = classifier.classify(line);
+                (line_type, content.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_patch_classifier_github_hunk_without_file_headers() {
+        let patch = concat!("@@ -1,2 +1,2 @@\n", " keep\n", "--- x\n", " after\n",);
+        assert_eq!(
+            classified_rows(patch),
+            vec![
+                (LineType::Header, "@@ -1,2 +1,2 @@".to_string()),
+                (LineType::Context, "keep".to_string()),
+                (LineType::Removed, "-- x".to_string()),
+                (LineType::Context, "after".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_patch_classifier_crlf_matches_lf_classification() {
+        let lf = concat!(
+            "diff --git a/q.sql b/q.sql\n",
+            "--- a/q.sql\n",
+            "+++ b/q.sql\n",
+            "@@ -1,3 +1,3 @@\n",
+            " keep\n",
+            "--- x\n",
+            "+++y\n",
+        );
+        let crlf = lf.replace('\n', "\r\n");
+        let lf_rows = classified_rows(lf);
+        assert_eq!(
+            lf_rows.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            classified_rows(&crlf)
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            lf_rows,
+            vec![
+                (LineType::Meta, "diff --git a/q.sql b/q.sql".to_string()),
+                (LineType::Meta, "--- a/q.sql".to_string()),
+                (LineType::Meta, "+++ b/q.sql".to_string()),
+                (LineType::Header, "@@ -1,3 +1,3 @@".to_string()),
+                (LineType::Context, "keep".to_string()),
+                (LineType::Removed, "-- x".to_string()),
+                (LineType::Added, "++y".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_patch_classifier_no_newline_marker_stays_context() {
+        let patch = concat!(
+            "@@ -1,2 +1,3 @@\n",
+            " keep\n",
+            "--- x\n",
+            "\\ No newline at end of file\n",
+            "+++y\n",
+            " after\n",
+        );
+        assert_eq!(
+            classified_rows(patch),
+            vec![
+                (LineType::Header, "@@ -1,2 +1,3 @@".to_string()),
+                (LineType::Context, "keep".to_string()),
+                (LineType::Removed, "-- x".to_string()),
+                (
+                    LineType::Context,
+                    "\\ No newline at end of file".to_string()
+                ),
+                (LineType::Added, "++y".to_string()),
+                (LineType::Context, "after".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn test_parse_hunk_header_no_comma_no_space() {
         // "@@ -1 +42\ntest" → after_plus = "42" で find([',', ' ']) が None
