@@ -419,6 +419,8 @@ UI colors for lists, pane focus, and status text. This palette does not change s
 
 A non-empty `NO_COLOR` environment variable turns these colors off and ignores `[theme.colors]`.
 
+An invalid color or preset warns and falls back to the default, or to the global value when the global file still has that key, and does not stop startup.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `preset` | `string` | `"dark"` | `dark`, `light`, or `ansi16` |
@@ -428,8 +430,6 @@ A non-empty `NO_COLOR` environment variable turns these colors off and ignores `
 | `colors.danger` | `string` | Red | Failures and the git-ops confirm footer |
 | `colors.success` | `string` | Green | Ready and success marks |
 | `colors.info` | `string` | same as accent | Building, idle, and other status text. An `accent` override does not change this |
-| `colors.draft_you` | `string` | LightBlue | Reserved for draft text you wrote |
-| `colors.draft_agent` | `string` | Magenta | Reserved for draft text from an agent |
 
 ```toml
 [theme]

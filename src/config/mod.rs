@@ -90,20 +90,209 @@ mod tests {
     }
 
     #[test]
-    fn invalid_theme_color_names_the_key() {
-        let err = toml::from_str::<Config>("[theme.colors]\naccent = \"cyann\"").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("theme.colors.accent: invalid color \"cyann\""),
-            "{err}"
+    fn invalid_theme_color_warns_and_falls_back_to_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        let source = "[theme.colors]\naccent = \"cyann\"\n";
+        fs::write(&global, source).unwrap();
+
+        let mut value: toml::Value = toml::from_str(source).unwrap();
+        let warnings = loader::sanitize_theme_table(&global, &mut value, |_| false);
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "{}: theme.colors.accent: invalid color \"cyann\" (using default)",
+                global.display()
+            )]
+        );
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(config.theme.colors.accent.is_none());
+        assert_eq!(config.theme.preset, ThemePreset::Dark);
+        assert!(config.theme.is_untouched());
+    }
+
+    #[test]
+    fn unknown_theme_preset_warns_and_falls_back_to_dark() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        let source = "[theme]\npreset = \"nope\"\n";
+        fs::write(&global, source).unwrap();
+
+        let mut value: toml::Value = toml::from_str(source).unwrap();
+        let warnings = loader::sanitize_theme_table(&global, &mut value, |_| false);
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "{}: theme.preset: unknown preset \"nope\" (using default)",
+                global.display()
+            )]
+        );
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.theme.preset, ThemePreset::Dark);
+        assert!(config.theme.is_untouched());
+    }
+
+    #[test]
+    fn sanitize_theme_table_removes_only_unparseable_color_values() {
+        let path = std::path::Path::new("theme.toml");
+        let mut value: toml::Value = toml::from_str(
+            r##"
+            [theme.colors]
+            accent = "cyann"
+            muted = ""
+            warning = "#12345"
+            danger = "300"
+            success = 5
+            info = "blue"
+            bogus = "not-a-color"
+            "##,
+        )
+        .unwrap();
+        let warnings = loader::sanitize_theme_table(path, &mut value, |_| false);
+        assert_eq!(
+            warnings,
+            vec![
+                "theme.toml: theme.colors.accent: invalid color \"cyann\" (using default)"
+                    .to_string(),
+                "theme.toml: theme.colors.muted: invalid color \"\" (using default)".to_string(),
+                "theme.toml: theme.colors.warning: invalid color \"#12345\" (using default)"
+                    .to_string(),
+                "theme.toml: theme.colors.danger: invalid color \"300\" (using default)"
+                    .to_string(),
+                "theme.toml: theme.colors.success: invalid color \"5\" (using default)".to_string(),
+            ]
+        );
+        let colors = value
+            .get("theme")
+            .unwrap()
+            .get("colors")
+            .unwrap()
+            .as_table()
+            .unwrap();
+        assert!(colors.get("accent").is_none());
+        assert!(colors.get("muted").is_none());
+        assert!(colors.get("warning").is_none());
+        assert!(colors.get("danger").is_none());
+        assert!(colors.get("success").is_none());
+        assert_eq!(
+            colors.get("info").and_then(toml::Value::as_str),
+            Some("blue")
+        );
+        assert_eq!(
+            colors.get("bogus").and_then(toml::Value::as_str),
+            Some("not-a-color")
+        );
+
+        let config: Config = value.try_into().unwrap();
+        assert_eq!(config.theme.colors.info, Some(ratatui::style::Color::Blue));
+        assert!(config.theme.colors.accent.is_none());
+    }
+
+    #[test]
+    fn load_from_paths_drops_each_files_bad_theme_value_and_keeps_the_valid_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+        let global_src = r#"
+            [theme]
+            preset = "light"
+
+            [theme.colors]
+            accent = "cyann"
+            muted = "green"
+            info = "blue"
+        "#;
+        let local_src = r#"
+            [theme]
+            preset = "nope"
+
+            [theme.colors]
+            warning = "yellow"
+            danger = "300"
+            success = "magenta"
+        "#;
+        fs::write(&global, global_src).unwrap();
+        fs::write(&local, local_src).unwrap();
+
+        let mut global_value: toml::Value = toml::from_str(global_src).unwrap();
+        let global_warnings = loader::sanitize_theme_table(&global, &mut global_value, |_| false);
+        assert_eq!(
+            global_warnings,
+            vec![format!(
+                "{}: theme.colors.accent: invalid color \"cyann\" (using default)",
+                global.display()
+            )]
+        );
+        let mut local_value: toml::Value = toml::from_str(local_src).unwrap();
+        let local_warnings = loader::sanitize_theme_table(&local, &mut local_value, |key| {
+            loader::theme_key_held(&global_value, key)
+        });
+        assert_eq!(
+            local_warnings,
+            vec![
+                format!(
+                    "{}: theme.preset: unknown preset \"nope\" (using global)",
+                    local.display()
+                ),
+                format!(
+                    "{}: theme.colors.danger: invalid color \"300\" (using default)",
+                    local.display()
+                ),
+            ]
+        );
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.theme.preset, ThemePreset::Light);
+        assert!(config.theme.colors.accent.is_none());
+        assert_eq!(
+            config.theme.colors.muted,
+            Some(ratatui::style::Color::Green)
+        );
+        assert_eq!(config.theme.colors.info, Some(ratatui::style::Color::Blue));
+        assert_eq!(
+            config.theme.colors.warning,
+            Some(ratatui::style::Color::Yellow)
+        );
+        assert!(config.theme.colors.danger.is_none());
+        assert_eq!(
+            config.theme.colors.success,
+            Some(ratatui::style::Color::Magenta)
         );
     }
 
     #[test]
-    fn unknown_theme_preset_fails() {
-        let err = toml::from_str::<Config>("[theme]\npreset = \"nope\"").unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("nope"), "{message}");
+    fn load_from_paths_keeps_the_global_color_when_the_local_color_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+        fs::write(&global, "[theme.colors]\naccent = \"green\"\n").unwrap();
+        fs::write(&local, "[theme.colors]\naccent = \"cyann\"\n").unwrap();
+
+        let mut global_value: toml::Value =
+            toml::from_str("[theme.colors]\naccent = \"green\"\n").unwrap();
+        assert!(loader::sanitize_theme_table(&global, &mut global_value, |_| false).is_empty());
+        let mut local_value: toml::Value =
+            toml::from_str("[theme.colors]\naccent = \"cyann\"\n").unwrap();
+        let warnings = loader::sanitize_theme_table(&local, &mut local_value, |key| {
+            loader::theme_key_held(&global_value, key)
+        });
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "{}: theme.colors.accent: invalid color \"cyann\" (using global)",
+                local.display()
+            )]
+        );
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(
+            config.theme.colors.accent,
+            Some(ratatui::style::Color::Green)
+        );
     }
 
     #[test]

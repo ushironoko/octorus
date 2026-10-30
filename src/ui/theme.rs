@@ -1,8 +1,8 @@
 //! UI palette.
 //!
-//! #169 and #172 take new colors from `theme.muted`, `theme.accent`,
-//! `theme.warning`, `theme.danger`, `theme.success`, `theme.info`,
-//! `theme.draft_you`, and `theme.draft_agent`.
+//! #169 and #172 take new colors from the theme fields that still exist:
+//! `muted`, `accent`, `warning`, `danger`, `success`, and `info`.
+//! Draft colors are added on `Theme` when those issues land.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -56,8 +56,6 @@ pub struct Theme {
     pub danger: Ink,
     pub success: Ink,
     pub info: Ink,
-    pub draft_you: Ink,
-    pub draft_agent: Ink,
 }
 
 impl Theme {
@@ -70,8 +68,6 @@ impl Theme {
                 danger: Ink::modifier(Modifier::BOLD),
                 success: Ink::modifier(Modifier::empty()),
                 info: Ink::modifier(Modifier::empty()),
-                draft_you: Ink::modifier(Modifier::empty()),
-                draft_agent: Ink::modifier(Modifier::empty()),
             };
         }
 
@@ -82,8 +78,6 @@ impl Theme {
         apply_fg(&mut theme.danger, cfg.colors.danger);
         apply_fg(&mut theme.success, cfg.colors.success);
         apply_fg(&mut theme.info, cfg.colors.info);
-        apply_fg(&mut theme.draft_you, cfg.colors.draft_you);
-        apply_fg(&mut theme.draft_agent, cfg.colors.draft_agent);
         theme
     }
 
@@ -108,21 +102,12 @@ fn preset(preset: ThemePreset) -> Theme {
         danger: Ink::plain(Color::Red),
         success: Ink::plain(Color::Green),
         info: Ink::plain(Color::Cyan),
-        draft_you: Ink::plain(Color::LightBlue),
-        draft_agent: Ink::plain(Color::Magenta),
     };
     match preset {
-        ThemePreset::Dark => dark,
+        ThemePreset::Dark | ThemePreset::Ansi16 => dark,
         ThemePreset::Light => Theme {
             accent: Ink::plain(Color::Blue),
             info: Ink::plain(Color::Blue),
-            draft_you: Ink::plain(Color::Blue),
-            ..dark
-        },
-        ThemePreset::Ansi16 => Theme {
-            accent: Ink::plain(Color::Cyan),
-            info: Ink::plain(Color::Cyan),
-            draft_you: Ink::plain(Color::Blue),
             ..dark
         },
     }
@@ -275,7 +260,7 @@ mod tests {
         )
     }
 
-    fn inks(theme: &Theme) -> [(&'static str, Ink); 8] {
+    fn inks(theme: &Theme) -> [(&'static str, Ink); 6] {
         [
             ("accent", theme.accent),
             ("muted", theme.muted),
@@ -283,8 +268,6 @@ mod tests {
             ("danger", theme.danger),
             ("success", theme.success),
             ("info", theme.info),
-            ("draft_you", theme.draft_you),
-            ("draft_agent", theme.draft_agent),
         ]
     }
 
@@ -355,14 +338,12 @@ mod tests {
         assert_eq!(fg(theme.danger), Some(Color::Red));
         assert_eq!(fg(theme.success), Some(Color::Green));
         assert_eq!(fg(theme.info), Some(Color::Cyan));
-        assert_eq!(fg(theme.draft_you), Some(Color::LightBlue));
-        assert_eq!(fg(theme.draft_agent), Some(Color::Magenta));
         assert_eq!(theme.muted.style().add_modifier, Modifier::empty());
         assert_eq!(theme.muted.style().bg, None);
     }
 
     #[test]
-    fn light_preset_recolors_accent_info_and_draft_you() {
+    fn light_preset_recolors_accent_and_info() {
         let cfg = ThemeConfig {
             preset: ThemePreset::Light,
             colors: ThemeColors::default(),
@@ -371,30 +352,19 @@ mod tests {
         let dark = Theme::test_default();
         assert_eq!(fg(theme.accent), Some(Color::Blue));
         assert_eq!(fg(theme.info), Some(Color::Blue));
-        assert_eq!(fg(theme.draft_you), Some(Color::Blue));
         assert_eq!(theme.muted, dark.muted);
         assert_eq!(theme.warning, dark.warning);
         assert_eq!(theme.danger, dark.danger);
         assert_eq!(theme.success, dark.success);
-        assert_eq!(theme.draft_agent, dark.draft_agent);
     }
 
     #[test]
-    fn ansi16_preset_recolors_draft_you_only() {
+    fn ansi16_preset_matches_dark() {
         let cfg = ThemeConfig {
             preset: ThemePreset::Ansi16,
             colors: ThemeColors::default(),
         };
-        let theme = Theme::resolve(&cfg, false);
-        let dark = Theme::test_default();
-        assert_eq!(fg(theme.accent), Some(Color::Cyan));
-        assert_eq!(fg(theme.info), Some(Color::Cyan));
-        assert_eq!(fg(theme.draft_you), Some(Color::Blue));
-        assert_eq!(theme.muted, dark.muted);
-        assert_eq!(theme.warning, dark.warning);
-        assert_eq!(theme.danger, dark.danger);
-        assert_eq!(theme.success, dark.success);
-        assert_eq!(theme.draft_agent, dark.draft_agent);
+        assert_eq!(Theme::resolve(&cfg, false), Theme::test_default());
     }
 
     #[test]
@@ -415,8 +385,6 @@ mod tests {
             theme.danger,
             theme.success,
             theme.info,
-            theme.draft_you,
-            theme.draft_agent,
         ] {
             assert_eq!(ink.style().fg, None);
             assert_eq!(ink.style().bg, None);
@@ -427,8 +395,6 @@ mod tests {
         assert_eq!(theme.warning.style().add_modifier, Modifier::empty());
         assert_eq!(theme.success.style().add_modifier, Modifier::empty());
         assert_eq!(theme.info.style().add_modifier, Modifier::empty());
-        assert_eq!(theme.draft_you.style().add_modifier, Modifier::empty());
-        assert_eq!(theme.draft_agent.style().add_modifier, Modifier::empty());
     }
 
     #[test]
@@ -480,22 +446,6 @@ mod tests {
                 sentinel(6),
                 ThemeColors {
                     info: Some(sentinel(6)),
-                    ..ThemeColors::default()
-                },
-            ),
-            (
-                "draft_you",
-                sentinel(7),
-                ThemeColors {
-                    draft_you: Some(sentinel(7)),
-                    ..ThemeColors::default()
-                },
-            ),
-            (
-                "draft_agent",
-                sentinel(8),
-                ThemeColors {
-                    draft_agent: Some(sentinel(8)),
                     ..ThemeColors::default()
                 },
             ),

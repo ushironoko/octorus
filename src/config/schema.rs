@@ -268,8 +268,6 @@ pub struct ThemeColors {
     pub danger: Option<Color>,
     pub success: Option<Color>,
     pub info: Option<Color>,
-    pub draft_you: Option<Color>,
-    pub draft_agent: Option<Color>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,15 +278,7 @@ pub struct ThemeConfig {
 
 impl ThemeConfig {
     pub fn is_untouched(&self) -> bool {
-        self.preset == ThemePreset::Dark
-            && self.colors.accent.is_none()
-            && self.colors.muted.is_none()
-            && self.colors.warning.is_none()
-            && self.colors.danger.is_none()
-            && self.colors.success.is_none()
-            && self.colors.info.is_none()
-            && self.colors.draft_you.is_none()
-            && self.colors.draft_agent.is_none()
+        *self == Self::default()
     }
 }
 
@@ -297,27 +287,23 @@ struct RawThemeConfig {
     #[serde(default)]
     preset: ThemePreset,
     #[serde(default)]
-    colors: RawThemeColors,
+    colors: ThemeColorStrings,
 }
 
-#[derive(Deserialize, Default)]
-struct RawThemeColors {
-    #[serde(default)]
+#[derive(Deserialize, Serialize, Default)]
+struct ThemeColorStrings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     accent: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     muted: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     danger: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     success: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     info: Option<String>,
-    #[serde(default)]
-    draft_you: Option<String>,
-    #[serde(default)]
-    draft_agent: Option<String>,
 }
 
 fn parse_color(key: &str, raw: &str) -> Result<Color, String> {
@@ -330,6 +316,30 @@ fn optional_color<E: serde::de::Error>(key: &str, raw: Option<String>) -> Result
         .transpose()
 }
 
+impl ThemeColorStrings {
+    fn parse<E: serde::de::Error>(self) -> Result<ThemeColors, E> {
+        Ok(ThemeColors {
+            accent: optional_color("theme.colors.accent", self.accent)?,
+            muted: optional_color("theme.colors.muted", self.muted)?,
+            warning: optional_color("theme.colors.warning", self.warning)?,
+            danger: optional_color("theme.colors.danger", self.danger)?,
+            success: optional_color("theme.colors.success", self.success)?,
+            info: optional_color("theme.colors.info", self.info)?,
+        })
+    }
+
+    fn from_colors(colors: &ThemeColors) -> Self {
+        Self {
+            accent: color_name(colors.accent),
+            muted: color_name(colors.muted),
+            warning: color_name(colors.warning),
+            danger: color_name(colors.danger),
+            success: color_name(colors.success),
+            info: color_name(colors.info),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for ThemeConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -338,38 +348,9 @@ impl<'de> Deserialize<'de> for ThemeConfig {
         let raw = RawThemeConfig::deserialize(deserializer)?;
         Ok(Self {
             preset: raw.preset,
-            colors: ThemeColors {
-                accent: optional_color("theme.colors.accent", raw.colors.accent)?,
-                muted: optional_color("theme.colors.muted", raw.colors.muted)?,
-                warning: optional_color("theme.colors.warning", raw.colors.warning)?,
-                danger: optional_color("theme.colors.danger", raw.colors.danger)?,
-                success: optional_color("theme.colors.success", raw.colors.success)?,
-                info: optional_color("theme.colors.info", raw.colors.info)?,
-                draft_you: optional_color("theme.colors.draft_you", raw.colors.draft_you)?,
-                draft_agent: optional_color("theme.colors.draft_agent", raw.colors.draft_agent)?,
-            },
+            colors: raw.colors.parse()?,
         })
     }
-}
-
-#[derive(Serialize)]
-struct SerializedThemeColors {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    accent: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    muted: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warning: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    danger: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    success: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    info: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    draft_you: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    draft_agent: Option<String>,
 }
 
 fn color_name(color: Option<Color>) -> Option<String> {
@@ -384,19 +365,7 @@ impl Serialize for ThemeConfig {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("ThemeConfig", 2)?;
         state.serialize_field("preset", &self.preset)?;
-        state.serialize_field(
-            "colors",
-            &SerializedThemeColors {
-                accent: color_name(self.colors.accent),
-                muted: color_name(self.colors.muted),
-                warning: color_name(self.colors.warning),
-                danger: color_name(self.colors.danger),
-                success: color_name(self.colors.success),
-                info: color_name(self.colors.info),
-                draft_you: color_name(self.colors.draft_you),
-                draft_agent: color_name(self.colors.draft_agent),
-            },
-        )?;
+        state.serialize_field("colors", &ThemeColorStrings::from_colors(&self.colors))?;
         state.end()
     }
 }
