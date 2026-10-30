@@ -1369,7 +1369,7 @@ fn render_module_graph_pane(
                 area,
                 path,
                 " Waiting for the current file…",
-                module_graph_block("Graph (opening…)", attention, theme, graph_help),
+                module_graph_block("", "Graph (opening…)", attention, theme, graph_help),
             );
         }
         ModuleGraphPaneState::Loading { path, .. } => {
@@ -1378,7 +1378,7 @@ fn render_module_graph_pane(
                 area,
                 path,
                 " Resolving imports and importers…",
-                module_graph_block("Graph (loading…)", attention, theme, graph_help),
+                module_graph_block("Graph", "(loading…)", attention, theme, graph_help),
             );
         }
         ModuleGraphPaneState::Ready(panel) => {
@@ -1423,7 +1423,7 @@ fn render_module_graph_ready_pane(
 ) {
     let current = panel.current();
     let title = module_graph_title(panel, usize::from(area.width.saturating_sub(2)));
-    let block = module_graph_block(&title, attention, theme, graph_help);
+    let block = module_graph_block("", &title, attention, theme, graph_help);
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
     let current_style = Style::default()
@@ -1477,8 +1477,8 @@ fn render_module_graph_ready_pane(
 fn module_graph_title(panel: &ModuleGraphPanel, title_width: usize) -> String {
     let current = panel.current();
     let direction = match panel.direction {
-        ModuleGraphDirection::Dependencies => "Imports →",
-        ModuleGraphDirection::Dependents => "Importers",
+        ModuleGraphDirection::Dependencies => "IMPORTS →",
+        ModuleGraphDirection::Dependents => "IMPORTERS",
     };
     let guarantee = match current.guarantee {
         crate::module_graph::DependencyGuarantee::Exact => "exact",
@@ -1493,10 +1493,6 @@ fn module_graph_title(panel: &ModuleGraphPanel, title_width: usize) -> String {
     if format!("▶ {full}").width() <= title_width {
         return full;
     }
-    let direction = match panel.direction {
-        ModuleGraphDirection::Dependencies => "IMPORTS →",
-        ModuleGraphDirection::Dependents => "IMPORTERS",
-    };
     match current.guarantee {
         crate::module_graph::DependencyGuarantee::Exact => format!("{direction} {count}"),
         crate::module_graph::DependencyGuarantee::Approximate => format!("{direction} ~{count}"),
@@ -1565,23 +1561,15 @@ fn register_module_graph_hits(app: &mut App, area: Rect) {
 }
 
 fn module_graph_block<'a>(
-    title: &'a str,
+    label: &'a str,
+    detail: &'a str,
     attention: Attention,
     theme: Theme,
     graph_help: &str,
 ) -> Block<'a> {
-    pane_block(
-        theme,
-        PaneTitle::Labeled {
-            label: "",
-            detail: title,
-        },
-        attention,
-    )
-    .title_bottom(Line::from(Span::styled(
-        graph_help.to_string(),
-        theme.muted.style(),
-    )))
+    pane_block(theme, PaneTitle::Labeled { label, detail }, attention).title_bottom(Line::from(
+        Span::styled(graph_help.to_string(), theme.muted.style()),
+    ))
 }
 
 fn module_graph_relationship_lines(
@@ -3112,7 +3100,7 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┏▶ Graph (loading…)━━━━━━━━━━━━┓
+        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┏▶ GRAPH (loading…)━━━━━━━━━━━━┓
         │▏ ▼ src/                         ││    1 import './helper';       │┃╔═ current module ═══════════╗┃
         │      app.ts                     ││                               │┃║src/app.ts                  ║┃
         │                                 ││                               │┃╚════════════════════════════╝┃
@@ -3251,7 +3239,7 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  2 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┏▶ Imports → 3/300 exact━━━━━━━┓
+        ┌Files────────────────────────────┐┌src/app.ts (1/1)───────────────┐┏▶ IMPORTS → 3/300 exact━━━━━━━┓
         │▏ ▼ src/                         ││    1 import './helper';       │┃╔═ current module ═══════════╗┃
         │      app.ts                     ││                               │┃║src/app.ts                  ║┃
         │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
@@ -3312,7 +3300,7 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  1 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ Imports → 1 exact━━━━━┓
+        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ IMPORTS → 1 exact━━━━━┓
         │▏ ▼ src/                  ││    1 import './依 存 先 ';│┃╔═ current module ═════╗┃
         │      app.ts              ││                        │┃║src/app.ts            ║┃
         │                          ││                        │┃╚══════════════════════╝┃
@@ -3391,8 +3379,7 @@ mod tests {
             ),
             40,
         );
-        assert!(exact.contains("▶ Imports → 3/300 exact"), "{exact}");
-        assert!(!exact.contains("IMPORTS"), "{exact}");
+        assert!(exact.contains("▶ IMPORTS → 3/300 exact"), "{exact}");
 
         let approximate = render_graph_title(
             &graph_panel(
@@ -3402,7 +3389,7 @@ mod tests {
             40,
         );
         assert!(
-            approximate.contains("▶ Importers 3/300 approximate"),
+            approximate.contains("▶ IMPORTERS 3/300 approximate"),
             "{approximate}"
         );
         assert!(!approximate.contains('~'), "{approximate}");
@@ -3514,7 +3501,7 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  2 files  symbols: -                                       │
         └──────────────────────────────────────────────────────────────────────────────┘
-        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ Imports → 3/300 exact━┓
+        ┌Files─────────────────────┐┌src/app.ts (1/1)────────┐┏▶ IMPORTS → 3/300 exact━┓
         │▏ ▼ src/                  ││    1 import './helper';│┃╔═ current module ═════╗┃
         │      app.ts              ││                        │┃║src/app.ts            ║┃
         │      helper.ts           ││                        │┃╚══════════════════════╝┃
@@ -3608,7 +3595,7 @@ mod tests {
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │Repo Browse - demo  2 files  symbols: -                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Files────────────────────────────┐┌src/helper.ts (1/1)────────────┐┏▶ Importers 1 approximate━━━━━┓
+        ┌Files────────────────────────────┐┌src/helper.ts (1/1)────────────┐┏▶ IMPORTERS 1 approximate━━━━━┓
         │▏ ▼ src/                         ││    1 export const helper = 1; │┃╔═ current module ═══════════╗┃
         │      app.ts                     ││                               │┃║src/helper.ts               ║┃
         │      helper.ts                  ││                               │┃╚════════════════════════════╝┃

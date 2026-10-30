@@ -471,6 +471,34 @@ mod tests {
     }
 
     #[test]
+    fn no_color_config_reaches_the_resolved_theme() {
+        use crate::app::RepositoryAvailability;
+        use crate::config::Config;
+        use ratatui::style::Modifier;
+
+        let config = Config {
+            no_color: true,
+            theme: crate::config::ThemeConfig {
+                colors: crate::config::ThemeColors {
+                    accent: Some(Color::Magenta),
+                    ..crate::config::ThemeColors::default()
+                },
+                ..crate::config::ThemeConfig::default()
+            },
+            ..Config::default()
+        };
+        let app = App::new_pr_list("owner/repo", config, RepositoryAvailability::Available);
+        assert_eq!(app.theme.accent.style().fg, None);
+        assert!(app
+            .theme
+            .accent
+            .style()
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(app.theme.muted.style().add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
     fn no_color_dim_marker_is_the_glyph_only() {
         use ratatui::style::Modifier;
 

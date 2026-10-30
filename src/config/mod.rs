@@ -4,6 +4,8 @@ mod schema;
 
 pub use keybindings::KeybindingsConfig;
 pub use loader::{find_project_root, find_project_root_in};
+#[cfg(test)]
+pub(crate) use schema::THEME_COLOR_KEYS;
 pub use schema::{
     AiConfig, DiffConfig, GitOpsConfig, LayoutConfig, MouseConfig, ProposalPostStrategy,
     ShellConfig, ThemeColors, ThemeConfig, ThemePreset,
@@ -190,6 +192,81 @@ mod tests {
         let config: Config = value.try_into().unwrap();
         assert_eq!(config.theme.colors.info, Some(ratatui::style::Color::Blue));
         assert!(config.theme.colors.accent.is_none());
+    }
+
+    #[test]
+    fn ordinary_theme_warning_keeps_debug_quotes_and_control_characters_are_escaped() {
+        let path = std::path::Path::new("theme.toml");
+        let mut ordinary: toml::Value =
+            toml::from_str("[theme.colors]\naccent = \"cyann\"\n").unwrap();
+        let ordinary_warnings = loader::sanitize_theme_table(path, &mut ordinary, |_| false);
+        assert_eq!(
+            ordinary_warnings,
+            vec![
+                "theme.toml: theme.colors.accent: invalid color \"cyann\" (using default)"
+                    .to_string()
+            ]
+        );
+
+        let mut colors = toml::map::Map::new();
+        colors.insert(
+            "accent".to_string(),
+            toml::Value::String("\u{1b}]0;pwned\u{7}\u{1b}[2J".to_string()),
+        );
+        let mut theme = toml::map::Map::new();
+        theme.insert(
+            "preset".to_string(),
+            toml::Value::String("\u{1b}[2J".to_string()),
+        );
+        theme.insert("colors".to_string(), toml::Value::Table(colors));
+        let mut root = toml::map::Map::new();
+        root.insert("theme".to_string(), toml::Value::Table(theme));
+        let mut value = toml::Value::Table(root);
+        let warnings = loader::sanitize_theme_table(path, &mut value, |_| false);
+        let text = warnings.join("\n");
+        assert!(!text.contains('\u{1b}'), "{text}");
+        assert!(!text.contains('\u{7}'), "{text}");
+        assert!(text.contains("invalid color"), "{text}");
+        assert!(text.contains("unknown preset"), "{text}");
+        assert!(text.contains("using default"), "{text}");
+    }
+
+    #[test]
+    fn every_parsed_color_key_is_stripped_when_invalid() {
+        let mut source = String::from("[theme.colors]\n");
+        for key in THEME_COLOR_KEYS {
+            source.push_str(&format!("{key} = \"cyann\"\n"));
+        }
+        let path = std::path::Path::new("theme.toml");
+        let mut value: toml::Value = toml::from_str(&source).unwrap();
+        let _ = loader::sanitize_theme_table(path, &mut value, |_| false);
+        let config: Config = value
+            .try_into()
+            .expect("an unlisted color key still fails startup");
+        assert!(config.theme.is_untouched());
+    }
+
+    #[test]
+    fn empty_local_theme_tables_are_not_local_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            "[theme.colors]\naccent = \"cyann\"\nmuted = \"nope\"\nwarning = \"#12345\"\ndanger = \"300\"\nsuccess = \"zz\"\ninfo = \"\"\n",
+        )
+        .unwrap();
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert!(
+            !config
+                .local_overrides
+                .iter()
+                .any(|key| key.starts_with("theme")),
+            "{:?}",
+            config.local_overrides
+        );
+        assert!(config.theme.is_untouched());
     }
 
     #[test]

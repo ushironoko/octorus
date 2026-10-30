@@ -3,10 +3,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::schema::ThemePreset;
+use super::schema::{ThemePreset, THEME_COLOR_KEYS};
 use super::Config;
-
-const THEME_COLOR_KEYS: [&str; 6] = ["accent", "muted", "warning", "danger", "success", "info"];
 
 /// Remove theme values the config parser would reject.
 ///
@@ -19,54 +17,65 @@ pub(super) fn sanitize_theme_table(
     global_has: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
-    let Some(theme) = value
-        .as_table_mut()
-        .and_then(|root| root.get_mut("theme"))
-        .and_then(|theme| theme.as_table_mut())
-    else {
+    let Some(root) = value.as_table_mut() else {
         return warnings;
     };
+    let drop_theme = {
+        let Some(theme) = root.get_mut("theme").and_then(|theme| theme.as_table_mut()) else {
+            return warnings;
+        };
 
-    let bad_preset = theme.get("preset").and_then(|preset| {
-        if known_preset(preset) {
-            None
-        } else {
-            Some(theme_value_text(preset))
-        }
-    });
-    if let Some(shown) = bad_preset {
-        let fallback = fallback_label(global_has("preset"));
-        warnings.push(format!(
-            "{}: theme.preset: unknown preset \"{shown}\" ({fallback})",
-            path.display()
-        ));
-        theme.remove("preset");
-    }
-
-    let Some(colors) = theme
-        .get_mut("colors")
-        .and_then(|colors| colors.as_table_mut())
-    else {
-        return warnings;
-    };
-    let bad_colors: Vec<(String, String)> = THEME_COLOR_KEYS
-        .iter()
-        .filter_map(|key| {
-            let color = colors.get(*key)?;
-            if known_color(color) {
+        let bad_preset = theme.get("preset").and_then(|preset| {
+            if known_preset(preset) {
                 None
             } else {
-                Some(((*key).to_string(), theme_value_text(color)))
+                Some(theme_value_text(preset))
             }
-        })
-        .collect();
-    for (key, shown) in bad_colors {
-        let fallback = fallback_label(global_has(&format!("colors.{key}")));
-        warnings.push(format!(
-            "{}: theme.colors.{key}: invalid color \"{shown}\" ({fallback})",
-            path.display()
-        ));
-        colors.remove(&key);
+        });
+        if let Some(shown) = bad_preset {
+            let fallback = fallback_label(global_has("preset"));
+            warnings.push(format!(
+                "{}: theme.preset: unknown preset {shown:?} ({fallback})",
+                warning_path(path)
+            ));
+            theme.remove("preset");
+        }
+
+        if let Some(colors) = theme
+            .get_mut("colors")
+            .and_then(|colors| colors.as_table_mut())
+        {
+            let bad_colors: Vec<(String, String)> = THEME_COLOR_KEYS
+                .iter()
+                .filter_map(|key| {
+                    let color = colors.get(*key)?;
+                    if known_color(color) {
+                        None
+                    } else {
+                        Some(((*key).to_string(), theme_value_text(color)))
+                    }
+                })
+                .collect();
+            for (key, shown) in bad_colors {
+                let fallback = fallback_label(global_has(&format!("colors.{key}")));
+                warnings.push(format!(
+                    "{}: theme.colors.{key}: invalid color {shown:?} ({fallback})",
+                    warning_path(path)
+                ));
+                colors.remove(&key);
+            }
+        }
+        if theme
+            .get("colors")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|colors| colors.is_empty())
+        {
+            theme.remove("colors");
+        }
+        theme.is_empty()
+    };
+    if drop_theme {
+        root.remove("theme");
     }
     warnings
 }
@@ -92,6 +101,15 @@ fn known_color(value: &toml::Value) -> bool {
     value
         .as_str()
         .is_some_and(|text| text.parse::<ratatui::style::Color>().is_ok())
+}
+
+fn warning_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if text.chars().any(char::is_control) {
+        format!("{text:?}")
+    } else {
+        text
+    }
 }
 
 fn theme_value_text(value: &toml::Value) -> String {

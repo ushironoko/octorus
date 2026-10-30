@@ -292,6 +292,18 @@ mod tests {
     }
 
     #[test]
+    fn theme_inks_match_the_config_color_keys() {
+        let mut names: Vec<_> = inks(&Theme::test_default())
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        names.sort_unstable();
+        let mut listed: Vec<_> = crate::config::THEME_COLOR_KEYS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(names, listed);
+    }
+
+    #[test]
     fn no_color_value_is_on_only_when_the_string_is_non_empty() {
         assert!(!no_color_from_value(None));
         assert!(!no_color_from_value(Some("")));

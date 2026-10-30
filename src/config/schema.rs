@@ -251,6 +251,9 @@ impl Default for ShellConfig {
     }
 }
 
+pub(crate) const THEME_COLOR_KEYS: [&str; 6] =
+    ["accent", "muted", "warning", "danger", "success", "info"];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePreset {
@@ -367,5 +370,31 @@ impl Serialize for ThemeConfig {
         state.serialize_field("preset", &self.preset)?;
         state.serialize_field("colors", &ThemeColorStrings::from_colors(&self.colors))?;
         state.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_color_strings_match_the_sanitizer_key_list() {
+        let filled = ThemeColorStrings {
+            accent: Some("red".to_string()),
+            muted: Some("red".to_string()),
+            warning: Some("red".to_string()),
+            danger: Some("red".to_string()),
+            success: Some("red".to_string()),
+            info: Some("red".to_string()),
+        };
+        let value = toml::Value::try_from(filled).unwrap();
+        let mut parsed: Vec<_> = value.as_table().unwrap().keys().cloned().collect();
+        parsed.sort();
+        let mut listed: Vec<_> = THEME_COLOR_KEYS
+            .iter()
+            .map(|key| (*key).to_string())
+            .collect();
+        listed.sort();
+        assert_eq!(parsed, listed);
     }
 }

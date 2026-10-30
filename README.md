@@ -423,7 +423,7 @@ An invalid color or preset warns and falls back to the default, or to the global
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `preset` | `string` | `"dark"` | `dark`, `light`, or `ansi16` |
+| `preset` | `string` | `"dark"` | `dark`, `light`, or `ansi16`. `ansi16` matches `dark` for now |
 | `colors.muted` | `string` | DarkGray | Muted text. Named colors, `#rrggbb`, or a palette index such as `244` |
 | `colors.accent` | `string` | Cyan | Focused titles, borders, and the selection marker |
 | `colors.warning` | `string` | Yellow | Pending CI and other warnings |

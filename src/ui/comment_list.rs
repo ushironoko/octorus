@@ -746,7 +746,7 @@ fn render_review_thread_data_with_hits(
         .map(|l| format!(":{}", l))
         .unwrap_or_default();
     let title = format!(
-        "Thread: {}{} ({} comments)",
+        " {}{} ({} comments)",
         root_comment.path, line_info, total_items
     );
 
@@ -757,7 +757,7 @@ fn render_review_thread_data_with_hits(
     let block = pane_block(
         theme,
         PaneTitle::Labeled {
-            label: "",
+            label: "Thread",
             detail: &title,
         },
         attention,
@@ -1454,7 +1454,7 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┏▶ Thread: src/main.rs:10 (3 comments)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┏▶ THREAD  src/main.rs:10 (3 comments)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
         ┃▌ @alice on src/main.rs:10                                                                        ▲
         ┃    Needs refactoring                                                                             █
         ┃                                                                                                  █
