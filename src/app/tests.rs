@@ -4771,6 +4771,34 @@ fn test_enter_comment_input_sets_mode() {
 }
 
 #[test]
+fn test_comment_after_plusplus_uses_real_new_line() {
+    let patch = concat!(
+        "diff --git a/q.sql b/q.sql\n",
+        "index 111..222 100644\n",
+        "--- a/q.sql\n",
+        "+++ b/q.sql\n",
+        "@@ -1,3 +1,4 @@\n",
+        " keep\n",
+        "--- comment\n",
+        " context after remove\n",
+        "+++x\n",
+        " next\n",
+    );
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 9;
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    match app.input_mode {
+        Some(InputMode::Comment(ctx)) => {
+            assert_eq!((ctx.line_number, ctx.diff_position), (4, 5));
+        }
+        other => panic!("expected a comment on the line after ++x, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_enter_comment_input_no_patch() {
     let mut app = App::new_for_test();
     app.data_state = DataState::Loaded {

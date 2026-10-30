@@ -103,10 +103,11 @@ impl<'a> PatchIndex<'a> {
 
         let mut new_line_number: Option<u32> = None;
         let mut position_counter: Option<u32> = None;
+        let mut classifier = PatchClassifier::new();
 
         for line in &line_iter {
             let line_clean = line.strip_suffix('\r').unwrap_or(line);
-            let (line_type, content) = classify_line(line_clean);
+            let (line_type, content) = classifier.classify(line_clean);
 
             match line_type {
                 LineType::Meta => {}
@@ -314,9 +315,10 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
     let mut new_line_number: Option<u32> = None;
     // Track the position within the patch (1-based, skipping meta lines)
     let mut position_counter: Option<u32> = None;
+    let mut classifier = PatchClassifier::new();
 
     for (i, line) in lines.iter().enumerate() {
-        let (line_type, content) = classify_line(line);
+        let (line_type, content) = classifier.classify(line);
 
         // Update position counter and line number BEFORE checking target
         match line_type {
@@ -372,24 +374,54 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
     None
 }
 
-/// Classify a line and extract its content without the prefix
-pub fn classify_line(line: &str) -> (LineType, &str) {
-    if line.starts_with("@@") {
-        (LineType::Header, line)
-    } else if line.starts_with("+++")
-        || line.starts_with("---")
-        || line.starts_with("diff ")
-        || line.starts_with("index ")
-    {
-        (LineType::Meta, line)
-    } else if let Some(content) = line.strip_prefix('+') {
-        (LineType::Added, content)
-    } else if let Some(content) = line.strip_prefix('-') {
-        (LineType::Removed, content)
-    } else if let Some(content) = line.strip_prefix(' ') {
-        (LineType::Context, content)
-    } else {
-        // Lines without prefix (shouldn't happen in valid patches, but handle gracefully)
+/// One forward scan of one patch.
+///
+/// `---` and `+++` are file headers only while no hunk header has been seen
+/// since the last `diff ` line. After the first `@@` they are removed and
+/// added file rows. Create a new classifier for each scan.
+#[derive(Debug)]
+pub struct PatchClassifier {
+    before_hunk: bool,
+}
+
+impl Default for PatchClassifier {
+    fn default() -> Self {
+        Self { before_hunk: true }
+    }
+}
+
+impl PatchClassifier {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Classify `line` and return its body without the diff prefix.
+    ///
+    /// Meta and header rows keep the raw line. Added, removed, and context
+    /// rows drop the leading `+`, `-`, or space.
+    pub fn classify<'a>(&mut self, line: &'a str) -> (LineType, &'a str) {
+        if line.starts_with("diff ") {
+            self.before_hunk = true;
+            return (LineType::Meta, line);
+        }
+        if line.starts_with("@@") {
+            self.before_hunk = false;
+            return (LineType::Header, line);
+        }
+        if line.starts_with("index ")
+            || (self.before_hunk && (line.starts_with("+++") || line.starts_with("---")))
+        {
+            return (LineType::Meta, line);
+        }
+        if let Some(content) = line.strip_prefix('+') {
+            return (LineType::Added, content);
+        }
+        if let Some(content) = line.strip_prefix('-') {
+            return (LineType::Removed, content);
+        }
+        if let Some(content) = line.strip_prefix(' ') {
+            return (LineType::Context, content);
+        }
         (LineType::Context, line)
     }
 }
@@ -400,11 +432,15 @@ pub fn classify_line(line: &str) -> (LineType, &str) {
 /// appears between `start` and `end` (i.e. the range does not cross a hunk boundary).
 pub fn validate_multiline_range(patch: &str, start: usize, end: usize) -> bool {
     let lines: Vec<&str> = patch.lines().collect();
+    let mut classifier = PatchClassifier::new();
+    for line in lines.iter().take(start) {
+        classifier.classify(line);
+    }
     for idx in start..=end {
         let Some(line) = lines.get(idx) else {
             return false;
         };
-        let (line_type, _) = classify_line(line);
+        let (line_type, _) = classifier.classify(line);
         match line_type {
             LineType::Added | LineType::Context => {}
             // Removed, Header, or Meta lines inside the range → invalid
@@ -427,9 +463,10 @@ pub fn validate_multiline_range(patch: &str, start: usize, end: usize) -> bool {
 pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
     let mut new_line_number: Option<u32> = None;
     let mut position_counter: Option<u32> = None;
+    let mut classifier = PatchClassifier::new();
 
     for line in patch.lines() {
-        let (line_type, _) = classify_line(line);
+        let (line_type, _) = classifier.classify(line);
 
         match line_type {
             LineType::Meta => continue,
@@ -777,7 +814,7 @@ Binary files /dev/null and b/image.png differ
     #[test]
     fn test_classify_line_no_prefix() {
         // diff プレフィックスなし → Context にフォールバック (L123-125)
-        let (line_type, content) = classify_line("no prefix");
+        let (line_type, content) = PatchClassifier::new().classify("no prefix");
         assert_eq!(line_type, LineType::Context);
         assert_eq!(content, "no prefix");
     }
@@ -785,9 +822,185 @@ Binary files /dev/null and b/image.png differ
     #[test]
     fn test_classify_line_empty() {
         // 空文字列 → Context にフォールバック (L123-125)
-        let (line_type, content) = classify_line("");
+        let (line_type, content) = PatchClassifier::new().classify("");
         assert_eq!(line_type, LineType::Context);
         assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_hunk_body_dashdash_and_plusplus_keep_line_numbers() {
+        let patch = concat!(
+            "diff --git a/q.sql b/q.sql\n",
+            "index 111..222 100644\n",
+            "--- a/q.sql\n",
+            "+++ b/q.sql\n",
+            "@@ -1,3 +1,4 @@\n",
+            " keep\n",
+            "--- comment\n",
+            " context after remove\n",
+            "+++x\n",
+            " next\n",
+        );
+        let rows: Vec<_> = (0..patch.lines().count())
+            .map(|index| {
+                let info = get_line_info(patch, index).unwrap();
+                (
+                    info.line_type,
+                    info.line_content,
+                    info.new_line_number,
+                    info.diff_position,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    LineType::Meta,
+                    "diff --git a/q.sql b/q.sql".to_string(),
+                    None,
+                    None
+                ),
+                (
+                    LineType::Meta,
+                    "index 111..222 100644".to_string(),
+                    None,
+                    None
+                ),
+                (LineType::Meta, "--- a/q.sql".to_string(), None, None),
+                (LineType::Meta, "+++ b/q.sql".to_string(), None, None),
+                (LineType::Header, "@@ -1,3 +1,4 @@".to_string(), None, None),
+                (LineType::Context, "keep".to_string(), Some(1), Some(1)),
+                (LineType::Removed, "-- comment".to_string(), None, Some(2)),
+                (
+                    LineType::Context,
+                    "context after remove".to_string(),
+                    Some(2),
+                    Some(3),
+                ),
+                (LineType::Added, "++x".to_string(), Some(3), Some(4)),
+                (LineType::Context, "next".to_string(), Some(4), Some(5)),
+            ]
+        );
+
+        assert!(validate_multiline_range(patch, 8, 9));
+
+        assert_eq!(find_diff_line_index(patch, SideLine::left(2)), Some(6));
+        assert_eq!(find_diff_line_index(patch, SideLine::right(3)), Some(8));
+        assert_eq!(find_diff_line_index(patch, SideLine::right(4)), Some(9));
+    }
+
+    #[test]
+    fn test_next_file_header_is_meta_after_a_hunk() {
+        let patch = concat!(
+            "diff --git a/a.sql b/a.sql\n",
+            "--- a/a.sql\n",
+            "+++ b/a.sql\n",
+            "@@ -1 +1 @@\n",
+            "--- comment\n",
+            "diff --git a/b.sql b/b.sql\n",
+            "--- a/b.sql\n",
+            "+++ b/b.sql\n",
+            "@@ -1 +1 @@\n",
+            "+++x\n",
+        );
+        let removed = get_line_info(patch, 4).unwrap();
+        assert_eq!(removed.line_type, LineType::Removed);
+        assert_eq!(removed.line_content, "-- comment");
+
+        let header = get_line_info(patch, 6).unwrap();
+        assert_eq!(header.line_type, LineType::Meta);
+        assert_eq!(header.line_content, "--- a/b.sql");
+
+        let added = get_line_info(patch, 9).unwrap();
+        assert_eq!(added.line_type, LineType::Added);
+        assert_eq!(added.line_content, "++x");
+        assert_eq!(added.new_line_number, Some(1));
+    }
+
+    fn classified_rows(patch: &str) -> Vec<(LineType, String)> {
+        let mut classifier = PatchClassifier::new();
+        patch
+            .lines()
+            .map(|line| {
+                let (line_type, content) = classifier.classify(line);
+                (line_type, content.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_patch_classifier_github_hunk_without_file_headers() {
+        let patch = concat!("@@ -1,2 +1,2 @@\n", " keep\n", "--- x\n", " after\n",);
+        assert_eq!(
+            classified_rows(patch),
+            vec![
+                (LineType::Header, "@@ -1,2 +1,2 @@".to_string()),
+                (LineType::Context, "keep".to_string()),
+                (LineType::Removed, "-- x".to_string()),
+                (LineType::Context, "after".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_patch_classifier_crlf_matches_lf_classification() {
+        let lf = concat!(
+            "diff --git a/q.sql b/q.sql\n",
+            "--- a/q.sql\n",
+            "+++ b/q.sql\n",
+            "@@ -1,3 +1,3 @@\n",
+            " keep\n",
+            "--- x\n",
+            "+++y\n",
+        );
+        let crlf = lf.replace('\n', "\r\n");
+        let lf_rows = classified_rows(lf);
+        assert_eq!(
+            lf_rows.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            classified_rows(&crlf)
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            lf_rows,
+            vec![
+                (LineType::Meta, "diff --git a/q.sql b/q.sql".to_string()),
+                (LineType::Meta, "--- a/q.sql".to_string()),
+                (LineType::Meta, "+++ b/q.sql".to_string()),
+                (LineType::Header, "@@ -1,3 +1,3 @@".to_string()),
+                (LineType::Context, "keep".to_string()),
+                (LineType::Removed, "-- x".to_string()),
+                (LineType::Added, "++y".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_patch_classifier_no_newline_marker_stays_context() {
+        let patch = concat!(
+            "@@ -1,2 +1,3 @@\n",
+            " keep\n",
+            "--- x\n",
+            "\\ No newline at end of file\n",
+            "+++y\n",
+            " after\n",
+        );
+        assert_eq!(
+            classified_rows(patch),
+            vec![
+                (LineType::Header, "@@ -1,2 +1,3 @@".to_string()),
+                (LineType::Context, "keep".to_string()),
+                (LineType::Removed, "-- x".to_string()),
+                (
+                    LineType::Context,
+                    "\\ No newline at end of file".to_string()
+                ),
+                (LineType::Added, "++y".to_string()),
+                (LineType::Context, "after".to_string()),
+            ]
+        );
     }
 
     #[test]
