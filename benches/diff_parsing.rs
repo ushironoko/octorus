@@ -1,7 +1,7 @@
 //! Diff parsing benchmarks for octorus.
 //!
 //! These benchmarks measure the performance of:
-//! - Line classification (classify_line)
+//! - Line classification (PatchClassifier)
 //! - Line info extraction (get_line_info)
 
 mod common;
@@ -9,11 +9,11 @@ mod common;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use common::{generate_diff_patch, generate_simple_patch};
-use octorus::{classify_line, get_line_info};
+use octorus::{get_line_info, PatchClassifier};
 
 /// Benchmark line classification.
 ///
-/// Tests the classify_line function which determines line type (Added, Removed, Context, etc.)
+/// Tests PatchClassifier, which determines line type (Added, Removed, Context, etc.)
 /// and extracts content without the prefix.
 fn bench_classify_line(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff_parsing/classify_line");
@@ -32,7 +32,9 @@ fn bench_classify_line(c: &mut Criterion) {
 
     for (name, line) in test_lines {
         group.bench_with_input(BenchmarkId::from_parameter(name), line, |b, line| {
-            b.iter(|| black_box(classify_line(black_box(line))));
+            b.iter(|| {
+                black_box(PatchClassifier::new().classify(black_box(line)));
+            });
         });
     }
 
@@ -41,7 +43,7 @@ fn bench_classify_line(c: &mut Criterion) {
 
 /// Benchmark line classification on patch lines.
 ///
-/// Measures classify_line performance when iterating over entire patches.
+/// Measures PatchClassifier performance when iterating over entire patches.
 fn bench_classify_line_batch(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff_parsing/classify_line_batch");
 
@@ -55,8 +57,9 @@ fn bench_classify_line_batch(c: &mut Criterion) {
             &lines,
             |b, lines| {
                 b.iter(|| {
+                    let mut classifier = PatchClassifier::new();
                     for line in lines.iter() {
-                        black_box(classify_line(black_box(line)));
+                        black_box(classifier.classify(black_box(line)));
                     }
                 });
             },
