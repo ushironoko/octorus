@@ -1,9 +1,8 @@
 use anyhow::Error;
 use serde::Deserialize;
-use std::io;
 use thiserror::Error;
 
-use super::client::gh_command;
+use super::client::{classify_gh_failure, error_chain_lowercased, gh_command, GhFailureKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitPullRequestState {
@@ -167,36 +166,23 @@ fn trailing_pr_reference(subject: &str) -> Option<(&str, u32)> {
 }
 
 pub fn classify_gh_command_error(error: &Error) -> CommitPrLookupError {
-    if error.chain().any(|cause| {
-        cause
-            .downcast_ref::<io::Error>()
-            .is_some_and(|io_error| io_error.kind() == io::ErrorKind::NotFound)
-    }) {
-        return CommitPrLookupError::CliMissing;
+    match classify_gh_failure(error) {
+        GhFailureKind::CliMissing => CommitPrLookupError::CliMissing,
+        GhFailureKind::Unauthenticated => CommitPrLookupError::Unauthenticated,
+        GhFailureKind::RateLimited => CommitPrLookupError::RateLimited,
+        // 404 is commit-specific and is not a GhFailureKind.
+        GhFailureKind::Offline | GhFailureKind::Other => {
+            if commit_not_on_github(&error_chain_lowercased(error)) {
+                CommitPrLookupError::CommitNotOnGitHub
+            } else {
+                CommitPrLookupError::ApiFailure
+            }
+        }
     }
+}
 
-    let message = error
-        .chain()
-        .map(|cause| cause.to_string())
-        .collect::<Vec<_>>()
-        .join(": ")
-        .to_ascii_lowercase();
-    if message.contains("rate limit exceeded")
-        || message.contains("secondary rate limit")
-        || message.contains("http 429")
-    {
-        CommitPrLookupError::RateLimited
-    } else if message.contains("not logged into any github hosts")
-        || message.contains("gh auth login")
-        || message.contains("bad credentials")
-        || message.contains("http 401")
-    {
-        CommitPrLookupError::Unauthenticated
-    } else if message.contains("http 404") || message.contains("no commit found for") {
-        CommitPrLookupError::CommitNotOnGitHub
-    } else {
-        CommitPrLookupError::ApiFailure
-    }
+fn commit_not_on_github(message: &str) -> bool {
+    message.contains("http 404") || message.contains("no commit found for")
 }
 
 #[cfg(test)]
@@ -468,6 +454,40 @@ mod tests {
         assert_eq!(
             classify_gh_command_error(&anyhow!("GitHub CLI command failed: server unavailable")),
             CommitPrLookupError::ApiFailure
+        );
+    }
+
+    #[test]
+    fn test_shared_classifier_keeps_404_on_the_commit_lookup_map() {
+        use crate::github::{classify_gh_failure, GhFailureKind};
+
+        for message in [
+            "gh command failed: gh: No commit found for SHA: deadbeef (HTTP 404)",
+            "gh command failed: gh: No commit found for SHA: deadbeef",
+            "gh command failed: HTTP 404: Not Found \
+             (https://api.github.com/repos/owner/repo/commits/deadbeef/pulls)",
+        ] {
+            let error = anyhow!(message);
+            assert_eq!(
+                classify_gh_failure(&error),
+                GhFailureKind::Other,
+                "{message}"
+            );
+            assert_eq!(
+                classify_gh_command_error(&error),
+                CommitPrLookupError::CommitNotOnGitHub,
+                "{message}"
+            );
+        }
+
+        let rate_limited_404 = anyhow!("API rate limit exceeded (HTTP 404)");
+        assert_eq!(
+            classify_gh_failure(&rate_limited_404),
+            GhFailureKind::RateLimited
+        );
+        assert_eq!(
+            classify_gh_command_error(&rate_limited_404),
+            CommitPrLookupError::RateLimited
         );
     }
 }

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::io;
 use std::process::Command;
 use thiserror::Error;
 
@@ -130,6 +131,71 @@ pub async fn gh_command_allow_exit_codes(args: &[&str], allowed_codes: &[i32]) -
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GhFailureKind {
+    Offline,
+    Unauthenticated,
+    CliMissing,
+    RateLimited,
+    Other,
+}
+
+const RATE_LIMIT_MARKERS: &[&str] = &["rate limit exceeded", "secondary rate limit", "http 429"];
+
+const UNAUTHENTICATED_MARKERS: &[&str] = &[
+    "not logged into any github hosts",
+    "gh auth login",
+    "bad credentials",
+    "http 401",
+];
+
+const OFFLINE_MARKERS: &[&str] = &[
+    "dial tcp",
+    "no such host",
+    "i/o timeout",
+    "connection refused",
+    "network is unreachable",
+    "proxyconnect",
+    "tls handshake timeout",
+    "temporary failure in name resolution",
+    "could not resolve host",
+];
+
+pub fn classify_gh_failure(error: &anyhow::Error) -> GhFailureKind {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|io_error| io_error.kind() == io::ErrorKind::NotFound)
+    }) {
+        return GhFailureKind::CliMissing;
+    }
+
+    let message = error_chain_lowercased(error);
+    if message_has_any(&message, RATE_LIMIT_MARKERS) {
+        GhFailureKind::RateLimited
+    } else if message_has_any(&message, UNAUTHENTICATED_MARKERS) {
+        GhFailureKind::Unauthenticated
+    } else if message_has_any(&message, OFFLINE_MARKERS) {
+        GhFailureKind::Offline
+    } else {
+        GhFailureKind::Other
+    }
+}
+
+/// Commit lookup checks 404 phrases against this same text.
+pub(super) fn error_chain_lowercased(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
+        .to_ascii_lowercase()
+}
+
+fn message_has_any(message: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| message.contains(marker))
+}
+
 /// Execute gh api command with JSON output
 pub async fn gh_api(endpoint: &str) -> Result<serde_json::Value> {
     let output = gh_command(&["api", endpoint]).await?;
@@ -246,6 +312,7 @@ pub fn check_graphql_errors(response: &serde_json::Value) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io;
 
     #[test]
     fn test_flatten_pages_single_page() {
@@ -332,6 +399,144 @@ mod tests {
         assert!(
             !completed.exists(),
             "a dropped gh fetch must not leave its child running to completion"
+        );
+    }
+
+    #[test]
+    fn classify_gh_failure_matches_the_locked_commit_lookup_inputs() {
+        let missing = anyhow::Error::new(io::Error::from(io::ErrorKind::NotFound))
+            .context("Failed to execute gh CLI - is it installed?");
+        assert_eq!(classify_gh_failure(&missing), GhFailureKind::CliMissing);
+
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "GitHub CLI command failed: not logged into any GitHub hosts; run gh auth login"
+            )),
+            GhFailureKind::Unauthenticated
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "GitHub CLI command failed: HTTP 401: Bad credentials"
+            )),
+            GhFailureKind::Unauthenticated
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "GitHub CLI command failed: API rate limit exceeded"
+            )),
+            GhFailureKind::RateLimited
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "GitHub CLI command failed: secondary rate limit"
+            )),
+            GhFailureKind::RateLimited
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("GitHub CLI command failed: HTTP 429")),
+            GhFailureKind::RateLimited
+        );
+    }
+
+    #[test]
+    fn classify_gh_failure_treats_not_found_kind_as_cli_missing() {
+        let missing = anyhow::Error::new(io::Error::from(io::ErrorKind::NotFound))
+            .context("Failed to execute gh CLI - is it installed?");
+        assert_eq!(classify_gh_failure(&missing), GhFailureKind::CliMissing);
+
+        // Flattening to Display drops the io::Error, so the same words are not CliMissing.
+        let flattened = anyhow::anyhow!("{missing}");
+        assert_eq!(classify_gh_failure(&flattened), GhFailureKind::Other);
+
+        let text_only = anyhow::anyhow!("Failed to execute gh CLI - is it installed?");
+        assert_eq!(classify_gh_failure(&text_only), GhFailureKind::Other);
+
+        let permission = anyhow::Error::new(io::Error::from(io::ErrorKind::PermissionDenied))
+            .context("Failed to execute gh CLI - is it installed?");
+        assert_eq!(classify_gh_failure(&permission), GhFailureKind::Other);
+    }
+
+    #[test]
+    fn classify_gh_failure_marks_each_offline_phrase() {
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("dial tcp 127.0.0.1:443")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("no such host")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("i/o timeout")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("connection refused")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("network is unreachable")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("proxyconnect")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("tls handshake timeout")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("temporary failure in name resolution")),
+            GhFailureKind::Offline
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("could not resolve host")),
+            GhFailureKind::Offline
+        );
+    }
+
+    #[test]
+    fn classify_gh_failure_leaves_eof_and_http_404_as_other() {
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("eof")),
+            GhFailureKind::Other
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("EOF")),
+            GhFailureKind::Other
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!("connection reset by peer")),
+            GhFailureKind::Other
+        );
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(
+                "GitHub CLI command failed: HTTP 403: SSO authorization required"
+            )),
+            GhFailureKind::Other
+        );
+
+        for message in [
+            "gh command failed: gh: No commit found for SHA: deadbeef (HTTP 404)",
+            "gh command failed: gh: No commit found for SHA: deadbeef",
+            "gh command failed: HTTP 404: Not Found \
+             (https://api.github.com/repos/owner/repo/commits/deadbeef/pulls)",
+        ] {
+            assert_eq!(
+                classify_gh_failure(&anyhow::anyhow!(message)),
+                GhFailureKind::Other,
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_gh_failure_prefers_rate_limit_over_http_404() {
+        let message = "API rate limit exceeded (HTTP 404)";
+        assert_eq!(
+            classify_gh_failure(&anyhow::anyhow!(message)),
+            GhFailureKind::RateLimited
         );
     }
 }
