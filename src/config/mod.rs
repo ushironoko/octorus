@@ -43,7 +43,6 @@ pub struct Config {
     pub mouse: MouseConfig,
     #[serde(default, skip_serializing_if = "ThemeConfig::is_untouched")]
     pub theme: ThemeConfig,
-    /// Set by `main` from `NO_COLOR`. Tests set this field. It is not a config key.
     #[serde(skip)]
     pub no_color: bool,
     #[serde(skip)]

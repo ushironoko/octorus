@@ -1,22 +1,13 @@
-//! Pane frame. Compact header and footer bars are not here.
-
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
 use super::theme::{Attention, Theme};
 
-/// How a block gets its title. The enum is the uppercase rule.
 pub enum PaneTitle<'a> {
-    /// `label` is the fixed word. `detail` is the dynamic tail.
-    /// Focused uppercases `label` only. An empty `label` skips that and
-    /// still takes `▶ ` while the pane has the keys.
     Labeled { label: &'a str, detail: &'a str },
-    /// Title bytes are copied through. No arrow and no case change.
     AsIs(&'a str),
 }
 
-/// Boxed pane frame. The title is owned, so a `format!` temporary can end
-/// on the call.
 pub fn pane_block(theme: Theme, title: PaneTitle<'_>, attention: Attention) -> Block<'static> {
     let text = title_text(title, attention);
     let style = if attention.has_keys() {

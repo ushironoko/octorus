@@ -251,7 +251,6 @@ impl Default for ShellConfig {
     }
 }
 
-/// Named palette. Unknown names stay serde's unknown-variant error.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePreset {
@@ -261,9 +260,6 @@ pub enum ThemePreset {
     Ansi16,
 }
 
-/// Foreground overrides. `None` keeps the preset color.
-///
-/// A string never lives here. Parsing happens when `[theme]` is deserialized.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThemeColors {
     pub accent: Option<Color>,
@@ -276,7 +272,6 @@ pub struct ThemeColors {
     pub draft_agent: Option<Color>,
 }
 
-/// Palette request. `Theme::resolve` turns this into inks and does not fail.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThemeConfig {
     pub preset: ThemePreset,
@@ -284,7 +279,6 @@ pub struct ThemeConfig {
 }
 
 impl ThemeConfig {
-    /// True when the preset is dark and every override is unset.
     pub fn is_untouched(&self) -> bool {
         self.preset == ThemePreset::Dark
             && self.colors.accent.is_none()

@@ -217,7 +217,6 @@ pub struct App {
     pub hit_map: crate::ui::hit::HitMap,
     /// マウスドラッグの状態機械
     pub(crate) drag_state: input_mouse::DragState,
-    /// Resolved palette. Draw code copies it with `let theme = app.theme`.
     pub theme: Theme,
 }
 
@@ -317,10 +316,6 @@ impl App {
         }
     }
 
-    /// True when a modal covers the panes underneath it.
-    ///
-    /// The 3-line git-ops confirm, the symbol popup, and the shell popup do
-    /// not count. The module graph is a pane, not an overlay.
     fn modal_open(&self) -> bool {
         if self.state == AppState::Help {
             return true;
@@ -359,12 +354,10 @@ impl App {
         false
     }
 
-    /// PR list, issue list, file list, cockpit, checks, and comment lists.
     pub fn sole_attention(&self) -> Attention {
         Attention::when(!self.modal_open())
     }
 
-    /// File pane, diff, and the inline comment panel.
     pub fn split_attention(&self) -> SplitAttention {
         if self.modal_open() {
             return SplitAttention {
@@ -397,7 +390,6 @@ impl App {
         }
     }
 
-    /// Fullscreen diff. The comment panel takes the keys from the diff.
     pub fn diff_attention(&self) -> DiffAttention {
         if self.modal_open() || self.state != AppState::DiffView {
             return DiffAttention {
@@ -418,7 +410,6 @@ impl App {
         }
     }
 
-    /// Repository browser panes. An overlay list is not one of these panes.
     pub fn browse_attention(&self) -> BrowseAttention {
         let dim = BrowseAttention {
             tree: Attention::Dim,
@@ -449,8 +440,6 @@ impl App {
         }
     }
 
-    /// Git-ops panes. A simple confirm keeps the focused tree pane focused.
-    /// Simulate and preview are modals, so every pane is dim.
     pub fn git_ops_attention(&self) -> GitOpsAttention {
         let dim = GitOpsAttention {
             tree: Attention::Dim,
@@ -478,7 +467,6 @@ impl App {
         }
     }
 
-    /// Issue body and the linked-PR list.
     pub fn issue_detail_attention(&self) -> IssueDetailAttention {
         if self.modal_open() || self.state != AppState::IssueDetail {
             return IssueDetailAttention {

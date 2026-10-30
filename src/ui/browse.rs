@@ -3817,10 +3817,6 @@ mod tests {
     /// The assertions therefore read cells.
     #[test]
     fn test_overlay_left_border_survives_a_wide_glyph_straddling_it() {
-        // The selection marker reserves two columns, so the name starts in
-        // column 5. Ten leading ASCII columns put the first wide glyph on
-        // columns 15-16, and the 60%-wide overlay's left border lands on
-        // column 16 of an 80-column frame.
         let paths: Vec<String> = (0..8).map(|i| format!("{i:0>10}日本語")).collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         let mut app = app_with_browse(&refs);
@@ -3869,9 +3865,6 @@ mod tests {
     /// its call for a bare `Clear` is invisible to every other test.
     #[test]
     fn test_symbol_search_left_border_survives_a_wide_glyph_straddling_it() {
-        // The 80%-wide overlay's left border lands on column 8 of an 80-column
-        // frame. The selection marker puts the name in column 5, so two leading
-        // ASCII columns put the first wide glyph on columns 7-8.
         let paths: Vec<String> = (0..8).map(|i| format!("{i:0>2}日本語")).collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         let mut app = app_with_browse(&refs);

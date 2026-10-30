@@ -10,16 +10,11 @@ use ratatui::widgets::{Block, BorderType, Borders, HighlightSpacing, List};
 
 use crate::config::{ThemeConfig, ThemePreset};
 
-/// Columns reserved for `▌ ` and `▏ `, including the trailing space.
 pub const SELECTION_MARKER_WIDTH: usize = 2;
 
 const FOCUSED_MARKER: &str = "▌ ";
 const DIM_MARKER: &str = "▏ ";
 
-/// Semantic color plus the modifier that must travel with it.
-///
-/// There is no getter that returns [`Color`]. A span takes [`Style`] through
-/// [`From<Ink>`], so `NO_COLOR`'s `DIM` and `BOLD` cannot be peeled off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ink {
     style: Style,
@@ -30,7 +25,6 @@ impl Ink {
         self.style
     }
 
-    /// Adds `BOLD` on top of the modifier this ink already has.
     pub fn bold(self) -> Style {
         self.style.add_modifier(Modifier::BOLD)
     }
@@ -54,9 +48,6 @@ impl From<Ink> for Style {
     }
 }
 
-/// Resolved UI palette. `Copy` so a draw function starts with `let theme = app.theme`.
-///
-/// `selection` and `focus` are not fields. They are attention and the pane frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
     pub muted: Ink,
@@ -70,8 +61,6 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Infallible. `no_color` wins over the preset and over every color override.
-    /// This function does not read the environment.
     pub fn resolve(cfg: &ThemeConfig, no_color: bool) -> Self {
         if no_color {
             return Self {
@@ -98,12 +87,10 @@ impl Theme {
         theme
     }
 
-    /// `resolve(&ThemeConfig::default(), false)`.
     pub fn test_default() -> Self {
         Self::resolve(&ThemeConfig::default(), false)
     }
 
-    /// Help tabs. Active is accent plus bold. Inactive is muted.
     pub fn tab(self, active: bool) -> Style {
         if active {
             self.accent.bold()
@@ -141,9 +128,6 @@ fn preset(preset: ThemePreset) -> Theme {
     }
 }
 
-/// Non-empty UTF-8 means `NO_COLOR` is on. Missing or empty means off.
-///
-/// `main` is the only caller of `std::env::var("NO_COLOR")`.
 pub fn no_color_from_value(value: Option<&str>) -> bool {
     matches!(value, Some(text) if !text.is_empty())
 }
@@ -154,14 +138,9 @@ fn apply_fg(ink: &mut Ink, color: Option<Color>) {
     }
 }
 
-/// Who the pane is for this frame.
-///
-/// Draw code passes the value through. `rows` and `pane_block` are the match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attention {
-    /// Keys come here. Marker `▌`, title `▶` plus an uppercased label, thick accent border.
     Focused,
-    /// A sibling has the keys, or a modal covers this pane.
     Dim,
 }
 
@@ -217,9 +196,6 @@ impl Attention {
     }
 }
 
-/// One marker policy. `apply` is for `ListState` lists. `prefix` and
-/// `body_style` are for the hand-drawn browse tree. Calling both on one
-/// list reserves four columns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RowMark {
     symbol: &'static str,
@@ -251,7 +227,6 @@ impl RowMark {
     }
 }
 
-/// Returned by `App::split_attention`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SplitAttention {
     pub files: Attention,
@@ -259,7 +234,6 @@ pub struct SplitAttention {
     pub comments: Attention,
 }
 
-/// Fullscreen diff. Same comment-panel rule as [`SplitAttention`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiffAttention {
     pub diff: Attention,
