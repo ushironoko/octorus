@@ -361,22 +361,10 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     frame.render_widget(header, area);
 }
 
-fn outdated_left_ids(app: &App) -> HashSet<u64> {
-    let Some(comments) = app.cmt.review_comments.as_deref() else {
-        return HashSet::new();
-    };
-    let files = app.files();
-    comments
-        .iter()
-        .filter(|comment| App::left_review_comment_is_outdated(comment, files))
-        .map(|comment| comment.id)
-        .collect()
-}
-
 fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
-    let outdated_ids = outdated_left_ids(app);
+    let (outdated_ids, hidden_line_ids) = app.review_list_marks();
     if app.cmt.expanded_thread.is_some() {
-        render_expanded_thread(frame, app, area, &outdated_ids);
+        render_expanded_thread(frame, app, area, &outdated_ids, &hidden_line_ids);
         return;
     }
 
@@ -430,6 +418,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
             selected: app.cmt.selected_thread,
             resolved_ids: &resolved_ids,
             outdated_ids: &outdated_ids,
+            hidden_line_ids: &hidden_line_ids,
         },
         &mut app.cmt.thread_scroll_offset,
         Some(&mut app.hit_map),
@@ -445,6 +434,7 @@ pub(crate) struct ReviewThreadListData<'a> {
     pub selected: usize,
     pub resolved_ids: &'a std::collections::HashSet<u64>,
     pub outdated_ids: &'a HashSet<u64>,
+    pub hidden_line_ids: &'a HashSet<u64>,
 }
 
 pub(crate) fn render_review_thread_list_data(
@@ -486,7 +476,10 @@ fn render_review_thread_list_data_with_hits(
             let thread_index = data.visible_threads.map_or(i, |indices| indices[i]);
             let thread = data.threads.get(thread_index)?;
             let comment = &data.comments[thread.root];
-            let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
+            let location = crate::app::format_review_location(
+                comment,
+                !data.hidden_line_ids.contains(&comment.id),
+            );
             let resolved = data.resolved_ids.contains(&comment.id);
 
             let reply_count = thread.replies.len();
@@ -516,10 +509,7 @@ fn render_review_thread_list_data_with_hits(
                     Span::raw("")
                 },
                 Span::raw(" on "),
-                Span::styled(
-                    format!("{}{}", comment.path, line_info),
-                    Style::default().fg(Color::Green),
-                ),
+                Span::styled(location, Style::default().fg(Color::Green)),
                 if data.outdated_ids.contains(&comment.id) {
                     Span::styled(" outdated", theme.muted.style())
                 } else {
@@ -579,6 +569,7 @@ fn render_expanded_thread(
     app: &mut App,
     area: ratatui::layout::Rect,
     outdated_ids: &HashSet<u64>,
+    hidden_line_ids: &HashSet<u64>,
 ) {
     use std::collections::HashSet;
 
@@ -618,6 +609,7 @@ fn render_expanded_thread(
         &mut app.cmt.expanded_scroll_offset,
         &resolved_ids,
         outdated_ids,
+        hidden_line_ids,
         Some(&mut app.hit_map),
         theme,
         attention,
@@ -634,6 +626,7 @@ pub(crate) fn render_review_thread_data(
     scroll_offset: &mut usize,
     resolved_ids: &std::collections::HashSet<u64>,
     outdated_ids: &HashSet<u64>,
+    hidden_line_ids: &HashSet<u64>,
     theme: Theme,
     attention: Attention,
 ) {
@@ -646,6 +639,7 @@ pub(crate) fn render_review_thread_data(
         scroll_offset,
         resolved_ids,
         outdated_ids,
+        hidden_line_ids,
         None,
         theme,
         attention,
@@ -662,6 +656,7 @@ fn render_review_thread_data_with_hits(
     scroll_offset: &mut usize,
     resolved_ids: &std::collections::HashSet<u64>,
     outdated_ids: &HashSet<u64>,
+    hidden_line_ids: &HashSet<u64>,
     hit_map: Option<&mut HitMap>,
     theme: Theme,
     attention: Attention,
@@ -688,7 +683,10 @@ fn render_review_thread_data_with_hits(
             };
 
             let header_line = if is_root {
-                let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
+                let location = crate::app::format_review_location(
+                    comment,
+                    !hidden_line_ids.contains(&comment.id),
+                );
                 Line::from(vec![
                     Span::styled(
                         format!("@{}", comment.user.login),
@@ -696,10 +694,7 @@ fn render_review_thread_data_with_hits(
                     ),
                     resolved_badge,
                     Span::raw(" on "),
-                    Span::styled(
-                        format!("{}{}", comment.path, line_info),
-                        Style::default().fg(Color::Green),
-                    ),
+                    Span::styled(location, Style::default().fg(Color::Green)),
                     if outdated_ids.contains(&comment.id) {
                         Span::styled(" outdated", theme.muted.style())
                     } else {
@@ -741,14 +736,11 @@ fn render_review_thread_data_with_hits(
 
     let total_items = comment_indices.len();
     let root_comment = &all_comments[thread.root];
-    let line_info = root_comment
-        .line
-        .map(|l| format!(":{}", l))
-        .unwrap_or_default();
-    let title = format!(
-        " {}{} ({} comments)",
-        root_comment.path, line_info, total_items
+    let location = crate::app::format_review_location(
+        root_comment,
+        !hidden_line_ids.contains(&root_comment.id),
     );
+    let title = format!(" {location} ({total_items} comments)");
 
     let mut list_state = ListState::default()
         .with_offset(*scroll_offset)
@@ -1059,7 +1051,7 @@ mod tests {
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ @reviewer1 on src/main.rs:10                                                                    ┃
+        ┃▌ @reviewer1 on src/main.rs:R10                                                                   ┃
         ┃    This looks good.                                                                              ┃
         ┃                                                                                                  ┃
         ┃                                                                                                  ┃
@@ -1207,10 +1199,10 @@ mod tests {
         │ [Local Comments (2)]                                                                             │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ @dacuna on src/main.rs:10                                                                       ▲
+        ┃▌ @dacuna on src/main.rs:R10                                                                      ▲
         ┃    Fix this variable naming                                                                      █
         ┃                                                                                                  █
-        ┃  @dacuna [resolved] on src/lib.rs:42                                                             █
+        ┃  @dacuna [resolved] on src/lib.rs:R42                                                            █
         ┃    Consider error handling                                                                       █
         ┃                                                                                                  █
         ┃                                                                                                  █
@@ -1377,7 +1369,7 @@ mod tests {
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ @alice on src/main.rs:10  (1 reply)                                                             ┃
+        ┃▌ @alice on src/main.rs:R10  (1 reply)                                                            ┃
         ┃    Needs refactoring                                                                             ┃
         ┃                                                                                                  ┃
         ┃                                                                                                  ┃
@@ -1454,8 +1446,8 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┏▶ THREAD  src/main.rs:10 (3 comments)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ @alice on src/main.rs:10                                                                        ▲
+        ┏▶ THREAD  src/main.rs:R10 (3 comments)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ @alice on src/main.rs:R10                                                                       ▲
         ┃    Needs refactoring                                                                             █
         ┃                                                                                                  █
         ┃    @bob  2025-01-02                                                                              █
@@ -1546,7 +1538,7 @@ mod tests {
 
         let rendered = render_full(&mut app);
         assert!(
-            rendered.contains("@alice [resolved] on src/main.rs:40"),
+            rendered.contains("@alice [resolved] on src/main.rs:R40"),
             "expanded root must show [resolved]:\n{rendered}"
         );
         assert!(
@@ -1628,11 +1620,11 @@ mod tests {
 
         let rendered = render_full(&mut app);
         assert!(
-            rendered.contains("@alice [resolved] on src/main.rs:20"),
+            rendered.contains("@alice [resolved] on src/main.rs:R20"),
             "thread with resolved root should display [resolved] badge:\n{rendered}"
         );
         assert!(
-            !rendered.contains("@alice [resolved] on src/main.rs:30"),
+            !rendered.contains("@alice [resolved] on src/main.rs:R30"),
             "thread whose only resolved comment is a reply must not display [resolved] on the root:\n{rendered}"
         );
     }

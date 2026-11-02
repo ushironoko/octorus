@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Stdout;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -90,13 +90,11 @@ fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
     })
 }
 
-/// Every `LEFT` endpoint of a comment must hit an old-file row.
-/// A `RIGHT` start line is not required. New-file placement ignores it.
-fn left_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
-    let Some(line) = comment.line else {
+fn comment_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
+    let Some(anchor) = comment_anchor(comment) else {
         return false;
     };
-    if find_diff_line_index(patch, SideLine::left(line)).is_none() {
+    if find_diff_line_index(patch, anchor).is_none() {
         return false;
     }
     let Some(start) = comment.start_line else {
@@ -109,7 +107,59 @@ fn left_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
             .as_deref()
             .or(comment.location.side.as_deref()),
     );
-    start_side == DiffSide::Right || find_diff_line_index(patch, SideLine::left(start)).is_some()
+    start_side != DiffSide::Left || find_diff_line_index(patch, SideLine::left(start)).is_some()
+}
+
+pub(crate) fn format_review_location(comment: &ReviewComment, show_line: bool) -> String {
+    if show_line {
+        if let Some(line) = comment.line {
+            let mark = match parse_diff_side(comment.location.side.as_deref()) {
+                DiffSide::Left => "L",
+                DiffSide::Right => "R",
+            };
+            return format!("{}:{mark}{line}", comment.path);
+        }
+    }
+    comment.path.clone()
+}
+
+pub(crate) fn review_comment_shows_line(
+    comment: &ReviewComment,
+    files: &[ChangedFile],
+    files_loaded: bool,
+    patches_pending: bool,
+) -> bool {
+    if comment.line.is_none() {
+        return false;
+    }
+    if !files_loaded {
+        return true;
+    }
+    !matches!(
+        files.iter().find(|file| file.filename == comment.path),
+        Some(file) if file.patch.is_none() && !patches_pending
+    )
+}
+
+pub(crate) fn review_comment_outdated(
+    comment: &ReviewComment,
+    files: &[ChangedFile],
+    files_loaded: bool,
+    patches_pending: bool,
+) -> bool {
+    if comment.line.is_none() {
+        return true;
+    }
+    if !files_loaded {
+        return false;
+    }
+    let Some(file) = files.iter().find(|file| file.filename == comment.path) else {
+        return true;
+    };
+    let Some(patch) = file.patch.as_deref() else {
+        return !patches_pending;
+    };
+    !comment_anchor_resolves(comment, patch)
 }
 
 impl App {
@@ -1092,6 +1142,7 @@ impl App {
         // Find file index by path
         let file_index = self.files().iter().position(|f| &f.filename == target_path);
 
+        self.cmt.line_notice = None;
         if let Some(idx) = file_index {
             self.selected_file = idx;
             self.diff_view_return_state = AppState::FileList;
@@ -1102,7 +1153,6 @@ impl App {
             self.update_file_comment_positions();
             self.ensure_diff_cache();
 
-            // Find diff line index from pre-computed positions
             let diff_line_index = self
                 .cmt
                 .file_comment_positions
@@ -1113,6 +1163,8 @@ impl App {
             if let Some(line_idx) = diff_line_index {
                 self.diff_scroll.selected_line = line_idx;
                 self.diff_scroll.scroll_offset = line_idx;
+            } else {
+                self.cmt.line_notice = Some("Line no longer in diff".to_string());
             }
         }
     }
@@ -1142,7 +1194,7 @@ impl App {
             let Some(anchor) = comment_anchor(comment) else {
                 continue;
             };
-            if anchor.side == DiffSide::Left && !left_anchor_resolves(comment, &patch) {
+            if !comment_anchor_resolves(comment, &patch) {
                 continue;
             }
             if let Some(diff_index) = find_diff_line_index(&patch, anchor) {
@@ -1158,27 +1210,35 @@ impl App {
             .sort_by_key(|pos| pos.diff_line_index);
     }
 
-    /// `true` when a `LEFT` comment has no old-file row in the loaded diff.
-    ///
-    /// A file whose patch is still loading is not outdated. A missing file,
-    /// a null `line`, or an old line that is not in the patch is outdated.
-    pub(crate) fn left_review_comment_is_outdated(
-        comment: &ReviewComment,
-        files: &[ChangedFile],
-    ) -> bool {
-        if parse_diff_side(comment.location.side.as_deref()) != DiffSide::Left {
-            return false;
-        }
-        if comment.line.is_none() {
-            return true;
-        }
-        let Some(file) = files.iter().find(|file| file.filename == comment.path) else {
-            return true;
+    fn patches_pending(&self) -> bool {
+        self.batch_diff_receiver.is_some() || self.lazy_diff_receiver.is_some()
+    }
+
+    fn files_loaded(&self) -> bool {
+        matches!(self.data_state, DataState::Loaded { .. })
+    }
+
+    pub(crate) fn review_list_marks(&self) -> (HashSet<u64>, HashSet<u64>) {
+        let files_loaded = self.files_loaded();
+        let patches_pending = self.patches_pending();
+        let files = match &self.data_state {
+            DataState::Loaded { files, .. } => files.as_slice(),
+            _ => &[],
         };
-        let Some(patch) = file.patch.as_deref() else {
-            return false;
+        let Some(comments) = self.cmt.review_comments.as_deref() else {
+            return (HashSet::new(), HashSet::new());
         };
-        !left_anchor_resolves(comment, patch)
+        let mut outdated_ids = HashSet::new();
+        let mut hidden_line_ids = HashSet::new();
+        for comment in comments {
+            if review_comment_outdated(comment, files, files_loaded, patches_pending) {
+                outdated_ids.insert(comment.id);
+            }
+            if !review_comment_shows_line(comment, files, files_loaded, patches_pending) {
+                hidden_line_ids.insert(comment.id);
+            }
+        }
+        (outdated_ids, hidden_line_ids)
     }
     /// Get comment indices at the current selected line
     pub fn get_comment_indices_at_current_line(&self) -> Vec<usize> {

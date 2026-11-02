@@ -5258,6 +5258,26 @@ fn test_update_file_comment_positions_stale_comment() {
     assert!(app.cmt.file_comment_positions.is_empty());
 }
 
+fn comment_flags(app: &App) -> (bool, bool) {
+    (
+        matches!(app.data_state, DataState::Loaded { .. }),
+        app.batch_diff_receiver.is_some() || app.lazy_diff_receiver.is_some(),
+    )
+}
+
+fn comment_is_outdated(app: &App, comment: &ReviewComment) -> bool {
+    let (loaded, pending) = comment_flags(app);
+    super::comments::review_comment_outdated(comment, app.files(), loaded, pending)
+}
+
+fn comment_location(app: &App, comment: &ReviewComment) -> String {
+    let (loaded, pending) = comment_flags(app);
+    super::comments::format_review_location(
+        comment,
+        super::comments::review_comment_shows_line(comment, app.files(), loaded, pending),
+    )
+}
+
 fn review_on(
     id: u64,
     line: Option<u32>,
@@ -5538,10 +5558,8 @@ fn missing_newline_marker_does_not_accept_the_next_line_number() {
     ]);
     app.update_file_comment_positions();
     assert!(app.cmt.file_comment_positions.is_empty());
-    assert!(App::left_review_comment_is_outdated(
-        &app.cmt.review_comments.as_ref().unwrap()[0],
-        app.files(),
-    ));
+    let comment = app.cmt.review_comments.as_ref().unwrap()[0].clone();
+    assert!(comment_is_outdated(&app, &comment));
 }
 
 #[tokio::test]
@@ -5562,11 +5580,19 @@ async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff(
     app.cmt.selected_comment = 1;
     app.jump_to_comment();
     assert_eq!(app.diff_scroll.selected_line, 0);
+    assert_eq!(
+        app.cmt.line_notice.as_deref(),
+        Some("Line no longer in diff")
+    );
     assert_eq!(app.cmt.file_comment_positions.len(), 1);
 
     install_plain_diff(&mut app);
     app.state = AppState::DiffView;
     let diff = render_screen(&mut app, 100, 24);
+    assert!(
+        diff.contains("Line no longer in diff"),
+        "outdated jump should explain the row 0 landing\n{diff}"
+    );
     assert!(row_containing(&diff, "added-right").contains('●'));
     assert!(!row_containing(&diff, "removed-left").contains('●'));
     assert!(!diff.contains("left is gone"));
@@ -5575,9 +5601,8 @@ async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff(
     app.state = AppState::CommentList;
     app.cmt.comment_tab = CommentTab::Review;
     let list = render_screen(&mut app, 100, 24);
-    let placed = row_containing(&list, "test.rs:11");
-    let missing = row_containing(&list, "test.rs:40");
-    let dropped = row_containing(&list, "test.rs");
+    let placed = row_containing(&list, "test.rs:R11");
+    let missing = row_containing(&list, "test.rs:L40");
     assert!(!placed.contains("outdated"), "RIGHT row: {placed:?}");
     assert!(
         missing.contains("outdated"),
@@ -5586,8 +5611,8 @@ async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff(
     assert!(list.contains("left is gone"));
     assert!(
         list.lines()
-            .any(|line| line.contains("outdated") && !line.contains(":40")),
-        "null-line LEFT comment should be outdated\n{dropped}\n{list}"
+            .any(|line| line.contains("on test.rs outdated") && !line.contains("test.rs:")),
+        "null-line comment should be outdated with no number\n{list}"
     );
 }
 
@@ -5603,10 +5628,8 @@ fn right_comment_with_a_missing_start_stays_on_the_new_line() {
     )]);
     app.update_file_comment_positions();
     assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 3);
-    assert!(!App::left_review_comment_is_outdated(
-        &app.cmt.review_comments.as_ref().unwrap()[0],
-        app.files(),
-    ));
+    let comment = app.cmt.review_comments.as_ref().unwrap()[0].clone();
+    assert!(!comment_is_outdated(&app, &comment));
 }
 
 #[test]
@@ -5658,10 +5681,8 @@ fn multiline_left_comment_with_a_missing_start_is_not_placed() {
     app.build_review_threads();
     app.update_file_comment_positions();
     assert!(app.cmt.file_comment_positions.is_empty());
-    assert!(App::left_review_comment_is_outdated(
-        &app.cmt.review_comments.as_ref().unwrap()[0],
-        app.files(),
-    ));
+    let comment = app.cmt.review_comments.as_ref().unwrap()[0].clone();
+    assert!(comment_is_outdated(&app, &comment));
 
     install_plain_diff(&mut app);
     app.state = AppState::DiffView;
@@ -5672,14 +5693,14 @@ fn multiline_left_comment_with_a_missing_start_is_not_placed() {
     app.state = AppState::CommentList;
     app.cmt.comment_tab = CommentTab::Review;
     let list = render_screen(&mut app, 100, 24);
-    assert!(row_containing(&list, "test.rs:11").contains("outdated"));
+    assert!(row_containing(&list, "test.rs:L11").contains("outdated"));
     assert!(list.contains("range starts outside the hunk"));
     insta::assert_snapshot!(list, @"
     ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
     │ [Review Threads (1)]  [Discussion (0)]                                                           │
     └──────────────────────────────────────────────────────────────────────────────────────────────────┘
     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-    ┃▌ @reviewer on test.rs:11 outdated                                                                ┃
+    ┃▌ @reviewer on test.rs:L11 outdated                                                               ┃
     ┃    range starts outside the hunk                                                                 ┃
     ┃                                                                                                  ┃
     ┃                                                                                                  ┃
@@ -5709,12 +5730,103 @@ fn left_comment_waits_for_a_loading_patch_before_calling_it_outdated() {
     if let DataState::Loaded { files, .. } = &mut app.data_state {
         files[0].patch = None;
     }
-    assert!(!App::left_review_comment_is_outdated(&comment, app.files()));
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.batch_diff_receiver = Some(rx);
+    assert!(!comment_is_outdated(&app, &comment));
+    assert_eq!(comment_location(&app, &comment), "test.rs:L11");
+    drop(tx);
+    app.batch_diff_receiver = None;
+
+    assert!(comment_is_outdated(&app, &comment));
+    assert_eq!(comment_location(&app, &comment), "test.rs");
+
+    let right = review_on(3, Some(11), Some("RIGHT"), None, "binary right");
+    assert!(comment_is_outdated(&app, &right));
+    assert_eq!(comment_location(&app, &right), "test.rs");
 
     let orphan = review_on(2, Some(11), Some("LEFT"), None, "no file");
     let mut orphan = orphan;
     orphan.path = "missing.rs".to_string();
-    assert!(App::left_review_comment_is_outdated(&orphan, app.files()));
+    assert!(comment_is_outdated(&app, &orphan));
+    assert_eq!(comment_location(&app, &orphan), "missing.rs:L11");
+}
+
+#[test]
+fn right_null_line_comment_is_outdated_without_a_number() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    let comment = review_on(1, None, Some("RIGHT"), None, "no line on the new file");
+    app.cmt.review_comments = Some(vec![comment.clone()]);
+    app.build_review_threads();
+    assert!(comment_is_outdated(&app, &comment));
+    assert_eq!(comment_location(&app, &comment), "test.rs");
+
+    app.state = AppState::CommentList;
+    app.cmt.comment_tab = CommentTab::Review;
+    let list = render_screen(&mut app, 100, 24);
+    let row = list
+        .lines()
+        .find(|line| line.contains("no line on the new file"))
+        .unwrap_or("");
+    assert!(
+        list.lines()
+            .any(|line| line.contains("on test.rs outdated") && !line.contains("test.rs:")),
+        "null RIGHT line: {row}\n{list}"
+    );
+}
+
+#[test]
+fn next_and_prev_comment_visit_left_then_right_rows() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(11), Some("LEFT"), None, "removed"),
+        review_on(2, Some(11), Some("RIGHT"), None, "added"),
+    ]);
+    app.update_file_comment_positions();
+    app.diff_scroll.selected_line = 0;
+
+    app.jump_to_next_comment();
+    assert_eq!(app.diff_scroll.selected_line, 2);
+    app.jump_to_next_comment();
+    assert_eq!(app.diff_scroll.selected_line, 3);
+    app.jump_to_prev_comment();
+    assert_eq!(app.diff_scroll.selected_line, 2);
+    app.jump_to_prev_comment();
+    assert_eq!(app.diff_scroll.selected_line, 2);
+}
+
+#[test]
+fn left_start_right_end_lands_on_the_new_line() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(11),
+        Some("RIGHT"),
+        Some((11, "LEFT")),
+        "spans the change",
+    )]);
+    app.update_file_comment_positions();
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 3);
+    let comment = app.cmt.review_comments.as_ref().unwrap()[0].clone();
+    assert!(!comment_is_outdated(&app, &comment));
+    assert_eq!(comment_location(&app, &comment), "test.rs:R11");
+}
+
+#[test]
+fn left_start_right_end_is_outdated_when_the_old_start_is_missing() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(11),
+        Some("RIGHT"),
+        Some((99, "LEFT")),
+        "old start is gone",
+    )]);
+    app.build_review_threads();
+    app.update_file_comment_positions();
+    assert!(app.cmt.file_comment_positions.is_empty());
+    let comment = app.cmt.review_comments.as_ref().unwrap()[0].clone();
+    assert!(comment_is_outdated(&app, &comment));
+    assert_eq!(comment_location(&app, &comment), "test.rs:R11");
 }
 
 #[test]

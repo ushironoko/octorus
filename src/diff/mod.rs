@@ -992,9 +992,6 @@ Binary files /dev/null and b/image.png differ
 
     #[test]
     fn no_newline_marker_does_not_shift_later_file_lines_and_keeps_github_position() {
-        // keep is old/new 1. `old` is old 2. The marker is not a file line.
-        // `new` is new 2. `tail` is old/new 3.
-        // GitHub position still counts the marker, so `new` stays at position 4.
         let patch = "\
 @@ -1,3 +1,3 @@
  keep

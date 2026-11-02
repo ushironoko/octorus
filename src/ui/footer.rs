@@ -4,7 +4,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 
-use crate::app::{App, ShellPhase};
+use crate::app::{App, AppState, ShellPhase};
 use crate::config::KeybindingsConfig;
 
 pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
@@ -68,6 +68,13 @@ pub fn build_footer_line_with_focus<'a>(
             format!("{} {}", icon, message),
             Style::default().fg(color),
         ))
+    } else if let Some(message) = app
+        .cmt
+        .line_notice
+        .as_deref()
+        .filter(|_| matches!(app.state, AppState::DiffView | AppState::SplitViewDiff))
+    {
+        Line::from(Span::styled(message.to_string(), app.theme.warning.style()))
     } else if let Some(message) = app.pr_open_notice() {
         Line::from(Span::styled(message, Style::default().fg(Color::Yellow)))
     } else {
