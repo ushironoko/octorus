@@ -25,6 +25,13 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
     )
 }
 
+/// Priority cascade:
+/// 1. Shell input overlay (highest, focused pane only)
+/// 2. Approve confirmation
+/// 3. Comment, issue comment, or review submitting
+/// 4. Submission result
+/// 5. PR open notice
+/// 6. Default help text plus loading indicators
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
     build_footer_line_with_focus(app, help_text, true)
 }

@@ -6365,7 +6365,18 @@ async fn test_review_submit_disconnect_reports_unknown_result() {
     let (success, message) = review_toast(&app);
     assert!(!success);
     assert!(!message.contains("Review failed"));
-    insta::assert_snapshot!(message, @"結果不明");
+    insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
+
+    let mut switched = App::new_for_test();
+    switched.pr_number = Some(2);
+    let (switched_tx, switched_rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    switched.cmt.review_submit_receiver = Some((9, switched_rx));
+    drop(switched_tx);
+    switched.poll_review_submit_updates();
+    insta::assert_snapshot!(
+        review_toast(&switched).1,
+        @"#9 Review result unknown: check GitHub before resubmitting"
+    );
 }
 
 #[tokio::test]
@@ -6396,9 +6407,7 @@ async fn test_review_submit_rejects_a_second_submit_while_one_is_in_flight() {
 
     assert_eq!(polled.load(Ordering::SeqCst), 1);
     assert!(app.is_submitting_review());
-    let (success, message) = review_toast(&app);
-    assert!(!success);
-    insta::assert_snapshot!(message, @"Review is still submitting");
+    assert!(app.cmt.submission_result.is_none());
 
     release_first.send(()).unwrap();
     poll_review_submit_until_done(&mut app).await;
@@ -6445,11 +6454,14 @@ async fn test_wait_for_review_submit_returns_once_the_submit_lands() {
     app.pr_number = Some(1);
     app.spawn_review_submit(ReviewAction::Approve, async { Ok(()) });
 
-    let unfinished = app
-        .wait_for_review_submit(std::time::Duration::from_millis(200))
+    let outcome = app
+        .wait_for_review_submit_until(
+            std::time::Duration::from_millis(200),
+            std::future::pending(),
+        )
         .await;
 
-    assert!(!unfinished);
+    assert!(outcome.stderr_line().is_none());
     let (success, message) = review_toast(&app);
     assert!(success);
     insta::assert_snapshot!(message, @"Review submitted (approved)");
@@ -6461,12 +6473,84 @@ async fn test_wait_for_review_submit_gives_up_after_its_budget() {
     app.pr_number = Some(1);
     app.spawn_review_submit(ReviewAction::Approve, std::future::pending());
 
-    let unfinished = app
-        .wait_for_review_submit(std::time::Duration::from_millis(50))
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_millis(50), std::future::pending())
         .await;
 
-    assert!(unfinished);
     assert!(app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#1 Review submission did not finish. It may still be posted. Check the pull request on GitHub before resubmitting.");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_cancel_says_the_review_may_still_be_posted() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(3);
+    app.spawn_review_submit(ReviewAction::Approve, std::future::pending());
+
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_secs(10), std::future::ready(()))
+        .await;
+
+    assert!(app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#3 Review submission did not finish. It may still be posted. Check the pull request on GitHub before resubmitting.");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_prints_failure_with_pr_number() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    app.spawn_review_submit(ReviewAction::Approve, async {
+        Err(anyhow::anyhow!("network error"))
+    });
+
+    let outcome = app
+        .wait_for_review_submit_until(
+            std::time::Duration::from_millis(200),
+            std::future::pending(),
+        )
+        .await;
+
+    assert!(!app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#7 Review failed: network error");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_prints_unknown_when_the_task_drops() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    let (tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((7, rx));
+    drop(tx);
+
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_millis(50), std::future::pending())
+        .await;
+
+    assert!(!app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#7 Review result unknown: check GitHub before resubmitting");
+}
+
+#[tokio::test]
+async fn test_review_submit_task_panic_reports_unknown_result() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    let (tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((4, rx));
+    let panicked = std::thread::spawn(move || {
+        let _tx = tx;
+        panic!("review submit task panicked");
+    })
+    .join()
+    .is_err();
+    assert!(panicked);
+
+    app.poll_review_submit_updates();
+
+    assert!(!app.is_submitting_review());
+    let (success, message) = review_toast(&app);
+    assert!(!success);
+    assert!(!message.contains("Review failed"));
+    insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
 }
 
 #[tokio::test]

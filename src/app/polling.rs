@@ -532,13 +532,11 @@ impl App {
         }
     }
 
-    pub(crate) fn poll_review_submit_updates(&mut self) {
-        let Some((origin_pr, rx)) = self.cmt.review_submit_receiver.as_mut() else {
-            return;
-        };
+    pub(crate) fn poll_review_submit_updates(&mut self) -> Option<super::ReviewWaitOutcome> {
+        let (origin_pr, rx) = self.cmt.review_submit_receiver.as_mut()?;
         let origin_pr = *origin_pr;
 
-        let (success, message) = match rx.try_recv() {
+        let (success, message, outcome) = match rx.try_recv() {
             Ok(ReviewSubmitResult::Submitted(action)) => {
                 let action_str = match action {
                     ReviewAction::Approve => "approved",
@@ -546,14 +544,33 @@ impl App {
                     ReviewAction::Comment => "commented",
                 };
                 tracing::debug!(action_str, "submit_review: success");
-                (true, format!("Review submitted ({action_str})"))
+                (
+                    true,
+                    format!("Review submitted ({action_str})"),
+                    super::ReviewWaitOutcome::Submitted {
+                        pr_number: origin_pr,
+                    },
+                )
             }
             Ok(ReviewSubmitResult::Failed(text)) => {
                 tracing::debug!(%text, "submit_review: API failed");
-                (false, format!("Review failed: {text}"))
+                (
+                    false,
+                    format!("Review failed: {text}"),
+                    super::ReviewWaitOutcome::Failed {
+                        pr_number: origin_pr,
+                        detail: text,
+                    },
+                )
             }
-            Err(mpsc::error::TryRecvError::Empty) => return,
-            Err(mpsc::error::TryRecvError::Disconnected) => (false, "結果不明".to_string()),
+            Err(mpsc::error::TryRecvError::Empty) => return None,
+            Err(mpsc::error::TryRecvError::Disconnected) => (
+                false,
+                super::REVIEW_RESULT_UNKNOWN.to_string(),
+                super::ReviewWaitOutcome::Unknown {
+                    pr_number: origin_pr,
+                },
+            ),
         };
 
         self.cmt.review_submit_receiver = None;
@@ -564,6 +581,7 @@ impl App {
         };
         self.cmt.submission_result = Some((success, message));
         self.cmt.submission_result_time = Some(Instant::now());
+        Some(outcome)
     }
 
     pub(crate) fn poll_mark_viewed_updates(&mut self) {

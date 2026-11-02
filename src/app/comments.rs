@@ -160,8 +160,6 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         if self.is_submitting_review() {
-            self.cmt.submission_result = Some((false, "Review is still submitting".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
             return Ok(());
         }
         tracing::debug!(?action, "submit_review: start");
@@ -200,11 +198,6 @@ impl App {
     }
 
     pub(crate) fn start_review_submit(&mut self, action: ReviewAction, body: String) {
-        if self.is_submitting_review() {
-            self.cmt.submission_result = Some((false, "Review is still submitting".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
-            return;
-        }
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
         let repo = self.repo.clone();
         let pr_number = self.pr_number();

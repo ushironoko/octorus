@@ -1,4 +1,11 @@
 #!/bin/sh
+# Stand-in for the gh binary. octorus runs `gh` from PATH, so this file has
+# to be installed under that name. It never execs the real gh.
+#   mkdir -p /tmp/fake-bin
+#   ln -s "$PWD/scripts/fake-gh-review.sh" /tmp/fake-bin/gh
+#   PATH="/tmp/fake-bin:$PATH" or --repo example/demo --pr 1
+# `gh pr review` sleeps 5 seconds and exits 0. Other calls print a one-PR
+# fixture or nothing. Set FAKE_GH_LOG to record each invocation.
 if [ -n "${FAKE_GH_LOG:-}" ]; then
     printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 fi
