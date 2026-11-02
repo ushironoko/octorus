@@ -444,7 +444,11 @@ mod tests {
     }
 
     fn draw_pr_list(app: &mut App) -> Buffer {
-        let backend = TestBackend::new(100, 24);
+        draw_sized(app, 100, 24)
+    }
+
+    fn draw_sized(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -636,6 +640,94 @@ mod tests {
             .find(|y| row_text(buf, *y).contains(needle))
             .unwrap_or_else(|| panic!("row {needle} missing\n{}", screen_text(buf)));
         (0..buf.area().width).map(|x| &buf[(x, y)]).collect()
+    }
+
+    fn popup_with(names: &[&str]) -> App {
+        use crate::app::SymbolPopupState;
+
+        let mut app = pr_list_app();
+        app.symbol_popup = Some(SymbolPopupState {
+            symbols: names
+                .iter()
+                .map(|name| ((*name).to_string(), 1, 4))
+                .collect(),
+            selected: 0,
+        });
+        app
+    }
+
+    fn popup_outer_width(buf: &Buffer, name: &str) -> u16 {
+        let y = (0..buf.area().height)
+            .find(|y| row_text(buf, *y).contains(name) || row_text(buf, *y).contains('…'))
+            .unwrap_or_else(|| panic!("popup row missing\n{}", screen_text(buf)));
+        let bar = (0..buf.area().width)
+            .find(|x| buf[(*x, y)].symbol() == "▌")
+            .unwrap_or_else(|| panic!("selection bar missing\n{}", row_text(buf, y)));
+        let left = (0..bar)
+            .rev()
+            .find(|x| buf[(*x, y)].symbol() == "│")
+            .unwrap_or_else(|| panic!("left border missing\n{}", row_text(buf, y)));
+        let right = (bar..buf.area().width)
+            .find(|x| buf[(*x, y)].symbol() == "│")
+            .unwrap_or_else(|| panic!("right border missing\n{}", row_text(buf, y)));
+        right.saturating_sub(left).saturating_add(1)
+    }
+
+    #[test]
+    fn symbol_popup_longest_name_keeps_a_gap_before_the_frame() {
+        let name = "abcdefghijabcdefghij";
+        let mut app = popup_with(&[name, "short"]);
+        let buf = draw_sized(&mut app, 80, 16);
+        let row = row_text(&buf, {
+            (0..buf.area().height)
+                .find(|y| row_text(&buf, *y).contains(name))
+                .unwrap_or_else(|| panic!("name clipped off the popup\n{}", screen_text(&buf)))
+        });
+        let at = row.find(name).expect("name");
+        let next = row[at + name.len()..].chars().next();
+        assert_eq!(
+            next,
+            Some(' '),
+            "longest name touches the frame: {row}\n{}",
+            screen_text(&buf)
+        );
+    }
+
+    #[test]
+    fn symbol_popup_fullwidth_name_uses_the_same_width_as_ascii() {
+        let ascii = "a".repeat(20);
+        let wide = "あ".repeat(10);
+        let mut ascii_app = popup_with(&[&ascii]);
+        let mut wide_app = popup_with(&[&wide]);
+        let ascii_buf = draw_sized(&mut ascii_app, 80, 12);
+        let wide_buf = draw_sized(&mut wide_app, 80, 12);
+        assert_eq!(
+            popup_outer_width(&ascii_buf, &ascii),
+            popup_outer_width(&wide_buf, &wide),
+            "byte length sized the fullwidth name\nascii:\n{}\nwide:\n{}",
+            screen_text(&ascii_buf),
+            screen_text(&wide_buf)
+        );
+    }
+
+    #[test]
+    fn symbol_popup_narrow_terminal_keeps_the_start_of_the_name() {
+        let name = "LongSymbolName";
+        let mut app = popup_with(&[name]);
+        let buf = draw_sized(&mut app, 16, 8);
+        let rendered = screen_text(&buf);
+        assert!(
+            rendered.contains('…'),
+            "narrow popup did not truncate the name:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Long"),
+            "narrow popup hid the start of the name:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(name),
+            "narrow popup drew the full name:\n{rendered}"
+        );
     }
 
     #[test]

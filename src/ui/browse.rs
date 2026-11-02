@@ -1774,7 +1774,7 @@ fn render_symbol_search(
 }
 
 /// Keep `selected` visible inside a window `height` rows tall.
-fn scroll_offset(selected: usize, total: usize, height: usize) -> usize {
+pub(crate) fn scroll_offset(selected: usize, total: usize, height: usize) -> usize {
     if height == 0 || total <= height {
         return 0;
     }

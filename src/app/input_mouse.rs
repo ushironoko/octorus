@@ -1013,6 +1013,76 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_scrolled_symbol_popup_click_selects_the_visible_symbol() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let symbols: Vec<(String, usize, usize)> = (0..40)
+            .map(|index| (format!("id{index:02}"), 0, 0))
+            .collect();
+        let mut app = loaded_file_list_app(1);
+        app.symbol_popup = Some(super::super::SymbolPopupState {
+            symbols,
+            selected: 39,
+        });
+        let backend = TestBackend::new(40, 12);
+        let mut screen = Terminal::new(backend).unwrap();
+        screen
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let buf = screen.backend().buffer().clone();
+        let (x, y, shown) = (0..buf.area().height)
+            .find_map(|y| {
+                let mut text = String::new();
+                let mut columns = Vec::new();
+                let mut cursor = 0u16;
+                while cursor < buf.area().width {
+                    let symbol = buf[(cursor, y)].symbol();
+                    let width = u16::try_from(unicode_width::UnicodeWidthStr::width(symbol))
+                        .unwrap_or(1)
+                        .max(1);
+                    for _ in 0..width {
+                        columns.push(cursor);
+                    }
+                    text.push_str(symbol);
+                    cursor = cursor.saturating_add(width);
+                }
+                let start = text.find("id")?;
+                if text[start..].starts_with("id39") {
+                    return None;
+                }
+                let index: usize = text[start + 2..start + 4].parse().ok()?;
+                Some((columns[start], y, index))
+            })
+            .unwrap_or_else(|| panic!("no scrolled symbol row"));
+        let target = app
+            .hit_map
+            .hit(x, y)
+            .unwrap_or_else(|| panic!("click missed the symbol row at {x},{y}"));
+        let HitTarget::ListRow {
+            list: ListKind::SymbolPopup,
+            row,
+            ..
+        } = target
+        else {
+            panic!("click was not a symbol row: {target:?}");
+        };
+        let mut terminal = Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 40, 12)),
+            },
+        )
+        .unwrap();
+        app.symbol_popup_click(row, &mut terminal).await.unwrap();
+        assert_eq!(
+            app.symbol_popup.as_ref().unwrap().selected,
+            shown,
+            "click selected a different symbol than the row that was drawn"
+        );
+    }
+
     #[test]
     fn test_symbol_popup_move_and_wheel_dispatch() {
         let mut app = loaded_file_list_app(3);
