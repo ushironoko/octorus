@@ -711,22 +711,20 @@ mod tests {
     }
 
     #[test]
-    fn symbol_popup_narrow_terminal_keeps_the_start_of_the_name() {
-        let name = "LongSymbolName";
-        let mut app = popup_with(&[name]);
-        let buf = draw_sized(&mut app, 16, 8);
-        let rendered = screen_text(&buf);
+    fn symbol_popup_rows_use_one_space_after_the_bar() {
+        let mut app = popup_with(&["result", "shortFn"]);
+        let rendered = screen_text(&draw_sized(&mut app, 40, 12));
         assert!(
-            rendered.contains('…'),
-            "narrow popup did not truncate the name:\n{rendered}"
+            rendered.contains("▌ result  "),
+            "selected row is not ▌, one space, the name, and the pad:\n{rendered}"
         );
         assert!(
-            rendered.contains("Long"),
-            "narrow popup hid the start of the name:\n{rendered}"
+            !rendered.contains("▌  result"),
+            "selected row kept a pad before the name:\n{rendered}"
         );
         assert!(
-            !rendered.contains(name),
-            "narrow popup drew the full name:\n{rendered}"
+            rendered.contains("  shortFn"),
+            "unselected row is not two spaces and the name:\n{rendered}"
         );
     }
 

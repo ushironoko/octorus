@@ -50,7 +50,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, AppState, DataState, ShellCommandResult, ShellPhase};
-use crate::ui::common::truncate_with_width;
 
 static KITTY_ENABLED: AtomicBool = AtomicBool::new(false);
 static MOUSE_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -245,17 +244,16 @@ fn render_symbol_popup(frame: &mut Frame, app: &mut App) {
     let theme = app.theme;
     let area = frame.area();
 
+    let name_pad = "  ";
     let border = 2usize;
-    let gutter = theme::SELECTION_MARKER_WIDTH;
-    let trailing = 2usize;
-    let longest = popup
+    let name_max = popup
         .symbols
         .iter()
         .map(|(name, _, _)| name.width())
         .max()
         .unwrap_or(10);
-    let desired = longest + gutter + trailing + border;
-    let width = u16::try_from(desired.max(20))
+    let max_width = name_max + theme::SELECTION_MARKER_WIDTH + name_pad.len() + border;
+    let width = u16::try_from(max_width.max(20))
         .unwrap_or(u16::MAX)
         .min(area.width.saturating_sub(4));
     let height = u16::try_from(popup.symbols.len() + border)
@@ -269,20 +267,17 @@ fn render_symbol_popup(frame: &mut Frame, app: &mut App) {
     let inner = block.inner(popup_area);
     let inner_height = usize::from(inner.height);
     let offset = browse::scroll_offset(popup.selected, popup.symbols.len(), inner_height);
-    let room = usize::from(inner.width).saturating_sub(gutter);
-    let gap = room.saturating_sub(longest).min(trailing);
-    let name_budget = room.saturating_sub(gap);
     let visible: Vec<_> = popup
         .symbols
         .iter()
         .enumerate()
         .skip(offset)
         .take(inner_height)
-        .map(|(index, (name, _, _))| (index, truncate_with_width(name, name_budget)))
+        .map(|(index, (name, _, _))| (index, format!("{name}{name_pad}")))
         .collect();
     let items: Vec<ListItem> = visible
         .iter()
-        .map(|(_, name)| ListItem::new(Line::from(Span::raw(name.clone().into_owned()))))
+        .map(|(_, name)| ListItem::new(Line::from(Span::raw(name.clone()))))
         .collect();
 
     frame.render_widget(Clear, popup_area);
