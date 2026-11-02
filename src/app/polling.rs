@@ -8,7 +8,7 @@ use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
 use crate::diff_store::{PrefetchItem, MAX_PREFETCH_FILES};
 use crate::github::{ChangedFile, CiStatus};
-use crate::loader::{CommentSubmitResult, DataLoadResult};
+use crate::loader::{CommentSubmitResult, DataLoadResult, ReviewSubmitResult};
 
 use super::types::*;
 use super::{App, DataState};
@@ -525,6 +525,40 @@ impl App {
                 self.cmt.comment_submit_receiver = None;
             }
         }
+    }
+
+    pub(crate) fn poll_review_submit_updates(&mut self) {
+        let Some((origin_pr, rx)) = self.cmt.review_submit_receiver.as_mut() else {
+            return;
+        };
+        let origin_pr = *origin_pr;
+
+        let (success, message) = match rx.try_recv() {
+            Ok(ReviewSubmitResult::Submitted(action)) => {
+                let action_str = match action {
+                    ReviewAction::Approve => "approved",
+                    ReviewAction::RequestChanges => "changes requested",
+                    ReviewAction::Comment => "commented",
+                };
+                tracing::debug!(action_str, "submit_review: success");
+                (true, format!("Review submitted ({action_str})"))
+            }
+            Ok(ReviewSubmitResult::Failed(text)) => {
+                tracing::debug!(%text, "submit_review: API failed");
+                (false, format!("Review failed: {text}"))
+            }
+            Err(mpsc::error::TryRecvError::Empty) => return,
+            Err(mpsc::error::TryRecvError::Disconnected) => (false, "結果不明".to_string()),
+        };
+
+        self.cmt.review_submit_receiver = None;
+        let message = if self.pr_number == Some(origin_pr) {
+            message
+        } else {
+            format!("#{origin_pr} {message}")
+        };
+        self.cmt.submission_result = Some((success, message));
+        self.cmt.submission_result_time = Some(Instant::now());
     }
 
     pub(crate) fn poll_mark_viewed_updates(&mut self) {

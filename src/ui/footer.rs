@@ -28,7 +28,7 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
 /// Priority cascade:
 /// 1. Shell input overlay (highest, focused pane only)
 /// 2. Approve confirmation
-/// 3. PR comment submitting
+/// 3. PR comment or review submitting
 /// 4. Issue comment submitting
 /// 5. Submission result
 /// 6. Default help text + loading indicators
@@ -53,7 +53,10 @@ pub fn build_footer_line_with_focus<'a>(
             app.approve_confirmation_footer_text(),
             Style::default().fg(Color::Yellow),
         ))
-    } else if app.is_submitting_comment() || app.is_issue_comment_submitting() {
+    } else if app.is_submitting_comment()
+        || app.is_issue_comment_submitting()
+        || app.is_submitting_review()
+    {
         Line::from(Span::styled(
             format!("{} Submitting...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
@@ -151,7 +154,7 @@ fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AppState, PrOpenSource};
+    use crate::app::{App, AppState, PrOpenSource, ReviewAction};
     use insta::assert_snapshot;
 
     const HELP: &str = "j/k: move | q: quit";
@@ -189,6 +192,26 @@ mod tests {
         assert!(text.contains("Submitting..."));
         assert!(!text.contains(HELP));
         assert_eq!(line.spans.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_review_submit_in_flight_renders_submitting_footer() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut app = App::new_for_test();
+        app.pr_number = Some(1);
+        app.spawn_review_submit(ReviewAction::Approve, std::future::pending());
+        assert!(app.is_submitting_review());
+
+        let line = build_footer_line(&app, HELP);
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(line, frame.area()))
+            .unwrap();
+        let row = crate::ui::test_buffer::row_text(terminal.backend().buffer(), 0);
+
+        assert!(row.contains("Submitting..."));
+        assert!(!row.contains(HELP));
     }
 
     #[test]

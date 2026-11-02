@@ -438,6 +438,7 @@ impl App {
             self.poll_lazy_diff_updates();
             self.poll_discussion_comment_updates();
             self.poll_comment_submit_updates();
+            self.poll_review_submit_updates();
             self.poll_mark_viewed_updates();
             self.poll_rally_events();
             self.poll_checks_updates();
@@ -548,6 +549,10 @@ impl App {
     /// コメント送信中かどうか
     pub fn is_submitting_comment(&self) -> bool {
         self.cmt.comment_submitting
+    }
+
+    pub fn is_submitting_review(&self) -> bool {
+        self.cmt.review_submit_receiver.is_some()
     }
 
     /// Approve confirmation prompt is active.

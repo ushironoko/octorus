@@ -10,6 +10,7 @@ use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComm
 use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
 use crate::github::{self, comment::ReviewComment, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
+use crate::loader::ReviewSubmitResult;
 use crate::ui;
 
 use super::types::*;
@@ -167,6 +168,40 @@ impl App {
         self.cmt.pending_approve_body = None;
         Ok(())
     }
+
+    pub fn start_review_submit(&mut self, action: ReviewAction, body: String) {
+        if self.is_submitting_review() {
+            self.cmt.submission_result = Some((false, "Review is still submitting".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return;
+        }
+        tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number();
+        self.spawn_review_submit(action, async move {
+            github::submit_review(&repo, pr_number, action, &body).await
+        });
+    }
+
+    pub(crate) fn spawn_review_submit<F>(&mut self, action: ReviewAction, submit: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        if self.is_submitting_review() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel(1);
+        self.cmt.review_submit_receiver = Some((self.pr_number(), rx));
+        self.cmt.pending_approve_body = None;
+        tokio::spawn(async move {
+            let result = match submit.await {
+                Ok(()) => ReviewSubmitResult::Submitted(action),
+                Err(e) => ReviewSubmitResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(result).await;
+        });
+    }
+
     pub(crate) fn enter_suggestion_input(&mut self) {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
