@@ -440,7 +440,6 @@ impl App {
             return Ok(());
         }
 
-        // Using separate check for review comment in FileList context
         if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal)?;
             return Ok(());

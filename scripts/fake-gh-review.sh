@@ -1,9 +1,4 @@
 #!/bin/sh
-# Stand-in for gh. It never execs the real gh, so it cannot write to GitHub.
-# `gh pr review` sleeps 5 seconds and exits 0. Other calls print a one-PR
-# fixture or nothing, which is enough to open a file list for a local check.
-# Set FAKE_GH_LOG to a path to record each invocation.
-
 if [ -n "${FAKE_GH_LOG:-}" ]; then
     printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 fi

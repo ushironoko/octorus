@@ -468,11 +468,8 @@ impl App {
             self.handle_input(&mut terminal).await?;
         }
 
-        // gh is kill_on_drop and main calls process::exit after run returns,
-        // so leaving while the submit task runs can cut gh off mid-review.
         let review_unfinished = self.wait_for_review_submit(Duration::from_secs(10)).await;
 
-        // Graceful shutdown: abort any running rally
         if let Some(handle) = self.rally_abort_handle.take() {
             handle.abort();
         }

@@ -142,7 +142,6 @@ impl App {
             return Ok(());
         };
 
-        // All actions with non-empty body: submit immediately
         self.start_review_submit(action, body);
         Ok(())
     }

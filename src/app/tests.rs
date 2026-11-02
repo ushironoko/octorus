@@ -2694,8 +2694,6 @@ fn test_pending_approve_choice_a_submits_empty_body() {
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('a')));
 
     assert_eq!(choice, PendingApproveChoice::Submit);
-    // pending_approve_body is NOT taken by handle_pending_approve_choice;
-    // it is taken by the caller (handle_input) before calling start_review_submit.
     assert!(app.cmt.pending_approve_body.is_some());
 }
 
