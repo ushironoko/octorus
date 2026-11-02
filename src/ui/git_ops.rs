@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -11,9 +11,11 @@ use ratatui::{
     Frame,
 };
 
+use super::chrome::{pane_block, PaneTitle};
 use super::common::render_rally_status_bar;
 use super::diff_view;
-use crate::app::{App, AppState, CommitLogState, FileStatus, GitOpsState, LeftPaneFocus, TreeRow};
+use super::theme::{Attention, Theme};
+use crate::app::{App, CommitLogState, FileStatus, GitOpsState, LeftPaneFocus, TreeRow};
 use crate::github::{format_relative_time, PrCommit};
 use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind};
 
@@ -39,14 +41,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ])
         .split(outer_chunks[0]);
 
-    let is_diff_focused = app.state == AppState::GitOpsSplitDiff;
-    let left_focus = app
-        .git_ops_state
-        .as_ref()
-        .map(|ops| ops.left_focus)
-        .unwrap_or(LeftPaneFocus::Tree);
-    let is_tree_focused = !is_diff_focused && left_focus == LeftPaneFocus::Tree;
-    let is_commits_focused = !is_diff_focused && left_focus == LeftPaneFocus::Commits;
+    let theme = app.theme;
+    let panes = app.git_ops_attention();
 
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -61,9 +57,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .set_visible_lines(diff_visible_lines);
     }
 
-    render_tree_pane(frame, app, left_chunks[0], is_tree_focused);
-    render_commits_pane(frame, app, left_chunks[1], is_commits_focused);
-    render_diff_pane(frame, app, h_chunks[1], is_diff_focused);
+    render_tree_pane(frame, app, left_chunks[0], panes.tree, theme);
+    render_commits_pane(frame, app, left_chunks[1], panes.commits, theme);
+    render_diff_pane(frame, app, h_chunks[1], panes.diff, theme);
     super::split_view::register_split_divider(app, h_chunks[0], outer_chunks[0]);
 
     if has_rally {
@@ -75,20 +71,10 @@ fn render_tree_pane(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    is_focused: bool,
+    attention: Attention,
+    theme: Theme,
 ) {
-    let has_pending_confirm = app
-        .git_ops_state
-        .as_ref()
-        .is_some_and(|ops| ops.pending_confirm.is_some());
-
-    let border_color = if has_pending_confirm {
-        Color::Red
-    } else if is_focused {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
+    let is_focused = attention.has_keys();
 
     let simple_lines =
         app.git_ops_state
@@ -120,23 +106,24 @@ fn render_tree_pane(
         "staged:{} unstaged:{} untracked:{}",
         staged_count, unstaged_count, untracked_count,
     );
-    let header = Paragraph::new(header_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title("Git Status"),
-    );
+    let header = Paragraph::new(header_text).block(pane_block(
+        theme,
+        PaneTitle::AsIs("Git Status"),
+        attention,
+    ));
     frame.render_widget(header, chunks[0]);
 
     if ops.entries.is_empty() {
         let empty = Paragraph::new("No changes")
             .style(Style::default().fg(Color::DarkGray))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color))
-                    .title("Files (0)"),
-            );
+            .block(pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "Files",
+                    detail: "(0)",
+                },
+                attention,
+            ));
         frame.render_widget(empty, chunks[1]);
     } else {
         let total = ops.tree.visible_rows.len();
@@ -145,18 +132,20 @@ fn render_tree_pane(
             .tree
             .visible_rows
             .iter()
-            .enumerate()
-            .map(|(i, row)| build_tree_row_item(ops, row, i == selected))
+            .map(|row| build_tree_row_item(ops, row))
             .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title(format!("Files ({})", ops.entries.len()));
+        let detail = format!("({})", ops.entries.len());
+        let block = pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Files",
+                detail: &detail,
+            },
+            attention,
+        );
         let inner_area = block.inner(chunks[1]);
-        let list = List::new(items)
-            .block(block)
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
             .with_offset(ops.tree.scroll_offset)
@@ -229,18 +218,13 @@ fn render_tree_pane(
         .as_ref()
         .and_then(|ops| ops.pending_confirm.as_ref());
     if let Some(texts) = simple_lines {
-        let style = Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD);
+        let style = theme.danger.style();
         let lines: Vec<Line> = texts
             .into_iter()
             .map(|text| Line::from(Span::styled(text, style)))
             .collect();
-        let footer = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red)),
-        );
+        let footer =
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(style));
         frame.render_widget(footer, chunks[2]);
         return;
     }
@@ -272,42 +256,23 @@ fn render_tree_pane(
             "Tab/h: focus tree"
         }
     };
-    if has_pending_confirm {
-        let line = Line::from(Span::styled(
-            help_text,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
-        let footer = Paragraph::new(line).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red)),
-        );
-        frame.render_widget(footer, chunks[2]);
-    } else {
-        let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
-        let footer =
-            Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
-                app,
-                Style::default().fg(border_color),
-                is_focused,
-            ));
-        frame.render_widget(footer, chunks[2]);
-    }
+    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
+        app,
+        attention.border_style(theme),
+        attention.has_keys(),
+    ));
+    frame.render_widget(footer, chunks[2]);
 }
 
 fn render_diff_pane(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    is_focused: bool,
+    attention: Attention,
+    theme: Theme,
 ) {
-    let border_color = if is_focused {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
+    let is_focused = attention.has_keys();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -338,12 +303,14 @@ fn render_diff_pane(
             .unwrap_or_else(|| "No file selected".to_string())
     };
 
-    let header = Paragraph::new(header_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title("Diff Preview"),
-    );
+    let header = Paragraph::new(header_text).block(pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "Diff",
+            detail: "",
+        },
+        attention,
+    ));
     frame.render_widget(header, chunks[0]);
 
     if is_commit_diff {
@@ -351,7 +318,8 @@ fn render_diff_pane(
             frame,
             &ops.commit_log,
             chunks[1],
-            border_color,
+            attention,
+            theme,
             bg_color,
             &mut app.hit_map,
         );
@@ -360,7 +328,8 @@ fn render_diff_pane(
             frame,
             ops,
             chunks[1],
-            border_color,
+            attention,
+            theme,
             bg_color,
             &mut app.hit_map,
         );
@@ -376,8 +345,8 @@ fn render_diff_pane(
     let footer_line = super::footer::build_footer_line_with_focus(app, footer_text, is_focused);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
-        Style::default().fg(border_color),
-        is_focused,
+        attention.border_style(theme),
+        attention.has_keys(),
     ));
     frame.render_widget(footer, chunks[2]);
 }
@@ -386,7 +355,8 @@ fn render_diff_body(
     frame: &mut Frame,
     ops: &GitOpsState,
     area: ratatui::layout::Rect,
-    border_color: Color,
+    attention: Attention,
+    theme: Theme,
     bg_color: bool,
     hit_map: &mut HitMap,
 ) {
@@ -431,9 +401,7 @@ fn render_diff_body(
         ops.diff_scroll.scroll_offset as u16
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+    let block = attention.frame(theme);
     let inner_area = block.inner(area);
     register_diff_body_hits(
         hit_map,
@@ -477,7 +445,8 @@ fn render_commit_diff_body(
     frame: &mut Frame,
     cl: &CommitLogState,
     area: ratatui::layout::Rect,
-    border_color: Color,
+    attention: Attention,
+    theme: Theme,
     bg_color: bool,
     hit_map: &mut HitMap,
 ) {
@@ -537,9 +506,7 @@ fn render_commit_diff_body(
         cl.diff_scroll.scroll_offset as u16
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+    let block = attention.frame(theme);
     let inner_area = block.inner(area);
     register_diff_body_hits(
         hit_map,
@@ -634,14 +601,9 @@ fn render_commits_pane(
     frame: &mut Frame,
     app: &mut App,
     area: ratatui::layout::Rect,
-    is_focused: bool,
+    attention: Attention,
+    theme: Theme,
 ) {
-    let border_color = if is_focused {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
-
     let spinner = app.spinner_char().to_string();
     let Some(ref mut ops) = app.git_ops_state else {
         return;
@@ -654,12 +616,14 @@ fn render_commits_pane(
             format!("{} Loading commits...", spinner),
             Style::default().fg(Color::Yellow),
         )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .title("Commits"),
-        );
+        .block(pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Commits",
+                detail: "",
+            },
+            attention,
+        ));
         frame.render_widget(loading, area);
         return;
     }
@@ -669,12 +633,14 @@ fn render_commits_pane(
             format!("Error: {}", error),
             Style::default().fg(Color::Red),
         ))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .title("Commits"),
-        );
+        .block(pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Commits",
+                detail: "",
+            },
+            attention,
+        ));
         frame.render_widget(err_msg, area);
         return;
     }
@@ -682,12 +648,14 @@ fn render_commits_pane(
     if cl.commits.is_empty() {
         let empty = Paragraph::new("No commits")
             .style(Style::default().fg(Color::DarkGray))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color))
-                    .title("Commits (0)"),
-            );
+            .block(pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "Commits",
+                    detail: "(0)",
+                },
+                attention,
+            ));
         frame.render_widget(empty, area);
         return;
     }
@@ -697,8 +665,7 @@ fn render_commits_pane(
     let mut items: Vec<ListItem> = cl
         .commits
         .iter()
-        .enumerate()
-        .map(|(i, commit)| build_commit_item(commit, i == selected))
+        .map(|commit| build_commit_item(commit))
         .collect();
 
     if cl.loading && !cl.commits.is_empty() {
@@ -713,20 +680,22 @@ fn render_commits_pane(
     } else {
         format!("{}", total)
     };
-    let title = if ahead_count > 0 {
-        format!("Commits ({}) \u{2191}{}", count_str, ahead_count)
+    let detail = if ahead_count > 0 {
+        format!("({}) \u{2191}{}", count_str, ahead_count)
     } else {
-        format!("Commits ({})", count_str)
+        format!("({})", count_str)
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(title);
+    let block = pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "Commits",
+            detail: &detail,
+        },
+        attention,
+    );
     let inner_area = block.inner(area);
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().bg(Color::DarkGray));
+    let list = attention.rows(theme).apply(List::new(items).block(block));
 
     let mut list_state = ListState::default()
         .with_offset(cl.scroll_offset)
@@ -776,15 +745,7 @@ fn render_commits_pane(
     }
 }
 
-fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
-    let style = if is_selected {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
+fn build_commit_item(commit: &PrCommit) -> ListItem<'static> {
     let relative_time = format_relative_time(&commit.date);
     let author = commit
         .author_login
@@ -796,7 +757,7 @@ fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
             format!("{} ", commit.short_sha()),
             Style::default().fg(Color::Cyan),
         ),
-        Span::styled(commit.message.clone(), style),
+        Span::styled(commit.message.clone(), Style::default()),
         Span::styled(
             format!("  ({}, {})", author, relative_time),
             Style::default().fg(Color::DarkGray),
@@ -806,7 +767,7 @@ fn build_commit_item<'a>(commit: &PrCommit, is_selected: bool) -> ListItem<'a> {
     ListItem::new(line)
 }
 
-fn build_tree_row_item<'a>(ops: &GitOpsState, row: &TreeRow, is_selected: bool) -> ListItem<'a> {
+fn build_tree_row_item(ops: &GitOpsState, row: &TreeRow) -> ListItem<'static> {
     match row {
         TreeRow::Dir {
             ref path,
@@ -817,17 +778,12 @@ fn build_tree_row_item<'a>(ops: &GitOpsState, row: &TreeRow, is_selected: bool) 
             let icon = if *expanded { "▼" } else { "▶" };
             let dir_name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Cyan)
-            };
-
             let line = Line::from(vec![
                 Span::raw(indent),
-                Span::styled(format!("{} {}/", icon, dir_name), style),
+                Span::styled(
+                    format!("{} {}/", icon, dir_name),
+                    Style::default().fg(Color::Cyan),
+                ),
             ]);
             ListItem::new(line)
         }
@@ -846,19 +802,11 @@ fn build_tree_row_item<'a>(ops: &GitOpsState, row: &TreeRow, is_selected: bool) 
                 .map(|(_, name)| name)
                 .unwrap_or(&entry.path);
 
-            let file_style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
             let mut spans = vec![
                 Span::raw(indent),
                 Span::styled(label, Style::default().fg(status_color)),
                 Span::raw(" "),
-                Span::styled(filename.to_string(), file_style),
+                Span::styled(filename.to_string(), Style::default()),
             ];
 
             let total_add = entry.additions + entry.staged_additions;
@@ -912,6 +860,7 @@ fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::AppState;
     use crate::app::{
         DestructiveOp, DiscardInvocation, FileStatus, GitOpsState, GitStatusEntry,
         PendingGitOpsConfirm, RepositoryAvailability,
@@ -959,9 +908,15 @@ mod tests {
         let backend = TestBackend::new(100, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let area = Rect::new(0, 0, 100, 20);
+        let theme = app.theme;
+        let attention = if is_focused {
+            Attention::Focused
+        } else {
+            Attention::Dim
+        };
         terminal
             .draw(|frame| {
-                render_tree_pane(frame, app, area, is_focused);
+                render_tree_pane(frame, app, area, attention, theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -982,9 +937,15 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let area = Rect::new(0, 0, 80, 20);
+        let theme = app.theme;
+        let attention = if is_focused {
+            Attention::Focused
+        } else {
+            Attention::Dim
+        };
         terminal
             .draw(|frame| {
-                render_tree_pane(frame, app, area, is_focused);
+                render_tree_pane(frame, app, area, attention, theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -1047,9 +1008,10 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         let area = Rect::new(0, 0, width, height);
+        let theme = app.theme;
         terminal
             .draw(|frame| {
-                render_tree_pane(frame, app, area, true);
+                render_tree_pane(frame, app, area, Attention::Focused, theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -1092,7 +1054,7 @@ mod tests {
     fn left_pane_right(rows: &[String]) -> usize {
         rows[0]
             .chars()
-            .position(|ch| ch == '┐')
+            .position(|ch| ch == '┐' || ch == '┓')
             .expect("left pane border")
     }
 
@@ -1365,8 +1327,43 @@ mod tests {
         ");
     }
 
+    fn render_tree_and_footer_border_colors(app: &mut App, is_focused: bool) -> (Color, Color) {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 80, 20);
+        let theme = app.theme;
+        let attention = if is_focused {
+            Attention::Focused
+        } else {
+            Attention::Dim
+        };
+        terminal
+            .draw(|frame| {
+                render_tree_pane(frame, app, area, attention, theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row_text = |y: u16| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let text_row = (0..area.height).find(|y| row_text(*y).contains("git reset"));
+        let text_row = text_row.unwrap_or_else(|| {
+            panic!(
+                "confirm text missing:\n{}",
+                (0..area.height)
+                    .map(row_text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
+        let footer_border = buf[(0, text_row.saturating_sub(1))].fg;
+        (buf[(0, 0)].fg, footer_border)
+    }
+
     #[test]
-    fn test_border_red_on_pending_confirm() {
+    fn test_footer_border_is_danger_on_pending_confirm() {
         let (mut app, _tx) = make_app();
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
@@ -1376,7 +1373,9 @@ mod tests {
         });
         app.git_ops_state = Some(ops);
 
-        assert_eq!(render_tree_pane_border_color(&mut app, false), Color::Red);
+        let (tree, footer) = render_tree_and_footer_border_colors(&mut app, true);
+        assert_eq!(tree, Color::Cyan);
+        assert_eq!(footer, Color::Red);
     }
 
     #[test]
@@ -1387,7 +1386,7 @@ mod tests {
         rebuild_tree(&mut ops);
         app.git_ops_state = Some(ops);
 
-        assert_eq!(render_tree_pane_border_color(&mut app, true), Color::Yellow);
+        assert_eq!(render_tree_pane_border_color(&mut app, true), Color::Cyan);
         assert_eq!(
             render_tree_pane_border_color(&mut app, false),
             Color::DarkGray
@@ -1469,9 +1468,10 @@ mod tests {
         let backend = TestBackend::new(80, 15);
         let mut terminal = Terminal::new(backend).unwrap();
         let area = Rect::new(0, 0, 80, 15);
+        let theme = app.theme;
         terminal
             .draw(|frame| {
-                render_diff_pane(frame, app, area, false);
+                render_diff_pane(frame, app, area, Attention::Dim, theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -1649,9 +1649,15 @@ mod tests {
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let area = Rect::new(0, 0, 60, 10);
+        let theme = app.theme;
+        let attention = if is_focused {
+            Attention::Focused
+        } else {
+            Attention::Dim
+        };
         terminal
             .draw(|frame| {
-                render_commits_pane(frame, app, area, is_focused);
+                render_commits_pane(frame, app, area, attention, theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();

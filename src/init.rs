@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use anyhow::{Context, Result};
 use crossterm::style::Stylize;
 use std::collections::HashMap;

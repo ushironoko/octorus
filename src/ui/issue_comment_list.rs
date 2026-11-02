@@ -64,6 +64,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let theme = app.theme;
+    let attention = app.sole_attention();
     let Some(ref mut state) = app.issue_state else {
         return;
     };
@@ -84,7 +86,9 @@ fn render_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         return;
     }
 
-    let available_width = area.width.saturating_sub(4) as usize;
+    let available_width =
+        area.width
+            .saturating_sub(2 + super::theme::SELECTION_MARKER_WIDTH as u16) as usize;
     let body_width = available_width.saturating_sub(4);
 
     let items: Vec<ListItem> = comments
@@ -102,13 +106,9 @@ fn render_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         .with_offset(state.issue_comment_list_scroll_offset)
         .with_selected(Some(state.selected_issue_comment));
 
-    let block = Block::default().borders(Borders::ALL);
+    let block = attention.frame(theme);
     let inner_area = block.inner(area);
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
 
     let final_offset = list_state.offset();
@@ -164,11 +164,9 @@ fn render_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
 fn format_comment_item(
     comment: &IssueComment,
     _index: usize,
-    is_selected: bool,
+    _is_selected: bool,
     body_width: usize,
 ) -> ListItem<'static> {
-    let prefix = if is_selected { "> " } else { "  " };
-
     let date = comment
         .created_at
         .split('T')
@@ -176,7 +174,6 @@ fn format_comment_item(
         .unwrap_or(&comment.created_at);
 
     let mut header_spans = vec![
-        Span::raw(prefix.to_string()),
         Span::styled(
             format!("@{}", comment.author.login),
             Style::default().fg(Color::Cyan),
@@ -206,7 +203,7 @@ fn format_comment_item(
 
     let mut lines = vec![header_line];
     for wrapped_line in wrapped_lines {
-        lines.push(Line::from(vec![Span::raw("    "), Span::raw(wrapped_line)]));
+        lines.push(Line::from(vec![Span::raw("  "), Span::raw(wrapped_line)]));
     }
     lines.push(Line::from(""));
 

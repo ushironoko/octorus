@@ -1,6 +1,7 @@
 mod ai_rally;
 mod browse;
 mod checks_list;
+pub(crate) mod chrome;
 mod cockpit;
 mod comment_list;
 pub(crate) mod common;
@@ -18,6 +19,7 @@ mod pr_list;
 mod simulate_modal;
 mod split_view;
 pub mod text_area;
+pub mod theme;
 
 #[cfg(test)]
 mod test_buffer;

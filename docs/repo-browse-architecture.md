@@ -338,7 +338,7 @@ failure, empty response, and malformed response are not cached so they can be
 retried. Even when the same commit appears on many blame-gutter lines, the
 network call happens once.
 
-`build_plain_diff_cache()` is a single pass of `expand_tabs` → `classify_line` →
+`build_plain_diff_cache()` is a single pass of `expand_tabs` → `PatchClassifier` →
 string interning and takes no `ParserPool`. This is why a file can be displayed
 without waiting for highlighting; the replacement produced by
 `build_diff_cache()` arrives afterwards.

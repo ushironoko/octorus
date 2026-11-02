@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 
+use super::chrome::{pane_block, PaneTitle};
 use super::common::fit_to_width;
 use crate::app::App;
 use crate::github::CheckItem;
@@ -48,19 +49,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame.render_widget(empty, chunks[1]);
         } else {
             let total = checks.len();
-            let items = build_check_list_items(checks, app.chk.selected_check);
+            let theme = app.theme;
+            let attention = app.sole_attention();
+            let items = build_check_list_items(checks);
 
             let mut list_state = ListState::default()
                 .with_offset(app.chk.checks_scroll_offset)
                 .with_selected(Some(app.chk.selected_check));
 
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!("CI Checks ({})", total)),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray));
+            let detail = format!("({total})");
+            let block = pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "CI Checks",
+                    detail: &detail,
+                },
+                attention,
+            );
+            let list = attention.rows(theme).apply(List::new(items).block(block));
 
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
             app.chk.checks_scroll_offset = list_state.offset();
@@ -172,22 +178,12 @@ fn format_duration(started: &Option<String>, completed: &Option<String>) -> Stri
     }
 }
 
-fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem<'static>> {
+fn build_check_list_items(checks: &[CheckItem]) -> Vec<ListItem<'static>> {
     checks
         .iter()
-        .enumerate()
-        .map(|(i, check)| {
-            let is_selected = i == selected;
+        .map(|check| {
             let (icon, icon_color) = check_status_icon(check);
             let duration = format_duration(&check.started_at, &check.completed_at);
-
-            let name_style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
 
             let workflow = if check.workflow.is_empty() {
                 "-"
@@ -203,7 +199,7 @@ fn build_check_list_items(checks: &[CheckItem], selected: usize) -> Vec<ListItem
                 Span::raw(" "),
                 Span::styled(
                     fit_to_width(&check.name, name_width).into_owned(),
-                    name_style,
+                    Style::default(),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -411,24 +407,24 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │CI Checks: PR #42                                                                                 │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌CI Checks (2)─────────────────────────────────────────────────────────────────────────────────────┐
-        │ ✓  lint                            ci               -                                            ▲
-        │ ✓  integration-tests               nightly          -                                            █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  ▼
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ CI CHECKS (2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌  ✓  lint                            ci               -                                          ▲
+        ┃   ✓  integration-tests               nightly          -                                          █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  ▼
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
