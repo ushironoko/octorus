@@ -978,6 +978,59 @@ Binary files /dev/null and b/image.png differ
     }
 
     #[test]
+    fn no_newline_marker_does_not_shift_later_file_lines_and_keeps_github_position() {
+        // keep is old/new 1. `old` is old 2. The marker is not a file line.
+        // `new` is new 2. `tail` is old/new 3.
+        // GitHub position still counts the marker, so `new` stays at position 4.
+        let patch = "\
+@@ -1,3 +1,3 @@
+ keep
+-old
+\\ No newline at end of file
++new
+ tail
+";
+        let lines: Vec<&str> = patch.lines().collect();
+        let marker = lines
+            .iter()
+            .position(|line| *line == "\\ No newline at end of file");
+        let new_row = lines.iter().position(|line| *line == "+new").unwrap();
+        let tail_row = lines.iter().position(|line| *line == " tail").unwrap();
+        assert_eq!(marker, Some(3));
+
+        let marker_info = get_line_info(patch, 3).unwrap();
+        assert_eq!(marker_info.new_line_number, None);
+        assert_eq!(marker_info.diff_position, Some(3));
+
+        let new_info = get_line_info(patch, new_row).unwrap();
+        assert_eq!(new_info.new_line_number, Some(2));
+        assert_eq!(new_info.diff_position, Some(4));
+
+        let tail_info = get_line_info(patch, tail_row).unwrap();
+        assert_eq!(tail_info.new_line_number, Some(3));
+        assert_eq!(tail_info.diff_position, Some(5));
+
+        let index = PatchIndex::build(patch);
+        assert_eq!(index.get(3).unwrap().new_line_number, None);
+        assert_eq!(index.get(3).unwrap().diff_position, Some(3));
+        assert_eq!(index.get(new_row).unwrap().new_line_number, Some(2));
+        assert_eq!(index.get(new_row).unwrap().diff_position, Some(4));
+        assert_eq!(index.get(tail_row).unwrap().new_line_number, Some(3));
+        assert_eq!(index.get(tail_row).unwrap().diff_position, Some(5));
+
+        assert_eq!(line_number_to_position(patch, 2), Some(4));
+        assert_eq!(line_number_to_position(patch, 3), Some(5));
+        assert_eq!(
+            find_diff_line_index(patch, SideLine::left(3)),
+            Some(tail_row)
+        );
+        assert_eq!(
+            find_diff_line_index(patch, SideLine::right(2)),
+            Some(new_row)
+        );
+    }
+
+    #[test]
     fn test_patch_classifier_no_newline_marker_stays_context() {
         let patch = concat!(
             "@@ -1,2 +1,3 @@\n",
