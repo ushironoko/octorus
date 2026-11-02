@@ -36,16 +36,18 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, AppState, DataState, ShellCommandResult, ShellPhase};
 
@@ -236,68 +238,72 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn render_symbol_popup(frame: &mut Frame, app: &mut App) {
-    let Some(ref popup) = app.symbol_popup else {
+    let Some(popup) = app.symbol_popup.clone() else {
         return;
     };
+    let theme = app.theme;
     let area = frame.area();
 
-    let max_width = popup
+    let name_pad = "  ";
+    let border = 2usize;
+    let name_max = popup
         .symbols
         .iter()
-        .map(|(name, _, _)| name.len())
+        .map(|(name, _, _)| name.width())
         .max()
-        .unwrap_or(10) as u16
-        + 6; // padding + borders
-    let height = (popup.symbols.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for borders
-    let width = max_width.max(20).min(area.width.saturating_sub(4));
-
+        .unwrap_or(10);
+    let max_width = name_max + theme::SELECTION_MARKER_WIDTH + name_pad.len() + border;
+    let width = u16::try_from(max_width.max(20))
+        .unwrap_or(u16::MAX)
+        .min(area.width.saturating_sub(4));
+    let height = u16::try_from(popup.symbols.len() + border)
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(4));
     let popup_area = centered_rect(width, height, area);
-
-    frame.render_widget(Clear, popup_area);
-
-    let items: Vec<ListItem> = popup
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Select symbol (j/k/↑↓: move, Enter: jump, Esc: cancel)")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(popup_area);
+    let inner_height = usize::from(inner.height);
+    let offset = browse::scroll_offset(popup.selected, popup.symbols.len(), inner_height);
+    let visible: Vec<_> = popup
         .symbols
         .iter()
         .enumerate()
-        .map(|(i, (name, _, _))| {
-            let style = if i == popup.selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(format!("  {}  ", name), style)))
-        })
+        .skip(offset)
+        .take(inner_height)
+        .map(|(index, (name, _, _))| (index, format!("{name}{name_pad}")))
+        .collect();
+    let items: Vec<ListItem> = visible
+        .iter()
+        .map(|(_, name)| ListItem::new(Line::from(Span::raw(name.clone()))))
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Select symbol (j/k/↑↓: move, Enter: jump, Esc: cancel)")
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
+    frame.render_widget(Clear, popup_area);
 
-    frame.render_widget(list, popup_area);
+    let list = theme::Attention::Focused
+        .rows(theme)
+        .apply(List::new(items).block(block));
+    let mut list_state =
+        ListState::default().with_selected(Some(popup.selected.saturating_sub(offset)));
+    frame.render_stateful_widget(list, popup_area, &mut list_state);
 
-    let symbol_count = app.symbol_popup.as_ref().map_or(0, |p| p.symbols.len());
     app.hit_map
         .push(area, hit::HitTarget::Backdrop { dismiss: true });
     app.hit_map.push(popup_area, hit::HitTarget::OverlaySurface);
-    let inner = Block::default().borders(Borders::ALL).inner(popup_area);
-    for row in 0..symbol_count.min(usize::from(inner.height)) {
+    for (visible_row, (index, _)) in visible.iter().enumerate() {
         app.hit_map.push(
             Rect {
                 x: inner.x,
-                y: inner.y.saturating_add(row as u16),
+                y: inner.y.saturating_add(visible_row as u16),
                 width: inner.width,
                 height: 1,
             },
             hit::HitTarget::ListRow {
                 list: hit::ListKind::SymbolPopup,
-                row,
-                index: row,
+                row: *index,
+                index: *index,
             },
         );
     }

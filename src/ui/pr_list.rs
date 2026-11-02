@@ -444,7 +444,11 @@ mod tests {
     }
 
     fn draw_pr_list(app: &mut App) -> Buffer {
-        let backend = TestBackend::new(100, 24);
+        draw_sized(app, 100, 24)
+    }
+
+    fn draw_sized(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -550,6 +554,177 @@ mod tests {
         assert!(
             title.contains("Pull Requests"),
             "pane title changed:\n{title}"
+        );
+    }
+
+    fn symbol_popup_app() -> App {
+        use crate::app::SymbolPopupState;
+
+        let mut app = pr_list_app();
+        app.symbol_popup = Some(SymbolPopupState {
+            symbols: vec![("foo".to_string(), 1, 4), ("bar".to_string(), 6, 9)],
+            selected: 0,
+        });
+        app
+    }
+
+    #[test]
+    fn symbol_popup_selected_row_matches_the_pr_list_marker() {
+        let list = render_screen(vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "bob"),
+        ]);
+        let list_mark = cells_with(&list, "▌")
+            .into_iter()
+            .next()
+            .expect("pr list drew no ▌");
+        let (fg, bg, modifier) = (list_mark.fg, list_mark.bg, list_mark.modifier);
+
+        let mut app = symbol_popup_app();
+        let buf = draw_pr_list(&mut app);
+        let marks = cells_with(&buf, "▌");
+        assert!(
+            !marks.is_empty(),
+            "symbol popup drew no ▌\n{}",
+            screen_text(&buf)
+        );
+        assert!(
+            marks
+                .iter()
+                .all(|cell| cell.fg == fg && cell.bg == bg && cell.modifier == modifier),
+            "popup ▌ style {marks:?} != pr list fg={fg:?} bg={bg:?} mod={modifier:?}\n{}",
+            screen_text(&buf)
+        );
+
+        let name = row_cells(&buf, "foo");
+        let letter = name
+            .iter()
+            .find(|cell| cell.symbol() == "f")
+            .expect("selected symbol name missing");
+        let title = row_cells(&list, "Fix");
+        let title_letter = title
+            .iter()
+            .find(|cell| cell.symbol() == "F")
+            .expect("pr title missing");
+        assert_eq!(letter.bg, title_letter.bg);
+        assert_eq!(letter.modifier, title_letter.modifier);
+        assert_ne!(letter.bg, Color::Cyan);
+        assert_ne!(letter.fg, Color::Black);
+    }
+
+    #[test]
+    fn symbol_popup_no_color_selection_is_the_bar() {
+        let mut app = symbol_popup_app();
+        app.theme = Theme::resolve(&crate::config::ThemeConfig::default(), true);
+        let buf = draw_pr_list(&mut app);
+        let marks = cells_with(&buf, "▌");
+        assert!(
+            !marks.is_empty(),
+            "NO_COLOR symbol popup drew no ▌\n{}",
+            screen_text(&buf)
+        );
+        assert!(
+            marks.iter().all(|cell| {
+                cell.bg == Color::Reset && cell.fg != Color::Cyan && cell.fg != Color::Black
+            }),
+            "NO_COLOR selection still carries a color: {:?}",
+            marks
+                .iter()
+                .map(|cell| (cell.fg, cell.bg, cell.modifier))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn row_cells<'a>(buf: &'a Buffer, needle: &str) -> Vec<&'a ratatui::buffer::Cell> {
+        let y = (0..buf.area().height)
+            .find(|y| row_text(buf, *y).contains(needle))
+            .unwrap_or_else(|| panic!("row {needle} missing\n{}", screen_text(buf)));
+        (0..buf.area().width).map(|x| &buf[(x, y)]).collect()
+    }
+
+    fn popup_with(names: &[&str]) -> App {
+        use crate::app::SymbolPopupState;
+
+        let mut app = pr_list_app();
+        app.symbol_popup = Some(SymbolPopupState {
+            symbols: names
+                .iter()
+                .map(|name| ((*name).to_string(), 1, 4))
+                .collect(),
+            selected: 0,
+        });
+        app
+    }
+
+    fn popup_outer_width(buf: &Buffer, name: &str) -> u16 {
+        let y = (0..buf.area().height)
+            .find(|y| row_text(buf, *y).contains(name) || row_text(buf, *y).contains('…'))
+            .unwrap_or_else(|| panic!("popup row missing\n{}", screen_text(buf)));
+        let bar = (0..buf.area().width)
+            .find(|x| buf[(*x, y)].symbol() == "▌")
+            .unwrap_or_else(|| panic!("selection bar missing\n{}", row_text(buf, y)));
+        let left = (0..bar)
+            .rev()
+            .find(|x| buf[(*x, y)].symbol() == "│")
+            .unwrap_or_else(|| panic!("left border missing\n{}", row_text(buf, y)));
+        let right = (bar..buf.area().width)
+            .find(|x| buf[(*x, y)].symbol() == "│")
+            .unwrap_or_else(|| panic!("right border missing\n{}", row_text(buf, y)));
+        right.saturating_sub(left).saturating_add(1)
+    }
+
+    #[test]
+    fn symbol_popup_longest_name_keeps_a_gap_before_the_frame() {
+        let name = "abcdefghijabcdefghij";
+        let mut app = popup_with(&[name, "short"]);
+        let buf = draw_sized(&mut app, 80, 16);
+        let row = row_text(&buf, {
+            (0..buf.area().height)
+                .find(|y| row_text(&buf, *y).contains(name))
+                .unwrap_or_else(|| panic!("name clipped off the popup\n{}", screen_text(&buf)))
+        });
+        let at = row.find(name).expect("name");
+        let next = row[at + name.len()..].chars().next();
+        assert_eq!(
+            next,
+            Some(' '),
+            "longest name touches the frame: {row}\n{}",
+            screen_text(&buf)
+        );
+    }
+
+    #[test]
+    fn symbol_popup_fullwidth_name_uses_the_same_width_as_ascii() {
+        let ascii = "a".repeat(20);
+        let wide = "あ".repeat(10);
+        let mut ascii_app = popup_with(&[&ascii]);
+        let mut wide_app = popup_with(&[&wide]);
+        let ascii_buf = draw_sized(&mut ascii_app, 80, 12);
+        let wide_buf = draw_sized(&mut wide_app, 80, 12);
+        assert_eq!(
+            popup_outer_width(&ascii_buf, &ascii),
+            popup_outer_width(&wide_buf, &wide),
+            "byte length sized the fullwidth name\nascii:\n{}\nwide:\n{}",
+            screen_text(&ascii_buf),
+            screen_text(&wide_buf)
+        );
+    }
+
+    #[test]
+    fn symbol_popup_rows_use_one_space_after_the_bar() {
+        let mut app = popup_with(&["result", "shortFn"]);
+        let rendered = screen_text(&draw_sized(&mut app, 40, 12));
+        assert!(
+            rendered.contains("▌ result  "),
+            "selected row is not ▌, one space, the name, and the pad:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("▌  result"),
+            "selected row kept a pad before the name:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("  shortFn"),
+            "unselected row is not two spaces and the name:\n{rendered}"
         );
     }
 

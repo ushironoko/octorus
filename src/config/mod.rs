@@ -240,9 +240,7 @@ mod tests {
         let path = std::path::Path::new("theme.toml");
         let mut value: toml::Value = toml::from_str(&source).unwrap();
         let _ = loader::sanitize_theme_table(path, &mut value, |_| false);
-        let config: Config = value
-            .try_into()
-            .expect("an unlisted color key still fails startup");
+        let config: Config = value.try_into().unwrap();
         assert!(config.theme.is_untouched());
     }
 
