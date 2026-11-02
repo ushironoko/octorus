@@ -232,6 +232,19 @@ mod tests {
     }
 
     #[test]
+    fn every_parsed_color_key_is_stripped_when_invalid() {
+        let mut source = String::from("[theme.colors]\n");
+        for key in THEME_COLOR_KEYS {
+            source.push_str(&format!("{key} = \"cyann\"\n"));
+        }
+        let path = std::path::Path::new("theme.toml");
+        let mut value: toml::Value = toml::from_str(&source).unwrap();
+        let _ = loader::sanitize_theme_table(path, &mut value, |_| false);
+        let config: Config = value.try_into().unwrap();
+        assert!(config.theme.is_untouched());
+    }
+
+    #[test]
     fn empty_local_theme_tables_are_not_local_overrides() {
         let dir = tempfile::tempdir().unwrap();
         let global = dir.path().join("global.toml");
