@@ -1468,10 +1468,12 @@ fn render_module_graph_ready_pane(
                     .into_iter()
                     .enumerate()
             {
-                if selected && line_index == 1 {
-                    let tail = skip_display_columns(&text, SELECTION_MARKER_WIDTH);
+                if selected && line_index == 1 && inner_width >= 7 {
+                    let tail = skip_display_columns(&text, 1);
+                    let prefix = mark.prefix(true);
+                    let spine: String = prefix.content.chars().take(1).collect();
                     lines.push(Line::from(vec![
-                        mark.prefix(true),
+                        Span::styled(spine, prefix.style),
                         Span::styled(tail, style),
                     ]));
                 } else {
@@ -3280,6 +3282,103 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn selected_graph_branch_replaces_only_the_spine() {
+        let mut dependencies = app_with_graph_selection();
+        let rendered = render_at(&mut dependencies, 100, 16);
+        assert!(
+            rendered.contains("▌─▶│"),
+            "dependencies selection dropped the branch:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("▌ ▶"),
+            "dependencies selection replaced two columns:\n{rendered}"
+        );
+
+        let mut dependents = app_with_graph_selection();
+        let state = dependents.browse_state.as_mut().unwrap();
+        state.module_graph_pane = ModuleGraphPaneState::Ready(ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction: ModuleGraphDirection::Dependents,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Exact,
+            },
+            dependents: ModuleGraphRows {
+                rows: vec![
+                    ModuleGraphRow {
+                        node: "user2".to_string(),
+                        edge: "[import] ./app".to_string(),
+                        jump: None,
+                    },
+                    ModuleGraphRow {
+                        node: "user3".to_string(),
+                        edge: "[import] ./app".to_string(),
+                        jump: None,
+                    },
+                ],
+                total: 2,
+                guarantee: DependencyGuarantee::Exact,
+            },
+        });
+        let rendered = render_at(&mut dependents, 100, 16);
+        assert!(
+            rendered.contains("▌─┤│user2") || rendered.contains("▌─┤│"),
+            "dependents selection dropped the branch:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("▌ ┤"),
+            "dependents selection replaced two columns:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn narrow_graph_selection_keeps_the_box_and_the_first_character() {
+        let panel = ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction: ModuleGraphDirection::Dependencies,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: vec![ModuleGraphRow {
+                    node: "node".to_string(),
+                    edge: "edge".to_string(),
+                    jump: None,
+                }],
+                total: 1,
+                guarantee: DependencyGuarantee::Exact,
+            },
+            dependents: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Exact,
+            },
+        };
+        let backend = TestBackend::new(8, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::test_default();
+        terminal
+            .draw(|frame| {
+                render_module_graph_ready_pane(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, 8, 12),
+                    &panel,
+                    Attention::Focused,
+                    theme,
+                    "help",
+                );
+            })
+            .unwrap();
+        let rendered = screen_text_of(terminal.backend().buffer());
+        assert!(
+            rendered.contains("│edge"),
+            "narrow selection ate the box or the first character:\n{rendered}"
+        );
+    }
+
     fn row_cells<'a>(buf: &'a Buffer, needle: &str) -> Vec<&'a Cell> {
         let y = (0..buf.area().height)
             .find(|y| {
@@ -3411,7 +3510,7 @@ mod tests {
         │      app.ts                     ││                               │┃║src/app.ts                  ║┃
         │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
         │                                 ││                               │┃│  ┌─ src/helper.ts ─────────┐┃
-        │                                 ││                               │┃▌ ▶│[import] ./helper  :1    │┃
+        │                                 ││                               │┃▌─▶│[import] ./helper  :1    │┃
         │                                 ││                               │┃│  └─────────────────────────┘┃
         │                                 ││                               │┃│  ┌─ package react ─────────┐┃
         │                                 ││                               │┃├─▶│[import] react  :2       │┃
@@ -3472,7 +3571,7 @@ mod tests {
         │      app.ts              ││                        │┃║src/app.ts            ║┃
         │                          ││                        │┃╚══════════════════════╝┃
         │                          ││                        │┃│  ┌─ 依 存 先 依 存 先 依 … ─┐┃
-        │                          ││                        │┃▌ ▶│[import] ./依 存 先  …│┃
+        │                          ││                        │┃▌─▶│[import] ./依 存 先  …│┃
         │                          ││                        │┃   └───────────────────┘┃
         └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
@@ -3673,7 +3772,7 @@ mod tests {
         │      app.ts              ││                        │┃║src/app.ts            ║┃
         │      helper.ts           ││                        │┃╚══════════════════════╝┃
         │                          ││                        │┃│  ┌─ src/helper.ts ───┐┃
-        │                          ││                        │┃▌ ▶│[import] ./helper …│┃
+        │                          ││                        │┃▌─▶│[import] ./helper …│┃
         │                          ││                        │┃│  └───────────────────┘┃
         │                          ││                        │┃│  ┌─ package react ───┐┃
         │                          ││                        │┃├─▶│[import] react  :2 │┃
@@ -3722,7 +3821,7 @@ mod tests {
         │      app.ts              ││      r = 1;            │┃║src/helper.ts         ║┃
         │      helper.ts           ││                        │┃╚══════════════════════╝┃
         │                          ││                        │┃│  ┌─ src/app.rs ──────┐┃
-        │                          ││                        │┃▌ ┘│[use] crate::helpe…│┃
+        │                          ││                        │┃▌─┘│[use] crate::helpe…│┃
         │                          ││                        │┃   └───────────────────┘┃
         │                          ││                        │┃                        ┃
         │                          ││                        │┃                        ┃
@@ -3767,7 +3866,7 @@ mod tests {
         │      app.ts                     ││                               │┃║src/helper.ts               ║┃
         │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
         │                                 ││                               │┃│  ┌─ src/app.rs ────────────┐┃
-        │                                 ││                               │┃▌ ┘│[use] crate::helper  :4  │┃
+        │                                 ││                               │┃▌─┘│[use] crate::helper  :4  │┃
         │                                 ││                               │┃   └─────────────────────────┘┃
         │                                 ││                               │┃                              ┃
         │                                 ││                               │┃                              ┃
