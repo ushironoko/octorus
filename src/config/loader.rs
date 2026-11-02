@@ -308,6 +308,7 @@ impl Config {
         }
         if let Err(errors) = config.keybindings.validate() {
             for error in errors {
+                // Print on the terminal. tracing writes debug.log only when OR_DEBUG=1.
                 #[allow(clippy::print_stderr)]
                 {
                     eprintln!("Warning: {}", error);

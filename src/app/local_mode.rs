@@ -124,6 +124,8 @@ impl App {
         self.cmt.review_comments = None;
         self.cmt.local_comment_meta.clear();
         self.cmt.discussion_comments = None;
+        self.cmt.comment_error = None;
+        self.cmt.discussion_error = None;
         self.cmt.comment_receiver = None;
         self.cmt.discussion_comment_receiver = None;
         self.cmt.comment_submit_receiver = None;
