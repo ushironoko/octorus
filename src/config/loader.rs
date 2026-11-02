@@ -6,11 +6,6 @@ use std::path::{Path, PathBuf};
 use super::schema::{ThemePreset, THEME_COLOR_KEYS};
 use super::Config;
 
-/// Remove theme values the config parser would reject.
-///
-/// `global_has` is true when the already-sanitized global table still has that
-/// key (`preset`, or `colors.accent` and the other color keys). The global
-/// file passes `|_| false` because a bad global value falls back to the preset.
 pub(super) fn sanitize_theme_table(
     path: &Path,
     value: &mut toml::Value,
@@ -20,6 +15,26 @@ pub(super) fn sanitize_theme_table(
     let Some(root) = value.as_table_mut() else {
         return warnings;
     };
+    let rejected_theme = root
+        .get("theme")
+        .filter(|theme| !theme.is_table())
+        .map(|theme| {
+            let hint = if theme.is_str() {
+                "; did you mean [diff] theme = \"...\"?"
+            } else {
+                ""
+            };
+            (toml_type_name(theme), theme_value_text(theme), hint)
+        });
+    if let Some((kind, shown, hint)) = rejected_theme {
+        let fallback = fallback_label(global_has("theme"));
+        warnings.push(format!(
+            "{}: theme: expected a table, got {kind} {shown:?}{hint} ({fallback})",
+            warning_path(path)
+        ));
+        root.remove("theme");
+        return warnings;
+    }
     let drop_theme = {
         let Some(theme) = root.get_mut("theme").and_then(|theme| theme.as_table_mut()) else {
             return warnings;
@@ -39,6 +54,19 @@ pub(super) fn sanitize_theme_table(
                 warning_path(path)
             ));
             theme.remove("preset");
+        }
+
+        let rejected_colors = theme
+            .get("colors")
+            .filter(|colors| !colors.is_table())
+            .map(|colors| (toml_type_name(colors), theme_value_text(colors)));
+        if let Some((kind, shown)) = rejected_colors {
+            let fallback = fallback_label(global_has("colors"));
+            warnings.push(format!(
+                "{}: theme.colors: expected a table, got {kind} {shown:?} ({fallback})",
+                warning_path(path)
+            ));
+            theme.remove("colors");
         }
 
         if let Some(colors) = theme
@@ -84,6 +112,12 @@ pub(super) fn theme_key_held(global: &toml::Value, key: &str) -> bool {
     let Some(theme) = global.get("theme").and_then(toml::Value::as_table) else {
         return false;
     };
+    if key == "theme" {
+        return theme.contains_key("preset") || theme_colors_held(theme);
+    }
+    if key == "colors" {
+        return theme_colors_held(theme);
+    }
     if let Some(color_key) = key.strip_prefix("colors.") {
         return theme
             .get("colors")
@@ -91,6 +125,25 @@ pub(super) fn theme_key_held(global: &toml::Value, key: &str) -> bool {
             .is_some_and(|colors| colors.contains_key(color_key));
     }
     key == "preset" && theme.contains_key("preset")
+}
+
+fn theme_colors_held(theme: &toml::Table) -> bool {
+    theme
+        .get("colors")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|colors| !colors.is_empty())
+}
+
+fn toml_type_name(value: &toml::Value) -> &'static str {
+    match value {
+        toml::Value::String(_) => "string",
+        toml::Value::Integer(_) => "integer",
+        toml::Value::Float(_) => "float",
+        toml::Value::Boolean(_) => "boolean",
+        toml::Value::Datetime(_) => "datetime",
+        toml::Value::Array(_) => "array",
+        toml::Value::Table(_) => "table",
+    }
 }
 
 fn known_preset(value: &toml::Value) -> bool {
