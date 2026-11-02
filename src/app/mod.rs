@@ -22,7 +22,7 @@ use crate::ui::theme::{
     Attention, BrowseAttention, DiffAttention, GitOpsAttention, IssueDetailAttention,
     SplitAttention, Theme,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod types;
 pub use types::{
@@ -66,6 +66,39 @@ mod symbol;
 mod tests;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+const REVIEW_SUBMIT_EXIT_WAIT: Duration = Duration::from_secs(10);
+const REVIEW_SUBMIT_EXIT_WAIT_NOTICE: &str = "Waiting for the review submit to finish...";
+pub(crate) const REVIEW_RESULT_UNKNOWN: &str =
+    "Review result unknown: check GitHub before resubmitting";
+
+/// What a review submit did by the time the process is leaving.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReviewWaitOutcome {
+    Idle,
+    Submitted { pr_number: u32 },
+    Failed { pr_number: u32, detail: String },
+    Unknown { pr_number: u32 },
+    TimedOut { pr_number: u32 },
+}
+
+impl ReviewWaitOutcome {
+    /// Line for stderr after the terminal is restored. Success prints nothing.
+    pub(crate) fn stderr_line(&self) -> Option<String> {
+        match self {
+            Self::Idle | Self::Submitted { .. } => None,
+            Self::Failed { pr_number, detail } => {
+                Some(format!("#{pr_number} Review failed: {detail}"))
+            }
+            Self::Unknown { pr_number } => {
+                Some(format!("#{pr_number} {REVIEW_RESULT_UNKNOWN}"))
+            }
+            Self::TimedOut { pr_number } => Some(format!(
+                "#{pr_number} Review submission did not finish. It may still be posted. Check the pull request on GitHub before resubmitting."
+            )),
+        }
+    }
+}
 
 /// PR番号と紐づいたレシーバー（発信元PRを追跡してクロスPRキャッシュ汚染を防止）
 pub(crate) type PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>;
@@ -619,6 +652,7 @@ impl App {
             self.poll_lazy_diff_updates();
             self.poll_discussion_comment_updates();
             self.poll_comment_submit_updates();
+            self.poll_review_submit_updates();
             self.poll_mark_viewed_updates();
             self.poll_rally_events();
             self.poll_checks_updates();
@@ -648,13 +682,74 @@ impl App {
             self.handle_input(&mut terminal).await?;
         }
 
-        // Graceful shutdown: abort any running rally
         if let Some(handle) = self.rally_abort_handle.take() {
             handle.abort();
         }
 
+        let waiting_on_review = self.is_submitting_review();
         ui::restore_terminal(&mut terminal)?;
+        if waiting_on_review {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("{REVIEW_SUBMIT_EXIT_WAIT_NOTICE}");
+            }
+        }
+        let review_outcome = self.wait_for_review_submit(REVIEW_SUBMIT_EXIT_WAIT).await;
+        if let Some(line) = review_outcome.stderr_line() {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("{line}");
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) async fn wait_for_review_submit(&mut self, budget: Duration) -> ReviewWaitOutcome {
+        self.wait_for_review_submit_until(budget, async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
+    }
+
+    /// `cancel` resolves when the user hits Ctrl-C. That ends the wait the
+    /// same way a timeout does, so the caller can warn before a second submit.
+    pub(crate) async fn wait_for_review_submit_until<C>(
+        &mut self,
+        budget: Duration,
+        cancel: C,
+    ) -> ReviewWaitOutcome
+    where
+        C: std::future::Future<Output = ()>,
+    {
+        let Some(pr_number) = self
+            .cmt
+            .review_submit_receiver
+            .as_ref()
+            .map(|(pr_number, _)| *pr_number)
+        else {
+            return ReviewWaitOutcome::Idle;
+        };
+        let deadline = Instant::now() + budget;
+        let mut cancel = std::pin::pin!(cancel);
+        loop {
+            if let Some(outcome) = self.poll_review_submit_updates() {
+                return outcome;
+            }
+            if Instant::now() >= deadline {
+                return ReviewWaitOutcome::TimedOut { pr_number };
+            }
+            let slice =
+                Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now()));
+            tokio::select! {
+                _ = tokio::time::sleep(slice) => {}
+                _ = &mut cancel => {
+                    if let Some(outcome) = self.poll_review_submit_updates() {
+                        return outcome;
+                    }
+                    return ReviewWaitOutcome::TimedOut { pr_number };
+                }
+            }
+        }
     }
 
     /// Get the current spinner character for loading animations
@@ -729,6 +824,10 @@ impl App {
     /// コメント送信中かどうか
     pub fn is_submitting_comment(&self) -> bool {
         self.cmt.comment_submitting
+    }
+
+    pub fn is_submitting_review(&self) -> bool {
+        self.cmt.review_submit_receiver.is_some()
     }
 
     /// Approve confirmation prompt is active.

@@ -1268,6 +1268,7 @@ pub struct CommentState {
         super::PrReceiver<Result<Vec<crate::github::comment::DiscussionComment>, String>>,
     pub(crate) comment_submit_receiver: super::PrReceiver<crate::loader::CommentSubmitResult>,
     pub comment_submitting: bool,
+    pub(crate) review_submit_receiver: super::PrReceiver<crate::loader::ReviewSubmitResult>,
     pub submission_result: Option<(bool, String)>,
     pub(crate) submission_result_time: Option<std::time::Instant>,
     pub(crate) pending_approve_body: Option<String>,

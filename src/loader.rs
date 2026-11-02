@@ -33,6 +33,11 @@ pub enum CommentSubmitResult {
     Error(String),
 }
 
+pub enum ReviewSubmitResult {
+    Submitted(crate::app::ReviewAction),
+    Failed(String),
+}
+
 /// バックグラウンド取得モード
 pub enum FetchMode {
     /// 新規取得（キャッシュミスまたは強制更新）
