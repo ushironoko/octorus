@@ -2694,8 +2694,6 @@ fn test_pending_approve_choice_a_submits_empty_body() {
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('a')));
 
     assert_eq!(choice, PendingApproveChoice::Submit);
-    // pending_approve_body is NOT taken by handle_pending_approve_choice;
-    // it is taken by the caller (handle_input) before calling submit_review_with_body.
     assert!(app.cmt.pending_approve_body.is_some());
 }
 
@@ -6406,6 +6404,265 @@ async fn test_poll_comment_submit_failure() {
     let (success, msg) = app.cmt.submission_result.unwrap();
     assert!(!success);
     assert!(msg.contains("network error"));
+}
+
+async fn poll_review_submit_until_done(app: &mut App) {
+    for _ in 0..100 {
+        app.poll_review_submit_updates();
+        if !app.is_submitting_review() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+fn review_toast(app: &App) -> (bool, String) {
+    app.cmt
+        .submission_result
+        .clone()
+        .expect("review submit sets a toast")
+}
+
+#[tokio::test]
+async fn test_review_submit_success_toast_names_each_action() {
+    let mut messages = Vec::new();
+    for action in [
+        ReviewAction::Approve,
+        ReviewAction::RequestChanges,
+        ReviewAction::Comment,
+    ] {
+        let mut app = App::new_for_test();
+        app.pr_number = Some(1);
+        app.spawn_review_submit(action, async { Ok(()) });
+        poll_review_submit_until_done(&mut app).await;
+
+        assert!(!app.is_submitting_review());
+        let (success, message) = review_toast(&app);
+        assert!(success);
+        messages.push(message);
+    }
+    insta::assert_snapshot!(messages.join("\n"), @"
+    Review submitted (approved)
+    Review submitted (changes requested)
+    Review submitted (commented)
+    ");
+}
+
+#[tokio::test]
+async fn test_review_submit_failure_shows_error_and_unlocks() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.spawn_review_submit(ReviewAction::Approve, async {
+        Err(anyhow::anyhow!("network error"))
+    });
+    poll_review_submit_until_done(&mut app).await;
+
+    assert!(!app.is_submitting_review());
+    let (success, message) = review_toast(&app);
+    assert!(!success);
+    insta::assert_snapshot!(message, @"Review failed: network error");
+}
+
+#[tokio::test]
+async fn test_review_submit_disconnect_reports_unknown_result() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let (tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+    drop(tx);
+
+    app.poll_review_submit_updates();
+
+    assert!(!app.is_submitting_review());
+    let (success, message) = review_toast(&app);
+    assert!(!success);
+    assert!(!message.contains("Review failed"));
+    insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
+
+    let mut switched = App::new_for_test();
+    switched.pr_number = Some(2);
+    let (switched_tx, switched_rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    switched.cmt.review_submit_receiver = Some((9, switched_rx));
+    drop(switched_tx);
+    switched.poll_review_submit_updates();
+    insta::assert_snapshot!(
+        review_toast(&switched).1,
+        @"#9 Review result unknown: check GitHub before resubmitting"
+    );
+}
+
+#[tokio::test]
+async fn test_review_submit_rejects_a_second_submit_while_one_is_in_flight() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let polled = std::sync::Arc::new(AtomicUsize::new(0));
+
+    let (release_first, first_released) = tokio::sync::oneshot::channel::<()>();
+    let first = std::sync::Arc::clone(&polled);
+    app.spawn_review_submit(ReviewAction::Approve, async move {
+        first.fetch_add(1, Ordering::SeqCst);
+        let _ = first_released.await;
+        Ok(())
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(polled.load(Ordering::SeqCst), 1);
+
+    let second = std::sync::Arc::clone(&polled);
+    app.spawn_review_submit(ReviewAction::Comment, async move {
+        second.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    app.start_review_submit(ReviewAction::Comment, "LGTM".to_string());
+    tokio::task::yield_now().await;
+
+    assert_eq!(polled.load(Ordering::SeqCst), 1);
+    assert!(app.is_submitting_review());
+    assert!(app.cmt.submission_result.is_none());
+
+    release_first.send(()).unwrap();
+    poll_review_submit_until_done(&mut app).await;
+    assert!(!app.is_submitting_review());
+    insta::assert_snapshot!(review_toast(&app).1, @"Review submitted (approved)");
+
+    let third = std::sync::Arc::clone(&polled);
+    app.spawn_review_submit(ReviewAction::Comment, async move {
+        third.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    poll_review_submit_until_done(&mut app).await;
+    assert_eq!(polled.load(Ordering::SeqCst), 2);
+    insta::assert_snapshot!(review_toast(&app).1, @"Review submitted (commented)");
+}
+
+#[tokio::test]
+async fn test_review_submit_result_names_its_pr_after_a_pr_switch() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let (retry_tx, _retry_rx) = mpsc::channel(4);
+    app.set_retry_sender(retry_tx);
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    app.spawn_review_submit(ReviewAction::Approve, async move {
+        let _ = released.await;
+        Ok(())
+    });
+
+    app.select_pr(2);
+    assert!(app.is_submitting_review());
+
+    release.send(()).unwrap();
+    poll_review_submit_until_done(&mut app).await;
+
+    assert!(!app.is_submitting_review());
+    let (success, message) = review_toast(&app);
+    assert!(success);
+    insta::assert_snapshot!(message, @"#1 Review submitted (approved)");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_returns_once_the_submit_lands() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.spawn_review_submit(ReviewAction::Approve, async { Ok(()) });
+
+    let outcome = app
+        .wait_for_review_submit_until(
+            std::time::Duration::from_millis(200),
+            std::future::pending(),
+        )
+        .await;
+
+    assert!(outcome.stderr_line().is_none());
+    let (success, message) = review_toast(&app);
+    assert!(success);
+    insta::assert_snapshot!(message, @"Review submitted (approved)");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_gives_up_after_its_budget() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.spawn_review_submit(ReviewAction::Approve, std::future::pending());
+
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_millis(50), std::future::pending())
+        .await;
+
+    assert!(app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#1 Review submission did not finish. It may still be posted. Check the pull request on GitHub before resubmitting.");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_cancel_says_the_review_may_still_be_posted() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(3);
+    app.spawn_review_submit(ReviewAction::Approve, std::future::pending());
+
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_secs(10), std::future::ready(()))
+        .await;
+
+    assert!(app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#3 Review submission did not finish. It may still be posted. Check the pull request on GitHub before resubmitting.");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_prints_failure_with_pr_number() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    app.spawn_review_submit(ReviewAction::Approve, async {
+        Err(anyhow::anyhow!("network error"))
+    });
+
+    let outcome = app
+        .wait_for_review_submit_until(
+            std::time::Duration::from_millis(200),
+            std::future::pending(),
+        )
+        .await;
+
+    assert!(!app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#7 Review failed: network error");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_prints_unknown_when_the_task_drops() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    let (tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((7, rx));
+    drop(tx);
+
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_millis(50), std::future::pending())
+        .await;
+
+    assert!(!app.is_submitting_review());
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#7 Review result unknown: check GitHub before resubmitting");
+}
+
+#[tokio::test]
+async fn test_review_submit_task_panic_reports_unknown_result() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    let (tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((4, rx));
+    let panicked = std::thread::spawn(move || {
+        let _tx = tx;
+        panic!("review submit task panicked");
+    })
+    .join()
+    .is_err();
+    assert!(panicked);
+
+    app.poll_review_submit_updates();
+
+    assert!(!app.is_submitting_review());
+    let (success, message) = review_toast(&app);
+    assert!(!success);
+    assert!(!message.contains("Review failed"));
+    insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
 use crate::diff_store::{PrefetchItem, MAX_PREFETCH_FILES};
 use crate::github::{ChangedFile, CiStatus, GhFailure};
-use crate::loader::{CommentSubmitResult, DataLoadResult};
+use crate::loader::{CommentSubmitResult, DataLoadResult, ReviewSubmitResult};
 
 use super::types::*;
 use super::{App, DataState};
@@ -530,6 +530,58 @@ impl App {
                 self.cmt.comment_submit_receiver = None;
             }
         }
+    }
+
+    pub(crate) fn poll_review_submit_updates(&mut self) -> Option<super::ReviewWaitOutcome> {
+        let (origin_pr, rx) = self.cmt.review_submit_receiver.as_mut()?;
+        let origin_pr = *origin_pr;
+
+        let (success, message, outcome) = match rx.try_recv() {
+            Ok(ReviewSubmitResult::Submitted(action)) => {
+                let action_str = match action {
+                    ReviewAction::Approve => "approved",
+                    ReviewAction::RequestChanges => "changes requested",
+                    ReviewAction::Comment => "commented",
+                };
+                tracing::debug!(action_str, "submit_review: success");
+                (
+                    true,
+                    format!("Review submitted ({action_str})"),
+                    super::ReviewWaitOutcome::Submitted {
+                        pr_number: origin_pr,
+                    },
+                )
+            }
+            Ok(ReviewSubmitResult::Failed(text)) => {
+                tracing::debug!(%text, "submit_review: API failed");
+                (
+                    false,
+                    format!("Review failed: {text}"),
+                    super::ReviewWaitOutcome::Failed {
+                        pr_number: origin_pr,
+                        detail: text,
+                    },
+                )
+            }
+            Err(mpsc::error::TryRecvError::Empty) => return None,
+            Err(mpsc::error::TryRecvError::Disconnected) => (
+                false,
+                super::REVIEW_RESULT_UNKNOWN.to_string(),
+                super::ReviewWaitOutcome::Unknown {
+                    pr_number: origin_pr,
+                },
+            ),
+        };
+
+        self.cmt.review_submit_receiver = None;
+        let message = if self.pr_number == Some(origin_pr) {
+            message
+        } else {
+            format!("#{origin_pr} {message}")
+        };
+        self.cmt.submission_result = Some((success, message));
+        self.cmt.submission_result_time = Some(Instant::now());
+        Some(outcome)
     }
 
     pub(crate) fn poll_mark_viewed_updates(&mut self) {

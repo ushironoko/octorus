@@ -11,6 +11,7 @@ use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
 use crate::github::comment::{Review, ReviewComment};
 use crate::github::{self, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
+use crate::loader::ReviewSubmitResult;
 use crate::ui;
 
 use super::types::*;
@@ -203,11 +204,14 @@ impl App {
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
     }
-    pub(crate) async fn submit_review(
+    pub(crate) fn submit_review(
         &mut self,
         action: ReviewAction,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        if self.is_submitting_review() {
+            return Ok(());
+        }
         tracing::debug!(?action, "submit_review: start");
         ui::restore_terminal(terminal)?;
 
@@ -239,37 +243,38 @@ impl App {
             return Ok(());
         };
 
-        // All actions with non-empty body: submit immediately
-        self.submit_review_with_body(action, &body).await
-    }
-
-    pub(crate) async fn submit_review_with_body(
-        &mut self,
-        action: ReviewAction,
-        body: &str,
-    ) -> Result<()> {
-        tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
-        match github::submit_review(&self.repo, self.pr_number(), action, body).await {
-            Ok(()) => {
-                let action_str = match action {
-                    ReviewAction::Approve => "approved",
-                    ReviewAction::RequestChanges => "changes requested",
-                    ReviewAction::Comment => "commented",
-                };
-                tracing::debug!(action_str, "submit_review: success");
-                self.cmt.submission_result =
-                    Some((true, format!("Review submitted ({})", action_str)));
-                self.cmt.submission_result_time = Some(Instant::now());
-            }
-            Err(e) => {
-                tracing::debug!(%e, "submit_review: API failed");
-                self.cmt.submission_result = Some((false, format!("Review failed: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
-            }
-        }
-        self.cmt.pending_approve_body = None;
+        self.start_review_submit(action, body);
         Ok(())
     }
+
+    pub(crate) fn start_review_submit(&mut self, action: ReviewAction, body: String) {
+        tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number();
+        self.spawn_review_submit(action, async move {
+            github::submit_review(&repo, pr_number, action, &body).await
+        });
+    }
+
+    pub(crate) fn spawn_review_submit<F>(&mut self, action: ReviewAction, submit: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        if self.is_submitting_review() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel(1);
+        self.cmt.review_submit_receiver = Some((self.pr_number(), rx));
+        self.cmt.pending_approve_body = None;
+        tokio::spawn(async move {
+            let result = match submit.await {
+                Ok(()) => ReviewSubmitResult::Submitted(action),
+                Err(e) => ReviewSubmitResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(result).await;
+        });
+    }
+
     pub(crate) fn enter_suggestion_input(&mut self) {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
