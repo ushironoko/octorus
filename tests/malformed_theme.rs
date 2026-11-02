@@ -1,10 +1,3 @@
-//! A malformed `theme` value must not stop startup.
-//!
-//! `Config::load_from_paths` is the result a caller can read back. That is the
-//! theme that survived, and every unrelated key. The `or` process is what the
-//! user sees at startup. Its stderr carries the warning, and the
-//! alternate-screen sequence means config loading returned.
-
 use assert_cmd::cargo::cargo_bin_cmd;
 use octorus::config::{Config, ThemePreset};
 use std::collections::HashSet;
