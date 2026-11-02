@@ -148,6 +148,7 @@ fn is_path_under_mise(exe_path: &Path) -> bool {
 }
 
 /// Update via `cargo install octorus@{version}`.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn update_via_cargo(version: &str) -> Result<()> {
     println!("Detected cargo installation. Running cargo install...");
     println!();
@@ -359,6 +360,7 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<()> {
 }
 
 /// Update via GitHub Releases: download prebuilt binary, verify, and replace.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn update_via_release(latest_tag: &str, latest_version: &str) -> Result<()> {
     let target = detect_target()?;
     let archive_name = format!("octorus-{}-{}.tar.gz", latest_version, target);
@@ -414,6 +416,7 @@ pub fn check_for_update() -> Option<String> {
 /// Run the update command: check for new version, download, verify, and install.
 /// Automatically detects whether the binary was installed via `cargo install`
 /// and uses the appropriate update method.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_update() -> Result<UpdateResult> {
     let current_version = env!("CARGO_PKG_VERSION");
 

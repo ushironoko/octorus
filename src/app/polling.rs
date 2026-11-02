@@ -7,7 +7,7 @@ use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
 use crate::cache::{PrCacheKey, PrData};
 use crate::diff_store::{PrefetchItem, MAX_PREFETCH_FILES};
-use crate::github::{ChangedFile, CiStatus};
+use crate::github::{ChangedFile, CiStatus, GhFailure};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
 
 use super::types::*;
@@ -43,17 +43,25 @@ impl App {
                     self.reapply_filter("pr");
                 }
             }
-            Ok(Err(e)) => {
-                eprintln!("Warning: Failed to fetch PR list: {}", e);
-                self.prs.pr_list.recover_or(vec![]);
-                self.prs.pr_list_receiver = None;
+            Ok(Err(failure)) => {
+                tracing::warn!(
+                    kind = ?failure.kind,
+                    error = %failure.message,
+                    "Failed to fetch PR list"
+                );
+                self.record_pr_list_fetch_failure(failure);
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.prs.pr_list.recover_or(vec![]);
-                self.prs.pr_list_receiver = None;
+                tracing::warn!("PR list fetch disconnected");
+                self.record_pr_list_fetch_failure(GhFailure::other("PR list fetch disconnected"));
             }
         }
+    }
+
+    fn record_pr_list_fetch_failure(&mut self, failure: GhFailure) {
+        self.prs.pr_list.fail(failure);
+        self.prs.pr_list_receiver = None;
     }
 
     /// バックグラウンドタスクからのデータ更新をポーリング
@@ -117,6 +125,7 @@ impl App {
                     .put_review_comments(cache_key, comments.clone());
                 // PR が切り替わっていなければ UI 状態にも反映
                 if self.pr_number == Some(origin_pr) {
+                    self.cmt.comment_error = None;
                     self.apply_review_comments(comments);
                     // Update comment positions if in diff view or side-by-side
                     if matches!(
@@ -129,13 +138,10 @@ impl App {
                 }
                 self.cmt.comment_receiver = None;
             }
-            Ok(Err(e)) => {
-                eprintln!("Warning: Failed to fetch comments: {}", e);
-                // Keep existing comments if any, or show empty
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "Failed to fetch comments");
                 if self.pr_number == Some(origin_pr) {
-                    if self.cmt.review_comments.is_none() {
-                        self.cmt.review_comments = Some(vec![]);
-                    }
+                    self.cmt.comment_error = Some(error);
                     self.cmt.comments_loading = false;
                 }
                 self.cmt.comment_receiver = None;
@@ -451,18 +457,17 @@ impl App {
                     .put_discussion_comments(cache_key, comments.clone());
                 // PR が切り替わっていなければ UI 状態にも反映
                 if self.pr_number == Some(origin_pr) {
+                    self.cmt.discussion_error = None;
                     self.cmt.discussion_comments = Some(comments);
                     self.cmt.selected_discussion_comment = 0;
                     self.cmt.discussion_comments_loading = false;
                 }
                 self.cmt.discussion_comment_receiver = None;
             }
-            Ok(Err(e)) => {
-                eprintln!("Warning: Failed to fetch discussion comments: {}", e);
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "Failed to fetch discussion comments");
                 if self.pr_number == Some(origin_pr) {
-                    if self.cmt.discussion_comments.is_none() {
-                        self.cmt.discussion_comments = Some(vec![]);
-                    }
+                    self.cmt.discussion_error = Some(error);
                     self.cmt.discussion_comments_loading = false;
                 }
                 self.cmt.discussion_comment_receiver = None;

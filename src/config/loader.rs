@@ -171,7 +171,11 @@ impl Config {
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
             for error in errors {
-                eprintln!("Warning: {}", error);
+                // Print on the terminal. tracing writes debug.log only when OR_DEBUG=1.
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("Warning: {}", error);
+                }
             }
         }
 

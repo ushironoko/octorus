@@ -395,7 +395,10 @@ impl App {
     }
 
     /// PR一覧受信チャンネルを設定
-    pub fn set_pr_list_receiver(&mut self, rx: mpsc::Receiver<Result<github::PrListPage, String>>) {
+    pub fn set_pr_list_receiver(
+        &mut self,
+        rx: mpsc::Receiver<Result<github::PrListPage, github::GhFailure>>,
+    ) {
         self.prs.pr_list_receiver = Some(rx);
     }
 

@@ -195,9 +195,8 @@ pub fn highlight_code_line(
                 }
             })
             .collect(),
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!("Highlight error: {_e:?}");
+        Err(error) => {
+            tracing::debug!("Highlight error: {error:?}");
             smallvec![InternedSpan {
                 content: interner.get_or_intern(code),
                 style: Style::default(),
@@ -219,9 +218,8 @@ pub fn highlight_code_line_legacy(
             .into_iter()
             .map(|(style, text)| Span::styled(text.to_string(), convert_syntect_style(&style)))
             .collect(),
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!("Highlight error: {_e:?}");
+        Err(error) => {
+            tracing::debug!("Highlight error: {error:?}");
             vec![Span::raw(code.to_string())]
         }
     }
