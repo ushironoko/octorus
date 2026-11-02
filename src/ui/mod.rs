@@ -242,21 +242,32 @@ fn render_symbol_popup(frame: &mut Frame, app: &mut App) {
     let theme = app.theme;
     let area = frame.area();
 
-    let max_width = popup
-        .symbols
-        .iter()
-        .map(|(name, _, _)| name.len())
-        .max()
-        .unwrap_or(10) as u16
-        + 6; // padding + borders
-    let height = (popup.symbols.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let name_pad = "  ";
+    let text_pad = name_pad.len() * 2;
+    let border = 2;
+    let max_width = u16::try_from(
+        popup
+            .symbols
+            .iter()
+            .map(|(name, _, _)| name.len())
+            .max()
+            .unwrap_or(10)
+            + text_pad
+            + border,
+    )
+    .unwrap_or(u16::MAX);
+    let height = u16::try_from(popup.symbols.len() + border)
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(4));
     let width = max_width.max(20).min(area.width.saturating_sub(4));
     let popup_area = centered_rect(width, height, area);
     let symbol_count = popup.symbols.len();
     let items: Vec<ListItem> = popup
         .symbols
         .iter()
-        .map(|(name, _, _)| ListItem::new(Line::from(Span::raw(format!("  {name}  ")))))
+        .map(|(name, _, _)| {
+            ListItem::new(Line::from(Span::raw(format!("{name_pad}{name}{name_pad}"))))
+        })
         .collect();
 
     frame.render_widget(Clear, popup_area);
