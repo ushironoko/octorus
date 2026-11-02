@@ -36,11 +36,11 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
     Frame, Terminal,
 };
@@ -236,9 +236,10 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn render_symbol_popup(frame: &mut Frame, app: &mut App) {
-    let Some(ref popup) = app.symbol_popup else {
+    let Some(popup) = app.symbol_popup.clone() else {
         return;
     };
+    let theme = app.theme;
     let area = frame.area();
 
     let max_width = popup
@@ -248,40 +249,29 @@ fn render_symbol_popup(frame: &mut Frame, app: &mut App) {
         .max()
         .unwrap_or(10) as u16
         + 6; // padding + borders
-    let height = (popup.symbols.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for borders
+    let height = (popup.symbols.len() as u16 + 2).min(area.height.saturating_sub(4));
     let width = max_width.max(20).min(area.width.saturating_sub(4));
-
     let popup_area = centered_rect(width, height, area);
-
-    frame.render_widget(Clear, popup_area);
-
+    let symbol_count = popup.symbols.len();
     let items: Vec<ListItem> = popup
         .symbols
         .iter()
-        .enumerate()
-        .map(|(i, (name, _, _))| {
-            let style = if i == popup.selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(format!("  {}  ", name), style)))
-        })
+        .map(|(name, _, _)| ListItem::new(Line::from(Span::raw(format!("  {name}  ")))))
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Select symbol (j/k/↑↓: move, Enter: jump, Esc: cancel)")
-            .border_style(Style::default().fg(Color::Cyan)),
+    frame.render_widget(Clear, popup_area);
+
+    let list = theme::Attention::Focused.rows(theme).apply(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select symbol (j/k/↑↓: move, Enter: jump, Esc: cancel)")
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
     );
+    let mut list_state = ListState::default().with_selected(Some(popup.selected));
+    frame.render_stateful_widget(list, popup_area, &mut list_state);
 
-    frame.render_widget(list, popup_area);
-
-    let symbol_count = app.symbol_popup.as_ref().map_or(0, |p| p.symbols.len());
     app.hit_map
         .push(area, hit::HitTarget::Backdrop { dismiss: true });
     app.hit_map.push(popup_area, hit::HitTarget::OverlaySurface);

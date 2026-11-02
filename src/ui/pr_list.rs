@@ -553,6 +553,91 @@ mod tests {
         );
     }
 
+    fn symbol_popup_app() -> App {
+        use crate::app::SymbolPopupState;
+
+        let mut app = pr_list_app();
+        app.symbol_popup = Some(SymbolPopupState {
+            symbols: vec![("foo".to_string(), 1, 4), ("bar".to_string(), 6, 9)],
+            selected: 0,
+        });
+        app
+    }
+
+    #[test]
+    fn symbol_popup_selected_row_matches_the_pr_list_marker() {
+        let list = render_screen(vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "bob"),
+        ]);
+        let list_mark = cells_with(&list, "▌")
+            .into_iter()
+            .next()
+            .expect("pr list drew no ▌");
+        let (fg, bg, modifier) = (list_mark.fg, list_mark.bg, list_mark.modifier);
+
+        let mut app = symbol_popup_app();
+        let buf = draw_pr_list(&mut app);
+        let marks = cells_with(&buf, "▌");
+        assert!(
+            !marks.is_empty(),
+            "symbol popup drew no ▌\n{}",
+            screen_text(&buf)
+        );
+        assert!(
+            marks
+                .iter()
+                .all(|cell| cell.fg == fg && cell.bg == bg && cell.modifier == modifier),
+            "popup ▌ style {marks:?} != pr list fg={fg:?} bg={bg:?} mod={modifier:?}\n{}",
+            screen_text(&buf)
+        );
+
+        let name = row_cells(&buf, "foo");
+        let letter = name
+            .iter()
+            .find(|cell| cell.symbol() == "f")
+            .expect("selected symbol name missing");
+        let title = row_cells(&list, "Fix");
+        let title_letter = title
+            .iter()
+            .find(|cell| cell.symbol() == "F")
+            .expect("pr title missing");
+        assert_eq!(letter.bg, title_letter.bg);
+        assert_eq!(letter.modifier, title_letter.modifier);
+        assert_ne!(letter.bg, Color::Cyan);
+        assert_ne!(letter.fg, Color::Black);
+    }
+
+    #[test]
+    fn symbol_popup_no_color_selection_is_the_bar() {
+        let mut app = symbol_popup_app();
+        app.theme = Theme::resolve(&crate::config::ThemeConfig::default(), true);
+        let buf = draw_pr_list(&mut app);
+        let marks = cells_with(&buf, "▌");
+        assert!(
+            !marks.is_empty(),
+            "NO_COLOR symbol popup drew no ▌\n{}",
+            screen_text(&buf)
+        );
+        assert!(
+            marks.iter().all(|cell| {
+                cell.bg == Color::Reset && cell.fg != Color::Cyan && cell.fg != Color::Black
+            }),
+            "NO_COLOR selection still carries a color: {:?}",
+            marks
+                .iter()
+                .map(|cell| (cell.fg, cell.bg, cell.modifier))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn row_cells<'a>(buf: &'a Buffer, needle: &str) -> Vec<&'a ratatui::buffer::Cell> {
+        let y = (0..buf.area().height)
+            .find(|y| row_text(buf, *y).contains(needle))
+            .unwrap_or_else(|| panic!("row {needle} missing\n{}", screen_text(buf)));
+        (0..buf.area().width).map(|x| &buf[(x, y)]).collect()
+    }
+
     #[test]
     fn shell_overlay_removes_the_pr_list_focus_arrow() {
         use crate::app::{CachedShellLine, ShellCommandResult, ShellPhase, ShellState};

@@ -1445,6 +1445,7 @@ fn render_module_graph_ready_pane(
             Style::default().fg(Color::DarkGray),
         )));
     } else {
+        let mark = attention.rows(theme);
         let visible_nodes = inner_height.saturating_sub(3) / 3;
         let offset = scroll_offset(panel.selected, current.rows.len(), visible_nodes);
         for (index, row) in current
@@ -1454,24 +1455,44 @@ fn render_module_graph_ready_pane(
             .skip(offset)
             .take(visible_nodes)
         {
-            let style = if index == panel.selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if row.jump.is_none() {
+            let selected = index == panel.selected;
+            let base = if row.jump.is_none() {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
             };
+            let style = base.patch(mark.body_style(selected));
             let last = index + 1 == current.rows.len();
-            for text in module_graph_relationship_lines(row, panel.direction, inner_width, last) {
-                lines.push(Line::from(Span::styled(text, style)));
+            for (line_index, text) in
+                module_graph_relationship_lines(row, panel.direction, inner_width, last)
+                    .into_iter()
+                    .enumerate()
+            {
+                if selected && line_index == 1 {
+                    let tail = skip_display_columns(&text, SELECTION_MARKER_WIDTH);
+                    lines.push(Line::from(vec![
+                        mark.prefix(true),
+                        Span::styled(tail, style),
+                    ]));
+                } else {
+                    lines.push(Line::from(Span::styled(text, style)));
+                }
             }
         }
     }
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn skip_display_columns(text: &str, columns: usize) -> String {
+    let mut width = 0;
+    for (index, ch) in text.char_indices() {
+        if width >= columns {
+            return text[index..].to_string();
+        }
+        width += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    String::new()
 }
 
 fn module_graph_title(panel: &ModuleGraphPanel, title_width: usize) -> String {
@@ -1798,6 +1819,7 @@ mod tests {
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::{Buffer, Cell};
+    use ratatui::style::{Color, Modifier};
     use ratatui::Terminal;
     use std::borrow::Cow;
     use std::path::PathBuf;
@@ -3154,6 +3176,133 @@ mod tests {
         );
     }
 
+    fn cells_with<'a>(buf: &'a Buffer, symbol: &str) -> Vec<&'a Cell> {
+        let area = buf.area();
+        let mut found = Vec::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == symbol {
+                    found.push(cell);
+                }
+            }
+        }
+        found
+    }
+
+    fn app_with_graph_selection() -> App {
+        let mut app = app_with_browse(&["src/app.ts", "src/helper.ts"]);
+        let state = app.browse_state.as_mut().unwrap();
+        open_file(state, "src/app.ts", "import './helper';\n");
+        state.module_graph_pane = ModuleGraphPaneState::Ready(ModuleGraphPanel {
+            path: "src/app.ts".to_string(),
+            display_path: "src/app.ts".to_string(),
+            direction: ModuleGraphDirection::Dependencies,
+            selected: 0,
+            dependencies: ModuleGraphRows {
+                rows: vec![
+                    ModuleGraphRow {
+                        node: "src/helper.ts".to_string(),
+                        edge: "[import] ./helper  :1".to_string(),
+                        jump: Some(crate::app::browse::ModuleGraphJump {
+                            path: "src/helper.ts".to_string(),
+                            line: 0,
+                        }),
+                    },
+                    ModuleGraphRow {
+                        node: "package react".to_string(),
+                        edge: "[import] react  :2".to_string(),
+                        jump: None,
+                    },
+                ],
+                total: 2,
+                guarantee: DependencyGuarantee::Exact,
+            },
+            dependents: ModuleGraphRows {
+                rows: Vec::new(),
+                total: 0,
+                guarantee: DependencyGuarantee::Exact,
+            },
+        });
+        app.state = AppState::RepoBrowseGraph;
+        app
+    }
+
+    #[test]
+    fn module_graph_selected_row_matches_the_file_list_marker() {
+        let mut files = app_with_browse(&["src/app.ts"]);
+        files.state = AppState::RepoBrowseTree;
+        let file_buf = render_buffer(&mut files, 80, 12);
+        let file_mark = cells_with(&file_buf, "▌")
+            .into_iter()
+            .next()
+            .expect("file list drew no ▌");
+        let (fg, bg, modifier) = (file_mark.fg, file_mark.bg, file_mark.modifier);
+
+        let mut app = app_with_graph_selection();
+        let buf = render_buffer(&mut app, 100, 16);
+        let marks = cells_with(&buf, "▌");
+        assert!(
+            !marks.is_empty(),
+            "graph selection drew no ▌\n{}",
+            render_at(&mut app, 100, 16)
+        );
+        assert!(
+            marks
+                .iter()
+                .all(|cell| cell.fg == fg && cell.bg == bg && cell.modifier == modifier),
+            "graph ▌ != file list marker fg={fg:?} bg={bg:?} mod={modifier:?}"
+        );
+
+        let edge = row_cells(&buf, "[import] ./helper");
+        let letter = edge
+            .iter()
+            .find(|cell| cell.symbol() == "[")
+            .expect("selected edge missing");
+        assert_eq!(letter.bg, Color::Reset);
+        assert!(letter.modifier.contains(Modifier::BOLD));
+        assert_ne!(letter.fg, Color::Black);
+    }
+
+    #[test]
+    fn module_graph_no_color_selection_is_the_bar() {
+        let mut app = app_with_graph_selection();
+        app.theme = Theme::resolve(&crate::config::ThemeConfig::default(), true);
+        let buf = render_buffer(&mut app, 100, 16);
+        let marks = cells_with(&buf, "▌");
+        assert!(
+            !marks.is_empty(),
+            "NO_COLOR graph drew no ▌\n{}",
+            screen_text_of(&buf)
+        );
+        assert!(marks.iter().all(|cell| {
+            cell.bg == Color::Reset && cell.fg != Color::Cyan && cell.fg != Color::Black
+        }));
+    }
+
+    fn row_cells<'a>(buf: &'a Buffer, needle: &str) -> Vec<&'a Cell> {
+        let y = (0..buf.area().height)
+            .find(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("{needle} missing\n{}", screen_text_of(buf)));
+        (0..buf.area().width).map(|x| &buf[(x, y)]).collect()
+    }
+
+    fn screen_text_of(buf: &Buffer) -> String {
+        (0..buf.area().height)
+            .map(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn test_tree_focus_does_not_advertise_a_graph_focus_shortcut() {
         let mut app = app_with_browse(&["src/app.ts"]);
@@ -3262,7 +3411,7 @@ mod tests {
         │      app.ts                     ││                               │┃║src/app.ts                  ║┃
         │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
         │                                 ││                               │┃│  ┌─ src/helper.ts ─────────┐┃
-        │                                 ││                               │┃├─▶│[import] ./helper  :1    │┃
+        │                                 ││                               │┃▌ ▶│[import] ./helper  :1    │┃
         │                                 ││                               │┃│  └─────────────────────────┘┃
         │                                 ││                               │┃│  ┌─ package react ─────────┐┃
         │                                 ││                               │┃├─▶│[import] react  :2       │┃
@@ -3323,7 +3472,7 @@ mod tests {
         │      app.ts              ││                        │┃║src/app.ts            ║┃
         │                          ││                        │┃╚══════════════════════╝┃
         │                          ││                        │┃│  ┌─ 依 存 先 依 存 先 依 … ─┐┃
-        │                          ││                        │┃└─▶│[import] ./依 存 先  …│┃
+        │                          ││                        │┃▌ ▶│[import] ./依 存 先  …│┃
         │                          ││                        │┃   └───────────────────┘┃
         └──────────────────────────┘└────────────────────────┘┗ Tab/h/l dir | j/k node ┛
          Tab/h/l direction | j/k node | Enter open | i close graph | Esc/q code
@@ -3524,7 +3673,7 @@ mod tests {
         │      app.ts              ││                        │┃║src/app.ts            ║┃
         │      helper.ts           ││                        │┃╚══════════════════════╝┃
         │                          ││                        │┃│  ┌─ src/helper.ts ───┐┃
-        │                          ││                        │┃├─▶│[import] ./helper …│┃
+        │                          ││                        │┃▌ ▶│[import] ./helper …│┃
         │                          ││                        │┃│  └───────────────────┘┃
         │                          ││                        │┃│  ┌─ package react ───┐┃
         │                          ││                        │┃├─▶│[import] react  :2 │┃
@@ -3573,7 +3722,7 @@ mod tests {
         │      app.ts              ││      r = 1;            │┃║src/helper.ts         ║┃
         │      helper.ts           ││                        │┃╚══════════════════════╝┃
         │                          ││                        │┃│  ┌─ src/app.rs ──────┐┃
-        │                          ││                        │┃▲─┘│[use] crate::helpe…│┃
+        │                          ││                        │┃▌ ┘│[use] crate::helpe…│┃
         │                          ││                        │┃   └───────────────────┘┃
         │                          ││                        │┃                        ┃
         │                          ││                        │┃                        ┃
@@ -3618,7 +3767,7 @@ mod tests {
         │      app.ts                     ││                               │┃║src/helper.ts               ║┃
         │      helper.ts                  ││                               │┃╚════════════════════════════╝┃
         │                                 ││                               │┃│  ┌─ src/app.rs ────────────┐┃
-        │                                 ││                               │┃▲─┘│[use] crate::helper  :4  │┃
+        │                                 ││                               │┃▌ ┘│[use] crate::helper  :4  │┃
         │                                 ││                               │┃   └─────────────────────────┘┃
         │                                 ││                               │┃                              ┃
         │                                 ││                               │┃                              ┃
