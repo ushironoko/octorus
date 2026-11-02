@@ -123,9 +123,13 @@ impl<'a> PatchIndex<'a> {
                 }
             }
 
-            let current_new_line = match line_type {
-                LineType::Removed | LineType::Header | LineType::Meta => None,
-                _ => new_line_number,
+            let current_new_line = if is_no_newline_marker(line_clean) {
+                None
+            } else {
+                match line_type {
+                    LineType::Removed | LineType::Header | LineType::Meta => None,
+                    _ => new_line_number,
+                }
             };
 
             let current_position = match line_type {
@@ -141,13 +145,10 @@ impl<'a> PatchIndex<'a> {
                 diff_position: current_position,
             });
 
-            match line_type {
-                LineType::Added | LineType::Context => {
-                    if let Some(n) = new_line_number {
-                        new_line_number = Some(n + 1);
-                    }
+            if advances_file_line(line_type, line_clean) {
+                if let Some(n) = new_line_number {
+                    new_line_number = Some(n + 1);
                 }
-                _ => {}
             }
         }
 
@@ -251,6 +252,16 @@ fn split_hunk_number(input: &str) -> Option<(u32, &str)> {
     Some((number, &input[end..]))
 }
 
+/// Git writes this after a file row that has no trailing newline.
+/// GitHub `position` counts the row. Neither file contains it.
+fn is_no_newline_marker(line: &str) -> bool {
+    line.strip_suffix('\r').unwrap_or(line) == "\\ No newline at end of file"
+}
+
+fn advances_file_line(line_type: LineType, line: &str) -> bool {
+    matches!(line_type, LineType::Added | LineType::Context) && !is_no_newline_marker(line)
+}
+
 /// Diff row whose old-file or new-file line number is `target`.
 ///
 /// `Left` matches `-` and context rows. `Right` matches `+` and context rows.
@@ -339,10 +350,13 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
         }
 
         if i == line_index {
-            // For the target line, return the info
-            let current_new_line = match line_type {
-                LineType::Removed | LineType::Header | LineType::Meta => None,
-                _ => new_line_number,
+            let current_new_line = if is_no_newline_marker(line) {
+                None
+            } else {
+                match line_type {
+                    LineType::Removed | LineType::Header | LineType::Meta => None,
+                    _ => new_line_number,
+                }
             };
 
             let current_position = match line_type {
@@ -360,14 +374,10 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
             });
         }
 
-        // Update new_line_number for next iteration
-        match line_type {
-            LineType::Added | LineType::Context => {
-                if let Some(n) = new_line_number {
-                    new_line_number = Some(n + 1);
-                }
+        if advances_file_line(line_type, line) {
+            if let Some(n) = new_line_number {
+                new_line_number = Some(n + 1);
             }
-            _ => {}
         }
     }
 
@@ -477,6 +487,9 @@ pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
             }
             LineType::Added | LineType::Context => {
                 position_counter = position_counter.map(|p| p + 1);
+                if is_no_newline_marker(line) {
+                    continue;
+                }
                 if new_line_number == Some(target_line) {
                     return position_counter;
                 }
