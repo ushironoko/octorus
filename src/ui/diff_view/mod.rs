@@ -17,7 +17,7 @@ use super::common::render_rally_status_bar;
 use crate::app::{
     hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext, SpanVec,
 };
-use crate::diff::{classify_line, LineType};
+use crate::diff::{LineType, PatchClassifier};
 use crate::syntax::{
     apply_line_highlights, collect_line_highlights, collect_line_highlights_with_injections,
     get_theme, highlight_code_line, syntax_for_file, Highlighter, ParserPool,
@@ -51,10 +51,11 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
     let patch_hash = hash_string(patch);
     let expanded = expand_tabs(patch, tab_width);
     let mut interner = Rodeo::default();
+    let mut classifier = PatchClassifier::new();
     let lines: Vec<CachedDiffLine> = expanded
         .lines()
         .map(|line| {
-            let (line_type, content) = classify_line(line);
+            let (line_type, content) = classifier.classify(line);
 
             let fg_style = match line_type.fg_color() {
                 Some(c) => Style::default().fg(c),
@@ -787,8 +788,9 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
     // Maps source line index -> (diff line index, line type)
     let mut line_mapping: Vec<(usize, LineType)> = Vec::new();
 
+    let mut classifier = PatchClassifier::new();
     for (diff_line_idx, line) in patch.lines().enumerate() {
-        let (line_type, content) = classify_line(line);
+        let (line_type, content) = classifier.classify(line);
         match line_type {
             // Only include added and context lines (post-change version)
             // This ensures the source is syntactically valid for tree-sitter
@@ -961,11 +963,12 @@ fn build_lines_with_cst(
     let theme = get_theme(theme_name);
     let mut syntect_highlighter = syntax.map(|s| HighlightLines::new(s, theme));
 
+    let mut classifier = PatchClassifier::new();
     patch
         .lines()
         .enumerate()
         .map(|(i, line)| {
-            let (line_type, content) = classify_line(line);
+            let (line_type, content) = classifier.classify(line);
 
             let spans = match line_type {
                 LineType::Header => {
@@ -1052,10 +1055,11 @@ fn build_lines_with_syntect(
         }
     }
 
+    let mut classifier = PatchClassifier::new();
     patch
         .lines()
         .map(|line| {
-            let (line_type, content) = classify_line(line);
+            let (line_type, content) = classifier.classify(line);
 
             let spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
 
@@ -2474,6 +2478,52 @@ mod tests {
         assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
         assert_eq!(removed.spans[1].style.fg, Some(Color::Red));
         assert_eq!(removed.line_type, LineType::Removed);
+    }
+
+    #[test]
+    fn test_plain_cache_renders_hunk_dashdash_as_removed() {
+        let patch = concat!(
+            "diff --git a/q.sql b/q.sql\n",
+            "--- a/q.sql\n",
+            "+++ b/q.sql\n",
+            "@@ -1,3 +1,4 @@\n",
+            " keep\n",
+            "--- comment\n",
+            " context after remove\n",
+            "+++x\n",
+            " next\n",
+        );
+        let cache = build_plain_diff_cache(patch, 4);
+
+        let file_minus = &cache.lines[1];
+        assert_eq!(file_minus.line_type, LineType::Meta);
+        assert_eq!(cache.resolve(file_minus.spans[0].content), "--- a/q.sql");
+
+        let file_plus = &cache.lines[2];
+        assert_eq!(file_plus.line_type, LineType::Meta);
+        assert_eq!(cache.resolve(file_plus.spans[0].content), "+++ b/q.sql");
+
+        let removed = &cache.lines[5];
+        assert_eq!(removed.line_type, LineType::Removed);
+        assert_eq!(removed.spans.len(), 2);
+        assert_eq!(cache.resolve(removed.spans[0].content), "-");
+        assert_eq!(cache.resolve(removed.spans[1].content), "-- comment");
+        assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
+
+        let added = &cache.lines[7];
+        assert_eq!(added.line_type, LineType::Added);
+        assert_eq!(added.spans.len(), 2);
+        assert_eq!(cache.resolve(added.spans[0].content), "+");
+        assert_eq!(cache.resolve(added.spans[1].content), "++x");
+        assert_eq!(added.spans[0].style.fg, Some(Color::Green));
+
+        let after_add = &cache.lines[8];
+        let rendered = format!(
+            "{}{}",
+            cache.resolve(after_add.spans[0].content),
+            cache.resolve(after_add.spans[1].content),
+        );
+        assert_eq!(rendered, " next");
     }
 
     #[test]

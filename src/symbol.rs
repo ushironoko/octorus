@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use anyhow::Result;
 use tokio::process::Command;
 
-use crate::diff::{classify_line, LineType};
+use crate::diff::{LineType, PatchClassifier};
 use crate::github::ChangedFile;
 use crate::language::SupportedLanguage;
 
@@ -290,8 +290,9 @@ pub fn find_definition_in_patches(
             continue;
         };
 
+        let mut classifier = PatchClassifier::new();
         for (line_idx, line) in patch.lines().enumerate() {
-            let (line_type, content) = classify_line(line);
+            let (line_type, content) = classifier.classify(line);
 
             // Only search in Added and Context lines
             if !matches!(line_type, LineType::Added | LineType::Context) {
@@ -311,8 +312,9 @@ pub fn find_definition_in_patches(
             continue;
         };
 
+        let mut classifier = PatchClassifier::new();
         for (line_idx, line) in patch.lines().enumerate() {
-            let (line_type, content) = classify_line(line);
+            let (line_type, content) = classifier.classify(line);
 
             if !matches!(line_type, LineType::Added | LineType::Context) {
                 continue;
