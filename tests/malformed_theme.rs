@@ -81,16 +81,35 @@ fn write_optional(path: &Path, body: Option<&str>) {
     fs::write(path, body).expect("write config");
 }
 
-fn warning_line(path: &Path, body: &str) -> String {
-    format!("Warning: {}: {body}", path.display())
-}
-
 fn warning_lines(stderr: &str) -> Vec<String> {
     stderr
         .lines()
         .filter(|line| line.starts_with("Warning:"))
         .map(str::to_string)
         .collect()
+}
+
+fn assert_warnings(stderr: &str, expected: &[(&Path, &str)]) {
+    let actual = warning_lines(stderr);
+    assert_eq!(actual.len(), expected.len(), "stderr:\n{stderr}");
+    for (line, (path, body)) in actual.iter().zip(expected) {
+        let suffix = format!(": {body}");
+        let rest = line
+            .strip_prefix("Warning: ")
+            .unwrap_or_else(|| panic!("warning does not name a file: {line:?}\nstderr:\n{stderr}"));
+        let path_text = rest.strip_suffix(&suffix).unwrap_or_else(|| {
+            panic!("warning {line:?} does not end with {suffix:?}\nstderr:\n{stderr}")
+        });
+        let shown = PathBuf::from(path_text)
+            .canonicalize()
+            .unwrap_or_else(|error| {
+                panic!("canonicalize warning path {path_text}: {error}\nstderr:\n{stderr}")
+            });
+        let expected_path = path
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("canonicalize {}: {error}", path.display()));
+        assert_eq!(shown, expected_path, "stderr:\n{stderr}");
+    }
 }
 
 fn assert_startup(session: &Session) {
@@ -129,17 +148,12 @@ fn assert_shape(placement: Placement, toml: &str, warning_body: &str) {
 
     let mut expected = Vec::new();
     if global.is_some() {
-        expected.push(warning_line(&session.global_path, warning_body));
+        expected.push((session.global_path.as_path(), warning_body));
     }
     if local.is_some() {
-        expected.push(warning_line(&session.local_path, warning_body));
+        expected.push((session.local_path.as_path(), warning_body));
     }
-    assert_eq!(
-        warning_lines(&session.stderr),
-        expected,
-        "stderr:\n{}",
-        session.stderr
-    );
+    assert_warnings(&session.stderr, &expected);
 
     let overrides = match placement {
         Placement::Global => HashSet::new(),
@@ -202,14 +216,12 @@ fn string_theme_warning_escapes_control_characters() {
     assert_eq!(session.config.diff.theme, "Nord");
 
     let warnings = warning_lines(&session.stderr);
-    assert_eq!(
-        warnings,
-        vec![warning_line(
-            &session.global_path,
-            "theme: expected a table, got string \"\\u{1b}[2J\"; did you mean [diff] theme = \"...\"? (using default)"
+    assert_warnings(
+        &session.stderr,
+        &[(
+            session.global_path.as_path(),
+            "theme: expected a table, got string \"\\u{1b}[2J\"; did you mean [diff] theme = \"...\"? (using default)",
         )],
-        "stderr:\n{}",
-        session.stderr
     );
     assert!(
         warnings.iter().all(|line| !line.contains('\u{1b}')),
@@ -249,14 +261,12 @@ tab_width = 2
         session.config.local_overrides,
         HashSet::from([String::from("diff.tab_width")])
     );
-    assert_eq!(
-        warning_lines(&session.stderr),
-        vec![warning_line(
-            &session.local_path,
-            "theme: expected a table, got string \"Dracula\"; did you mean [diff] theme = \"...\"? (using global)"
+    assert_warnings(
+        &session.stderr,
+        &[(
+            session.local_path.as_path(),
+            "theme: expected a table, got string \"Dracula\"; did you mean [diff] theme = \"...\"? (using global)",
         )],
-        "stderr:\n{}",
-        session.stderr
     );
 }
 
@@ -295,14 +305,12 @@ info = \"yellow\"
             String::from("theme.colors"),
         ])
     );
-    assert_eq!(
-        warning_lines(&session.stderr),
-        vec![warning_line(
-            &session.global_path,
-            "theme: expected a table, got string \"Dracula\"; did you mean [diff] theme = \"...\"? (using default)"
+    assert_warnings(
+        &session.stderr,
+        &[(
+            session.global_path.as_path(),
+            "theme: expected a table, got string \"Dracula\"; did you mean [diff] theme = \"...\"? (using default)",
         )],
-        "stderr:\n{}",
-        session.stderr
     );
 }
 
@@ -339,14 +347,12 @@ colors = \"red\"
         session.config.local_overrides,
         HashSet::from([String::from("diff.tab_width"), String::from("theme.preset"),])
     );
-    assert_eq!(
-        warning_lines(&session.stderr),
-        vec![warning_line(
-            &session.local_path,
-            "theme.colors: expected a table, got string \"red\" (using global)"
+    assert_warnings(
+        &session.stderr,
+        &[(
+            session.local_path.as_path(),
+            "theme.colors: expected a table, got string \"red\" (using global)",
         )],
-        "stderr:\n{}",
-        session.stderr
     );
 }
 
