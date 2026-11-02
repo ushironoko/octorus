@@ -1369,7 +1369,7 @@ fn render_module_graph_pane(
                 area,
                 path,
                 " Waiting for the current file…",
-                module_graph_block("", "Graph (opening…)", attention, theme, graph_help),
+                module_graph_block("Graph", "(opening…)", attention, theme, graph_help),
             );
         }
         ModuleGraphPaneState::Loading { path, .. } => {
@@ -3134,6 +3134,24 @@ mod tests {
         └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━┛└ i/→ focus ─────────────┘
          o outline | s search | i graph | gb blame | gc diff | gp PR | gr discuss | gd d
         ");
+    }
+
+    #[test]
+    fn test_module_graph_waiting_focused_title_is_graph_opening() {
+        let mut app = app_with_browse(&["src/helper.ts"]);
+        let state = app.browse_state.as_mut().unwrap();
+        open_file(state, "src/helper.ts", "export {};\n");
+        state.module_graph_pane = ModuleGraphPaneState::Waiting {
+            path: "src/helper.ts".to_string(),
+        };
+        app.state = AppState::RepoBrowseGraph;
+
+        let rendered = render_at(&mut app, 100, 12);
+        assert!(rendered.contains("▶ GRAPH (opening…)"), "{rendered}");
+        assert!(
+            !rendered.contains("Graph (opening…)"),
+            "the label stayed inside the detail: {rendered}"
+        );
     }
 
     #[test]
