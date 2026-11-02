@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 
+use super::chrome::{pane_block, PaneTitle};
 use super::common::{
     build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar,
 };
@@ -69,19 +70,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(
-                &filtered,
-                display_selected,
-                &app.cmt.file_comment_counts,
+            let theme = app.theme;
+            let attention = app.sole_attention();
+            let items = build_file_list_items_ref(&filtered, &app.cmt.file_comment_counts);
+            let detail = format!("({display_count}/{total_files})");
+            let block = pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "Changed Files",
+                    detail: &detail,
+                },
+                attention,
             );
-
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!("Changed Files ({}/{})", display_count, total_files)),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray));
+            let list = attention.rows(theme).apply(List::new(items).block(block));
 
             let mut list_state = ListState::default()
                 .with_offset(app.file_list_scroll_offset)
@@ -121,22 +122,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let items: Vec<ListItem> = tree
             .visible_rows
             .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                build_tree_row_item(
-                    files,
-                    row,
-                    i == tree.selected_row,
-                    &app.cmt.file_comment_counts,
-                    col_width,
-                )
-            })
+            .map(|row| build_tree_row_item(files, row, &app.cmt.file_comment_counts, col_width))
             .collect();
 
-        let title = format!("Changed Files ({}) [tree]", total_files);
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let theme = app.theme;
+        let attention = app.sole_attention();
+        let detail = format!("({total_files}) [tree]");
+        let block = pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Changed Files",
+                detail: &detail,
+            },
+            attention,
+        );
+        let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
             .with_offset(tree.scroll_offset)
@@ -165,15 +165,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             );
         }
     } else {
-        let items = build_file_list_items(files, app.selected_file, &app.cmt.file_comment_counts);
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("Changed Files ({})", total_files)),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let theme = app.theme;
+        let attention = app.sole_attention();
+        let items = build_file_list_items(files, &app.cmt.file_comment_counts);
+        let detail = format!("({total_files})");
+        let block = pane_block(
+            theme,
+            PaneTitle::Labeled {
+                label: "Changed Files",
+                detail: &detail,
+            },
+            attention,
+        );
+        let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
             .with_offset(app.file_list_scroll_offset)
@@ -368,7 +372,6 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
 
 pub(crate) fn build_file_list_items<'a>(
     files: &'a [ChangedFile],
-    selected_file: usize,
     comment_counts: &HashMap<String, usize>,
 ) -> Vec<ListItem<'a>> {
     let max_count = files
@@ -379,17 +382,15 @@ pub(crate) fn build_file_list_items<'a>(
     let col_width = comment_col_width(max_count);
     files
         .iter()
-        .enumerate()
-        .map(|(i, file)| {
+        .map(|file| {
             let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
-            build_file_list_item(file, i == selected_file, count, col_width)
+            build_file_list_item(file, count, col_width)
         })
         .collect()
 }
 
 pub(crate) fn build_file_list_items_ref<'a>(
     files: &[&'a ChangedFile],
-    selected: usize,
     comment_counts: &HashMap<String, usize>,
 ) -> Vec<ListItem<'a>> {
     let max_count = files
@@ -400,10 +401,9 @@ pub(crate) fn build_file_list_items_ref<'a>(
     let col_width = comment_col_width(max_count);
     files
         .iter()
-        .enumerate()
-        .map(|(i, file)| {
+        .map(|file| {
             let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
-            build_file_list_item(file, i == selected, count, col_width)
+            build_file_list_item(file, count, col_width)
         })
         .collect()
 }
@@ -438,18 +438,9 @@ fn build_comment_column(count: usize, col_width: usize) -> Span<'static> {
 
 fn build_file_list_item<'a>(
     file: &'a ChangedFile,
-    is_selected: bool,
     comment_count: usize,
     col_width: usize,
 ) -> ListItem<'a> {
-    let style = if is_selected {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
     let status_color = match file.status.as_str() {
         "added" => Color::Green,
         "removed" => Color::Red,
@@ -480,7 +471,7 @@ fn build_file_list_item<'a>(
         } else {
             Span::raw("  ")
         },
-        Span::styled(&file.filename, style),
+        Span::styled(&file.filename, Style::default()),
         Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
     ];
 
@@ -490,7 +481,6 @@ fn build_file_list_item<'a>(
 pub(crate) fn build_tree_row_item<'a>(
     files: &'a [ChangedFile],
     row: &TreeRow,
-    is_selected: bool,
     comment_counts: &HashMap<String, usize>,
     col_width: usize,
 ) -> ListItem<'a> {
@@ -504,17 +494,12 @@ pub(crate) fn build_tree_row_item<'a>(
             let icon = if *expanded { "▼" } else { "▶" };
             let dir_name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Cyan)
-            };
-
             let line = Line::from(vec![
                 Span::raw(indent),
-                Span::styled(format!("{} {}/", icon, dir_name), style),
+                Span::styled(
+                    format!("{} {}/", icon, dir_name),
+                    Style::default().fg(Color::Cyan),
+                ),
             ]);
             ListItem::new(line)
         }
@@ -528,14 +513,6 @@ pub(crate) fn build_tree_row_item<'a>(
                 .rsplit_once('/')
                 .map(|(_, name)| name)
                 .unwrap_or(&file.filename);
-
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
 
             let status_color = match file.status.as_str() {
                 "added" => Color::Green,
@@ -569,7 +546,7 @@ pub(crate) fn build_tree_row_item<'a>(
                 } else {
                     Span::raw("  ")
                 },
-                Span::styled(filename, style),
+                Span::styled(filename, Style::default()),
                 Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
             ];
             ListItem::new(Line::from(spans))

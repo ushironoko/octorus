@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -11,7 +11,9 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
+use super::chrome::{pane_block, PaneTitle};
 use super::common::{fit_to_width, render_update_bar};
+use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
 use crate::github::{CiStatus, PullRequestSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -100,32 +102,38 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 };
 
             let total_prs = prs.len();
-            let title = if let Some(ref filter) = app.prs.pr_list_filter {
-                format!(
-                    "Pull Requests ({}/{})",
-                    filter.matched_indices.len(),
-                    total_prs
-                )
+            let detail = if let Some(ref filter) = app.prs.pr_list_filter {
+                format!("({}/{})", filter.matched_indices.len(), total_prs)
             } else if app.prs.pr_list.is_loading() {
-                format!("Pull Requests ({}) {}", total_prs, app.spinner_char())
+                format!("({}) {}", total_prs, app.spinner_char())
             } else if app.prs.pr_list_has_more {
-                format!("Pull Requests ({}+)", total_prs)
+                format!("({}+)", total_prs)
             } else {
-                format!("Pull Requests ({})", total_prs)
+                format!("({})", total_prs)
             };
 
-            let inner_width = chunks[1].width.saturating_sub(3) as usize;
-            let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width);
+            let theme = app.theme;
+            let attention = app.sole_attention();
+            let inner_width = chunks[1]
+                .width
+                .saturating_sub(3 + SELECTION_MARKER_WIDTH as u16)
+                as usize;
+            let items = build_pr_list_items_ref(&display_prs, display_selected, inner_width, theme);
 
             let mut list_state = ListState::default()
                 .with_offset(app.prs.pr_list_scroll_offset)
                 .with_selected(Some(display_selected));
 
-            let block = Block::default().borders(Borders::ALL).title(title);
+            let block = pane_block(
+                theme,
+                PaneTitle::Labeled {
+                    label: "Pull Requests",
+                    detail: &detail,
+                },
+                attention,
+            );
             let inner_area = block.inner(chunks[1]);
-            let list = List::new(items)
-                .block(block)
-                .highlight_style(Style::default().bg(Color::DarkGray));
+            let list = attention.rows(theme).apply(List::new(items).block(block));
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
             app.prs.pr_list_scroll_offset = list_state.offset();
@@ -214,6 +222,7 @@ fn build_pr_list_items_ref(
     prs: &[&PullRequestSummary],
     selected: usize,
     area_width: usize,
+    theme: Theme,
 ) -> Vec<ListItem<'static>> {
     prs.iter()
         .enumerate()
@@ -222,25 +231,14 @@ fn build_pr_list_items_ref(
 
             let draft_marker = if pr.is_draft { "[DRAFT] " } else { "" };
 
-            let number_style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Yellow)
-            };
-            let number_span = Span::styled(format!("#{:<5}", pr.number), number_style);
+            let number_span = Span::styled(format!("#{:<5}", pr.number), theme.muted.style());
 
             let author_width = 4 + pr.author.login.width();
             let fixed_width = 6 + 2 + 2 + author_width;
             let title_width = area_width.saturating_sub(fixed_width).max(20);
             let full_title = format!("{}{}", draft_marker, pr.title);
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else if pr.is_draft {
-                Style::default().fg(Color::DarkGray)
+            let title_style = if !is_selected && pr.is_draft {
+                theme.muted.style()
             } else {
                 Style::default()
             };
@@ -271,7 +269,7 @@ fn build_pr_list_items_ref(
             let ci_span = match ci_status {
                 CiStatus::Success => Span::styled("  ✓", Style::default().fg(Color::Green)),
                 CiStatus::Failure => Span::styled("  ✕", Style::default().fg(Color::Red)),
-                CiStatus::Pending => Span::styled("  ○", Style::default().fg(Color::Yellow)),
+                CiStatus::Pending => Span::styled("  ○", theme.warning.style()),
                 CiStatus::None => Span::raw(""),
             };
 
@@ -293,6 +291,7 @@ fn build_pr_list_items_ref(
 #[cfg(test)]
 mod tests {
     use super::super::test_buffer::{find_column, row_text, screen_text};
+    use super::super::theme::Attention;
     use super::*;
     use crate::app::{App, AppState, LoadState};
     use crate::github::{PullRequestSummary, User};
@@ -318,14 +317,15 @@ mod tests {
 
     fn render_rows(prs: &[PullRequestSummary], area_width: usize) -> Buffer {
         let refs: Vec<&PullRequestSummary> = prs.iter().collect();
-        let items = build_pr_list_items_ref(&refs, 0, area_width);
+        let theme = Theme::test_default();
+        let items = build_pr_list_items_ref(&refs, 0, area_width, theme);
         let width = 160;
         let height = u16::try_from(items.len()).unwrap_or(1).max(1);
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+                let list = Attention::Focused.rows(theme).apply(List::new(items));
                 let mut state = ListState::default().with_selected(Some(0));
                 frame.render_stateful_widget(list, frame.area(), &mut state);
             })
@@ -405,27 +405,245 @@ mod tests {
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │PR List: test/repo (open)                                                                         │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Pull Requests (2)─────────────────────────────────────────────────────────────────────────────────┐
-        │#10     Fix login bug                                                                   by @alice ▲
-        │#9      Add dark mode                                                                     by @bob █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  █
-        │                                                                                                  ▼
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ PULL REQUESTS (2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌ #10     Fix login bug                                                                 by @alice ▲
+        ┃  #9      Add dark mode                                                                   by @bob █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  █
+        ┃                                                                                                  ▼
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Quit                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    fn cells_with<'a>(buf: &'a Buffer, symbol: &str) -> Vec<&'a ratatui::buffer::Cell> {
+        let area = buf.area();
+        let mut found = Vec::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == symbol {
+                    found.push(cell);
+                }
+            }
+        }
+        found
+    }
+
+    fn draw_pr_list(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::render(frame, app);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn pr_list_app() -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Loaded(vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "bob"),
+        ]);
+        app
+    }
+
+    fn title_line(text: &str) -> &str {
+        text.lines()
+            .find(|line| line.contains("REQUESTS") || line.contains("Requests"))
+            .expect("pr list title missing")
+    }
+
+    #[test]
+    fn no_color_config_reaches_the_resolved_theme() {
+        use crate::app::RepositoryAvailability;
+        use crate::config::Config;
+        use ratatui::style::Modifier;
+
+        let config = Config {
+            no_color: true,
+            theme: crate::config::ThemeConfig {
+                colors: crate::config::ThemeColors {
+                    accent: Some(Color::Magenta),
+                    ..crate::config::ThemeColors::default()
+                },
+                ..crate::config::ThemeConfig::default()
+            },
+            ..Config::default()
+        };
+        let app = App::new_pr_list("owner/repo", config, RepositoryAvailability::Available);
+        assert_eq!(app.theme.accent.style().fg, None);
+        assert!(app
+            .theme
+            .accent
+            .style()
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(app.theme.muted.style().add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn no_color_dim_marker_is_the_glyph_only() {
+        use ratatui::style::Modifier;
+
+        let mut app = pr_list_app();
+        app.state = AppState::Help;
+        app.config.no_color = true;
+        app.theme = Theme::resolve(&crate::config::ThemeConfig::default(), true);
+        let buf = {
+            let backend = TestBackend::new(100, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    render(frame, &mut app);
+                })
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let marks = cells_with(&buf, "▏");
+        assert!(!marks.is_empty(), "dim row did not draw ▏");
+        assert!(
+            marks.iter().all(|cell| {
+                !cell.modifier.contains(Modifier::DIM)
+                    && !cell.modifier.contains(Modifier::BOLD)
+                    && cell.bg == Color::Reset
+            }),
+            "▏ cell is not the glyph only: {:?}",
+            marks
+                .iter()
+                .map(|cell| (cell.modifier, cell.fg, cell.bg))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn symbol_popup_removes_the_pr_list_focus_arrow() {
+        use crate::app::SymbolPopupState;
+
+        let mut app = pr_list_app();
+        app.symbol_popup = Some(SymbolPopupState {
+            symbols: vec![("foo".to_string(), 1, 4), ("bar".to_string(), 6, 9)],
+            selected: 0,
+        });
+        let text = screen_text(&draw_pr_list(&mut app));
+        let title = title_line(&text);
+        assert!(
+            !title.contains('▶'),
+            "symbol popup left the focus arrow on the pane title:\n{title}\n{text}"
+        );
+        assert!(
+            title.contains("Pull Requests"),
+            "pane title changed:\n{title}"
+        );
+    }
+
+    #[test]
+    fn shell_overlay_removes_the_pr_list_focus_arrow() {
+        use crate::app::{CachedShellLine, ShellCommandResult, ShellPhase, ShellState};
+
+        let phases = [
+            ShellPhase::Input,
+            ShellPhase::Running,
+            ShellPhase::Cancelling,
+            ShellPhase::Done(ShellCommandResult {
+                command: "echo hi".to_string(),
+                stdout: "hi\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                cached_lines: vec![CachedShellLine {
+                    text: "hi".to_string(),
+                    is_stderr: false,
+                }],
+                total_lines: 1,
+            }),
+        ];
+        for phase in phases {
+            let mut app = pr_list_app();
+            app.shell_state = Some(ShellState {
+                input: String::new(),
+                cursor: 0,
+                phase,
+                scroll_offset: 0,
+            });
+            let text = screen_text(&draw_pr_list(&mut app));
+            let title = title_line(&text);
+            assert!(
+                !title.contains('▶'),
+                "shell overlay left the focus arrow on the pane title:\n{title}\n{text}"
+            );
+            assert!(
+                title.contains("Pull Requests"),
+                "pane title changed:\n{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn focused_selected_row_uses_bar_bold_and_no_background() {
+        let buf = render_screen(vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "bob"),
+        ]);
+        let marks = cells_with(&buf, "▌");
+        assert!(!marks.is_empty(), "focused row did not draw ▌");
+        assert!(
+            marks
+                .iter()
+                .all(|cell| cell.modifier.contains(ratatui::style::Modifier::BOLD)),
+            "▌ cell is not bold"
+        );
+        assert!(
+            marks.iter().all(|cell| cell.bg == Color::Reset),
+            "▌ cell has a background"
+        );
+        let text = screen_text(&buf);
+        assert!(text.contains("▶ PULL REQUESTS (2)"), "{text}");
+    }
+
+    #[test]
+    fn dim_selected_row_uses_muted_bar_without_bold() {
+        let mut app = App::new_for_test();
+        app.state = AppState::Help;
+        app.prs.pr_list = LoadState::Loaded(vec![
+            sample_pr(1, "Fix login bug", "alice"),
+            sample_pr(2, "Add dark mode", "bob"),
+        ]);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let marks = cells_with(&buf, "▏");
+        assert!(!marks.is_empty(), "dim row did not draw ▏");
+        assert!(
+            marks
+                .iter()
+                .all(|cell| !cell.modifier.contains(ratatui::style::Modifier::BOLD)),
+            "▏ cell is bold"
+        );
+        assert!(marks.iter().all(|cell| cell.bg == Color::Reset));
+        assert!(cells_with(&buf, "▌").is_empty());
+        let text = screen_text(&buf);
+        assert!(text.contains("Pull Requests (2)"), "{text}");
+        assert!(!text.contains("▶ PULL REQUESTS"), "{text}");
     }
 }

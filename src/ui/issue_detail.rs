@@ -9,9 +9,11 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, IssueDetailFocus};
+use crate::app::App;
 use crate::diff::LineType;
+use crate::ui::chrome::{pane_block, PaneTitle};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
+use crate::ui::theme::Attention;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     {
@@ -36,7 +38,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let (
         linked_prs_count,
         linked_prs_loading,
-        detail_focus,
         detail_number,
         detail_title,
         detail_state,
@@ -49,7 +50,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         (
             lp_count,
             state.linked_prs.is_loading(),
-            state.detail_focus,
             detail.number,
             detail.title.clone(),
             detail.state.clone(),
@@ -106,13 +106,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title("Issue Detail"));
     frame.render_widget(header, chunks[0]);
 
-    let body_border_style = if detail_focus == IssueDetailFocus::Body {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    render_body(frame, app, chunks[1], body_border_style);
+    let panes = app.issue_detail_attention();
+    render_body(frame, app, chunks[1], panes.body);
     app.hit_map.push(
         Block::default().borders(Borders::ALL).inner(chunks[1]),
         HitTarget::Pane {
@@ -127,32 +122,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
 
     if let Some(idx) = linked_prs_chunk_idx {
-        let prs_focus = detail_focus == IssueDetailFocus::LinkedPrs;
-        let prs_border_style = if prs_focus {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
         let state = app.issue_state.as_ref().unwrap();
         if state.linked_prs.is_loading() {
             let spinner = app.spinner_char();
-            let loading = Paragraph::new(format!("{} Loading linked PRs...", spinner)).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(prs_border_style)
-                    .title("Linked PRs"),
-            );
+            let loading =
+                Paragraph::new(format!("{} Loading linked PRs...", spinner)).block(pane_block(
+                    app.theme,
+                    PaneTitle::Labeled {
+                        label: "Linked PRs",
+                        detail: "",
+                    },
+                    panes.linked_prs,
+                ));
             frame.render_widget(loading, chunks[idx]);
         } else if let Some(prs) = state.linked_prs.as_loaded() {
-            let title = format!("Linked PRs ({})", prs.len());
-
             let items: Vec<ListItem> = prs
                 .iter()
-                .enumerate()
-                .map(|(i, pr)| {
-                    let is_selected = prs_focus && i == selected_linked_pr;
-
+                .map(|pr| {
                     let pr_state_icon = if pr.state.to_lowercase() == "open"
                         || pr.state.to_lowercase() == "merged"
                     {
@@ -166,25 +152,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         Span::styled("● ", Style::default().fg(Color::Red))
                     };
 
-                    let number_style = if is_selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    };
-
-                    let title_style = if is_selected {
-                        Style::default().add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-
                     let mut spans = vec![
-                        Span::raw("  "),
                         pr_state_icon,
-                        Span::styled(format!("#{} ", pr.number), number_style),
-                        Span::styled(pr.title.clone(), title_style),
+                        Span::styled(format!("#{} ", pr.number), app.theme.muted.style()),
+                        Span::styled(pr.title.clone(), Style::default()),
                         Span::styled(
                             format!("  {}", pr.state),
                             Style::default().fg(Color::DarkGray),
@@ -202,21 +173,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 })
                 .collect();
 
-            let mut list_state = ListState::default().with_selected(if prs_focus {
-                Some(selected_linked_pr)
-            } else {
-                None
-            });
+            let mut list_state = ListState::default().with_selected(Some(selected_linked_pr));
 
             let item_count = items.len();
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(prs_border_style)
-                        .title(title),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray));
+            let detail = format!("({})", prs.len());
+            let block = pane_block(
+                app.theme,
+                PaneTitle::Labeled {
+                    label: "Linked PRs",
+                    detail: &detail,
+                },
+                panes.linked_prs,
+            );
+            let list = panes
+                .linked_prs
+                .rows(app.theme)
+                .apply(List::new(items).block(block));
             frame.render_stateful_widget(list, chunks[idx], &mut list_state);
 
             let inner = Block::default().borders(Borders::ALL).inner(chunks[idx]);
@@ -253,7 +225,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(footer, chunks[footer_idx]);
 }
 
-fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, border_style: Style) {
+fn render_body(
+    frame: &mut Frame,
+    app: &mut App,
+    area: ratatui::layout::Rect,
+    attention: Attention,
+) {
     let has_cache = app
         .issue_state
         .as_ref()
@@ -306,12 +283,14 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
         };
 
         let body = body
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style)
-                    .title("Body"),
-            )
+            .block(pane_block(
+                app.theme,
+                PaneTitle::Labeled {
+                    label: "Body",
+                    detail: "",
+                },
+                attention,
+            ))
             .scroll((scroll_offset as u16, 0));
         frame.render_widget(body, area);
 
@@ -339,12 +318,14 @@ fn render_body(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect, bo
             .to_string();
 
         let body = Paragraph::new(body_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style)
-                    .title("Body"),
-            )
+            .block(pane_block(
+                app.theme,
+                PaneTitle::Labeled {
+                    label: "Body",
+                    detail: "",
+                },
+                attention,
+            ))
             .wrap(Wrap { trim: false });
         frame.render_widget(body, area);
     }
@@ -451,26 +432,26 @@ mod tests {
         ┌Issue Detail──────────────────────────────────────────────────────────────────────────────────────┐
         │● #42 Fix the widget  by @testuser                                                                │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Body──────────────────────────────────────────────────────────────────────────────────────────────┐
-        │This is the body text.                                                                            │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏▶ BODY━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃This is the body text.                                                                            ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ? Help | ! Shell | q/Esc Back
         ");
     }

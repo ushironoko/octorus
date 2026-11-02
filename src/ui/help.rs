@@ -81,21 +81,9 @@ fn register_help_tab_hits(app: &mut App, area: Rect) {
 }
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: Rect) {
-    let keybindings_style = if app.help_tab == HelpTab::Keybindings {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let config_style = if app.help_tab == HelpTab::Config {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let theme = app.theme;
+    let keybindings_style = theme.tab(app.help_tab == HelpTab::Keybindings);
+    let config_style = theme.tab(app.help_tab == HelpTab::Config);
 
     let selected = match app.help_tab {
         HelpTab::Keybindings => 0,
@@ -114,11 +102,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .title("Help ([/]: switch tab)"),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(theme.tab(true));
 
     frame.render_widget(tabs, area);
 }

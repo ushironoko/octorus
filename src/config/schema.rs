@@ -1,3 +1,4 @@
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,5 +248,153 @@ impl Default for ShellConfig {
         Self {
             timeout_secs: default_shell_timeout(),
         }
+    }
+}
+
+pub(crate) const THEME_COLOR_KEYS: [&str; 6] =
+    ["accent", "muted", "warning", "danger", "success", "info"];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreset {
+    #[default]
+    Dark,
+    Light,
+    Ansi16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeColors {
+    pub accent: Option<Color>,
+    pub muted: Option<Color>,
+    pub warning: Option<Color>,
+    pub danger: Option<Color>,
+    pub success: Option<Color>,
+    pub info: Option<Color>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeConfig {
+    pub preset: ThemePreset,
+    pub colors: ThemeColors,
+}
+
+impl ThemeConfig {
+    pub fn is_untouched(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Deserialize)]
+struct RawThemeConfig {
+    #[serde(default)]
+    preset: ThemePreset,
+    #[serde(default)]
+    colors: ThemeColorStrings,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+struct ThemeColorStrings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    muted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    danger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    success: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    info: Option<String>,
+}
+
+fn parse_color(key: &str, raw: &str) -> Result<Color, String> {
+    raw.parse::<Color>()
+        .map_err(|_| format!("{key}: invalid color \"{raw}\""))
+}
+
+fn optional_color<E: serde::de::Error>(key: &str, raw: Option<String>) -> Result<Option<Color>, E> {
+    raw.map(|value| parse_color(key, &value).map_err(E::custom))
+        .transpose()
+}
+
+impl ThemeColorStrings {
+    fn parse<E: serde::de::Error>(self) -> Result<ThemeColors, E> {
+        Ok(ThemeColors {
+            accent: optional_color("theme.colors.accent", self.accent)?,
+            muted: optional_color("theme.colors.muted", self.muted)?,
+            warning: optional_color("theme.colors.warning", self.warning)?,
+            danger: optional_color("theme.colors.danger", self.danger)?,
+            success: optional_color("theme.colors.success", self.success)?,
+            info: optional_color("theme.colors.info", self.info)?,
+        })
+    }
+
+    fn from_colors(colors: &ThemeColors) -> Self {
+        Self {
+            accent: color_name(colors.accent),
+            muted: color_name(colors.muted),
+            warning: color_name(colors.warning),
+            danger: color_name(colors.danger),
+            success: color_name(colors.success),
+            info: color_name(colors.info),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemeConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawThemeConfig::deserialize(deserializer)?;
+        Ok(Self {
+            preset: raw.preset,
+            colors: raw.colors.parse()?,
+        })
+    }
+}
+
+fn color_name(color: Option<Color>) -> Option<String> {
+    color.map(|color| color.to_string())
+}
+
+impl Serialize for ThemeConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ThemeConfig", 2)?;
+        state.serialize_field("preset", &self.preset)?;
+        state.serialize_field("colors", &ThemeColorStrings::from_colors(&self.colors))?;
+        state.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_color_strings_match_the_sanitizer_key_list() {
+        let filled = ThemeColorStrings {
+            accent: Some("red".to_string()),
+            muted: Some("red".to_string()),
+            warning: Some("red".to_string()),
+            danger: Some("red".to_string()),
+            success: Some("red".to_string()),
+            info: Some("red".to_string()),
+        };
+        let value = toml::Value::try_from(filled).unwrap();
+        let mut parsed: Vec<_> = value.as_table().unwrap().keys().cloned().collect();
+        parsed.sort();
+        let mut listed: Vec<_> = THEME_COLOR_KEYS
+            .iter()
+            .map(|key| (*key).to_string())
+            .collect();
+        listed.sort();
+        assert_eq!(parsed, listed);
     }
 }
