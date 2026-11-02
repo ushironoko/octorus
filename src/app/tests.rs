@@ -2695,7 +2695,7 @@ fn test_pending_approve_choice_a_submits_empty_body() {
 
     assert_eq!(choice, PendingApproveChoice::Submit);
     // pending_approve_body is NOT taken by handle_pending_approve_choice;
-    // it is taken by the caller (handle_input) before calling submit_review_with_body.
+    // it is taken by the caller (handle_input) before calling start_review_submit.
     assert!(app.cmt.pending_approve_body.is_some());
 }
 
@@ -6393,6 +6393,36 @@ async fn test_review_submit_result_names_its_pr_after_a_pr_switch() {
     let (success, message) = review_toast(&app);
     assert!(success);
     insta::assert_snapshot!(message, @"#1 Review submitted (approved)");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_returns_once_the_submit_lands() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.spawn_review_submit(ReviewAction::Approve, async { Ok(()) });
+
+    let unfinished = app
+        .wait_for_review_submit(std::time::Duration::from_millis(200))
+        .await;
+
+    assert!(!unfinished);
+    let (success, message) = review_toast(&app);
+    assert!(success);
+    insta::assert_snapshot!(message, @"Review submitted (approved)");
+}
+
+#[tokio::test]
+async fn test_wait_for_review_submit_gives_up_after_its_budget() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.spawn_review_submit(ReviewAction::Approve, std::future::pending());
+
+    let unfinished = app
+        .wait_for_review_submit(std::time::Duration::from_millis(50))
+        .await;
+
+    assert!(unfinished);
+    assert!(app.is_submitting_review());
 }
 
 #[tokio::test]

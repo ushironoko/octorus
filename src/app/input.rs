@@ -164,8 +164,7 @@ impl App {
                         match self.handle_pending_approve_choice(&key) {
                             PendingApproveChoice::Submit => {
                                 let body = self.cmt.pending_approve_body.take().unwrap_or_default();
-                                self.submit_review_with_body(ReviewAction::Approve, &body)
-                                    .await?;
+                                self.start_review_submit(ReviewAction::Approve, body);
                             }
                             PendingApproveChoice::Cancel | PendingApproveChoice::Ignore => {}
                         }
@@ -432,19 +431,18 @@ impl App {
         }
 
         if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
-            self.submit_review(ReviewAction::Approve, terminal).await?;
+            self.submit_review(ReviewAction::Approve, terminal)?;
             return Ok(());
         }
 
         if !self.local_mode && self.matches_single_key(&key, &kb.request_changes) {
-            self.submit_review(ReviewAction::RequestChanges, terminal)
-                .await?;
+            self.submit_review(ReviewAction::RequestChanges, terminal)?;
             return Ok(());
         }
 
         // Using separate check for review comment in FileList context
         if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
-            self.submit_review(ReviewAction::Comment, terminal).await?;
+            self.submit_review(ReviewAction::Comment, terminal)?;
             return Ok(());
         }
 
@@ -522,18 +520,17 @@ impl App {
         let kb = &self.config.keybindings;
 
         if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
-            self.submit_review(ReviewAction::Approve, terminal).await?;
+            self.submit_review(ReviewAction::Approve, terminal)?;
             return Ok(true);
         }
 
         if !self.local_mode && self.matches_single_key(&key, &kb.request_changes) {
-            self.submit_review(ReviewAction::RequestChanges, terminal)
-                .await?;
+            self.submit_review(ReviewAction::RequestChanges, terminal)?;
             return Ok(true);
         }
 
         if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
-            self.submit_review(ReviewAction::Comment, terminal).await?;
+            self.submit_review(ReviewAction::Comment, terminal)?;
             return Ok(true);
         }
 

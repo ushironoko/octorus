@@ -18,7 +18,7 @@ use crate::keybinding::KeyBinding;
 use crate::loader::{DataLoadResult, SingleFileDiffResult};
 use crate::ui;
 use crate::ui::text_area::TextArea;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod types;
 pub use types::{
@@ -468,13 +468,32 @@ impl App {
             self.handle_input(&mut terminal).await?;
         }
 
+        // gh is kill_on_drop and main calls process::exit after run returns,
+        // so leaving while the submit task runs can cut gh off mid-review.
+        let review_unfinished = self.wait_for_review_submit(Duration::from_secs(10)).await;
+
         // Graceful shutdown: abort any running rally
         if let Some(handle) = self.rally_abort_handle.take() {
             handle.abort();
         }
 
         ui::restore_terminal(&mut terminal)?;
+        if review_unfinished {
+            eprintln!(
+                "Review submission did not finish. It may not have been sent. Check the pull request on GitHub."
+            );
+        }
         Ok(())
+    }
+
+    pub(crate) async fn wait_for_review_submit(&mut self, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        self.poll_review_submit_updates();
+        while self.is_submitting_review() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            self.poll_review_submit_updates();
+        }
+        self.is_submitting_review()
     }
 
     /// Get the current spinner character for loading animations

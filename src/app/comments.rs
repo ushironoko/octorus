@@ -101,11 +101,16 @@ impl App {
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
     }
-    pub(crate) async fn submit_review(
+    pub(crate) fn submit_review(
         &mut self,
         action: ReviewAction,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        if self.is_submitting_review() {
+            self.cmt.submission_result = Some((false, "Review is still submitting".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return Ok(());
+        }
         tracing::debug!(?action, "submit_review: start");
         ui::restore_terminal(terminal)?;
 
@@ -138,38 +143,11 @@ impl App {
         };
 
         // All actions with non-empty body: submit immediately
-        self.submit_review_with_body(action, &body).await
-    }
-
-    pub(crate) async fn submit_review_with_body(
-        &mut self,
-        action: ReviewAction,
-        body: &str,
-    ) -> Result<()> {
-        tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
-        match github::submit_review(&self.repo, self.pr_number(), action, body).await {
-            Ok(()) => {
-                let action_str = match action {
-                    ReviewAction::Approve => "approved",
-                    ReviewAction::RequestChanges => "changes requested",
-                    ReviewAction::Comment => "commented",
-                };
-                tracing::debug!(action_str, "submit_review: success");
-                self.cmt.submission_result =
-                    Some((true, format!("Review submitted ({})", action_str)));
-                self.cmt.submission_result_time = Some(Instant::now());
-            }
-            Err(e) => {
-                tracing::debug!(%e, "submit_review: API failed");
-                self.cmt.submission_result = Some((false, format!("Review failed: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
-            }
-        }
-        self.cmt.pending_approve_body = None;
+        self.start_review_submit(action, body);
         Ok(())
     }
 
-    pub fn start_review_submit(&mut self, action: ReviewAction, body: String) {
+    pub(crate) fn start_review_submit(&mut self, action: ReviewAction, body: String) {
         if self.is_submitting_review() {
             self.cmt.submission_result = Some((false, "Review is still submitting".to_string()));
             self.cmt.submission_result_time = Some(Instant::now());
