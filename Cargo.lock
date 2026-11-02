@@ -1549,7 +1549,7 @@ dependencies = [
  "chrono",
  "clap",
  "criterion",
- "crossterm 0.28.1",
+ "crossterm 0.29.0",
  "hearth-graph",
  "insta",
  "lasso",
