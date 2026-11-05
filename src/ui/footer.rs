@@ -4,7 +4,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 
-use crate::app::{App, ShellPhase};
+use crate::app::{App, AppState, ShellPhase};
 use crate::config::KeybindingsConfig;
 
 pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
@@ -30,8 +30,9 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
 /// 2. Approve confirmation
 /// 3. Comment, issue comment, or review submitting
 /// 4. Submission result
-/// 5. PR open notice
-/// 6. Default help text plus loading indicators
+/// 5. Diff line notice (`Line no longer in diff`)
+/// 6. PR open notice
+/// 7. Default help text plus loading indicators
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
     build_footer_line_with_focus(app, help_text, true)
 }
@@ -71,6 +72,13 @@ pub fn build_footer_line_with_focus<'a>(
             format!("{} {}", icon, message),
             Style::default().fg(color),
         ))
+    } else if let Some(message) = app
+        .cmt
+        .line_notice
+        .as_deref()
+        .filter(|_| matches!(app.state, AppState::DiffView | AppState::SplitViewDiff))
+    {
+        Line::from(Span::styled(message.to_string(), app.theme.warning.style()))
     } else if let Some(message) = app.pr_open_notice() {
         Line::from(Span::styled(message, Style::default().fg(Color::Yellow)))
     } else {

@@ -123,9 +123,13 @@ impl<'a> PatchIndex<'a> {
                 }
             }
 
-            let current_new_line = match line_type {
-                LineType::Removed | LineType::Header | LineType::Meta => None,
-                _ => new_line_number,
+            let current_new_line = if is_no_newline_marker(line_clean) {
+                None
+            } else {
+                match line_type {
+                    LineType::Removed | LineType::Header | LineType::Meta => None,
+                    _ => new_line_number,
+                }
             };
 
             let current_position = match line_type {
@@ -141,13 +145,10 @@ impl<'a> PatchIndex<'a> {
                 diff_position: current_position,
             });
 
-            match line_type {
-                LineType::Added | LineType::Context => {
-                    if let Some(n) = new_line_number {
-                        new_line_number = Some(n + 1);
-                    }
+            if advances_file_line(line_type, line_clean) {
+                if let Some(n) = new_line_number {
+                    new_line_number = Some(n + 1);
                 }
-                _ => {}
             }
         }
 
@@ -251,6 +252,16 @@ fn split_hunk_number(input: &str) -> Option<(u32, &str)> {
     Some((number, &input[end..]))
 }
 
+/// Git writes this after a file row that has no trailing newline.
+/// GitHub `position` counts the row. Neither file contains it.
+fn is_no_newline_marker(line: &str) -> bool {
+    line.strip_suffix('\r').unwrap_or(line) == "\\ No newline at end of file"
+}
+
+fn advances_file_line(line_type: LineType, line: &str) -> bool {
+    matches!(line_type, LineType::Added | LineType::Context) && !is_no_newline_marker(line)
+}
+
 /// Diff row whose old-file or new-file line number is `target`.
 ///
 /// `Left` matches `-` and context rows. `Right` matches `+` and context rows.
@@ -339,10 +350,13 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
         }
 
         if i == line_index {
-            // For the target line, return the info
-            let current_new_line = match line_type {
-                LineType::Removed | LineType::Header | LineType::Meta => None,
-                _ => new_line_number,
+            let current_new_line = if is_no_newline_marker(line) {
+                None
+            } else {
+                match line_type {
+                    LineType::Removed | LineType::Header | LineType::Meta => None,
+                    _ => new_line_number,
+                }
             };
 
             let current_position = match line_type {
@@ -360,14 +374,10 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
             });
         }
 
-        // Update new_line_number for next iteration
-        match line_type {
-            LineType::Added | LineType::Context => {
-                if let Some(n) = new_line_number {
-                    new_line_number = Some(n + 1);
-                }
+        if advances_file_line(line_type, line) {
+            if let Some(n) = new_line_number {
+                new_line_number = Some(n + 1);
             }
-            _ => {}
         }
     }
 
@@ -477,6 +487,9 @@ pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
             }
             LineType::Added | LineType::Context => {
                 position_counter = position_counter.map(|p| p + 1);
+                if is_no_newline_marker(line) {
+                    continue;
+                }
                 if new_line_number == Some(target_line) {
                     return position_counter;
                 }
@@ -974,6 +987,56 @@ Binary files /dev/null and b/image.png differ
                 (LineType::Removed, "-- x".to_string()),
                 (LineType::Added, "++y".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn no_newline_marker_does_not_shift_later_file_lines_and_keeps_github_position() {
+        let patch = "\
+@@ -1,3 +1,3 @@
+ keep
+-old
+\\ No newline at end of file
++new
+ tail
+";
+        let lines: Vec<&str> = patch.lines().collect();
+        let marker = lines
+            .iter()
+            .position(|line| *line == "\\ No newline at end of file");
+        let new_row = lines.iter().position(|line| *line == "+new").unwrap();
+        let tail_row = lines.iter().position(|line| *line == " tail").unwrap();
+        assert_eq!(marker, Some(3));
+
+        let marker_info = get_line_info(patch, 3).unwrap();
+        assert_eq!(marker_info.new_line_number, None);
+        assert_eq!(marker_info.diff_position, Some(3));
+
+        let new_info = get_line_info(patch, new_row).unwrap();
+        assert_eq!(new_info.new_line_number, Some(2));
+        assert_eq!(new_info.diff_position, Some(4));
+
+        let tail_info = get_line_info(patch, tail_row).unwrap();
+        assert_eq!(tail_info.new_line_number, Some(3));
+        assert_eq!(tail_info.diff_position, Some(5));
+
+        let index = PatchIndex::build(patch);
+        assert_eq!(index.get(3).unwrap().new_line_number, None);
+        assert_eq!(index.get(3).unwrap().diff_position, Some(3));
+        assert_eq!(index.get(new_row).unwrap().new_line_number, Some(2));
+        assert_eq!(index.get(new_row).unwrap().diff_position, Some(4));
+        assert_eq!(index.get(tail_row).unwrap().new_line_number, Some(3));
+        assert_eq!(index.get(tail_row).unwrap().diff_position, Some(5));
+
+        assert_eq!(line_number_to_position(patch, 2), Some(4));
+        assert_eq!(line_number_to_position(patch, 3), Some(5));
+        assert_eq!(
+            find_diff_line_index(patch, SideLine::left(3)),
+            Some(tail_row)
+        );
+        assert_eq!(
+            find_diff_line_index(patch, SideLine::right(2)),
+            Some(new_row)
         );
     }
 

@@ -1152,6 +1152,7 @@ fn render_line_discussion(
                     selected: *selected,
                     resolved_ids: &resolved,
                     outdated_ids: &outdated_ids,
+                    hidden_line_ids: &outdated_ids,
                 },
                 scroll,
                 theme,
@@ -1191,6 +1192,7 @@ fn render_line_discussion(
                 *selected,
                 scroll,
                 &resolved,
+                &outdated_ids,
                 &outdated_ids,
                 theme,
                 Attention::Focused,
@@ -2562,7 +2564,7 @@ mod tests {
         app.state = AppState::RepoBrowseFile;
 
         let rendered = render_at(&mut app, 100, 20);
-        assert!(rendered.contains("@reviewer on main.rs:2"), "{rendered}");
+        assert!(rendered.contains("@reviewer on main.rs:R2"), "{rendered}");
         assert!(rendered.contains("Discuss this line"), "{rendered}");
     }
 
@@ -2590,7 +2592,7 @@ mod tests {
         app.state = AppState::RepoBrowseFile;
 
         let rendered = render_at(&mut app, 140, 20);
-        assert!(rendered.contains("@reviewer on main.rs:2"), "{rendered}");
+        assert!(rendered.contains("@reviewer on main.rs:R2"), "{rendered}");
         let expected_note =
             "⚠ Incomplete: the anchoring budget was reached (16 groups or 20000 lines maximum)";
         let note = rendered

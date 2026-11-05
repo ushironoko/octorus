@@ -236,6 +236,7 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
         variant: DiffViewVariant,
     ) -> Result<()> {
+        self.cmt.line_notice = None;
         if self.symbol_popup.is_some() {
             self.handle_symbol_popup_input(key, terminal).await?;
             return Ok(());
