@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793517591162,
+  "lastUpdate": 1794114352126,
   "repoUrl": "https://github.com/ushironoko/octorus",
   "entries": {
     "octorus Benchmark": [
@@ -18073,6 +18073,160 @@ window.BENCHMARK_DATA = {
             "name": "archive/visible_range/visible_only/5000",
             "value": 22530,
             "range": "± 103",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "ushironoko",
+            "username": "ushironoko",
+            "email": "apple19940820@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b0c8989f886a249177fe8f748b8403a3bf008c1a",
+          "message": "fix(ui): show GRAPH (opening…) and the list selection bar (#233)\n\n* fix(browse): title the waiting graph pane GRAPH (opening…)\n\nThe waiting pane passed an empty label, so a focused title kept the\nword Graph in its original case. The label and the detail are separate\nnow, matching the loading pane.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* fix(ui): paint symbol and graph selection with the list mark\n\nThe symbol popup and the selected graph node used black on cyan.\nBoth now use the same bar and bold row style as the PR list and the\nfile list. NO_COLOR still shows the bar, with no background fill.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* test(config): drop the redundant invalid theme color sweep\n\nempty_local_theme_tables_are_not_local_overrides already rejects every\ninvalid theme color key and checks that the theme stays untouched.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* fix(ui): size the symbol popup from its pad and border\n\nThe popup width added 6 and the height added 2. Both now follow the\nname padding and the border thickness, so the caption is gone.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* fix(ui): fit symbol names and scrolled clicks in the popup\n\nThe selection bar took two columns the width math ignored, so the\nlongest name sat on the frame. Width now uses display columns, the\nbar, and a trailing gap, and a narrow popup truncates the name with\nan ellipsis. The list keeps its own offset, and a click uses that\nsymbol index.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* test(config): sweep every theme color key again\n\nThe loop over THEME_COLOR_KEYS stays, so a new key is rejected with\nthe rest when its value cannot be parsed.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* fix(browse): replace only the graph spine with the selection bar\n\nThe bar takes the first column of the connector, so Dependencies\nreads ▌─▶ and Dependents reads ▌─┤ or ▌─┘. A pane narrower than\nseven columns has no connector, and the selected box stays intact.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* fix(ui): pad the symbol popup the way the list gutter does\n\nThe row is the name plus the trailing pad. The width adds the\ndisplay width, the two-column bar, that pad, and the border.\nA selected row is ▌, one space, and the name.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n---------\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>",
+          "timestamp": "2026-11-02T14:02:27Z",
+          "url": "https://github.com/ushironoko/octorus/commit/b0c8989f886a249177fe8f748b8403a3bf008c1a"
+        },
+        "date": 1794114351702,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "diff_parsing/classify_line/header",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_diff",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_plus",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_minus",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/added",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/removed",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context_long",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/100",
+            "value": 508,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/500",
+            "value": 2542,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/1000",
+            "value": 5092,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/start/5",
+            "value": 2082,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/middle/50",
+            "value": 2317,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/end/95",
+            "value": 2521,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/start/5",
+            "value": 9263,
+            "range": "± 91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/middle/250",
+            "value": 10500,
+            "range": "± 108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/end/495",
+            "value": 11713,
+            "range": "± 104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/start/5",
+            "value": 19655,
+            "range": "± 346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/middle/500",
+            "value": 22150,
+            "range": "± 174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/end/995",
+            "value": 24825,
+            "range": "± 100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/simple",
+            "value": 19400,
+            "range": "± 157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/complex",
+            "value": 22157,
+            "range": "± 159",
             "unit": "ns/iter"
           }
         ]
