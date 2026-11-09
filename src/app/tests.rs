@@ -6635,6 +6635,45 @@ async fn test_review_submit_task_panic_reports_unknown_result() {
 }
 
 #[tokio::test]
+async fn test_review_submit_timeout_reports_unknown_and_drops_the_submit() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+
+    // Stands in for a `gh pr review` that never returns. The sender lives in
+    // the future, so the receiver only closes once the timeout drops it.
+    let (submit_dropped, mut dropped) = tokio::sync::oneshot::channel::<()>();
+    app.spawn_review_submit_with_timeout(
+        ReviewAction::Approve,
+        std::time::Duration::from_millis(20),
+        async move {
+            let _submit_dropped = submit_dropped;
+            std::future::pending::<()>().await;
+            Ok(())
+        },
+    );
+
+    let outcome = app
+        .wait_for_review_submit_until(std::time::Duration::from_secs(5), std::future::pending())
+        .await;
+
+    assert_eq!(outcome, ReviewWaitOutcome::Unknown { pr_number: 1 });
+    assert!(!app.is_submitting_review());
+    let (success, message) = review_toast(&app);
+    assert!(!success);
+    assert!(!message.contains("Review failed"));
+    insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
+    insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#1 Review result unknown: check GitHub before resubmitting");
+    // The request is gone with the future, which is what kills the gh child.
+    assert!(matches!(
+        dropped.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+    // A timed-out approve must not reopen the confirm prompt, since that would
+    // invite a resubmit before the user has checked GitHub.
+    assert!(!app.is_pending_approve_confirmation());
+}
+
+#[tokio::test]
 async fn test_poll_mark_viewed_success() {
     let mut app = App::new_for_test();
     app.pr_number = Some(1);

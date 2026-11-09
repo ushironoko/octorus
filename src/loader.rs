@@ -36,6 +36,9 @@ pub enum CommentSubmitResult {
 pub enum ReviewSubmitResult {
     Submitted(crate::app::ReviewAction),
     Failed(String),
+    /// The submit ran past its timeout. GitHub may still have accepted the
+    /// review, so this is not reported as a failure.
+    Unknown,
 }
 
 /// バックグラウンド取得モード

@@ -69,6 +69,9 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 
 const REVIEW_SUBMIT_EXIT_WAIT: Duration = Duration::from_secs(10);
 const REVIEW_SUBMIT_EXIT_WAIT_NOTICE: &str = "Waiting for the review submit to finish...";
+/// Bound on one review submit. Past it the submit future is dropped, which
+/// kills the `gh` child, and the outcome is reported as unknown.
+const REVIEW_SUBMIT_TIMEOUT: Duration = Duration::from_secs(45);
 pub(crate) const REVIEW_RESULT_UNKNOWN: &str =
     "Review result unknown: check GitHub before resubmitting";
 

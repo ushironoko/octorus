@@ -564,7 +564,7 @@ impl App {
                 )
             }
             Err(mpsc::error::TryRecvError::Empty) => return None,
-            Err(mpsc::error::TryRecvError::Disconnected) => (
+            Ok(ReviewSubmitResult::Unknown) | Err(mpsc::error::TryRecvError::Disconnected) => (
                 false,
                 super::REVIEW_RESULT_UNKNOWN.to_string(),
                 super::ReviewWaitOutcome::Unknown {
