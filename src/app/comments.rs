@@ -3,7 +3,7 @@ use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashMap;
 use std::io::Stdout;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
@@ -15,7 +15,7 @@ use crate::loader::ReviewSubmitResult;
 use crate::ui;
 
 use super::types::*;
-use super::{App, AppState, CommentTab};
+use super::{App, AppState, CommentTab, REVIEW_SUBMIT_TIMEOUT};
 
 pub(crate) fn split_local_comments(
     entries: Vec<LocalReviewComment>,
@@ -210,6 +210,20 @@ impl App {
     where
         F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
+        self.spawn_review_submit_with_timeout(action, REVIEW_SUBMIT_TIMEOUT, submit);
+    }
+
+    /// Runs `submit` off the event loop. A submit that is still running after
+    /// `timeout` is dropped, which kills its `gh` child, and is reported as
+    /// unknown rather than failed, because GitHub may already have the review.
+    pub(crate) fn spawn_review_submit_with_timeout<F>(
+        &mut self,
+        action: ReviewAction,
+        timeout: Duration,
+        submit: F,
+    ) where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
         if self.is_submitting_review() {
             return;
         }
@@ -217,9 +231,13 @@ impl App {
         self.cmt.review_submit_receiver = Some((self.pr_number(), rx));
         self.cmt.pending_approve_body = None;
         tokio::spawn(async move {
-            let result = match submit.await {
-                Ok(()) => ReviewSubmitResult::Submitted(action),
-                Err(e) => ReviewSubmitResult::Failed(e.to_string()),
+            let result = match tokio::time::timeout(timeout, submit).await {
+                Ok(Ok(())) => ReviewSubmitResult::Submitted(action),
+                Ok(Err(e)) => ReviewSubmitResult::Failed(e.to_string()),
+                Err(_elapsed) => {
+                    tracing::warn!(?timeout, "submit_review: timed out, outcome unknown");
+                    ReviewSubmitResult::Unknown
+                }
             };
             let _ = tx.send(result).await;
         });
