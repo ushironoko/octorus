@@ -5542,6 +5542,87 @@ fn missing_newline_marker_does_not_accept_the_next_line_number() {
     ));
 }
 
+#[test]
+fn comment_entry_on_no_newline_marker_is_refused() {
+    let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 3; // the marker row
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+}
+
+#[test]
+fn comment_after_no_newline_marker_uses_real_new_line_and_position() {
+    let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 4; // +b
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    match app.input_mode {
+        Some(InputMode::Comment(ctx)) => {
+            assert_eq!((ctx.line_number, ctx.diff_position), (2, 4));
+        }
+        other => panic!("expected a comment on +b, got {other:?}"),
+    }
+}
+
+#[test]
+fn multiline_comment_range_with_no_newline_marker() {
+    let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
+    let mut app = make_app_with_patch(patch);
+
+    // Rows 3..=4 start on the marker: refused, and the selection is kept.
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 3,
+        cursor_line: 4,
+    });
+    app.enter_multiline_comment_input();
+    assert!(app.input_mode.is_none());
+    assert!(app.multiline_selection.is_some());
+
+    // Rows 4..=5 are +b and +c: lines 2..=3 at positions 4..=5.
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 4,
+        cursor_line: 5,
+    });
+    app.enter_multiline_comment_input();
+    match app.input_mode {
+        Some(InputMode::Comment(ctx)) => {
+            assert_eq!(
+                (ctx.line_number, ctx.start_line_number, ctx.diff_position),
+                (3, Some(2), 5)
+            );
+        }
+        other => panic!("expected a multiline comment on +b..+c, got {other:?}"),
+    }
+}
+
+#[test]
+fn review_comment_after_no_newline_marker_lands_on_the_added_row() {
+    let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
+    let mut app = make_app_with_patch(patch);
+    app.cmt.review_comments = Some(vec![
+        review_on(1, Some(2), Some("RIGHT"), None, "new line 2"),
+        review_on(2, Some(3), Some("RIGHT"), None, "new line 3"),
+    ]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<&str> = patch.lines().collect();
+    let landed: Vec<&str> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| rows[pos.diff_line_index])
+        .collect();
+    assert_eq!(landed, vec!["+b", "+c"]);
+}
+
 #[tokio::test]
 async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff() {
     let mut app = make_app_with_patch(SIDE_PATCH);

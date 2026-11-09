@@ -63,12 +63,13 @@ pub struct DiffLineInfo {
     pub line_content: String,
     /// Classification of the line type
     pub line_type: LineType,
-    /// Line number in the new file (None for removed lines and headers)
+    /// Line number in the new file (None for removed, header, and no-newline marker rows)
     pub new_line_number: Option<u32>,
     /// Position within the patch (1-based). Corresponds to GitHub API's `position` parameter.
     /// Meta lines (diff --git, ---, +++, index) are not counted.
     /// The first `@@` header is not counted; position 1 is the first line below it.
     /// Subsequent `@@` headers (multi-hunk) ARE counted as positions.
+    /// The `\ No newline at end of file` marker is counted too, but has no new line number.
     /// None for meta lines and the first `@@` header.
     pub diff_position: Option<u32>,
 }
@@ -86,7 +87,7 @@ pub struct PatchIndex<'a> {
 pub struct PatchLineInfo<'a> {
     pub content: &'a str,
     pub line_type: LineType,
-    /// Line number in the new file (None for removed lines and headers)
+    /// Line number in the new file (None for removed, header, and no-newline marker rows)
     pub new_line_number: Option<u32>,
     /// Position within the patch (1-based, GitHub API compatible)
     pub diff_position: Option<u32>,
@@ -108,6 +109,9 @@ impl<'a> PatchIndex<'a> {
         for line in &line_iter {
             let line_clean = line.strip_suffix('\r').unwrap_or(line);
             let (line_type, content) = classifier.classify(line_clean);
+            let is_marker = is_no_newline_marker(line_clean);
+            let new_side_row =
+                matches!(line_type, LineType::Added | LineType::Context) && !is_marker;
 
             match line_type {
                 LineType::Meta => {}
@@ -123,10 +127,7 @@ impl<'a> PatchIndex<'a> {
                 }
             }
 
-            let current_new_line = match line_type {
-                LineType::Removed | LineType::Header | LineType::Meta => None,
-                _ => new_line_number,
-            };
+            let current_new_line = if new_side_row { new_line_number } else { None };
 
             let current_position = match line_type {
                 LineType::Meta => None,
@@ -141,13 +142,8 @@ impl<'a> PatchIndex<'a> {
                 diff_position: current_position,
             });
 
-            match line_type {
-                LineType::Added | LineType::Context => {
-                    if let Some(n) = new_line_number {
-                        new_line_number = Some(n + 1);
-                    }
-                }
-                _ => {}
+            if new_side_row {
+                new_line_number = new_line_number.map(|n| n + 1);
             }
         }
 
@@ -271,6 +267,8 @@ pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
         // An empty row is a context row whose prefix space was dropped.
         // A row that starts with `---` or `+++` is still a removed or added
         // file row, so the first character decides the side.
+        // A `\ No newline` marker matches neither prefix, so it is skipped without moving
+        // either counter.
         let on_old = line.starts_with('-') || line.starts_with(' ') || line.is_empty();
         let on_new = line.starts_with('+') || line.starts_with(' ') || line.is_empty();
         if !on_old && !on_new {
@@ -293,6 +291,23 @@ pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
     }
 
     None
+}
+
+/// `\ No newline at end of file`, which git writes after the last row of a side that has no
+/// trailing newline. No other diff row starts with `\`.
+///
+/// The marker is not a file row, so it has no new-file line number and cannot be commented on.
+/// The classifier still reports it as `Context` (see
+/// `test_patch_classifier_no_newline_marker_stays_context`), so the numbering code checks for it
+/// here instead.
+///
+/// The marker does take a GitHub position. `position` counts the lines of the patch text below
+/// the first `@@` (that header itself is not counted), and the marker is one of those lines, so
+/// every row after it counts it. GitHub's docs give the count but do not mention the marker, so
+/// this follows from that definition.
+#[inline]
+fn is_no_newline_marker(line: &str) -> bool {
+    line.starts_with('\\')
 }
 
 /// Get information about a specific line in a patch
@@ -319,6 +334,9 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
 
     for (i, line) in lines.iter().enumerate() {
         let (line_type, content) = classifier.classify(line);
+        let is_marker = is_no_newline_marker(line);
+        // Only a `+` or context row that is not the marker has a new-file line number.
+        let new_side_row = matches!(line_type, LineType::Added | LineType::Context) && !is_marker;
 
         // Update position counter and line number BEFORE checking target
         match line_type {
@@ -340,10 +358,7 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
 
         if i == line_index {
             // For the target line, return the info
-            let current_new_line = match line_type {
-                LineType::Removed | LineType::Header | LineType::Meta => None,
-                _ => new_line_number,
-            };
+            let current_new_line = if new_side_row { new_line_number } else { None };
 
             let current_position = match line_type {
                 // Meta lines and the first @@ header (position 0) have no valid position
@@ -361,13 +376,8 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
         }
 
         // Update new_line_number for next iteration
-        match line_type {
-            LineType::Added | LineType::Context => {
-                if let Some(n) = new_line_number {
-                    new_line_number = Some(n + 1);
-                }
-            }
-            _ => {}
+        if new_side_row {
+            new_line_number = new_line_number.map(|n| n + 1);
         }
     }
 
@@ -422,6 +432,7 @@ impl PatchClassifier {
         if let Some(content) = line.strip_prefix(' ') {
             return (LineType::Context, content);
         }
+        // Prefix-less rows, including the no-newline marker, stay Context with the whole line.
         (LineType::Context, line)
     }
 }
@@ -441,6 +452,10 @@ pub fn validate_multiline_range(patch: &str, start: usize, end: usize) -> bool {
             return false;
         };
         let (line_type, _) = classifier.classify(line);
+        // The marker is classified as Context but has no new-file line number.
+        if is_no_newline_marker(line) {
+            return false;
+        }
         match line_type {
             LineType::Added | LineType::Context => {}
             // Removed, Header, or Meta lines inside the range → invalid
@@ -477,6 +492,10 @@ pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
             }
             LineType::Added | LineType::Context => {
                 position_counter = position_counter.map(|p| p + 1);
+                // The marker holds a position but is not a new-file row.
+                if is_no_newline_marker(line) {
+                    continue;
+                }
                 if new_line_number == Some(target_line) {
                     return position_counter;
                 }
@@ -1695,6 +1714,302 @@ index 1234567..abcdefg 100644
     fn test_patch_index_out_of_bounds() {
         let idx = PatchIndex::build(SAMPLE_PATCH);
         assert!(idx.get(999).is_none());
+    }
+
+    // ============================================
+    // No-newline marker (`\ No newline at end of file`)
+    // ============================================
+
+    /// New side ends without a newline: the marker follows a `+` row.
+    const MARKER_NEW_SIDE_LACKS_NEWLINE: &str = concat!(
+        "@@ -1,2 +1,2 @@\n",
+        " a\n",
+        "-b\n",
+        "+c\n",
+        "\\ No newline at end of file\n",
+    );
+
+    /// Old side ends without a newline: the marker sits between a `-` row and `+` rows.
+    const MARKER_OLD_SIDE_LACKS_NEWLINE: &str = concat!(
+        "@@ -1,2 +1,3 @@\n",
+        " a\n",
+        "-b\n",
+        "\\ No newline at end of file\n",
+        "+b\n",
+        "+c\n",
+    );
+
+    /// Both sides end on the same context row without a newline.
+    const MARKER_BOTH_SIDES_LACK_NEWLINE: &str = concat!(
+        "@@ -1,2 +1,2 @@\n",
+        " a\n",
+        " b\n",
+        "\\ No newline at end of file\n",
+    );
+
+    /// A marker-bearing hunk followed by a second hunk. Git writes the marker only in a
+    /// file's last hunk, so this shape is hand-built: it guards the numbering reset.
+    const MARKER_THEN_SECOND_HUNK: &str = concat!(
+        "@@ -1,2 +1,3 @@\n",
+        " a\n",
+        "-b\n",
+        "\\ No newline at end of file\n",
+        "+b\n",
+        "+c\n",
+        "@@ -10,2 +11,2 @@\n",
+        " x\n",
+        "-y\n",
+        "+z\n",
+    );
+
+    /// One line per patch row: index, kind, new-file line, GitHub position, content.
+    /// `-` marks an absent number.
+    fn numbering_table(patch: &str) -> String {
+        let show = |value: Option<u32>| match value {
+            Some(n) => n.to_string(),
+            None => "-".to_string(),
+        };
+        (0..patch.lines().count())
+            .map(|row| {
+                let info = get_line_info(patch, row).expect("row is in range");
+                let new = show(info.new_line_number);
+                let pos = show(info.diff_position);
+                format!(
+                    "{row} {:?} new={new} pos={pos} {}",
+                    info.line_type, info.line_content
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn numbering_key(info: &DiffLineInfo) -> (String, LineType, Option<u32>, Option<u32>) {
+        (
+            info.line_content.clone(),
+            info.line_type,
+            info.new_line_number,
+            info.diff_position,
+        )
+    }
+
+    #[test]
+    fn no_newline_marker_after_new_side_last_row_takes_no_line_number() {
+        assert_snapshot!(numbering_table(MARKER_NEW_SIDE_LACKS_NEWLINE), @r#"
+        0 Header new=- pos=- @@ -1,2 +1,2 @@
+        1 Context new=1 pos=1 a
+        2 Removed new=- pos=2 b
+        3 Added new=2 pos=3 c
+        4 Context new=- pos=4 \ No newline at end of file
+        "#);
+
+        // `+c` is new line 2. The marker must not create a phantom new line 3.
+        assert_eq!(
+            line_number_to_position(MARKER_NEW_SIDE_LACKS_NEWLINE, 2),
+            Some(3)
+        );
+        assert_eq!(
+            line_number_to_position(MARKER_NEW_SIDE_LACKS_NEWLINE, 3),
+            None
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_NEW_SIDE_LACKS_NEWLINE, SideLine::right(3)),
+            None
+        );
+        // Old side: `-b` is old line 2, and there is no old line 3.
+        assert_eq!(
+            find_diff_line_index(MARKER_NEW_SIDE_LACKS_NEWLINE, SideLine::left(2)),
+            Some(2)
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_NEW_SIDE_LACKS_NEWLINE, SideLine::left(3)),
+            None
+        );
+    }
+
+    #[test]
+    fn no_newline_marker_between_removed_and_added_rows_keeps_new_numbers() {
+        assert_snapshot!(numbering_table(MARKER_OLD_SIDE_LACKS_NEWLINE), @r#"
+        0 Header new=- pos=- @@ -1,2 +1,3 @@
+        1 Context new=1 pos=1 a
+        2 Removed new=- pos=2 b
+        3 Context new=- pos=3 \ No newline at end of file
+        4 Added new=2 pos=4 b
+        5 Added new=3 pos=5 c
+        "#);
+
+        // The marker holds position 3, so `+b` is position 4 and `+c` is position 5.
+        assert_eq!(
+            line_number_to_position(MARKER_OLD_SIDE_LACKS_NEWLINE, 1),
+            Some(1)
+        );
+        assert_eq!(
+            line_number_to_position(MARKER_OLD_SIDE_LACKS_NEWLINE, 2),
+            Some(4)
+        );
+        assert_eq!(
+            line_number_to_position(MARKER_OLD_SIDE_LACKS_NEWLINE, 3),
+            Some(5)
+        );
+        assert_eq!(
+            line_number_to_position(MARKER_OLD_SIDE_LACKS_NEWLINE, 4),
+            None
+        );
+        // The marker does not move the old counter: `-b` is old line 2 and nothing else.
+        assert_eq!(
+            find_diff_line_index(MARKER_OLD_SIDE_LACKS_NEWLINE, SideLine::left(2)),
+            Some(2)
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_OLD_SIDE_LACKS_NEWLINE, SideLine::left(3)),
+            None
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_OLD_SIDE_LACKS_NEWLINE, SideLine::right(2)),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn no_newline_marker_after_context_row_on_both_sides_is_not_commentable() {
+        assert_snapshot!(numbering_table(MARKER_BOTH_SIDES_LACK_NEWLINE), @r#"
+        0 Header new=- pos=- @@ -1,2 +1,2 @@
+        1 Context new=1 pos=1 a
+        2 Context new=2 pos=2 b
+        3 Context new=- pos=3 \ No newline at end of file
+        "#);
+
+        assert_eq!(
+            line_number_to_position(MARKER_BOTH_SIDES_LACK_NEWLINE, 2),
+            Some(2)
+        );
+        assert_eq!(
+            line_number_to_position(MARKER_BOTH_SIDES_LACK_NEWLINE, 3),
+            None
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_BOTH_SIDES_LACK_NEWLINE, SideLine::right(3)),
+            None
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_BOTH_SIDES_LACK_NEWLINE, SideLine::left(3)),
+            None
+        );
+    }
+
+    #[test]
+    fn no_newline_marker_before_next_hunk_keeps_hunk_numbers() {
+        assert_snapshot!(numbering_table(MARKER_THEN_SECOND_HUNK), @r#"
+        0 Header new=- pos=- @@ -1,2 +1,3 @@
+        1 Context new=1 pos=1 a
+        2 Removed new=- pos=2 b
+        3 Context new=- pos=3 \ No newline at end of file
+        4 Added new=2 pos=4 b
+        5 Added new=3 pos=5 c
+        6 Header new=- pos=6 @@ -10,2 +11,2 @@
+        7 Context new=11 pos=7 x
+        8 Removed new=- pos=8 y
+        9 Added new=12 pos=9 z
+        "#);
+
+        // The second hunk restarts at new line 11. Positions keep counting the marker.
+        assert_eq!(line_number_to_position(MARKER_THEN_SECOND_HUNK, 3), Some(5));
+        assert_eq!(
+            line_number_to_position(MARKER_THEN_SECOND_HUNK, 11),
+            Some(7)
+        );
+        assert_eq!(
+            line_number_to_position(MARKER_THEN_SECOND_HUNK, 12),
+            Some(9)
+        );
+        assert_eq!(line_number_to_position(MARKER_THEN_SECOND_HUNK, 10), None);
+        assert_eq!(
+            find_diff_line_index(MARKER_THEN_SECOND_HUNK, SideLine::left(10)),
+            Some(7)
+        );
+        assert_eq!(
+            find_diff_line_index(MARKER_THEN_SECOND_HUNK, SideLine::left(11)),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn validate_multiline_range_rejects_no_newline_marker() {
+        // The marker is classified as Context, but it is not a new-file row.
+        // Rows 3..=4 of the old-side fixture are the marker and `+b`.
+        assert!(validate_multiline_range(
+            MARKER_OLD_SIDE_LACKS_NEWLINE,
+            4,
+            5
+        ));
+        assert!(!validate_multiline_range(
+            MARKER_OLD_SIDE_LACKS_NEWLINE,
+            3,
+            4
+        ));
+        // Rows 3..=4 of the new-side fixture are `+c` and the marker.
+        assert!(validate_multiline_range(
+            MARKER_NEW_SIDE_LACKS_NEWLINE,
+            3,
+            3
+        ));
+        assert!(!validate_multiline_range(
+            MARKER_NEW_SIDE_LACKS_NEWLINE,
+            3,
+            4
+        ));
+    }
+
+    #[test]
+    fn patch_index_matches_get_line_info_on_every_fixture() {
+        let fixtures = [
+            SAMPLE_PATCH,
+            "@@ -1,3 +1,3 @@\n-old1\n+new1\n ctx\n@@ -10,3 +10,3 @@\n-old2\n+new2\n ctx2",
+            "diff --git a/foo.rs b/foo.rs\nindex 123..456 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }",
+            "@@ -1,2 +1,3 @@\r\n fn main() {\r\n+    hello\r\n }",
+            "@@ -1,2 +1,3 @@\n 日本語のコンテキスト\n+追加された行\n-削除された行",
+            "",
+            MARKER_NEW_SIDE_LACKS_NEWLINE,
+            MARKER_OLD_SIDE_LACKS_NEWLINE,
+            MARKER_BOTH_SIDES_LACK_NEWLINE,
+            MARKER_THEN_SECOND_HUNK,
+        ];
+        for patch in fixtures {
+            let index = PatchIndex::build(patch);
+            let rows = patch.lines().count();
+            assert_eq!(index.len(), rows, "row count of {patch:?}");
+
+            // One past the last row must be None on both paths.
+            for row in 0..=rows {
+                let from_index = index.get(row).map(PatchLineInfo::to_diff_line_info);
+                let direct = get_line_info(patch, row);
+                assert_eq!(
+                    from_index.as_ref().map(numbering_key),
+                    direct.as_ref().map(numbering_key),
+                    "row {row} of {patch:?}"
+                );
+            }
+
+            // Every new-file row resolves back to its own position and row index.
+            for row in 0..rows {
+                let info = get_line_info(patch, row).expect("row is in range");
+                if !matches!(info.line_type, LineType::Added | LineType::Context) {
+                    continue;
+                }
+                let Some(line) = info.new_line_number else {
+                    continue;
+                };
+                assert_eq!(
+                    line_number_to_position(patch, line),
+                    info.diff_position,
+                    "position of new line {line} in {patch:?}"
+                );
+                assert_eq!(
+                    find_diff_line_index(patch, SideLine::right(line)),
+                    Some(row),
+                    "row of new line {line} in {patch:?}"
+                );
+            }
+        }
     }
 
     // ============================================
