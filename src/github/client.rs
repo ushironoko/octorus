@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::io;
 use std::process::Command;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Error)]
 pub enum DetectRepoError {
@@ -311,6 +312,67 @@ pub async fn gh_api_post(
     serde_json::from_str(&output).context("Failed to parse gh api response as JSON")
 }
 
+/// Execute `gh api` with a JSON request body read from stdin.
+///
+/// Use this when the body has nested arrays or objects, which the `-f`/`-F`
+/// field syntax cannot express (for example the `comments` array of a review).
+/// On this path the body is not parsed by gh, so `@file` and `key=value`
+/// syntax in the text are sent as written.
+pub(super) async fn gh_api_post_json(
+    endpoint: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let payload = serde_json::to_vec(body).context("Failed to serialize gh api request body")?;
+    tracing::debug!(endpoint = %endpoint, "gh api post json");
+    let output = run_with_stdin(
+        "gh",
+        &[
+            "api",
+            "--method",
+            "POST",
+            endpoint,
+            "--header",
+            "Content-Type: application/json",
+            "--input",
+            "-",
+        ],
+        &payload,
+    )
+    .await?;
+    serde_json::from_str(&output).context("Failed to parse gh api response as JSON")
+}
+
+/// Run `program` with `args`, write `stdin_bytes` to its standard input, and
+/// return its stdout. The write runs alongside the wait so a payload larger
+/// than the pipe buffer cannot deadlock against a child that is writing stdout.
+async fn run_with_stdin(program: &str, args: &[&str], stdin_bytes: &[u8]) -> Result<String> {
+    let mut command = spawnable_command(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .context("Failed to execute gh CLI - is it installed?")?;
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .context("Failed to open stdin of gh CLI")?;
+    let payload = stdin_bytes.to_vec();
+    let write = async move { child_stdin.write_all(&payload).await };
+    let (write_result, output) = tokio::join!(write, child.wait_with_output());
+    let output = output.context("Failed to wait for gh CLI")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!("{}", format_gh_error(stderr.trim(), stdout.trim()));
+    }
+    write_result.context("Failed to write request body to gh CLI")?;
+    String::from_utf8(output.stdout).context("gh output contains invalid UTF-8")
+}
+
 /// Execute gh graphql API with query and variables.
 pub async fn gh_api_graphql(
     query: &str,
@@ -589,6 +651,39 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    /// The JSON body must reach the child unchanged, byte for byte.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_run_with_stdin_delivers_the_body_to_the_child() {
+        let payload = br#"{"comments":[{"path":"src/a.rs","body":"multi\nline @notes.txt"}]}"#;
+        let out = run_with_stdin("/bin/cat", &[], payload).await.unwrap();
+        assert_eq!(out.as_bytes(), payload);
+    }
+
+    /// A body larger than a pipe buffer must not deadlock against a child that
+    /// writes stdout while it reads stdin.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_run_with_stdin_survives_a_body_larger_than_a_pipe_buffer() {
+        let payload = vec![b'x'; 1 << 20];
+        let out = run_with_stdin("/bin/cat", &[], &payload).await.unwrap();
+        assert_eq!(out.len(), payload.len());
+    }
+
+    /// A failing `gh` must surface its stderr, which is what the user sees.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_run_with_stdin_reports_the_failure_with_stderr() {
+        let err = run_with_stdin(
+            "/bin/sh",
+            &["-c", "echo 'HTTP 422: Unprocessable Entity' >&2; exit 1"],
+            b"{}",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("HTTP 422"), "{err}");
     }
 
     #[test]

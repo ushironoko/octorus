@@ -74,6 +74,10 @@ const REVIEW_SUBMIT_EXIT_WAIT_NOTICE: &str = "Waiting for the review submit to f
 const REVIEW_SUBMIT_TIMEOUT: Duration = Duration::from_secs(45);
 pub(crate) const REVIEW_RESULT_UNKNOWN: &str =
     "Review result unknown: check GitHub before resubmitting";
+/// Bound on one inline comment add. Past it the add future is dropped, which
+/// kills its `gh` children, and the outcome is reported as unknown.
+const INLINE_COMMENT_TIMEOUT: Duration = Duration::from_secs(45);
+const COMMENT_RESULT_UNKNOWN: &str = "Comment result unknown: check GitHub before adding it again";
 
 /// What a review submit did by the time the process is leaving.
 #[derive(Debug, PartialEq, Eq)]

@@ -11,7 +11,7 @@ use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
 use crate::github::comment::{Review, ReviewComment};
 use crate::github::{self, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
-use crate::loader::ReviewSubmitResult;
+use crate::loader::{CommentSubmitResult, ReviewSubmitResult};
 use crate::ui;
 
 use super::types::*;
@@ -115,6 +115,9 @@ fn left_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
 
 impl App {
     pub(crate) fn enter_comment_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -159,7 +162,7 @@ impl App {
         action: ReviewAction,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        if self.is_submitting_review() {
+        if !self.review_submit_may_start() {
             return Ok(());
         }
         tracing::debug!(?action, "submit_review: start");
@@ -197,12 +200,45 @@ impl App {
         Ok(())
     }
 
+    /// Whether a review submit may start now. A comment still being added must
+    /// reach the pending review before the review publishes it, or the comment
+    /// would be left out. When a submit is refused, the reason goes to the toast.
+    pub(crate) fn review_submit_may_start(&mut self) -> bool {
+        if self.is_submitting_review() {
+            return false;
+        }
+        if self.cmt.comment_submitting {
+            self.cmt.submission_result = Some((
+                false,
+                "Wait for the comment to be added, then submit the review".to_string(),
+            ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return false;
+        }
+        true
+    }
+
+    /// Whether a new inline comment or suggestion may start now. Refused while a
+    /// review is publishing, so the new draft cannot race the publish.
+    fn inline_comment_may_start(&mut self) -> bool {
+        if self.is_submitting_review() {
+            self.cmt.submission_result = Some((
+                false,
+                "Wait for the review to finish submitting".to_string(),
+            ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return false;
+        }
+        true
+    }
+
     pub(crate) fn start_review_submit(&mut self, action: ReviewAction, body: String) {
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
+        // Publishes the pending review (with its inline drafts) when there is one.
         self.spawn_review_submit(action, async move {
-            github::submit_review(&repo, pr_number, action, &body).await
+            github::submit_review_publishing_pending(&repo, pr_number, action, &body).await
         });
     }
 
@@ -243,7 +279,35 @@ impl App {
         });
     }
 
+    /// Adds one inline comment to the pending review off the event loop. An add
+    /// still running after `timeout` is dropped, which kills its `gh` children, and
+    /// is reported as unknown rather than failed, because GitHub may already hold
+    /// the draft. A review submit is refused while an add is in flight, so this
+    /// bound also limits how long that refusal can last.
+    pub(crate) fn spawn_inline_comment_add<F>(&mut self, pr_number: u32, timeout: Duration, add: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel(1);
+        self.cmt.comment_submit_receiver = Some((pr_number, rx));
+        self.cmt.comment_submitting = true;
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(timeout, add).await {
+                Ok(Ok(())) => CommentSubmitResult::AddedToPendingReview,
+                Ok(Err(e)) => CommentSubmitResult::Error(e.to_string()),
+                Err(_elapsed) => {
+                    tracing::warn!(?timeout, "inline comment: timed out, outcome unknown");
+                    CommentSubmitResult::Unknown
+                }
+            };
+            let _ = tx.send(result).await;
+        });
+    }
+
     pub(crate) fn enter_suggestion_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -315,6 +379,9 @@ impl App {
         });
     }
     pub(crate) fn enter_multiline_comment_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(ref selection) = self.multiline_selection else {
             return;
         };
@@ -380,6 +447,9 @@ impl App {
         self.state = AppState::TextInput;
     }
     pub(crate) fn enter_multiline_suggestion_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(ref selection) = self.multiline_selection else {
             return;
         };

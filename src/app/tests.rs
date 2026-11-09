@@ -6375,6 +6375,191 @@ async fn test_poll_comment_submit_failure() {
     assert!(msg.contains("network error"));
 }
 
+#[tokio::test]
+async fn test_poll_comment_submit_added_to_pending_review_is_reported_as_unpublished() {
+    use crate::loader::CommentSubmitResult;
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.cmt.comment_submitting = true;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_submit_receiver = Some((1, rx));
+
+    tx.send(CommentSubmitResult::AddedToPendingReview)
+        .await
+        .unwrap();
+
+    app.poll_comment_submit_updates();
+
+    assert!(!app.cmt.comment_submitting);
+    assert!(app.cmt.comment_submit_receiver.is_none());
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(success);
+    insta::assert_snapshot!(message, @"Added to pending review");
+}
+
+/// An inline comment add that never returns must not hold the review submit gate
+/// forever. It is reported as unknown, because GitHub may already have the draft.
+#[tokio::test]
+async fn test_inline_comment_add_timeout_reports_unknown_and_frees_the_review_submit() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+
+    // The sender lives in the future, so the receiver only closes once the
+    // timeout drops it, which is what kills the gh children.
+    let (add_dropped, mut dropped) = tokio::sync::oneshot::channel::<()>();
+    app.spawn_inline_comment_add(1, std::time::Duration::from_millis(20), async move {
+        let _add_dropped = add_dropped;
+        std::future::pending::<()>().await;
+        Ok(())
+    });
+    assert!(app.cmt.comment_submitting);
+
+    for _ in 0..500 {
+        app.poll_comment_submit_updates();
+        if !app.cmt.comment_submitting {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert!(!app.cmt.comment_submitting);
+    assert!(app.cmt.comment_submit_receiver.is_none());
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(
+        message,
+        @"Comment result unknown: check GitHub before adding it again"
+    );
+    assert!(app.review_submit_may_start());
+    assert!(matches!(
+        dropped.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+/// A comment must not start while a review publishes the pending review, or the
+/// comment could land after the publish and be left out.
+#[test]
+fn test_enter_comment_input_is_refused_while_a_review_is_publishing() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 1;
+    app.state = AppState::DiffView;
+    let (_tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+
+    app.enter_comment_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(message, @"Wait for the review to finish submitting");
+}
+
+#[test]
+fn test_enter_suggestion_input_is_refused_while_a_review_is_publishing() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 1;
+    app.state = AppState::DiffView;
+    let (_tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+
+    app.enter_suggestion_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+}
+
+/// Multi-line comments and suggestions check the same gate as single-line ones, or
+/// a range started during a publish could race it.
+#[test]
+fn test_enter_multiline_comment_input_is_refused_while_a_review_is_publishing() {
+    let patch = "@@ -1,2 +1,4 @@\n context\n+added\n+more\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.state = AppState::DiffView;
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+    // Control: the same range opens a comment while nothing is publishing.
+    app.enter_multiline_comment_input();
+    assert!(matches!(app.input_mode, Some(InputMode::Comment(_))));
+    app.input_mode = None;
+    app.state = AppState::DiffView;
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+
+    let (_tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+    app.enter_multiline_comment_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+    // The range is kept, so it can be commented once the publish has finished.
+    assert!(app.multiline_selection.is_some());
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(message, @"Wait for the review to finish submitting");
+}
+
+#[test]
+fn test_enter_multiline_suggestion_input_is_refused_while_a_review_is_publishing() {
+    let patch = "@@ -1,2 +1,4 @@\n context\n+added\n+more\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.state = AppState::DiffView;
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+    // Control: the same range opens a suggestion while nothing is publishing.
+    app.enter_multiline_suggestion_input();
+    assert!(matches!(app.input_mode, Some(InputMode::Suggestion { .. })));
+    app.input_mode = None;
+    app.state = AppState::DiffView;
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+
+    let (_tx, rx) = mpsc::channel::<crate::loader::ReviewSubmitResult>(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+    app.enter_multiline_suggestion_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+    assert!(app.multiline_selection.is_some());
+}
+
+/// A review must not publish before an in-flight comment has reached the pending
+/// review, or that comment would be left out of the publish.
+#[test]
+fn test_review_submit_waits_for_an_inflight_comment() {
+    let mut app = App::new_for_test();
+    app.cmt.comment_submitting = true;
+
+    assert!(!app.review_submit_may_start());
+
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(
+        message,
+        @"Wait for the comment to be added, then submit the review"
+    );
+}
+
+#[test]
+fn test_review_submit_may_start_when_nothing_is_in_flight() {
+    let mut app = App::new_for_test();
+
+    assert!(app.review_submit_may_start());
+    assert!(app.cmt.submission_result.is_none());
+}
+
 async fn poll_review_submit_until_done(app: &mut App) {
     for _ in 0..100 {
         app.poll_review_submit_updates();
@@ -6632,6 +6817,34 @@ async fn test_review_submit_task_panic_reports_unknown_result() {
     assert!(!success);
     assert!(!message.contains("Review failed"));
     insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
+}
+
+/// Publishing moves the pending review's inline comments to GitHub. The TUI must
+/// fetch them again, or the published comments stay missing until a manual reload.
+#[tokio::test]
+async fn test_review_submit_reloads_review_comments_after_publishing() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let key = crate::cache::PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 1,
+    };
+    // The stale list from before the publish, both shown and cached.
+    app.session_cache.put_review_comments(key, Vec::new());
+    app.cmt.review_comments = Some(Vec::new());
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+    tx.send(crate::loader::ReviewSubmitResult::Submitted(
+        ReviewAction::Comment,
+    ))
+    .await
+    .unwrap();
+
+    app.poll_review_submit_updates();
+
+    // The stale list is dropped and fetched again, not restored from the cache.
+    assert!(app.cmt.review_comments.is_none());
+    assert!(app.cmt.comments_loading);
 }
 
 #[tokio::test]

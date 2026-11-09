@@ -485,6 +485,32 @@ impl App {
         }
     }
 
+    /// A comment reached GitHub (published or pending). Clears the in-flight
+    /// state, shows `message`, and reloads the comments of the PR it was for.
+    fn finish_comment_submit(&mut self, origin_pr: u32, message: &str) {
+        self.cmt.comment_submitting = false;
+        self.cmt.comment_submit_receiver = None;
+        self.cmt.submission_result = Some((true, message.to_string()));
+        self.cmt.submission_result_time = Some(Instant::now());
+        self.reload_review_comments_for(origin_pr);
+    }
+
+    /// Drops the cached review comments of `origin_pr` and fetches them again when
+    /// that PR is still on screen. Call it after anything that changed them on GitHub.
+    fn reload_review_comments_for(&mut self, origin_pr: u32) {
+        let cache_key = PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number: origin_pr,
+        };
+        self.session_cache.remove_review_comments(&cache_key);
+        // PR が切り替わっていなければコメントを再取得
+        if self.pr_number == Some(origin_pr) {
+            self.cmt.review_comments = None;
+            self.load_review_comments();
+            self.update_file_comment_positions();
+        }
+    }
+
     /// コメント送信結果のポーリング
     pub(crate) fn poll_comment_submit_updates(&mut self) {
         // Clear old submission result after 3 seconds
@@ -502,21 +528,17 @@ impl App {
 
         match rx.try_recv() {
             Ok(CommentSubmitResult::Success) => {
+                self.finish_comment_submit(origin_pr, "Submitted");
+            }
+            Ok(CommentSubmitResult::AddedToPendingReview) => {
+                self.finish_comment_submit(origin_pr, "Added to pending review");
+            }
+            Ok(CommentSubmitResult::Unknown) => {
                 self.cmt.comment_submitting = false;
                 self.cmt.comment_submit_receiver = None;
-                self.cmt.submission_result = Some((true, "Submitted".to_string()));
+                self.cmt.submission_result =
+                    Some((false, super::COMMENT_RESULT_UNKNOWN.to_string()));
                 self.cmt.submission_result_time = Some(Instant::now());
-                let cache_key = PrCacheKey {
-                    repo: self.repo.clone(),
-                    pr_number: origin_pr,
-                };
-                self.session_cache.remove_review_comments(&cache_key);
-                // PR が切り替わっていなければコメントを再取得
-                if self.pr_number == Some(origin_pr) {
-                    self.cmt.review_comments = None;
-                    self.load_review_comments();
-                    self.update_file_comment_positions();
-                }
             }
             Ok(CommentSubmitResult::Error(e)) => {
                 self.cmt.comment_submitting = false;
@@ -574,6 +596,14 @@ impl App {
         };
 
         self.cmt.review_submit_receiver = None;
+        // A publish moves the pending review's inline comments to GitHub. A publish
+        // that timed out may have done so as well, so the list is fetched again.
+        if matches!(
+            outcome,
+            super::ReviewWaitOutcome::Submitted { .. } | super::ReviewWaitOutcome::Unknown { .. }
+        ) {
+            self.reload_review_comments_for(origin_pr);
+        }
         let message = if self.pr_number == Some(origin_pr) {
             message
         } else {

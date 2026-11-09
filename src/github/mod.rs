@@ -44,6 +44,7 @@ macro_rules! define_state_filter {
 }
 
 mod issue;
+mod pending_review;
 mod pr;
 
 pub use blame::{
@@ -61,6 +62,7 @@ pub use commit::{
 };
 pub use commit_pr::*;
 pub use dashboard::{fetch_mentioned_issues_count, fetch_review_requested_prs_count};
+pub use pending_review::{add_inline_draft, submit_review_publishing_pending, InlineDraft};
 
 pub use issue::{
     build_reply_template, create_issue_comment, fetch_issue_detail, fetch_issue_list,

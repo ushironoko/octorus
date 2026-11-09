@@ -155,7 +155,7 @@ The module graph supports Rust, TypeScript, TSX, JavaScript, and JSX. JavaScript
 - Readline-style editing keys (`Ctrl-A/E/B/F/P/N/D/H/K/U/W`) inside the comment / reply / suggestion text input
 - Multiline selection mode (`Shift+Enter`) for range comments and suggestions
 - Show Comment List for Review Comments and Discussions
-- Review submission (Approve / Request Changes / Comment)
+- Review submission (Approve / Request Changes / Comment). Inline comments and suggestions are added to your pending review on GitHub and published together when you submit it. Replies are posted immediately.
 - Mark files and directories as viewed
 - File tree view toggle
 - Go to Definition (`gd`) with symbol popup and jump stack (up to 100 positions)

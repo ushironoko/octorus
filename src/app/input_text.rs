@@ -13,7 +13,7 @@ use crate::loader::CommentSubmitResult;
 use crate::ui::text_area::TextAreaAction;
 
 use super::types::*;
-use super::{App, SuggestionHighlightCache};
+use super::{App, SuggestionHighlightCache, INLINE_COMMENT_TIMEOUT};
 
 impl App {
     /// Note: the help keybinding (?) is intentionally not handled here
@@ -145,36 +145,21 @@ impl App {
         };
 
         let commit_id = pr.head.sha.clone();
-        let filename = file.filename.clone();
+        let pr_node_id = pr.node_id.clone();
+        let draft = github::InlineDraft {
+            path: file.filename.clone(),
+            body,
+            line: ctx.line_number,
+            start_line: ctx.start_line_number,
+        };
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
-        let position = ctx.diff_position;
-        let start_line = ctx.start_line_number;
-        let end_line = ctx.line_number;
 
-        let (tx, rx) = mpsc::channel(1);
-        self.cmt.comment_submit_receiver = Some((pr_number, rx));
-        self.cmt.comment_submitting = true;
-
-        tokio::spawn(async move {
-            let result = if let Some(start) = start_line {
-                github::create_multiline_review_comment(
-                    &repo, pr_number, &commit_id, &filename, start, end_line, "RIGHT", &body,
-                )
+        // The comment joins the viewer's pending review. GitHub publishes it only
+        // when a review is submitted, so it is not posted on its own (issue #169).
+        self.spawn_inline_comment_add(pr_number, INLINE_COMMENT_TIMEOUT, async move {
+            github::add_inline_draft(&repo, pr_number, pr_node_id.as_deref(), &commit_id, &draft)
                 .await
-            } else {
-                github::create_review_comment(
-                    &repo, pr_number, &commit_id, &filename, position, &body,
-                )
-                .await
-            };
-
-            let _ = tx
-                .send(match result {
-                    Ok(_) => CommentSubmitResult::Success,
-                    Err(e) => CommentSubmitResult::Error(e.to_string()),
-                })
-                .await;
         });
     }
 
