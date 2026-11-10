@@ -42,7 +42,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
 
       - name: Run clippy
         run: cargo clippy --all-targets --workspace -- -D warnings
@@ -62,7 +62,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
 
       - name: Run tests
         run: cargo test --workspace
@@ -84,7 +84,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
 
       - name: Run benchmark assertions
         run: cargo bench --bench blame_parse -- --test
