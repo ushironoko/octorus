@@ -313,7 +313,10 @@ mod tests {
         let mut app = make_cockpit_app();
         app.handle_cockpit_input(press(KeyCode::Char('?'))).unwrap();
         assert_eq!(app.state, AppState::Help);
-        assert_eq!(app.previous_state, AppState::Cockpit);
+        assert_eq!(app.help_return_state, AppState::Cockpit);
+
+        app.apply_help_scroll(press(KeyCode::Char('q')), 30);
+        assert_eq!(app.state, AppState::Cockpit);
     }
 
     #[tokio::test]
