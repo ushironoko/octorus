@@ -543,16 +543,17 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Mark selected directory as viewed",
             fmt_key(&kb.mark_viewed_dir.display(), key_width)
         )),
+        // Each submit publishes the pending review, with the inline drafts in it (#169).
         Line::from(format!(
-            "{}  Approve PR",
+            "{}  Approve PR (publish pending drafts)",
             fmt_key(&kb.approve.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Request changes",
+            "{}  Request changes (publish pending drafts)",
             fmt_key(&kb.request_changes.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Comment only",
+            "{}  Comment only (publish pending drafts)",
             fmt_key(&kb.comment.display(), key_width)
         )),
         Line::from(format!(
@@ -979,7 +980,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Submit",
             fmt_key(&kb.submit.display(), key_width)
         )),
-        Line::from("  Esc             Cancel input"),
+        Line::from("  Esc             Cancel (comment text kept per line)"),
         Line::from(vec![Span::styled(
             "  Readline-style editing keys:",
             Style::default().fg(Color::DarkGray),
@@ -1599,6 +1600,30 @@ mod tests {
         assert!(joined.contains("Readline-style editing keys"));
         for key in ["Ctrl-A", "Ctrl-E", "Ctrl-W", "Ctrl-K", "Ctrl-U"] {
             assert!(joined.contains(key), "help missing binding: {key}");
+        }
+    }
+
+    /// The three submit keys publish the pending review, so the help must say so.
+    /// These lines are not wrapped, so each must fit a 60-column terminal.
+    #[test]
+    fn test_submit_help_says_it_publishes_pending_drafts() {
+        let kb = KeybindingsConfig::default();
+        let lines = build_help_lines(&kb);
+        let texts: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        for label in [
+            "Approve PR (publish pending drafts)",
+            "Request changes (publish pending drafts)",
+            "Comment only (publish pending drafts)",
+            "Cancel (comment text kept per line)",
+        ] {
+            let line = texts
+                .iter()
+                .find(|t| t.ends_with(label))
+                .unwrap_or_else(|| panic!("help missing line: {label}"));
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 58,
+                "help line too wide for 60 columns: {line}"
+            );
         }
     }
 

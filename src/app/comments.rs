@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
 use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
-use crate::github::comment::{Review, ReviewComment};
+use crate::github::comment::{CommentPublication, Review, ReviewComment};
 use crate::github::{self, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 use crate::loader::{CommentSubmitResult, ReviewSubmitResult};
@@ -32,13 +32,18 @@ pub(crate) fn split_local_comments(
     (comments, meta)
 }
 
-pub(crate) fn combine_review_fetch_results<EComments, EReviews>(
+/// Merges the three reads behind the diff's comments. The published comments
+/// and the drafts are one list, so the diff marks both. A failed draft read is
+/// reported as `Unknown` and does not fail the rest.
+pub(crate) fn combine_review_fetch_results<EComments, EReviews, EDrafts>(
     review_comments_result: Result<Vec<ReviewComment>, EComments>,
     reviews_result: Result<Vec<Review>, EReviews>,
-) -> Result<Vec<ReviewComment>, String>
+    drafts_result: Result<Vec<ReviewComment>, EDrafts>,
+) -> Result<ReviewCommentsFetch, String>
 where
     EComments: std::fmt::Display,
     EReviews: std::fmt::Display,
+    EDrafts: std::fmt::Display,
 {
     let mut all_comments = Vec::new();
     let comments_error = match review_comments_result {
@@ -47,6 +52,17 @@ where
             None
         }
         Err(error) => Some(error.to_string()),
+    };
+    let pending_drafts = match drafts_result {
+        Ok(drafts) => {
+            let count = drafts.len();
+            merge_drafts(&mut all_comments, drafts);
+            PendingDrafts::Known(count)
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to read the pending review; drafts are not shown");
+            PendingDrafts::Unknown
+        }
     };
     let reviews_error = match reviews_result {
         Ok(reviews) => {
@@ -74,13 +90,70 @@ where
 
     all_comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
+    let fetch = ReviewCommentsFetch {
+        comments: all_comments,
+        pending_drafts,
+    };
     match (comments_error, reviews_error) {
         (Some(message), Some(_)) => Err(message),
         (Some(message), None) | (None, Some(message)) => {
             tracing::warn!(error = %message, "Failed to fetch part of the review comments");
-            Ok(all_comments)
+            Ok(fetch)
         }
-        (None, None) => Ok(all_comments),
+        (None, None) => Ok(fetch),
+    }
+}
+
+/// Adds the drafts to the published comments. GitHub may list a draft in both
+/// places, so a draft already present is flagged, not repeated.
+fn merge_drafts(comments: &mut Vec<ReviewComment>, drafts: Vec<ReviewComment>) {
+    for draft in drafts {
+        match comments.iter_mut().find(|comment| comment.id == draft.id) {
+            Some(existing) => existing.location.publication = CommentPublication::PendingDraft,
+            None => comments.push(draft),
+        }
+    }
+}
+
+/// How many comments in the list are drafts in the viewer's pending review.
+pub(crate) fn count_pending_drafts(comments: &[ReviewComment]) -> usize {
+    comments.iter().filter(|c| c.is_pending_draft()).count()
+}
+
+/// Reads what the diff shows for a PR: published comments, review summary
+/// bodies, and the viewer's pending drafts (issue #169). The drafts come from the
+/// review list, so they are read after it.
+async fn fetch_review_comments_for_view(
+    repo: &str,
+    pr_number: u32,
+) -> Result<ReviewCommentsFetch, String> {
+    let (review_comments_result, reviews_result) = tokio::join!(
+        github::comment::fetch_review_comments(repo, pr_number),
+        github::comment::fetch_reviews(repo, pr_number),
+    );
+    let drafts_result = match &reviews_result {
+        Ok(reviews) => match github::pending_review_id(reviews) {
+            Some(review_id) => github::fetch_draft_comments(repo, pr_number, review_id)
+                .await
+                .map_err(|e| e.to_string()),
+            None => Ok(Vec::new()),
+        },
+        Err(error) => Err(error.to_string()),
+    };
+    combine_review_fetch_results(review_comments_result, reviews_result, drafts_result)
+}
+
+/// Maps a failed inline add to the result the user sees. A refusal wrote nothing,
+/// so it can be retried as is. An unconfirmed add may already be on GitHub, so it
+/// is unknown rather than failed. Anything else is a failure.
+fn classify_add_error(error: anyhow::Error) -> CommentSubmitResult {
+    if error.is::<github::DraftUnconfirmed>() {
+        tracing::warn!(error = %error, "inline comment: not confirmed, outcome unknown");
+        return CommentSubmitResult::Unknown;
+    }
+    match error.downcast::<github::DraftRefused>() {
+        Ok(refused) => CommentSubmitResult::Refused(refused.to_string()),
+        Err(error) => CommentSubmitResult::Error(error.to_string()),
     }
 }
 
@@ -147,15 +220,15 @@ impl App {
             return;
         };
 
-        self.input_mode = Some(InputMode::Comment(LineInputContext {
-            file_index: self.selected_file,
-            line_number,
-            diff_position,
-            start_line_number: None,
-        }));
-        self.input_text_area.clear();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
+        self.open_inline_composer(
+            InputMode::Comment(LineInputContext {
+                file_index: self.selected_file,
+                line_number,
+                diff_position,
+                start_line_number: None,
+            }),
+            "",
+        );
     }
     pub(crate) fn submit_review(
         &mut self,
@@ -219,13 +292,21 @@ impl App {
     }
 
     /// Whether a new inline comment or suggestion may start now. Refused while a
-    /// review is publishing, so the new draft cannot race the publish.
+    /// review is publishing, so the new draft cannot race the publish. Also refused
+    /// while another add is in flight: the composer would open but ignore keys
+    /// until that add finishes.
     fn inline_comment_may_start(&mut self) -> bool {
         if self.is_submitting_review() {
             self.cmt.submission_result = Some((
                 false,
                 "Wait for the review to finish submitting".to_string(),
             ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return false;
+        }
+        if self.cmt.comment_submitting {
+            self.cmt.submission_result =
+                Some((false, "Wait for the comment to be added".to_string()));
             self.cmt.submission_result_time = Some(Instant::now());
             return false;
         }
@@ -294,7 +375,7 @@ impl App {
         tokio::spawn(async move {
             let result = match tokio::time::timeout(timeout, add).await {
                 Ok(Ok(())) => CommentSubmitResult::AddedToPendingReview,
-                Ok(Err(e)) => CommentSubmitResult::Error(e.to_string()),
+                Ok(Err(e)) => classify_add_error(e),
                 Err(_elapsed) => {
                     tracing::warn!(?timeout, "inline comment: timed out, outcome unknown");
                     CommentSubmitResult::Unknown
@@ -339,20 +420,20 @@ impl App {
 
         let original_code = line_info.line_content.clone();
 
-        self.input_mode = Some(InputMode::Suggestion {
-            context: LineInputContext {
-                file_index: self.selected_file,
-                line_number,
-                diff_position,
-                start_line_number: None,
-            },
-            original_code: original_code.clone(),
-        });
         // サジェスチョンは元コードを初期値として設定
-        self.input_text_area.set_content(&original_code);
+        self.open_inline_composer(
+            InputMode::Suggestion {
+                context: LineInputContext {
+                    file_index: self.selected_file,
+                    line_number,
+                    diff_position,
+                    start_line_number: None,
+                },
+                original_code: original_code.clone(),
+            },
+            &original_code,
+        );
         self.update_suggestion_highlight_cache();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
     }
     /// 複数行選択モードを開始する（Shift+Enter）
     pub(crate) fn enter_multiline_selection(&mut self) {
@@ -436,15 +517,15 @@ impl App {
         // バリデーション成功後にのみ選択状態をクリア
         self.multiline_selection = None;
 
-        self.input_mode = Some(InputMode::Comment(LineInputContext {
-            file_index: self.selected_file,
-            line_number: end_line_number,
-            diff_position,
-            start_line_number: start_line,
-        }));
-        self.input_text_area.clear();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
+        self.open_inline_composer(
+            InputMode::Comment(LineInputContext {
+                file_index: self.selected_file,
+                line_number: end_line_number,
+                diff_position,
+                start_line_number: start_line,
+            }),
+            "",
+        );
     }
     pub(crate) fn enter_multiline_suggestion_input(&mut self) {
         if !self.inline_comment_may_start() {
@@ -515,19 +596,19 @@ impl App {
         // バリデーション成功後にのみ選択状態をクリア
         self.multiline_selection = None;
 
-        self.input_mode = Some(InputMode::Suggestion {
-            context: LineInputContext {
-                file_index: self.selected_file,
-                line_number: end_line_number,
-                diff_position,
-                start_line_number: start_line,
+        self.open_inline_composer(
+            InputMode::Suggestion {
+                context: LineInputContext {
+                    file_index: self.selected_file,
+                    line_number: end_line_number,
+                    diff_position,
+                    start_line_number: start_line,
+                },
+                original_code: original_code.clone(),
             },
-            original_code: original_code.clone(),
-        });
-        self.input_text_area.set_content(&original_code);
+            &original_code,
+        );
         self.update_suggestion_highlight_cache();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
     }
     pub(crate) fn open_comment_list(&mut self) {
         self.state = AppState::CommentList;
@@ -758,8 +839,11 @@ impl App {
             return;
         }
 
+        // Only a read that reached the pending review is cached, so a cached list
+        // always carries the drafts it had.
         if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
             self.cmt.local_comment_meta.clear();
+            self.cmt.pending_drafts = PendingDrafts::Known(count_pending_drafts(comments));
             self.apply_review_comments(comments.to_vec());
             return;
         }
@@ -773,10 +857,7 @@ impl App {
         let repo = self.repo.clone();
 
         tokio::spawn(async move {
-            let review_comments_result =
-                github::comment::fetch_review_comments(&repo, pr_number).await;
-            let reviews_result = github::comment::fetch_reviews(&repo, pr_number).await;
-            let combined = combine_review_fetch_results(review_comments_result, reviews_result);
+            let combined = fetch_review_comments_for_view(&repo, pr_number).await;
             let _ = tx.send(combined).await;
         });
     }
@@ -1427,6 +1508,16 @@ impl App {
         let Some(comment) = comments.get(comment_idx) else {
             return;
         };
+        // A reply posts at once and is not part of the pending review, so a draft
+        // is refused until the review is submitted.
+        if comment.is_pending_draft() {
+            self.cmt.submission_result = Some((
+                false,
+                "Submit the pending review before replying to a draft".to_string(),
+            ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return;
+        }
 
         self.input_mode = Some(InputMode::Reply {
             comment_id: comment.id,

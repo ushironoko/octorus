@@ -39,6 +39,8 @@ pub use types::{
 };
 // Internal-only types (not re-exported from crate::app)
 use types::MarkViewedResult;
+// Crate-internal: the pending review's draft count shown in the PR header (issue #169).
+pub(crate) use types::PendingDrafts;
 
 mod ai_rally;
 pub mod browse;
@@ -77,7 +79,10 @@ pub(crate) const REVIEW_RESULT_UNKNOWN: &str =
 /// Bound on one inline comment add. Past it the add future is dropped, which
 /// kills its `gh` children, and the outcome is reported as unknown.
 const INLINE_COMMENT_TIMEOUT: Duration = Duration::from_secs(45);
-const COMMENT_RESULT_UNKNOWN: &str = "Comment result unknown: check GitHub before adding it again";
+/// The footer text when an add may have reached GitHub. The text is kept on its line,
+/// so it is not reported as lost; the user is told to check before adding it again.
+const COMMENT_RESULT_UNKNOWN: &str =
+    "Comment result unknown: check GitHub before adding it again. Text kept.";
 
 /// What a review submit did by the time the process is leaving.
 #[derive(Debug, PartialEq, Eq)]

@@ -11,7 +11,8 @@ use ratatui::{
 
 use super::chrome::{pane_block, PaneTitle};
 use super::common::{
-    build_ci_status_span, build_pr_info, render_rally_status_bar, render_update_bar,
+    build_ci_status_span, build_pending_review_span, build_pr_info, render_rally_status_bar,
+    render_update_bar,
 };
 use crate::app::{App, TreeRow};
 use crate::github::ChangedFile;
@@ -46,8 +47,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let pr_info = build_pr_info(app);
     let ci_span = build_ci_status_span(app);
 
-    let header = Paragraph::new(Line::from(vec![Span::raw(pr_info), ci_span]))
-        .block(Block::default().borders(Borders::ALL).title("octorus"));
+    let mut header_block = Block::default().borders(Borders::ALL).title("octorus");
+    // Right-aligned in the border, so it stays visible when the PR title is long.
+    if let Some(note) = build_pending_review_span(app) {
+        header_block = header_block.title(Line::from(note).right_aligned());
+    }
+    let header = Paragraph::new(Line::from(vec![Span::raw(pr_info), ci_span])).block(header_block);
     frame.render_widget(header, chunks[0]);
 
     let files = app.files();
@@ -653,5 +658,86 @@ mod tests {
         │PR #123 inferred from commit subject; GitHub did not confirm it                         │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+}
+
+#[cfg(test)]
+mod pending_header_tests {
+    use super::*;
+    use crate::app::{App, AppState, DataState, PendingDrafts};
+    use crate::github::{Branch, ChangedFile, PullRequest, User};
+    use crate::ui::test_buffer::{row_text, screen_text};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn loaded_app(drafts: PendingDrafts) -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::FileList;
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 244,
+                node_id: None,
+                title: "Inline comments".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: Branch {
+                    ref_name: "feat".to_string(),
+                    sha: "abc1234".to_string(),
+                },
+                base: Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def5678".to_string(),
+                },
+                user: User {
+                    login: "alice".to_string(),
+                },
+                updated_at: "2026-11-10T00:00:00Z".to_string(),
+            }),
+            files: vec![ChangedFile {
+                filename: "src/app.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            }],
+        };
+        app.cmt.pending_drafts = drafts;
+        app
+    }
+
+    /// The PR header is the top border of the file list. The note sits on that
+    /// border, right-aligned, so it stays visible with a long PR title.
+    #[test]
+    fn file_list_header_shows_the_pending_review_drafts_on_its_border() {
+        let mut app = loaded_app(PendingDrafts::Known(2));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let border = row_text(buffer, 0);
+        assert!(border.contains("octorus"), "{border}");
+        assert!(border.contains("Pending review: 2 drafts"), "{border}");
+    }
+
+    #[test]
+    fn file_list_header_shows_one_draft_in_the_singular() {
+        let mut app = loaded_app(PendingDrafts::Known(1));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert!(screen_text(terminal.backend().buffer()).contains("Pending review: 1 draft"));
+    }
+
+    #[test]
+    fn file_list_header_has_no_note_without_drafts() {
+        let mut app = loaded_app(PendingDrafts::Known(0));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert!(!screen_text(terminal.backend().buffer()).contains("Pending review"));
     }
 }

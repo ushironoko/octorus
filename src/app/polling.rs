@@ -115,18 +115,24 @@ impl App {
         let origin_pr = *origin_pr;
 
         match rx.try_recv() {
-            Ok(Ok(comments)) => {
-                // セッションキャッシュに格納（発信元PRのキーで保存）
+            Ok(Ok(fetch)) => {
+                // Cache under the origin PR. A read that could not reach the pending
+                // review is not cached, so the next open reads it again.
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
                     pr_number: origin_pr,
                 };
-                self.session_cache
-                    .put_review_comments(cache_key, comments.clone());
+                match fetch.pending_drafts {
+                    PendingDrafts::Known(_) => self
+                        .session_cache
+                        .put_review_comments(cache_key, fetch.comments.clone()),
+                    PendingDrafts::Unknown => self.session_cache.remove_review_comments(&cache_key),
+                }
                 // PR が切り替わっていなければ UI 状態にも反映
                 if self.pr_number == Some(origin_pr) {
                     self.cmt.comment_error = None;
-                    self.apply_review_comments(comments);
+                    self.cmt.pending_drafts = fetch.pending_drafts;
+                    self.apply_review_comments(fetch.comments);
                     // Update comment positions if in diff view or side-by-side
                     if matches!(
                         self.state,
@@ -488,11 +494,22 @@ impl App {
     /// A comment reached GitHub (published or pending). Clears the in-flight
     /// state, shows `message`, and reloads the comments of the PR it was for.
     fn finish_comment_submit(&mut self, origin_pr: u32, message: &str) {
+        self.cmt.pending_add = None;
         self.cmt.comment_submitting = false;
         self.cmt.comment_submit_receiver = None;
         self.cmt.submission_result = Some((true, message.to_string()));
         self.cmt.submission_result_time = Some(Instant::now());
         self.reload_review_comments_for(origin_pr);
+    }
+
+    /// A comment did not reach GitHub, or may not have. Its text is kept for the
+    /// line, and `message` is shown as the whole failure text.
+    fn finish_failed_comment_submit(&mut self, message: String) {
+        self.keep_failed_add();
+        self.cmt.comment_submitting = false;
+        self.cmt.comment_submit_receiver = None;
+        self.cmt.submission_result = Some((false, message));
+        self.cmt.submission_result_time = Some(Instant::now());
     }
 
     /// Drops the cached review comments of `origin_pr` and fetches them again when
@@ -534,22 +551,24 @@ impl App {
                 self.finish_comment_submit(origin_pr, "Added to pending review");
             }
             Ok(CommentSubmitResult::Unknown) => {
-                self.cmt.comment_submitting = false;
-                self.cmt.comment_submit_receiver = None;
-                self.cmt.submission_result =
-                    Some((false, super::COMMENT_RESULT_UNKNOWN.to_string()));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.finish_failed_comment_submit(super::COMMENT_RESULT_UNKNOWN.to_string());
+            }
+            Ok(CommentSubmitResult::Refused(message)) => {
+                self.finish_failed_comment_submit(message);
             }
             Ok(CommentSubmitResult::Error(e)) => {
-                self.cmt.comment_submitting = false;
-                self.cmt.comment_submit_receiver = None;
-                self.cmt.submission_result = Some((false, format!("Failed: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.finish_failed_comment_submit(format!("Failed: {}", e));
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.cmt.comment_submitting = false;
-                self.cmt.comment_submit_receiver = None;
+                // The add task ended without a result. Its outcome is unknown, so
+                // an inline add is reported that way. A reply keeps the old silence.
+                if self.cmt.pending_add.is_some() {
+                    self.finish_failed_comment_submit(super::COMMENT_RESULT_UNKNOWN.to_string());
+                } else {
+                    self.cmt.comment_submitting = false;
+                    self.cmt.comment_submit_receiver = None;
+                }
             }
         }
     }

@@ -122,6 +122,7 @@ impl App {
         self.diff_store.clear();
         self.file_list_filter = None;
         self.cmt.review_comments = None;
+        self.cmt.pending_drafts = PendingDrafts::Unknown;
         self.cmt.local_comment_meta.clear();
         self.cmt.discussion_comments = None;
         self.cmt.comment_error = None;

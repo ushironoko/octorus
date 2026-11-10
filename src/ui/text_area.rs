@@ -327,6 +327,14 @@ impl TextArea {
         self.scroll_offset.set(0);
     }
 
+    /// Sets the text exactly as `content()` returns it, so restoring a saved body
+    /// gives back what was typed. Unlike `set_content`, empty trailing lines are
+    /// kept. The cursor goes to the end, ready for more typing.
+    pub fn set_content_verbatim(&mut self, content: &str) {
+        self.lines = content.split('\n').map(String::from).collect();
+        self.move_to_end();
+    }
+
     /// カーソルを末尾に移動する
     /// Note: スクロール調整は行わない。visible_height がまだデフォルト値（1）の場合に
     /// 過剰スクロールが発生するため、次回の render_with_title() で正しい visible_height を
@@ -1473,5 +1481,26 @@ mod tests {
             .unwrap();
         let rows = read_inner_rows(&terminal);
         assert_eq!(rows[0], "Type your reply...");
+    }
+}
+
+#[cfg(test)]
+mod verbatim_content_tests {
+    use super::*;
+
+    #[test]
+    fn set_content_verbatim_gives_back_exactly_what_content_returned() {
+        for body in ["", "one line", "first\nsecond\n", "\n\nspaced\n\n"] {
+            let mut area = TextArea::new();
+            area.set_content_verbatim(body);
+            assert_eq!(area.content(), body, "body {body:?} must round-trip");
+        }
+    }
+
+    #[test]
+    fn set_content_verbatim_puts_the_cursor_at_the_end() {
+        let mut area = TextArea::new();
+        area.set_content_verbatim("first\nsecond");
+        assert_eq!((area.cursor_row, area.cursor_col), (1, 6));
     }
 }

@@ -12,8 +12,27 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::client::{check_graphql_errors, gh_api_paginate, gh_api_post_json};
+use super::comment::{CommentPublication, Review, ReviewComment};
 use super::short_sha;
 use crate::app::ReviewAction;
+
+/// The `state` GitHub reports for a review that is not submitted yet.
+const PENDING_STATE: &str = "PENDING";
+
+/// An add that GitHub refused before anything was written, so the draft is not
+/// on GitHub and the text can be retried as it is.
+#[derive(Debug, thiserror::Error)]
+pub enum DraftRefused {
+    /// The pending review was started on an older commit than the PR head.
+    #[error("Submit your pending review first (older commit), then retry. Text kept.")]
+    OlderCommit,
+}
+
+/// An add whose write may have reached GitHub without GitHub confirming it. The
+/// draft might now exist, so the outcome is unknown rather than failed.
+#[derive(Debug, thiserror::Error)]
+#[error("GitHub did not confirm the comment reached the pending review")]
+pub struct DraftUnconfirmed;
 
 /// One inline comment the viewer is adding.
 ///
@@ -77,7 +96,10 @@ pub(crate) enum SubmitRoute {
 /// Pick the PENDING review out of a review list. GitHub returns at most one per
 /// viewer and pull request, so the first match is the one.
 fn select_pending_review(entries: Vec<ReviewListEntry>) -> Result<Option<PendingReview>> {
-    let Some(entry) = entries.into_iter().find(|entry| entry.state == "PENDING") else {
+    let Some(entry) = entries
+        .into_iter()
+        .find(|entry| entry.state == PENDING_STATE)
+    else {
         return Ok(None);
     };
     let node_id = entry
@@ -216,8 +238,38 @@ pub(crate) async fn find_pending_review(
     select_pending_review(list_reviews(repo, pr_number).await?)
 }
 
+/// The REST id of the viewer's pending review in a review list, if there is one.
+/// The list is the one `fetch_reviews` reads, so a display read needs no extra call.
+pub(crate) fn pending_review_id(reviews: &[Review]) -> Option<u64> {
+    reviews
+        .iter()
+        .find(|review| review.state == PENDING_STATE)
+        .map(|review| review.id)
+}
+
+/// The comments of the viewer's pending review, each flagged as a draft. Read
+/// from the review's own endpoint, not from the PR-wide comment list.
+pub(crate) async fn fetch_draft_comments(
+    repo: &str,
+    pr_number: u32,
+    review_id: u64,
+) -> Result<Vec<ReviewComment>> {
+    let endpoint =
+        format!("repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments?per_page=100");
+    let json = gh_api_paginate(&endpoint).await?;
+    let mut drafts: Vec<ReviewComment> =
+        serde_json::from_value(json).context("Failed to parse pending review comments")?;
+    for draft in &mut drafts {
+        draft.location.publication = CommentPublication::PendingDraft;
+    }
+    Ok(drafts)
+}
+
 /// Add one inline draft to the viewer's pending review. Creates the review if
 /// there is none.
+///
+/// Errors are typed where the caller needs to tell them apart: [`DraftRefused`]
+/// wrote nothing, and [`DraftUnconfirmed`] may have written without confirming.
 pub async fn add_inline_draft(
     repo: &str,
     pr_number: u32,
@@ -232,9 +284,10 @@ pub async fn add_inline_draft(
             let created =
                 gh_api_post_json(&endpoint, &create_pending_review_body(head_sha, draft)).await?;
             // The point of this path is that the comment is not published on its
-            // own. Check that GitHub kept the review pending.
-            if created.get("state").and_then(Value::as_str) != Some("PENDING") {
-                anyhow::bail!("GitHub did not keep the comment in a pending review");
+            // own. Check that GitHub kept the review pending. When it did not, the
+            // write may already be public.
+            if created.get("state").and_then(Value::as_str) != Some(PENDING_STATE) {
+                return Err(DraftUnconfirmed.into());
             }
             Ok(())
         }
@@ -249,15 +302,18 @@ pub async fn add_inline_draft(
                 .pointer("/data/addPullRequestReviewThread/thread/id")
                 .is_none()
             {
-                anyhow::bail!("GitHub did not confirm the comment joined the pending review");
+                return Err(DraftUnconfirmed.into());
             }
             Ok(())
         }
-        DraftRoute::OlderCommit { review_commit } => anyhow::bail!(
-            "Your pending review is on commit {} but the PR head is {}. Submit the pending review first, then comment again.",
-            short_sha(&review_commit),
-            short_sha(head_sha)
-        ),
+        DraftRoute::OlderCommit { review_commit } => {
+            tracing::info!(
+                review_commit = %short_sha(&review_commit),
+                head = %short_sha(head_sha),
+                "inline comment refused: pending review is on an older commit"
+            );
+            Err(DraftRefused::OlderCommit.into())
+        }
     }
 }
 
@@ -467,6 +523,38 @@ mod tests {
     }
 
     #[test]
+    fn pending_review_id_finds_the_pending_review_in_a_review_list() {
+        let reviews: Vec<Review> = serde_json::from_value(json!([
+            {"id": 1, "state": "APPROVED", "body": "lgtm", "user": {"login": "a"}, "submitted_at": null},
+            {"id": 2, "state": "PENDING", "body": null, "user": {"login": "me"}, "submitted_at": null},
+        ]))
+        .unwrap();
+        assert_eq!(pending_review_id(&reviews), Some(2));
+    }
+
+    #[test]
+    fn pending_review_id_is_none_when_no_review_is_pending() {
+        let reviews: Vec<Review> = serde_json::from_value(json!([
+            {"id": 1, "state": "COMMENTED", "body": null, "user": {"login": "a"}, "submitted_at": null},
+        ]))
+        .unwrap();
+        assert_eq!(pending_review_id(&reviews), None);
+        assert_eq!(pending_review_id(&[]), None);
+    }
+
+    /// The refusal text is the whole footer message, so it must fit the footer's
+    /// 74 columns after the icon, and the action must come first.
+    #[test]
+    fn refusal_text_is_short_and_actionable_first() {
+        let text = DraftRefused::OlderCommit.to_string();
+        assert_eq!(
+            text,
+            "Submit your pending review first (older commit), then retry. Text kept."
+        );
+        assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= 74);
+    }
+
+    #[test]
     fn submit_event_body_names_the_action_and_keeps_the_body() {
         assert_eq!(
             submit_event_body(ReviewAction::Approve, ""),
@@ -486,13 +574,14 @@ mod fake_gh_tests {
     use super::*;
     use serial_test::serial;
 
-    const FAKE_GH_VARS: [&str; 6] = [
+    const FAKE_GH_VARS: [&str; 7] = [
         "FAKE_GH_LOG",
         "FAKE_GH_REVIEWS",
         "FAKE_GH_CREATE",
         "FAKE_GH_GRAPHQL",
         "FAKE_GH_PUBLISH",
         "FAKE_GH_PR_REVIEW",
+        "FAKE_GH_DRAFTS",
     ];
 
     /// Puts the test double first on PATH and sets its replies. Dropping it
@@ -521,11 +610,17 @@ mod fake_gh_tests {
             std::env::set_var("FAKE_GH_GRAPHQL", graphql);
             std::env::set_var("FAKE_GH_PUBLISH", publish);
             std::env::set_var("FAKE_GH_PR_REVIEW", "");
+            std::env::set_var("FAKE_GH_DRAFTS", "[[]]");
             Self {
                 _dir: dir,
                 log,
                 old_path,
             }
+        }
+
+        /// Sets the pending review's comments, as a paginated `--slurp` reply.
+        fn set_drafts(&self, json: &str) {
+            std::env::set_var("FAKE_GH_DRAFTS", json);
         }
 
         /// Every call made so far, as logged by the test double.
@@ -617,15 +712,73 @@ mod fake_gh_tests {
             .await
             .unwrap_err();
 
-        assert!(
-            err.to_string().contains("pending review is on commit old"),
-            "{err}"
+        assert!(matches!(
+            err.downcast_ref::<DraftRefused>(),
+            Some(DraftRefused::OlderCommit)
+        ));
+        assert_eq!(
+            err.to_string(),
+            "Submit your pending review first (older commit), then retry. Text kept."
         );
         let calls = gh.calls();
         assert!(
             !calls.contains("--method POST"),
             "nothing may be written: {calls}"
         );
+    }
+
+    /// A review that GitHub did not keep pending may already be public, so the add
+    /// is unconfirmed, which the caller reports as unknown rather than failed.
+    #[tokio::test]
+    #[serial]
+    async fn add_reports_a_create_that_is_not_pending_as_unconfirmed() {
+        let _gh = FakeGh::install("[[]]", r#"{"id":9,"state":"COMMENTED"}"#, "", "");
+
+        let err = add_inline_draft("o/r", 7, Some("PR_node"), "head", &draft())
+            .await
+            .unwrap_err();
+
+        assert!(err.is::<DraftUnconfirmed>(), "{err}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn add_reports_a_thread_without_an_id_as_unconfirmed() {
+        let _gh = FakeGh::install(
+            r#"[[{"id":77,"node_id":"PRR_pending","state":"PENDING","commit_id":"head"}]]"#,
+            "",
+            r#"{"data":{"addPullRequestReviewThread":{"thread":null}}}"#,
+            "",
+        );
+
+        let err = add_inline_draft("o/r", 7, Some("PR_node"), "head", &draft())
+            .await
+            .unwrap_err();
+
+        assert!(err.is::<DraftUnconfirmed>(), "{err}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fetch_draft_comments_reads_the_pending_review_and_flags_each_draft() {
+        let gh = FakeGh::install("[[]]", "", "", "");
+        gh.set_drafts(
+            r#"[[{"id":501,"path":"src/app.rs","line":42,"body":"first","user":{"login":"me"},"created_at":"2026-11-10T00:00:00Z"},{"id":502,"path":"src/lib.rs","line":7,"body":"second","user":{"login":"me"},"created_at":"2026-11-10T00:01:00Z"}]]"#,
+        );
+
+        let drafts = fetch_draft_comments("o/r", 7, 77).await.unwrap();
+
+        let calls = gh.calls();
+        assert!(
+            calls.contains(
+                "CALL api --paginate --slurp repos/o/r/pulls/7/reviews/77/comments?per_page=100"
+            ),
+            "{calls}"
+        );
+        assert_eq!(drafts.len(), 2);
+        assert!(drafts.iter().all(|draft| draft.is_pending_draft()));
+        assert_eq!(drafts[0].id, 501);
+        assert_eq!(drafts[1].body, "second");
     }
 
     #[tokio::test]

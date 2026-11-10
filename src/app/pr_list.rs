@@ -9,7 +9,7 @@ use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
 use crate::github::CiStatus;
 
-use super::types::LoadState;
+use super::types::{LoadState, PendingDrafts};
 use super::{App, AppState, DataState, PrOpenSource};
 
 impl App {
@@ -315,6 +315,7 @@ impl App {
         self.file_list_filter = None;
         self.cmt.pending_approve_body = None;
         self.cmt.review_comments = None;
+        self.cmt.pending_drafts = PendingDrafts::Unknown;
         self.cmt.comment_error = None;
         self.cmt.discussion_error = None;
         self.cmt.file_comment_counts.clear();
@@ -392,6 +393,7 @@ impl App {
         self.pr_number = None;
         self.data_state = DataState::Loading;
         self.cmt.review_comments = None;
+        self.cmt.pending_drafts = PendingDrafts::Unknown;
         self.cmt.discussion_comments = None;
         self.cmt.comment_error = None;
         self.cmt.discussion_error = None;
@@ -401,6 +403,9 @@ impl App {
         self.diff_scroll.reset();
         self.cmt.comment_receiver = None;
         self.cmt.discussion_comment_receiver = None;
+        // The add in flight loses its result with the receiver, so its text is kept
+        // for its own PR rather than dropped.
+        self.keep_failed_add();
         self.cmt.comment_submit_receiver = None;
         self.mark_viewed_receiver = None;
         self.batch_diff_receiver = None;

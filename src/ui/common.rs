@@ -10,7 +10,7 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::ai::RallyState;
-use crate::app::{App, DataState};
+use crate::app::{App, DataState, PendingDrafts};
 use crate::github::CiStatus;
 
 /// Build PR info string for header display (shared between file_list and ai_rally)
@@ -40,6 +40,31 @@ pub fn build_ci_status_span(app: &App) -> Span<'static> {
             Span::styled("  ○ CI pending", Style::default().fg(Color::Yellow))
         }
         Some(CiStatus::None) | None => Span::raw(""),
+    }
+}
+
+/// The pending-review note for a PR header: "Pending review: 1 draft" or
+/// "Pending review: 3 drafts" (issue #169).
+pub fn pending_review_text(drafts: usize) -> String {
+    if drafts == 1 {
+        "Pending review: 1 draft".to_string()
+    } else {
+        format!("Pending review: {drafts} drafts")
+    }
+}
+
+/// The pending-review note as a header span. `None` when the viewer has no drafts
+/// on this PR, and in local mode, which has no pending review.
+pub fn build_pending_review_span(app: &App) -> Option<Span<'static>> {
+    if app.is_local_mode() {
+        return None;
+    }
+    match app.cmt.pending_drafts {
+        PendingDrafts::Known(drafts) if drafts > 0 => Some(Span::styled(
+            pending_review_text(drafts),
+            Style::default().fg(Color::Yellow),
+        )),
+        PendingDrafts::Known(_) | PendingDrafts::Unknown => None,
     }
 }
 
@@ -295,5 +320,46 @@ mod tests {
             fit_to_width("あ", 0).as_ref(),
             truncate_with_width("あ", 0).as_ref()
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_note_tests {
+    use super::*;
+    use crate::app::{App, PendingDrafts};
+
+    #[test]
+    fn pending_review_text_counts_drafts_in_the_right_form() {
+        assert_eq!(pending_review_text(1), "Pending review: 1 draft");
+        assert_eq!(pending_review_text(2), "Pending review: 2 drafts");
+        assert_eq!(pending_review_text(12), "Pending review: 12 drafts");
+    }
+
+    #[test]
+    fn pending_note_is_shown_only_for_known_drafts() {
+        let mut app = App::new_for_test();
+        assert!(
+            build_pending_review_span(&app).is_none(),
+            "unknown is not shown"
+        );
+
+        app.cmt.pending_drafts = PendingDrafts::Known(0);
+        assert!(
+            build_pending_review_span(&app).is_none(),
+            "zero is not shown"
+        );
+
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        let note = build_pending_review_span(&app).expect("drafts are shown");
+        assert_eq!(note.content, "Pending review: 3 drafts");
+    }
+
+    #[test]
+    fn pending_note_is_hidden_in_local_mode() {
+        let mut app = App::new_for_test();
+        app.set_local_mode(true);
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+
+        assert!(build_pending_review_span(&app).is_none());
     }
 }

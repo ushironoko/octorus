@@ -1653,7 +1653,7 @@ pub fn render_text_input(frame: &mut Frame, app: &App) {
     match &app.input_mode {
         Some(InputMode::Comment(ctx)) => {
             render_comment_context(frame, app, chunks[1], ctx);
-            render_text_input_area(
+            render_pending_input_area(
                 frame,
                 app,
                 chunks[2],
@@ -1707,7 +1707,7 @@ fn render_comment_context(
         Some(start) => format!("{}-{}", start, ctx.line_number),
         None => ctx.line_number.to_string(),
     };
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("File: ", Style::default().fg(Color::DarkGray)),
             Span::styled(filename, Style::default().fg(Color::Cyan)),
@@ -1717,6 +1717,10 @@ fn render_comment_context(
             Span::styled(line_display, Style::default().fg(Color::Yellow)),
         ]),
     ];
+    lines.push(Line::from(Span::styled(
+        "Added to your pending review. Published when you submit the review.",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -1726,6 +1730,13 @@ fn render_comment_context(
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
+}
+
+/// Title of an inline composer (comment or suggestion). Ctrl-s adds the text to
+/// the viewer's pending review, so the title says so (issue #169). It must fit a
+/// 60-column terminal: the border takes two columns and the title one space each side.
+pub(crate) fn pending_review_input_title(label: &str, submit_key: &str) -> String {
+    format!("{label} → pending review ({submit_key}: add, Esc: cancel)")
 }
 
 /// Render TextArea with dynamic title and placeholder
@@ -1742,10 +1753,24 @@ fn render_text_input_area(
         .render_with_title(frame, area, &title, placeholder);
 }
 
+/// Render the TextArea of an inline comment, whose text joins the pending review.
+fn render_pending_input_area(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    label: &str,
+    placeholder: &str,
+) {
+    let submit_key = app.input_text_area.submit_key_display();
+    let title = pending_review_input_title(label, &submit_key);
+    app.input_text_area
+        .render_with_title(frame, area, &title, placeholder);
+}
+
 /// Render suggestion input TextArea with syntax highlighting
 fn render_suggestion_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let submit_key = app.input_text_area.submit_key_display();
-    let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
+    let title = pending_review_input_title("Suggestion", &submit_key);
 
     if let Some(ref cache) = app.suggestion_highlight_cache {
         app.input_text_area.render_highlighted(
@@ -1886,7 +1911,7 @@ fn render_suggestion_context(
     // Add hint about what will be submitted
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
-        "Edit the code below. It will be posted as a GitHub suggestion.",
+        "Edit the code below. It will be added to your pending review as a suggestion.",
         Style::default().fg(Color::DarkGray),
     )]));
 
@@ -3385,5 +3410,111 @@ mod priming_diff_tests {
             cache.patch_hash, expected_hash,
             "patch_hash in highlighted cache should match hash of original patch"
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_review_composer_tests {
+    use super::*;
+    use crate::app::{App, AppState, InputMode, LineInputContext};
+    use crate::ui::test_buffer::screen_text;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn context() -> LineInputContext {
+        LineInputContext {
+            file_index: 0,
+            line_number: 3,
+            diff_position: 3,
+            start_line_number: None,
+        }
+    }
+
+    fn screen(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_text_input(frame, app))
+            .unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn pending_review_title_fits_a_60_column_border() {
+        // The border takes two columns, and the title has one space of padding on
+        // each side, so the title text must be at most 56 columns.
+        for label in ["Comment", "Suggestion"] {
+            let title = pending_review_input_title(label, "Ctrl-s");
+            assert!(
+                unicode_width::UnicodeWidthStr::width(title.as_str()) <= 56,
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_title_says_it_joins_the_pending_review_at_60_columns() {
+        let mut app = App::new_for_test();
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Comment(context()));
+
+        let screen = screen(&app, 60, 24);
+
+        assert!(
+            screen.contains("Comment → pending review (Ctrl-s: add, Esc: cancel)"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn comment_location_says_the_comment_waits_for_the_review() {
+        let mut app = App::new_for_test();
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Comment(context()));
+
+        let screen = screen(&app, 60, 24);
+
+        assert!(screen.contains("Added to your pending review."), "{screen}");
+    }
+
+    #[test]
+    fn suggestion_title_and_description_say_they_join_the_pending_review() {
+        let mut app = App::new_for_test();
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Suggestion {
+            context: context(),
+            original_code: "let x = 1;".to_string(),
+        });
+
+        // Tall enough that the description under the original code is drawn.
+        let screen = screen(&app, 60, 40);
+
+        assert!(
+            screen.contains("Suggestion → pending review (Ctrl-s: add, Esc: cancel)"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("It will be added to your pending"),
+            "{screen}"
+        );
+    }
+
+    /// A reply posts at once, so its title must not claim the pending review.
+    #[test]
+    fn reply_title_keeps_its_submit_wording() {
+        let mut app = App::new_for_test();
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Reply {
+            comment_id: 1,
+            reply_to_user: "alice".to_string(),
+            reply_to_body: "why?".to_string(),
+        });
+
+        let screen = screen(&app, 60, 24);
+
+        assert!(
+            screen.contains("Reply (Ctrl-s: submit, Esc: cancel)"),
+            "{screen}"
+        );
+        assert!(!screen.contains("pending review"), "{screen}");
     }
 }

@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::chrome::{pane_block, PaneTitle};
-use super::common::render_rally_status_bar;
+use super::common::{build_pending_review_span, render_rally_status_bar};
 use super::diff_view;
 use super::file_list::{build_file_list_items, build_file_list_items_ref, build_tree_row_item};
 use super::theme::{Attention, SplitAttention, Theme};
@@ -108,8 +108,11 @@ fn render_file_list_pane(
         },
     };
 
-    let header =
-        Paragraph::new(pr_info).block(pane_block(theme, PaneTitle::AsIs("octorus"), attention));
+    let mut header_block = pane_block(theme, PaneTitle::AsIs("octorus"), attention);
+    if let Some(note) = build_pending_review_span(app) {
+        header_block = header_block.title(Line::from(note).right_aligned());
+    }
+    let header = Paragraph::new(pr_info).block(header_block);
     frame.render_widget(header, chunks[0]);
 
     let files = app.files();
@@ -714,5 +717,29 @@ mod tests {
             !text.contains("▶ DIFF"),
             "diff kept the arrow while comments are open:\n{text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_header_tests {
+    use super::*;
+    use crate::app::{App, AppState, PendingDrafts};
+    use crate::ui::test_buffer::row_text;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// The split view's file pane carries the PR header, so the note is on its border.
+    #[test]
+    fn split_view_file_pane_border_shows_the_pending_review_drafts() {
+        let mut app = App::new_for_test();
+        app.state = AppState::SplitViewFileList;
+        app.pr_number = Some(244);
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let border = row_text(terminal.backend().buffer(), 0);
+        assert!(border.contains("Pending review: 3 drafts"), "{border}");
     }
 }

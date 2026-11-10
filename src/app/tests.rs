@@ -1,4 +1,6 @@
-use super::types::{MarkViewedResult, PendingApproveChoice};
+use super::types::{
+    MarkViewedResult, PendingAdd, PendingApproveChoice, PendingDrafts, ReviewCommentsFetch,
+};
 use super::*;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use lasso::Rodeo;
@@ -536,7 +538,10 @@ async fn test_poll_comment_updates_discards_stale_pr_comments() {
     app.pr_number = Some(2);
 
     // Send comments for PR #1
-    comment_tx.send(Ok(vec![])).await.unwrap();
+    comment_tx
+        .send(Ok(fetch_without_drafts(vec![])))
+        .await
+        .unwrap();
 
     // Poll should NOT panic and should NOT apply PR #1 comments to UI
     app.poll_comment_updates();
@@ -1304,8 +1309,7 @@ fn test_back_to_pr_list_clears_all_receivers() {
     app.started_from_pr_list = true;
 
     // レシーバーを設定
-    let (_tx1, rx1) =
-        mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
+    let (_tx1, rx1) = mpsc::channel::<Result<ReviewCommentsFetch, String>>(1);
     app.cmt.comment_receiver = Some((1, rx1));
     let (_tx2, rx2) = mpsc::channel(1);
     app.diff_store.set_highlight_rx(rx2);
@@ -6429,7 +6433,7 @@ async fn test_inline_comment_add_timeout_reports_unknown_and_frees_the_review_su
     assert!(!success);
     insta::assert_snapshot!(
         message,
-        @"Comment result unknown: check GitHub before adding it again"
+        @"Comment result unknown: check GitHub before adding it again. Text kept."
     );
     assert!(app.review_submit_may_start());
     assert!(matches!(
@@ -6967,7 +6971,7 @@ async fn test_poll_comment_updates_cross_pr_discards() {
     app.cmt.comment_receiver = Some((1, rx)); // Data is for PR 1
     app.cmt.comments_loading = true;
 
-    tx.send(Ok(vec![])).await.unwrap();
+    tx.send(Ok(fetch_without_drafts(vec![]))).await.unwrap();
 
     app.poll_comment_updates();
 
@@ -9121,9 +9125,11 @@ async fn test_poll_comment_success_clears_comment_error() {
 
     let (tx, rx) = mpsc::channel(1);
     app.cmt.comment_receiver = Some((4, rx));
-    tx.send(Ok(vec![sample_review_comment(3, "fresh")]))
-        .await
-        .unwrap();
+    tx.send(Ok(fetch_without_drafts(vec![sample_review_comment(
+        3, "fresh",
+    )])))
+    .await
+    .unwrap();
 
     app.poll_comment_updates();
 
@@ -9190,12 +9196,21 @@ async fn test_poll_discussion_error_leaves_missing_comments_none() {
     assert!(!app.cmt.discussion_comments_loading);
 }
 
+/// A review-comment fetch that read the pending review and found no drafts.
+fn fetch_without_drafts(comments: Vec<ReviewComment>) -> ReviewCommentsFetch {
+    ReviewCommentsFetch {
+        comments,
+        pending_drafts: PendingDrafts::Known(0),
+    }
+}
+
 #[test]
 fn both_failed_review_fetches_send_the_first_error() {
     let comments: Result<Vec<ReviewComment>, &str> = Err("inline failed");
     let reviews: Result<Vec<crate::github::comment::Review>, &str> = Err("reviews failed");
+    let drafts: Result<Vec<ReviewComment>, &str> = Ok(vec![]);
     assert_eq!(
-        super::comments::combine_review_fetch_results(comments, reviews).unwrap_err(),
+        super::comments::combine_review_fetch_results(comments, reviews, drafts).unwrap_err(),
         "inline failed"
     );
 }
@@ -9204,11 +9219,12 @@ fn both_failed_review_fetches_send_the_first_error() {
 fn one_failed_review_fetch_keeps_what_the_other_gathered() {
     let comments: Result<Vec<ReviewComment>, &str> = Ok(vec![sample_review_comment(3, "inline")]);
     let reviews: Result<Vec<crate::github::comment::Review>, &str> = Err("reviews failed");
-    let gathered = super::comments::combine_review_fetch_results(comments, reviews)
+    let drafts: Result<Vec<ReviewComment>, &str> = Ok(vec![]);
+    let gathered = super::comments::combine_review_fetch_results(comments, reviews, drafts)
         .expect("one success stays Ok");
-    assert_eq!(gathered.len(), 1);
-    assert_eq!(gathered[0].id, 3);
-    assert_eq!(gathered[0].body, "inline");
+    assert_eq!(gathered.comments.len(), 1);
+    assert_eq!(gathered.comments[0].id, 3);
+    assert_eq!(gathered.comments[0].body, "inline");
 }
 
 #[tokio::test]
@@ -9573,7 +9589,7 @@ fn test_needs_review_comment_load_respects_inflight_receiver() {
     app.cmt.comment_receiver = None;
     assert!(app.needs_review_comment_load());
 
-    let (_tx2, rx) = tokio::sync::mpsc::channel::<Result<Vec<ReviewComment>, String>>(1);
+    let (_tx2, rx) = tokio::sync::mpsc::channel::<Result<ReviewCommentsFetch, String>>(1);
     app.cmt.comment_receiver = Some((1, rx));
     assert!(
         !app.needs_review_comment_load(),
@@ -9834,4 +9850,481 @@ fn test_toggle_mouse_key_ignored_when_disabled_in_config() {
 
     assert!(!app.handle_toggle_mouse_key(&f2));
     assert!(!app.mouse_capture_active);
+}
+
+// ===================================================================
+// Pending review drafts (issue #169). Unsent text is kept for its line, a refused
+// or unknown add gives its text back, replies refuse drafts, and the draft count
+// follows what was read from GitHub.
+// ===================================================================
+
+const DRAFT_PATCH: &str = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+
+/// A diff-view app on the `+added` line (new line 2), ready to open a composer.
+fn app_on_added_line() -> App {
+    let mut app = make_app_with_patch(DRAFT_PATCH);
+    app.pr_number = Some(1);
+    app.state = AppState::DiffView;
+    app.diff_scroll.selected_line = 2;
+    app
+}
+
+fn key_esc() -> KeyEvent {
+    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+}
+
+/// A comment of the viewer's pending review, as the fetch flags it.
+fn pending_draft_comment(id: u64, path: &str, line: u32, body: &str) -> ReviewComment {
+    let mut comment = sample_review_comment(id, body);
+    comment.path = path.to_string();
+    comment.line = Some(line);
+    comment.location.publication = crate::github::comment::CommentPublication::PendingDraft;
+    comment
+}
+
+/// A fetch whose draft read failed, so the drafts are unknown.
+fn fetch_with_unknown_drafts(comments: Vec<ReviewComment>) -> ReviewCommentsFetch {
+    ReviewCommentsFetch {
+        comments,
+        pending_drafts: PendingDrafts::Unknown,
+    }
+}
+
+/// Polls the inline add until it reports, as the event loop would.
+async fn wait_for_inline_add(app: &mut App) {
+    for _ in 0..500 {
+        app.poll_comment_submit_updates();
+        if !app.cmt.comment_submitting {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the inline add did not report");
+}
+
+/// Stands in for the submit path: the typed text is held while the add is in
+/// flight, and the composer has closed. `add` plays the GitHub result.
+fn start_inline_add_for_test(
+    app: &mut App,
+    typed: &str,
+    add: impl std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+) {
+    let anchor = app
+        .inline_draft_anchor(app.input_mode.as_ref().expect("composer open"))
+        .expect("an inline composer has an anchor");
+    app.cmt.pending_add = Some(PendingAdd {
+        anchor,
+        body: typed.to_string(),
+    });
+    app.input_mode = None;
+    app.input_text_area.clear();
+    app.state = AppState::DiffView;
+    app.spawn_inline_comment_add(1, std::time::Duration::from_secs(5), add);
+}
+
+#[test]
+fn esc_keeps_an_unsent_comment_for_its_line() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area
+        .set_content_verbatim("half a thought\nsecond line\n");
+
+    app.handle_text_input(key_esc()).unwrap();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(success);
+    insta::assert_snapshot!(message, @"Draft kept for this line: c restores it");
+
+    // Reopening the same line gives back the text exactly, trailing newline included.
+    app.enter_comment_input();
+    assert!(matches!(app.input_mode, Some(InputMode::Comment(_))));
+    assert_eq!(app.state, AppState::TextInput);
+    assert_eq!(
+        app.input_text_area.content(),
+        "half a thought\nsecond line\n"
+    );
+}
+
+#[test]
+fn a_kept_comment_is_not_restored_on_another_line() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area
+        .set_content_verbatim("written for line 2");
+    app.handle_text_input(key_esc()).unwrap();
+
+    // Line 3 is the context line ` more context`.
+    app.diff_scroll.selected_line = 3;
+    app.enter_comment_input();
+
+    assert!(app.input_text_area.content().is_empty());
+}
+
+#[test]
+fn a_kept_suggestion_comes_back_on_the_suggestion_composer_only() {
+    let mut app = app_on_added_line();
+    app.enter_suggestion_input();
+    app.input_text_area.set_content_verbatim("let x = 2;");
+    app.handle_text_input(key_esc()).unwrap();
+
+    // The comment composer on the same line starts empty, not with the suggestion.
+    app.enter_comment_input();
+    assert!(app.input_text_area.content().is_empty());
+    app.cancel_input();
+
+    app.enter_suggestion_input();
+    assert_eq!(app.input_text_area.content(), "let x = 2;");
+}
+
+#[test]
+fn a_kept_comment_does_not_come_back_on_another_pr() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area.set_content_verbatim("for PR 1");
+    app.handle_text_input(key_esc()).unwrap();
+
+    app.pr_number = Some(2);
+    app.enter_comment_input();
+
+    assert!(app.input_text_area.content().is_empty());
+}
+
+#[test]
+fn esc_on_an_empty_comment_keeps_nothing_and_says_nothing() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+
+    app.handle_text_input(key_esc()).unwrap();
+
+    assert!(app.cmt.saved_drafts.is_empty());
+    assert!(app.cmt.submission_result.is_none());
+}
+
+#[tokio::test]
+async fn a_refused_add_gives_its_text_back_on_the_same_line() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area.set_content_verbatim("rename this");
+
+    start_inline_add_for_test(&mut app, "rename this", async {
+        Err::<(), anyhow::Error>(crate::github::DraftRefused::OlderCommit.into())
+    });
+    wait_for_inline_add(&mut app).await;
+
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(
+        message,
+        @"Submit your pending review first (older commit), then retry. Text kept."
+    );
+    // The footer draws "✗ " before the text, and the footer is 76 columns wide.
+    assert!(unicode_width::UnicodeWidthStr::width(message.as_str()) <= 74);
+    assert!(app.cmt.pending_add.is_none());
+    app.enter_comment_input();
+    assert_eq!(app.input_text_area.content(), "rename this");
+}
+
+#[tokio::test]
+async fn an_unconfirmed_add_is_unknown_and_keeps_its_text() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area.set_content_verbatim("maybe landed");
+
+    start_inline_add_for_test(&mut app, "maybe landed", async {
+        Err::<(), anyhow::Error>(crate::github::DraftUnconfirmed.into())
+    });
+    wait_for_inline_add(&mut app).await;
+
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(
+        message,
+        @"Comment result unknown: check GitHub before adding it again. Text kept."
+    );
+    assert!(unicode_width::UnicodeWidthStr::width(message.as_str()) <= 74);
+    app.enter_comment_input();
+    assert_eq!(app.input_text_area.content(), "maybe landed");
+}
+
+#[tokio::test]
+async fn a_failed_add_keeps_its_text_with_the_error() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area.set_content_verbatim("try again");
+
+    start_inline_add_for_test(&mut app, "try again", async {
+        Err::<(), anyhow::Error>(anyhow::anyhow!("HTTP 502: Bad Gateway"))
+    });
+    wait_for_inline_add(&mut app).await;
+
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(message, @"Failed: HTTP 502: Bad Gateway");
+    app.enter_comment_input();
+    assert_eq!(app.input_text_area.content(), "try again");
+}
+
+/// A task that ends without reporting leaves an add with an unknown outcome.
+#[tokio::test]
+async fn an_add_whose_task_vanishes_is_unknown_and_keeps_its_text() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area.set_content_verbatim("lost reply");
+    let anchor = app
+        .inline_draft_anchor(app.input_mode.as_ref().unwrap())
+        .unwrap();
+    app.cmt.pending_add = Some(PendingAdd {
+        anchor,
+        body: "lost reply".to_string(),
+    });
+    app.input_mode = None;
+    app.state = AppState::DiffView;
+    let (tx, rx) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
+    app.cmt.comment_submit_receiver = Some((1, rx));
+    app.cmt.comment_submitting = true;
+    drop(tx);
+
+    app.poll_comment_submit_updates();
+
+    assert!(!app.cmt.comment_submitting);
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(
+        message,
+        @"Comment result unknown: check GitHub before adding it again. Text kept."
+    );
+    app.enter_comment_input();
+    assert_eq!(app.input_text_area.content(), "lost reply");
+}
+
+#[tokio::test]
+async fn a_successful_add_keeps_nothing() {
+    let mut app = app_on_added_line();
+    app.enter_comment_input();
+    app.input_text_area.set_content_verbatim("landed");
+    // No PR is loaded, so the reload after the add does not start a fetch.
+    app.pr_number = None;
+    start_inline_add_for_test(&mut app, "landed", async { Ok(()) });
+    wait_for_inline_add(&mut app).await;
+
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(success);
+    insta::assert_snapshot!(message, @"Added to pending review");
+    assert!(app.cmt.pending_add.is_none());
+    assert!(app.cmt.saved_drafts.is_empty());
+}
+
+/// Two adds at once could both create a pending review, so a composer does not
+/// open while an add is in flight. Its keys would be ignored anyway.
+#[test]
+fn an_inline_composer_is_refused_while_an_add_is_in_flight() {
+    let mut app = app_on_added_line();
+    app.cmt.comment_submitting = true;
+
+    app.enter_comment_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.state, AppState::DiffView);
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(message, @"Wait for the comment to be added");
+}
+
+#[test]
+fn reply_is_refused_on_a_pending_draft() {
+    let mut app = app_on_added_line();
+    app.apply_review_comments(vec![pending_draft_comment(501, "test.rs", 2, "my draft")]);
+    app.update_file_comment_positions();
+
+    app.enter_reply_input();
+
+    assert!(app.input_mode.is_none());
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(!success);
+    insta::assert_snapshot!(
+        message,
+        @"Submit the pending review before replying to a draft"
+    );
+}
+
+#[test]
+fn reply_still_opens_on_a_published_comment() {
+    let mut app = app_on_added_line();
+    let mut published = sample_review_comment(7, "published");
+    published.path = "test.rs".to_string();
+    published.line = Some(2);
+    app.apply_review_comments(vec![published]);
+    app.update_file_comment_positions();
+
+    app.enter_reply_input();
+
+    assert!(matches!(app.input_mode, Some(InputMode::Reply { .. })));
+}
+
+#[test]
+fn a_pending_draft_shows_on_its_diff_line() {
+    let mut app = app_on_added_line();
+    assert!(!app.has_comment_at_current_line());
+
+    app.apply_review_comments(vec![pending_draft_comment(501, "test.rs", 2, "my draft")]);
+    app.update_file_comment_positions();
+
+    assert!(app.has_comment_at_current_line());
+}
+
+#[test]
+fn combine_joins_the_drafts_to_the_published_comments_and_counts_them() {
+    let published: Result<Vec<ReviewComment>, &str> =
+        Ok(vec![sample_review_comment(3, "published")]);
+    let reviews: Result<Vec<crate::github::comment::Review>, &str> = Ok(vec![]);
+    let drafts: Result<Vec<ReviewComment>, &str> = Ok(vec![
+        pending_draft_comment(501, "src/app.rs", 1, "draft one"),
+        pending_draft_comment(502, "src/app.rs", 2, "draft two"),
+    ]);
+
+    let fetch = super::comments::combine_review_fetch_results(published, reviews, drafts)
+        .expect("all reads succeeded");
+
+    assert_eq!(fetch.pending_drafts, PendingDrafts::Known(2));
+    assert_eq!(fetch.comments.len(), 3);
+    assert_eq!(
+        super::comments::count_pending_drafts(&fetch.comments),
+        2,
+        "the published comment is not a draft"
+    );
+}
+
+#[test]
+fn combine_flags_a_draft_that_is_listed_twice_once() {
+    // GitHub may list a draft in the PR-wide list too. It must not appear twice.
+    let published: Result<Vec<ReviewComment>, &str> = Ok(vec![sample_review_comment(501, "draft")]);
+    let reviews: Result<Vec<crate::github::comment::Review>, &str> = Ok(vec![]);
+    let drafts: Result<Vec<ReviewComment>, &str> =
+        Ok(vec![pending_draft_comment(501, "src/app.rs", 1, "draft")]);
+
+    let fetch = super::comments::combine_review_fetch_results(published, reviews, drafts).unwrap();
+
+    assert_eq!(fetch.comments.len(), 1);
+    assert!(fetch.comments[0].is_pending_draft());
+    assert_eq!(fetch.pending_drafts, PendingDrafts::Known(1));
+}
+
+#[test]
+fn a_failed_draft_read_keeps_the_published_comments_and_leaves_the_count_unknown() {
+    let published: Result<Vec<ReviewComment>, &str> =
+        Ok(vec![sample_review_comment(3, "published")]);
+    let reviews: Result<Vec<crate::github::comment::Review>, &str> = Ok(vec![]);
+    let drafts: Result<Vec<ReviewComment>, &str> = Err("pending review unreadable");
+
+    let fetch = super::comments::combine_review_fetch_results(published, reviews, drafts)
+        .expect("the published comments still load");
+
+    assert_eq!(fetch.pending_drafts, PendingDrafts::Unknown);
+    assert_eq!(fetch.comments.len(), 1);
+    assert!(!fetch.comments[0].is_pending_draft());
+}
+
+/// A read that did not reach the pending review must not be cached: the cache
+/// would then hide the drafts until the next add or submit.
+#[tokio::test]
+async fn a_comment_read_without_the_drafts_is_not_cached() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 1,
+    };
+    app.session_cache.put_pr_data(
+        key.clone(),
+        PrData {
+            pr: Box::new(make_local_pr()),
+            files: vec![],
+            pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    );
+    app.session_cache
+        .put_review_comments(key.clone(), vec![sample_review_comment(3, "stale")]);
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((1, rx));
+    tx.send(Ok(fetch_with_unknown_drafts(vec![sample_review_comment(
+        3, "fresh",
+    )])))
+    .await
+    .unwrap();
+
+    app.poll_comment_updates();
+
+    assert!(app.session_cache.get_review_comments(&key).is_none());
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Unknown);
+    assert_eq!(app.cmt.review_comments.as_ref().unwrap()[0].body, "fresh");
+}
+
+#[tokio::test]
+async fn a_comment_read_with_the_drafts_is_cached_and_sets_the_count() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 1,
+    };
+    app.session_cache.put_pr_data(
+        key.clone(),
+        PrData {
+            pr: Box::new(make_local_pr()),
+            files: vec![],
+            pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    );
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((1, rx));
+    tx.send(Ok(ReviewCommentsFetch {
+        comments: vec![pending_draft_comment(501, "test.rs", 2, "draft")],
+        pending_drafts: PendingDrafts::Known(1),
+    }))
+    .await
+    .unwrap();
+
+    app.poll_comment_updates();
+
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(1));
+    let cached = app.session_cache.get_review_comments(&key).unwrap();
+    assert!(
+        cached[0].is_pending_draft(),
+        "the cached copy keeps the flag"
+    );
+}
+
+/// The cache keeps the flag, so a return to the PR shows the count again without
+/// a fetch.
+#[test]
+fn a_cached_comment_list_restores_the_draft_count() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    let key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 1,
+    };
+    app.session_cache.put_pr_data(
+        key.clone(),
+        PrData {
+            pr: Box::new(make_local_pr()),
+            files: vec![],
+            pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    );
+    app.session_cache.put_review_comments(
+        key,
+        vec![
+            pending_draft_comment(501, "test.rs", 2, "one"),
+            pending_draft_comment(502, "test.rs", 3, "two"),
+            sample_review_comment(3, "published"),
+        ],
+    );
+
+    app.load_review_comments();
+
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(2));
+    assert!(app.cmt.comment_receiver.is_none(), "no fetch was started");
 }
