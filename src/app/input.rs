@@ -742,7 +742,7 @@ impl App {
     }
 
     pub(crate) fn open_help(&mut self, from: AppState) {
-        self.previous_state = from;
+        self.help_return_state = from;
         self.state = AppState::Help;
         self.help_scroll_offset = 0;
         self.config_scroll_offset = 0;

@@ -6693,6 +6693,61 @@ mod tests {
         assert_eq!(app.state, AppState::RepoBrowseTree);
     }
 
+    #[test]
+    fn help_from_browse_commit_diff_returns_to_file_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test();
+        let mut state = BrowseState::new(dir.path().to_path_buf(), AppState::FileList);
+        state.commit_diff = BrowseCommitDiffState::Loading {
+            request_id: 1,
+            annotation: Arc::new(BlameAnnotation {
+                sha: Arc::from("abc1234"),
+                author_name: Arc::from("Ada"),
+                summary: Arc::from("summary"),
+                full: Arc::from("summary\n\nbody"),
+                author: Arc::from("Ada <ada@example.com>"),
+                identity: Arc::from("Ada"),
+                original_path: Arc::from("src/lib.rs"),
+            }),
+            cancel: CancellationToken::new(),
+        };
+        app.browse_state = Some(state);
+        app.state = AppState::RepoBrowseFile;
+        // TextInput never opens help, so any write to previous_state shows up here.
+        app.previous_state = AppState::TextInput;
+        let mut terminal = ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 120, 40)),
+            },
+        )
+        .unwrap();
+
+        app.handle_repo_browse_file_input(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut terminal,
+        )
+        .unwrap();
+        assert_eq!(app.state, AppState::Help);
+        assert_eq!(
+            app.previous_state,
+            AppState::TextInput,
+            "commit-diff help must not touch previous_state"
+        );
+
+        app.apply_help_scroll(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            30,
+        );
+        assert_eq!(app.state, AppState::RepoBrowseFile);
+    }
+
     #[tokio::test]
     async fn test_open_repo_browse_replaces_different_root_and_cancels_old_session() {
         let old_dir = tempfile::tempdir().unwrap();

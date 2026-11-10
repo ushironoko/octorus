@@ -2427,31 +2427,37 @@ fn test_help_scroll_g_uppercase_jumps_to_bottom() {
 }
 
 #[test]
-fn test_help_scroll_q_returns_to_previous_state() {
+fn test_help_scroll_q_returns_to_help_return_state() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
-    app.previous_state = AppState::FileList;
+    app.help_return_state = AppState::FileList;
+    // Help must ignore previous_state, which PR Description and Comment List own.
+    app.previous_state = AppState::PullRequestList;
     app.state = AppState::Help;
     app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
     assert_eq!(app.state, AppState::FileList);
 }
 
 #[test]
-fn test_open_help_from_diff_view_sets_previous_state() {
+fn test_open_help_from_diff_view_sets_help_return_state() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+    app.previous_state = AppState::CommentList;
     app.open_help(AppState::DiffView);
     assert_eq!(app.state, AppState::Help);
-    assert_eq!(app.previous_state, AppState::DiffView);
+    assert_eq!(app.help_return_state, AppState::DiffView);
+    assert_eq!(app.previous_state, AppState::CommentList);
 }
 
 #[test]
-fn test_open_help_from_split_view_diff_sets_previous_state() {
+fn test_open_help_from_split_view_diff_sets_help_return_state() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+    app.previous_state = AppState::CommentList;
     app.open_help(AppState::SplitViewDiff);
     assert_eq!(app.state, AppState::Help);
-    assert_eq!(app.previous_state, AppState::SplitViewDiff);
+    assert_eq!(app.help_return_state, AppState::SplitViewDiff);
+    assert_eq!(app.previous_state, AppState::CommentList);
 }
 
 #[test]
@@ -2532,11 +2538,248 @@ async fn test_help_from_pr_list_not_blocked_by_loading_guard() {
         .await
         .unwrap();
     assert_eq!(app.state, AppState::Help);
-    assert_eq!(app.previous_state, AppState::PullRequestList);
+    assert_eq!(app.help_return_state, AppState::PullRequestList);
 
     // Help状態ではLoadingガードがスキップされるので、qで戻れる
     app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
     assert_eq!(app.state, AppState::PullRequestList);
+}
+
+// ============================================================
+// Help return routing (#240)
+//
+// `?` returns to the screen that opened it. Help used to write `previous_state`,
+// which PR Description and Comment List use as their own return target, so the
+// second `q` looped back into the same screen. These tests send real key presses
+// through `handle_key_event`, the same dispatch the event loop uses.
+// ============================================================
+
+const HELP_RETURN_PATCH: &str = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+
+/// Sends one key press through the real key dispatch.
+async fn press_key(app: &mut App, code: KeyCode) {
+    let mut terminal = test_terminal();
+    app.handle_key_event(make_key(code), &mut terminal)
+        .await
+        .unwrap();
+}
+
+/// Pre-fills the session caches so opening the Comment List never spawns `gh`.
+fn seed_empty_comment_caches(app: &mut App) {
+    let repo = app.repo.clone();
+    let pr_number = app.pr_number();
+    app.session_cache.put_review_comments(
+        PrCacheKey {
+            repo: repo.clone(),
+            pr_number,
+        },
+        Vec::new(),
+    );
+    app.session_cache
+        .put_discussion_comments(PrCacheKey { repo, pr_number }, Vec::new());
+}
+
+#[tokio::test]
+async fn help_round_trip_from_pr_description_returns_to_file_list() {
+    // The exact sequence from #240: file list -> d -> ? -> q -> q.
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::FileList;
+
+    press_key(&mut app, KeyCode::Char('d')).await;
+    assert_eq!(app.state, AppState::PrDescription);
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(
+        app.state,
+        AppState::PrDescription,
+        "q closes help back to PR description"
+    );
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(
+        app.state,
+        AppState::FileList,
+        "q leaves PR description for the file list"
+    );
+}
+
+#[tokio::test]
+async fn help_round_trip_from_comment_list_returns_to_file_list() {
+    // The same sequence from #240, with C (Comment List) in place of d.
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::FileList;
+    seed_empty_comment_caches(&mut app);
+
+    press_key(&mut app, KeyCode::Char('C')).await;
+    assert_eq!(app.state, AppState::CommentList);
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(
+        app.state,
+        AppState::CommentList,
+        "q closes help back to the comment list"
+    );
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(
+        app.state,
+        AppState::FileList,
+        "q leaves the comment list for the file list"
+    );
+}
+
+#[tokio::test]
+async fn help_round_trip_from_split_view_comment_list_returns_to_split_view_file_list() {
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::SplitViewFileList;
+    seed_empty_comment_caches(&mut app);
+
+    press_key(&mut app, KeyCode::Char('C')).await;
+    assert_eq!(app.state, AppState::CommentList);
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::CommentList);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::SplitViewFileList);
+}
+
+#[tokio::test]
+async fn help_round_trip_from_split_view_pr_description_returns_to_split_view_diff() {
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::SplitViewDiff;
+
+    press_key(&mut app, KeyCode::Char('d')).await;
+    assert_eq!(app.state, AppState::PrDescription);
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::PrDescription);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::SplitViewDiff);
+}
+
+#[tokio::test]
+async fn help_from_diff_view_returns_to_diff_view() {
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::DiffView;
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::DiffView);
+}
+
+#[tokio::test]
+async fn help_from_split_view_file_list_returns_to_split_view_file_list() {
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::SplitViewFileList;
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::SplitViewFileList);
+}
+
+#[tokio::test]
+async fn help_round_trip_from_checks_list_returns_to_checks_list() {
+    // ChecksList has its own return slot. Help must return to the checks list,
+    // and only the checks list's own q may use checks_return_state.
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.state = AppState::ChecksList;
+    app.chk.checks_return_state = AppState::FileList;
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::ChecksList);
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(
+        app.state,
+        AppState::FileList,
+        "q leaves the checks list via checks_return_state"
+    );
+}
+
+#[tokio::test]
+async fn help_from_repo_browse_tree_returns_to_browse_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = make_app_with_patch(HELP_RETURN_PATCH);
+    app.browse_state = Some(crate::app::browse::BrowseState::new(
+        dir.path().to_path_buf(),
+        AppState::FileList,
+    ));
+    app.state = AppState::RepoBrowseTree;
+    // TextInput never opens help, so any write to previous_state shows up here.
+    app.previous_state = AppState::TextInput;
+
+    press_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.state, AppState::Help);
+    assert_eq!(
+        app.previous_state,
+        AppState::TextInput,
+        "browser help must not touch previous_state"
+    );
+
+    press_key(&mut app, KeyCode::Char('q')).await;
+    assert_eq!(app.state, AppState::RepoBrowseTree);
+}
+
+#[test]
+fn open_help_returns_to_every_help_opening_view_without_touching_previous_state() {
+    // Every screen that can open help, including the three browser panes.
+    const HELP_OPENERS: [AppState; 17] = [
+        AppState::FileList,
+        AppState::SplitViewFileList,
+        AppState::DiffView,
+        AppState::SplitViewDiff,
+        AppState::PrDescription,
+        AppState::CommentList,
+        AppState::PullRequestList,
+        AppState::ChecksList,
+        AppState::IssueList,
+        AppState::IssueDetail,
+        AppState::IssueCommentList,
+        AppState::GitOpsSplitTree,
+        AppState::GitOpsSplitDiff,
+        AppState::Cockpit,
+        AppState::RepoBrowseTree,
+        AppState::RepoBrowseFile,
+        AppState::RepoBrowseGraph,
+    ];
+    let mut app = App::new_for_test();
+    for from in HELP_OPENERS {
+        app.state = from;
+        // TextInput never opens help, so any write to previous_state shows up here.
+        app.previous_state = AppState::TextInput;
+
+        app.open_help(from);
+        assert_eq!(app.state, AppState::Help, "help from {from:?}");
+        assert_eq!(
+            app.previous_state,
+            AppState::TextInput,
+            "help from {from:?} touched previous_state"
+        );
+
+        app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
+        assert_eq!(app.state, from, "q after help from {from:?}");
+    }
 }
 
 #[tokio::test]
@@ -6866,11 +7109,8 @@ fn test_help_reopen_resets_scroll_but_preserves_tab() {
     app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
     assert_ne!(app.state, AppState::Help);
 
-    // Simulate reopening help (like input.rs does)
-    app.previous_state = AppState::FileList;
-    app.state = AppState::Help;
-    app.help_scroll_offset = 0;
-    app.config_scroll_offset = 0;
+    // Reopen help through the same entry point the key handlers use
+    app.open_help(AppState::FileList);
 
     // Tab state is preserved (not reset)
     assert_eq!(app.help_tab, HelpTab::Config);

@@ -148,8 +148,10 @@ pub struct App {
     pub diff_view_return_state: AppState,
     /// CommentPreview/SuggestionPreview の戻り先
     pub preview_return_state: AppState,
-    /// Help/CommentList など汎用的な戻り先
+    /// PrDescription/CommentList の戻り先（Help は help_return_state を使う）
     pub previous_state: AppState,
+    /// Help を閉じた時の戻り先。previous_state を共用すると開いた画面の戻り先を壊す
+    pub help_return_state: AppState,
     pub selected_file: usize,
     pub file_list_scroll_offset: usize,
     pub diff_scroll: DiffScrollState,
@@ -289,6 +291,7 @@ impl App {
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
             previous_state: AppState::FileList,
+            help_return_state: AppState::FileList,
             selected_file: 0,
             file_list_scroll_offset: 0,
             diff_scroll: DiffScrollState::new(ScrollMode::Margin),

@@ -382,7 +382,7 @@ impl App {
         };
 
         if self.matches_single_key(&key, &kb.quit) || self.matches_single_key(&key, &kb.help) {
-            self.state = self.previous_state;
+            self.state = self.help_return_state;
             return;
         } else if Self::is_shift_char_shortcut(&key, 'j') {
             offset = offset.saturating_add(visible_lines.max(1));

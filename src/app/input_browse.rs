@@ -512,8 +512,7 @@ impl App {
             return true;
         }
         if self.matches_single_key(key, &kb.help) {
-            self.previous_state = self.state;
-            self.state = AppState::Help;
+            self.open_help(self.state);
             return true;
         }
         if self.matches_single_key(key, &kb.toggle_zen_mode) {
@@ -627,8 +626,7 @@ impl App {
         }
         if self.matches_single_key(key, &kb.help) {
             self.clear_pending_keys();
-            self.previous_state = self.state;
-            self.state = AppState::Help;
+            self.open_help(self.state);
             return;
         }
         if self.matches_single_key(key, &kb.toggle_zen_mode) {
