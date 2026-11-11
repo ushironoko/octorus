@@ -1,9 +1,34 @@
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, Cell};
+use ratatui::style::Color;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DataState};
+use crate::config::{ThemeColors, ThemeConfig};
 use crate::github::comment::{CommentPublication, ReviewComment, ReviewCommentLocation};
 use crate::github::{Branch, ChangedFile, PullRequest, User};
+use crate::ui::theme::Theme;
+
+/// A warning color no preset uses, so a test can tell the theme's color from yellow.
+pub(crate) const CUSTOM_WARNING: Color = Color::Rgb(1, 2, 3);
+
+/// A muted color no preset uses, for the same reason as [`CUSTOM_WARNING`].
+pub(crate) const CUSTOM_MUTED: Color = Color::Rgb(4, 5, 6);
+
+/// The dark preset with the given color overrides, as a `[theme]` config applies them.
+pub(crate) fn theme_with(colors: ThemeColors) -> Theme {
+    Theme::resolve(
+        &ThemeConfig {
+            colors,
+            ..ThemeConfig::default()
+        },
+        false,
+    )
+}
+
+/// The dark preset drawn without color, as `NO_COLOR` gives it.
+pub(crate) fn no_color_theme() -> Theme {
+    Theme::resolve(&ThemeConfig::default(), true)
+}
 
 pub(crate) fn find_column(buf: &Buffer, y: u16, needle: &str) -> Option<u16> {
     let width = buf.area().width;
@@ -56,6 +81,16 @@ pub(crate) fn screen_text(buf: &Buffer) -> String {
         .map(|y| row_text(buf, y))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The cells that `needle` covers on the first row that draws it, or `None` when no
+/// row does. It takes one cell per char, so it is for ASCII and single-width text.
+pub(crate) fn cells_of(buf: &Buffer, needle: &str) -> Option<Vec<Cell>> {
+    let width = u16::try_from(needle.chars().count()).ok()?;
+    (0..buf.area().height).find_map(|y| {
+        let x = find_column(buf, y, needle)?;
+        Some((x..x + width).map(|x| buf[(x, y)].clone()).collect())
+    })
 }
 
 /// The patch `app_with_comment_on_added_line` loads. Its `+added` line is new

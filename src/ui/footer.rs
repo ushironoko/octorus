@@ -117,7 +117,7 @@ fn shell_input_line(app: &App) -> Option<Line<'static>> {
 fn loading_comments_span(app: &App) -> Span<'static> {
     Span::styled(
         format!("{} Loading comments...", app.spinner_char()),
-        Style::default().fg(Color::Yellow),
+        app.theme.warning.style(),
     )
 }
 
@@ -183,6 +183,8 @@ fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::app::{App, AppState, PrOpenSource, ReviewAction};
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
     use insta::assert_snapshot;
 
     const HELP: &str = "j/k: move | q: quit";
@@ -412,5 +414,41 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Loading comments..."), "{text}");
+    }
+
+    fn progress_span<'a>(line: &'a Line<'a>) -> &'a Span<'a> {
+        line.spans
+            .iter()
+            .find(|span| span.content.contains("Loading comments..."))
+            .expect("the reload progress is drawn")
+    }
+
+    #[test]
+    fn reload_progress_takes_the_theme_warning_color() {
+        let mut app = App::new_for_test();
+        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.comments_loading = true;
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+
+        let line = build_footer_line(&app, HELP);
+
+        assert_eq!(progress_span(&line).style.fg, Some(CUSTOM_WARNING));
+    }
+
+    #[test]
+    fn reload_progress_keeps_its_words_and_drops_its_color_under_no_color() {
+        let mut app = App::new_for_test();
+        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.comments_loading = true;
+        app.theme = no_color_theme();
+
+        let line = build_footer_line(&app, HELP);
+
+        let progress = progress_span(&line);
+        assert_eq!(progress.style.fg, None);
+        assert!(progress.content.contains("Loading comments..."));
     }
 }

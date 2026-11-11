@@ -49,7 +49,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let mut header_block = Block::default().borders(Borders::ALL).title("octorus");
     // Right-aligned in the border, so it stays visible when the PR title is long.
-    if let Some(note) = build_pending_review_span(app) {
+    if let Some(note) = build_pending_review_span(app, app.theme) {
         header_block = header_block.title(Line::from(note).right_aligned());
     }
     let header = Paragraph::new(Line::from(vec![Span::raw(pr_info), ci_span])).block(header_block);
@@ -665,8 +665,11 @@ mod tests {
 mod pending_header_tests {
     use super::*;
     use crate::app::{App, AppState, DataState, PendingDrafts};
+    use crate::config::ThemeColors;
     use crate::github::{Branch, ChangedFile, PullRequest, User};
-    use crate::ui::test_buffer::{row_text, screen_text};
+    use crate::ui::test_buffer::{
+        cells_of, no_color_theme, row_text, screen_text, theme_with, CUSTOM_WARNING,
+    };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -739,5 +742,43 @@ mod pending_header_tests {
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         assert!(!screen_text(terminal.backend().buffer()).contains("Pending review"));
+    }
+
+    /// The note is drawn in the theme's warning color, the same one a draft tag uses.
+    #[test]
+    fn file_list_header_count_takes_the_theme_warning_color() {
+        let mut app = loaded_app(PendingDrafts::Known(2));
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let cells = cells_of(terminal.backend().buffer(), "Pending review: 2 drafts")
+            .expect("the note is drawn");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{cells:?}"
+        );
+    }
+
+    #[test]
+    fn file_list_header_count_drops_its_color_under_no_color() {
+        let mut app = loaded_app(PendingDrafts::Known(2));
+        app.theme = no_color_theme();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let cells = cells_of(terminal.backend().buffer(), "Pending review: 2 drafts")
+            .expect("the note keeps its words");
+        assert!(
+            cells
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.modifier.is_empty()),
+            "{cells:?}"
+        );
     }
 }

@@ -40,7 +40,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(pr_info, Style::default().fg(Color::Cyan)),
         ci_span,
     ];
-    if let Some(note) = build_pending_review_span(app) {
+    if let Some(note) = build_pending_review_span(app, app.theme) {
         spans.push(Span::raw("  "));
         spans.push(note);
     }
@@ -232,6 +232,31 @@ mod tests {
         assert!(
             out.contains("UNIQUE_TAIL_MARKER"),
             "final line must be reachable when scrolled to the bottom:\n{out}"
+        );
+    }
+
+    /// The header note is drawn in the theme's warning color, as the file list's is.
+    #[test]
+    fn header_note_takes_the_theme_warning_color() {
+        use crate::app::PendingDrafts;
+        use crate::config::ThemeColors;
+        use crate::ui::test_buffer::{cells_of, theme_with, CUSTOM_WARNING};
+
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::PrDescription;
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let cells = cells_of(terminal.backend().buffer(), "Pending review: 3 drafts")
+            .expect("the note is drawn in the header");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{cells:?}"
         );
     }
 
