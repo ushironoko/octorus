@@ -305,8 +305,12 @@ pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
 /// the first `@@` (that header itself is not counted), and the marker is one of those lines, so
 /// every row after it counts it. GitHub's docs give the count but do not mention the marker, so
 /// this follows from that definition.
+///
+/// Pass the raw patch row, not the content the classifier returns. A file line whose text is the
+/// marker is the context row ` \ No newline ...`, and the classifier strips its space, leaving the
+/// same text. Only the column-0 check tells the two apart.
 #[inline]
-fn is_no_newline_marker(line: &str) -> bool {
+pub(crate) fn is_no_newline_marker(line: &str) -> bool {
     line.starts_with('\\')
 }
 

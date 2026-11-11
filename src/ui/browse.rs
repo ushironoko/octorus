@@ -539,6 +539,7 @@ fn render_commit_diff(
                     bg_color,
                     None,
                     area.width.saturating_sub(2),
+                    theme,
                 );
                 let adjusted_scroll = offset.saturating_sub(visible_start) as u16;
                 (

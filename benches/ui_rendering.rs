@@ -32,8 +32,9 @@ use ratatui::Terminal;
 use common::{generate_diff_patch, generate_haskell_diff_patch, generate_vue_diff_patch};
 use octorus::app::browse::{build_file_patch, BrowseState, OpenFile};
 use octorus::app::{App, AppState};
-use octorus::config::Config;
+use octorus::config::{Config, ThemeConfig};
 use octorus::ui::diff_view::build_plain_diff_cache;
+use octorus::ui::theme::Theme;
 use octorus::{build_diff_cache, render_cached_lines, ParserPool};
 
 const BROWSE_WIDTH: u16 = 80;
@@ -385,6 +386,7 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
                         false,
                         None,
                         120,
+                        Theme::resolve(&ThemeConfig::default(), false),
                     ))
                 });
             },
@@ -468,6 +470,7 @@ fn bench_visible_range_processing(c: &mut Criterion) {
                         false,
                         None,
                         120,
+                        Theme::resolve(&ThemeConfig::default(), false),
                     ))
                 });
             },

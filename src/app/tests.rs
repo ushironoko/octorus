@@ -5870,6 +5870,56 @@ fn review_comment_after_no_newline_marker_lands_on_the_added_row() {
     assert_eq!(landed, vec!["+b", "+c"]);
 }
 
+#[test]
+fn comment_on_no_newline_marker_says_why_it_cannot_take_one() {
+    let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 3; // the marker row
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(
+        app.cmt.submission_result,
+        Some((
+            false,
+            "Move to a code line to comment: this marker has no line".to_string()
+        ))
+    );
+}
+
+#[test]
+fn comment_on_the_deleted_line_before_the_marker_stays_silent() {
+    let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 2; // -b
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    assert!(app.input_mode.is_none());
+    assert_eq!(app.cmt.submission_result, None);
+}
+
+#[test]
+fn comment_on_a_file_line_that_reads_like_the_marker_still_opens() {
+    let patch = "@@ -1,2 +1,2 @@\n \\ No newline at end of file\n-old\n\\ No newline at end of file\n+new\n";
+    let mut app = make_app_with_patch(patch);
+    app.diff_scroll.selected_line = 1; // the file line: a context row
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    match app.input_mode {
+        Some(InputMode::Comment(ctx)) => {
+            assert_eq!((ctx.line_number, ctx.diff_position), (1, 1));
+        }
+        other => panic!("expected a comment on the file line, got {other:?}"),
+    }
+    assert_eq!(app.cmt.submission_result, None);
+}
+
 #[tokio::test]
 async fn unplaced_left_comment_is_outdated_in_the_list_and_absent_from_the_diff() {
     let mut app = make_app_with_patch(SIDE_PATCH);

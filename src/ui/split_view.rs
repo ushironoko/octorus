@@ -535,6 +535,7 @@ fn render_diff_body(
             app.config.diff.bg_color,
             multiline_range,
             area.width.saturating_sub(2),
+            theme,
         );
         (rendered, 0u16, start)
     } else {
@@ -758,6 +759,52 @@ mod tests {
             !text.contains("▶ DIFF"),
             "diff kept the arrow while comments are open:\n{text}"
         );
+    }
+
+    /// The marker sits between `-fn b() {}` and the `+` rows, as git writes it.
+    const NO_NEWLINE_PATCH: &str = concat!(
+        "@@ -1,2 +1,3 @@\n",
+        " fn a() {}\n",
+        "-fn b() {}\n",
+        "\\ No newline at end of file\n",
+        "+fn b() { 1 }\n",
+        "+fn c() {}\n",
+    );
+
+    #[test]
+    fn split_view_draws_the_marker_muted_in_the_prefix_column() {
+        use crate::config::ThemeConfig;
+        use crate::ui::test_buffer::{find_column, row_text};
+
+        let marker = "\\ No newline at end of file";
+        let mut app = loaded_app();
+        if let DataState::Loaded { files, .. } = &mut app.data_state {
+            files[0].patch = Some(NO_NEWLINE_PATCH.to_string());
+        }
+        app.diff_store.current = Some(diff_view::build_plain_diff_cache(NO_NEWLINE_PATCH, 4));
+        app.state = AppState::SplitViewDiff;
+        let mut terminal = Terminal::new(TestBackend::new(120, 16)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let row_with = |needle: &str| {
+            (0..buf.area().height)
+                .find(|y| row_text(&buf, *y).contains(needle))
+                .unwrap_or_else(|| panic!("no row shows {needle:?}\n{}", screen_text(&buf)))
+        };
+        let marker_y = row_with(marker);
+        let marker_x = find_column(&buf, marker_y, marker).unwrap();
+        let content_x = find_column(&buf, row_with("fn a() {}"), "fn a() {}").unwrap();
+        assert_eq!(marker_x + 1, content_x, "{}", screen_text(&buf));
+
+        let muted = Theme::resolve(&ThemeConfig::default(), false)
+            .muted
+            .style()
+            .fg
+            .expect("the muted token has a color");
+        for x in marker_x..marker_x + u16::try_from(marker.len()).unwrap() {
+            assert_eq!(buf[(x, marker_y)].fg, muted, "marker cell {x}");
+        }
     }
 }
 

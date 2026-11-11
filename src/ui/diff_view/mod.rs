@@ -14,10 +14,11 @@ use syntect::easy::HighlightLines;
 use smallvec::smallvec;
 
 use super::common::{pending_comment_tag, render_rally_status_bar};
+use super::theme::Theme;
 use crate::app::{
     hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext, SpanVec,
 };
-use crate::diff::{LineType, PatchClassifier};
+use crate::diff::{is_no_newline_marker, LineType, PatchClassifier};
 use crate::syntax::{
     apply_line_highlights, collect_line_highlights, collect_line_highlights_with_injections,
     get_theme, highlight_code_line, syntax_for_file, Highlighter, ParserPool,
@@ -56,6 +57,9 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
         .lines()
         .map(|line| {
             let (line_type, content) = classifier.classify(line);
+            if is_no_newline_marker(line) {
+                return no_newline_marker_row(line, &mut interner);
+            }
 
             let fg_style = match line_type.fg_color() {
                 Some(c) => Style::default().fg(c),
@@ -79,7 +83,11 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
                 }]
             };
 
-            CachedDiffLine { spans, line_type }
+            CachedDiffLine {
+                spans,
+                line_type,
+                no_newline_marker: false,
+            }
         })
         .collect();
 
@@ -90,6 +98,22 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
         interner,
         highlighted: false,
         markdown_rich: false,
+    }
+}
+
+/// The cached row for a `\ No newline at end of file` line.
+///
+/// The text is not file content, so the row has no diff prefix, no syntax highlight, and no
+/// highlighter state. Its one span is unstyled, and `render_cached_lines` draws it muted. The row
+/// keeps the `Context` type that the classifier gives it.
+fn no_newline_marker_row(line: &str, interner: &mut Rodeo) -> CachedDiffLine {
+    CachedDiffLine {
+        spans: smallvec![InternedSpan {
+            content: interner.get_or_intern(line),
+            style: Style::default(),
+        }],
+        line_type: LineType::Context,
+        no_newline_marker: true,
     }
 }
 
@@ -269,6 +293,7 @@ pub fn build_commit_diff_cache(
             combined_lines.push(CachedDiffLine {
                 spans,
                 line_type: line.line_type,
+                no_newline_marker: line.no_newline_marker,
             });
         }
     }
@@ -795,6 +820,10 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
             // Only include added and context lines (post-change version)
             // This ensures the source is syntactically valid for tree-sitter
             LineType::Added | LineType::Context => {
+                // The marker is not file content, so its text is not parsed as code.
+                if is_no_newline_marker(line) {
+                    continue;
+                }
                 line_mapping.push((diff_line_idx, line_type));
                 source.push_str(content);
                 source.push('\n');
@@ -969,6 +998,9 @@ fn build_lines_with_cst(
         .enumerate()
         .map(|(i, line)| {
             let (line_type, content) = classifier.classify(line);
+            if is_no_newline_marker(line) {
+                return no_newline_marker_row(line, interner);
+            }
 
             let spans = match line_type {
                 LineType::Header => {
@@ -1028,7 +1060,11 @@ fn build_lines_with_cst(
                 }
             };
 
-            CachedDiffLine { spans, line_type }
+            CachedDiffLine {
+                spans,
+                line_type,
+                no_newline_marker: false,
+            }
         })
         .collect()
 }
@@ -1060,10 +1096,17 @@ fn build_lines_with_syntect(
         .lines()
         .map(|line| {
             let (line_type, content) = classifier.classify(line);
+            if is_no_newline_marker(line) {
+                return no_newline_marker_row(line, interner);
+            }
 
             let spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
 
-            CachedDiffLine { spans, line_type }
+            CachedDiffLine {
+                spans,
+                line_type,
+                no_newline_marker: false,
+            }
         })
         .collect()
 }
@@ -1079,6 +1122,11 @@ fn build_lines_with_syntect(
 /// * `selected_line` – absolute index of the currently selected line.
 /// * `comment_lines` – set of diff line indices that have comments (for `●` marker).
 /// * `multiline_range` – 複数行選択範囲 (start, end) の inclusive range。None なら通常選択。
+/// * `theme` – the `\ No newline` row is drawn in its muted token.
+///
+/// The argument list is the public render entry point, used by the benches and by each diff
+/// body. Bundling it into a struct would change every one of those call sites.
+#[allow(clippy::too_many_arguments)]
 pub fn render_cached_lines<'a>(
     cache: &'a DiffCache,
     range: std::ops::Range<usize>,
@@ -1087,6 +1135,7 @@ pub fn render_cached_lines<'a>(
     bg_color: bool,
     multiline_range: Option<(usize, usize)>,
     content_width: u16,
+    theme: Theme,
 ) -> Vec<Line<'a>> {
     use unicode_width::UnicodeWidthStr;
 
@@ -1097,6 +1146,7 @@ pub fn render_cached_lines<'a>(
     // Handle case where start > end after clamping (produces empty slice)
     let safe_range = safe_start..safe_start.max(safe_end);
     let cw = content_width as usize;
+    let muted = theme.muted.style();
 
     cache.lines[safe_range.clone()]
         .iter()
@@ -1113,10 +1163,12 @@ pub fn render_cached_lines<'a>(
             } else {
                 None
             };
-            let base = cached
-                .spans
-                .iter()
-                .map(|s| Span::styled(cache.resolve(s.content), s.style));
+            let base = cached.spans.iter().map(|s| {
+                Span::styled(
+                    cache.resolve(s.content),
+                    drawn_style(cached, s.style, muted),
+                )
+            });
             let mut all_spans: Vec<Span<'_>> = marker.into_iter().chain(base).collect();
 
             // Pad trailing spaces so a line-level background color extends to the
@@ -1160,6 +1212,17 @@ pub fn render_cached_lines<'a>(
             }
         })
         .collect()
+}
+
+/// The style a cached span is drawn with. The `\ No newline` row takes the theme's muted token
+/// instead of its cached style, because the cache is built without a theme.
+#[inline]
+fn drawn_style(cached: &CachedDiffLine, cached_style: Style, muted: Style) -> Style {
+    if cached.no_newline_marker {
+        muted
+    } else {
+        cached_style
+    }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -1288,6 +1351,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &mut App, area: ratatu
             app.config.diff.bg_color,
             multiline_range,
             area.width.saturating_sub(2),
+            app.theme,
         );
         (rendered, 0u16, start)
     } else {
@@ -1304,6 +1368,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &mut App, area: ratatu
                     theme_name,
                     &app.cmt.file_comment_lines,
                     app.config.diff.tab_width,
+                    app.theme,
                 ),
                 None => {
                     if app.is_lazy_diff_loading() {
@@ -1421,6 +1486,7 @@ fn parse_patch_to_lines(
     theme_name: &str,
     comment_lines: &HashSet<usize>,
     tab_width: u8,
+    theme: Theme,
 ) -> Vec<Line<'static>> {
     // Build DiffCache and then convert to Lines
     // This ensures consistent behavior with cached path
@@ -1434,6 +1500,7 @@ fn parse_patch_to_lines(
         false,
         tab_width,
     );
+    let muted = theme.muted.style();
 
     cache
         .lines
@@ -1457,7 +1524,7 @@ fn parse_patch_to_lines(
             };
             let base = cached.spans.iter().map(|s| {
                 let text = cache.resolve(s.content).to_string();
-                let mut style = s.style;
+                let mut style = drawn_style(cached, s.style, muted);
                 if is_selected {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
@@ -2427,6 +2494,7 @@ mod tests {
             false,
             None,
             0,
+            Theme::test_default(),
         );
         let hl_rendered = render_cached_lines(
             &highlighted,
@@ -2436,6 +2504,7 @@ mod tests {
             false,
             None,
             0,
+            Theme::test_default(),
         );
 
         for &line_idx in &[4usize, 6] {
@@ -2573,8 +2642,15 @@ mod tests {
 +added line"#;
 
         let comment_lines = HashSet::new();
-        let lines =
-            parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 4);
+        let lines = parse_patch_to_lines(
+            patch,
+            0,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            4,
+            Theme::test_default(),
+        );
 
         // 4行: header, context, removed, added
         assert_eq!(lines.len(), 4);
@@ -2590,8 +2666,15 @@ mod tests {
         let mut comment_lines = HashSet::new();
         comment_lines.insert(2); // added 行にコメント
 
-        let lines =
-            parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines, 4);
+        let lines = parse_patch_to_lines(
+            patch,
+            2,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            4,
+            Theme::test_default(),
+        );
 
         assert_eq!(lines.len(), 4);
 
@@ -2622,8 +2705,15 @@ mod tests {
         let comment_lines = HashSet::new();
 
         // tab_width = 2: tab should expand to 2 spaces
-        let lines =
-            parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 2);
+        let lines = parse_patch_to_lines(
+            patch,
+            0,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            2,
+            Theme::test_default(),
+        );
         let line_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             line_text.contains("  indented"),
@@ -2632,8 +2722,15 @@ mod tests {
         );
 
         // tab_width = 8: tab should expand to 8 spaces
-        let lines =
-            parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 8);
+        let lines = parse_patch_to_lines(
+            patch,
+            0,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            8,
+            Theme::test_default(),
+        );
         let line_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             line_text.contains("        indented"),
@@ -2656,7 +2753,16 @@ mod tests {
         assert_eq!(cache.lines.len(), 4);
 
         // range が完全に範囲外 → 空の Vec
-        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new(), false, None, 0);
+        let result = render_cached_lines(
+            &cache,
+            100..200,
+            0,
+            &HashSet::new(),
+            false,
+            None,
+            0,
+            Theme::test_default(),
+        );
         assert!(
             result.is_empty(),
             "Out-of-bounds range should return empty Vec"
@@ -2668,8 +2774,321 @@ mod tests {
         let cache = build_plain_diff_cache("", 4);
         assert!(cache.lines.is_empty());
 
-        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new(), false, None, 0);
+        let result = render_cached_lines(
+            &cache,
+            0..10,
+            0,
+            &HashSet::new(),
+            false,
+            None,
+            0,
+            Theme::test_default(),
+        );
         assert!(result.is_empty(), "Empty cache should return empty Vec");
+    }
+}
+
+#[cfg(test)]
+mod no_newline_marker_tests {
+    use super::*;
+    use crate::app::{AppState, DataState};
+    use crate::config::ThemeConfig;
+    use crate::github::{Branch, ChangedFile, PullRequest, User};
+    use crate::ui::test_buffer::{find_column, row_text, screen_text};
+    use crate::ui::theme::Theme;
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::Terminal;
+
+    const MARKER: &str = "\\ No newline at end of file";
+
+    /// The old side ends without a newline, so the marker sits between `-fn b() {}` and the `+` rows.
+    const PATCH: &str = concat!(
+        "@@ -1,2 +1,3 @@\n",
+        " fn a() {}\n",
+        "-fn b() {}\n",
+        "\\ No newline at end of file\n",
+        "+fn b() { 1 }\n",
+        "+fn c() {}\n",
+    );
+
+    /// The diff view of `patch` for `filename`, drawn from `cache`. `None` takes the uncached fallback.
+    fn app_showing(patch: &str, filename: &str, cache: Option<DiffCache>) -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::DiffView;
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 1,
+                node_id: None,
+                title: "Title".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc".to_string(),
+                },
+                base: Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def".to_string(),
+                },
+                user: User {
+                    login: "alice".to_string(),
+                },
+                updated_at: "2025-01-01T00:00:00Z".to_string(),
+            }),
+            files: vec![ChangedFile {
+                filename: filename.to_string(),
+                status: "modified".to_string(),
+                additions: 2,
+                deletions: 1,
+                patch: Some(patch.to_string()),
+                viewed: false,
+            }],
+        };
+        app.diff_store.current = cache;
+        app
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The first row of `buf` whose text contains `needle`.
+    fn row_of(buf: &Buffer, needle: &str) -> u16 {
+        (0..buf.area().height)
+            .find(|y| row_text(buf, *y).contains(needle))
+            .unwrap_or_else(|| panic!("no row shows {needle:?}\n{}", screen_text(buf)))
+    }
+
+    fn marker_width() -> u16 {
+        u16::try_from(MARKER.chars().count()).unwrap()
+    }
+
+    fn muted_fg() -> Color {
+        Theme::resolve(&ThemeConfig::default(), false)
+            .muted
+            .style()
+            .fg
+            .expect("the muted token has a color")
+    }
+
+    /// The marker text starting at column `x` of row `y` is drawn in the theme's muted color.
+    fn assert_marker_muted(buf: &Buffer, y: u16, x: u16) {
+        for cx in x..x + marker_width() {
+            assert_eq!(
+                buf[(cx, y)].fg,
+                muted_fg(),
+                "marker cell {cx} is not muted\n{}",
+                screen_text(buf)
+            );
+        }
+    }
+
+    #[test]
+    fn unified_view_draws_the_marker_muted_in_the_prefix_column() {
+        let mut app = app_showing(PATCH, "src/lib.rs", Some(build_plain_diff_cache(PATCH, 4)));
+        let buf = draw(&mut app);
+
+        let marker_y = row_of(&buf, MARKER);
+        let marker_x = find_column(&buf, marker_y, MARKER).unwrap();
+        let context_y = row_of(&buf, "fn a() {}");
+        let content_x = find_column(&buf, context_y, "fn a() {}").unwrap();
+        // The context row is ` fn a() {}`, so its content starts one column after the prefix.
+        // The marker has no prefix, so it starts in the prefix column.
+        assert_eq!(
+            marker_x + 1,
+            content_x,
+            "the marker kept the context prefix space\n{}",
+            screen_text(&buf)
+        );
+        assert_marker_muted(&buf, marker_y, marker_x);
+        assert_eq!(buf[(content_x, context_y)].fg, Color::Reset);
+    }
+
+    #[test]
+    fn no_color_draws_the_marker_dim_without_a_color() {
+        let mut app = app_showing(PATCH, "src/lib.rs", Some(build_plain_diff_cache(PATCH, 4)));
+        app.theme = Theme::resolve(&ThemeConfig::default(), true);
+        let buf = draw(&mut app);
+
+        let marker_y = row_of(&buf, MARKER);
+        let marker_x = find_column(&buf, marker_y, MARKER).unwrap();
+        for cx in marker_x..marker_x + marker_width() {
+            let cell = &buf[(cx, marker_y)];
+            assert_eq!(cell.fg, Color::Reset, "marker cell {cx} has a color");
+            assert!(
+                cell.modifier.contains(Modifier::DIM),
+                "marker cell {cx} is not dim"
+            );
+        }
+    }
+
+    #[test]
+    fn highlighted_rust_file_draws_the_marker_muted_and_unhighlighted() {
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            PATCH,
+            "src/lib.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
+        let mut app = app_showing(PATCH, "src/lib.rs", Some(cache));
+        let buf = draw(&mut app);
+
+        let marker_y = row_of(&buf, MARKER);
+        let marker_x = find_column(&buf, marker_y, MARKER).unwrap();
+        assert_marker_muted(&buf, marker_y, marker_x);
+        // The code row keeps its syntax color, so the check above is not passing for lack of highlighting.
+        let context_y = row_of(&buf, "fn a() {}");
+        let keyword_x = find_column(&buf, context_y, "fn").unwrap();
+        assert_ne!(
+            buf[(keyword_x, context_y)].fg,
+            Color::Reset,
+            "the code row lost its syntax color\n{}",
+            screen_text(&buf)
+        );
+    }
+
+    #[test]
+    fn uncached_fallback_draws_the_marker_muted_in_the_prefix_column() {
+        let mut app = app_showing(PATCH, "src/lib.rs", None);
+        let buf = draw(&mut app);
+
+        let marker_y = row_of(&buf, MARKER);
+        let marker_x = find_column(&buf, marker_y, MARKER).unwrap();
+        let context_y = row_of(&buf, "fn a() {}");
+        let content_x = find_column(&buf, context_y, "fn a() {}").unwrap();
+        assert_eq!(marker_x + 1, content_x, "{}", screen_text(&buf));
+        assert_marker_muted(&buf, marker_y, marker_x);
+    }
+
+    /// Git writes the marker at column 0. A file whose own text is the marker has a context row
+    /// ` \ No newline ...`, and that row must keep the context look.
+    #[test]
+    fn a_file_line_that_reads_like_the_marker_stays_a_context_row() {
+        let patch = concat!(
+            "@@ -1,2 +1,2 @@\n",
+            " \\ No newline at end of file\n",
+            "-old\n",
+            "\\ No newline at end of file\n",
+            "+new\n",
+        );
+        let mut app = app_showing(patch, "notes.patch", Some(build_plain_diff_cache(patch, 4)));
+        let buf = draw(&mut app);
+
+        let rows: Vec<u16> = (0..buf.area().height)
+            .filter(|y| row_text(&buf, *y).contains(MARKER))
+            .collect();
+        let &[file_y, marker_y] = rows.as_slice() else {
+            panic!(
+                "expected two rows with the marker text\n{}",
+                screen_text(&buf)
+            );
+        };
+        let marker_x = find_column(&buf, marker_y, MARKER).unwrap();
+        let file_x = find_column(&buf, file_y, MARKER).unwrap();
+        assert_eq!(
+            file_x,
+            marker_x + 1,
+            "the file line lost its prefix space\n{}",
+            screen_text(&buf)
+        );
+        assert_eq!(buf[(marker_x, file_y)].symbol(), " ");
+        for cx in file_x..file_x + marker_width() {
+            let cell = &buf[(cx, file_y)];
+            assert_eq!(cell.fg, Color::Reset, "file line cell {cx} is colored");
+            assert!(
+                !cell.modifier.contains(Modifier::DIM),
+                "file line cell {cx} is dim"
+            );
+        }
+        assert_marker_muted(&buf, marker_y, marker_x);
+    }
+
+    /// One row per line: each span as `[fg]text`, with `-` for no foreground color.
+    fn styled_rows(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| {
+                        let fg = span
+                            .style
+                            .fg
+                            .map_or_else(|| "-".to_string(), |color| format!("{color:?}"));
+                        format!("[{fg}]{}", span.content)
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn marker_row_snapshot() {
+        let cache = build_plain_diff_cache(PATCH, 4);
+        let rows = render_cached_lines(
+            &cache,
+            0..cache.lines.len(),
+            0,
+            &HashSet::new(),
+            false,
+            None,
+            0,
+            Theme::resolve(&ThemeConfig::default(), false),
+        );
+        assert_snapshot!(styled_rows(&rows), @r#"
+        [Cyan]@@ -1,2 +1,3 @@
+        [-] [-]fn a() {}
+        [Red]-[Red]fn b() {}
+        [DarkGray]\ No newline at end of file
+        [Green]+[Green]fn b() { 1 }
+        [Green]+[Green]fn c() {}
+        "#);
+    }
+
+    #[test]
+    fn commit_diff_cache_keeps_the_marker_row_flag() {
+        let patch = concat!(
+            "diff --git a/a.rs b/a.rs\n",
+            "--- a/a.rs\n",
+            "+++ b/a.rs\n",
+            "@@ -1 +1 @@\n",
+            "-old\n",
+            "+new\n",
+            "diff --git a/b.rs b/b.rs\n",
+            "--- a/b.rs\n",
+            "+++ b/b.rs\n",
+            "@@ -1,2 +1,2 @@\n",
+            " a\n",
+            "-b\n",
+            "\\ No newline at end of file\n",
+            "+c\n",
+        );
+        let mut parser_pool = ParserPool::new();
+        let cache = build_commit_diff_cache(patch, "base16-ocean.dark", &mut parser_pool, 4);
+
+        let marked: Vec<&CachedDiffLine> =
+            cache.lines.iter().filter(|l| l.no_newline_marker).collect();
+        let [marker] = marked.as_slice() else {
+            panic!("expected one marker row, got {}", marked.len());
+        };
+        assert_eq!(cache.resolve(marker.spans[0].content), MARKER);
+    }
+
+    #[test]
+    fn the_marker_is_not_part_of_the_highlight_source() {
+        let (source, mapping) = build_combined_source_for_highlight(PATCH);
+        assert!(!source.contains("No newline"), "source: {source:?}");
+        // `fn a() {}`, `fn b() { 1 }`, and `fn c() {}`: the marker has no source line.
+        assert_eq!(mapping.len(), 3);
     }
 }
 
