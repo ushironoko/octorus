@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::chrome::{pane_block, PaneTitle};
-use super::common::{build_pending_review_span, render_rally_status_bar};
+use super::common::{build_pending_review_span, pending_comment_tag, render_rally_status_bar};
 use super::diff_view;
 use super::file_list::{build_file_list_items, build_file_list_items_ref, build_tree_row_item};
 use super::theme::{Attention, SplitAttention, Theme};
@@ -422,6 +422,7 @@ fn render_diff_pane_with_comments(
                     format!(" (line {})", comment.line.unwrap_or(0)),
                     Style::default().fg(Color::DarkGray),
                 ),
+                pending_comment_tag(comment, theme),
             ]));
 
             for line in comment.body.lines() {
@@ -781,5 +782,41 @@ mod pending_header_tests {
 
         let border = row_text(terminal.backend().buffer(), 0);
         assert!(border.contains("Pending review: 3 drafts"), "{border}");
+    }
+}
+
+#[cfg(test)]
+mod pending_comment_panel_tests {
+    use super::*;
+    use crate::app::AppState;
+    use crate::github::comment::CommentPublication;
+    use crate::ui::test_buffer::{
+        app_with_comment_on_added_line, comment_on_added_line, screen_text,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// The split view's diff pane with the comment panel open on the `+added` line.
+    fn split_screen(publication: CommentPublication) -> String {
+        let mut app = app_with_comment_on_added_line(comment_on_added_line(publication));
+        app.state = AppState::SplitViewDiff;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn split_panel_tags_a_draft_header() {
+        let text = split_screen(CommentPublication::PendingDraft);
+
+        assert!(text.contains("@alice (line 2) · pending review"), "{text}");
+    }
+
+    #[test]
+    fn split_panel_leaves_a_published_header_untagged() {
+        let text = split_screen(CommentPublication::Published);
+
+        assert!(text.contains("@alice (line 2)"), "{text}");
+        assert!(!text.contains("pending review"), "{text}");
     }
 }

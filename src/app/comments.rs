@@ -1418,6 +1418,22 @@ impl App {
         char_count.div_ceil(panel_width)
     }
 
+    /// Rows one comment's header takes in the panel. A published header is one row.
+    /// A draft's header also carries the pending-review tag, which can wrap it onto
+    /// a second row in a narrow panel (issue #169).
+    fn comment_header_rows(comment: &ReviewComment, panel_width: usize) -> usize {
+        if !comment.is_pending_draft() {
+            return 1;
+        }
+        let header = format!(
+            "@{} (line {}){}",
+            comment.user.login,
+            comment.line.unwrap_or(0),
+            ui::common::PENDING_COMMENT_TAG
+        );
+        Self::wrapped_line_count(&header, panel_width)
+    }
+
     /// コメント本文の折り返しを考慮した表示行数を計算
     pub(crate) fn comment_body_wrapped_lines(body: &str, panel_width: usize) -> usize {
         body.lines()
@@ -1443,7 +1459,7 @@ impl App {
             if i > 0 {
                 count += 1; // separator
             }
-            count += 1; // header
+            count += Self::comment_header_rows(comment, panel_inner_width);
             count += Self::comment_body_wrapped_lines(&comment.body, panel_inner_width);
             count += 1; // spacing
         }
@@ -1467,7 +1483,7 @@ impl App {
             if i > 0 {
                 offset += 1; // separator
             }
-            offset += 1; // header
+            offset += Self::comment_header_rows(comment, panel_inner_width);
             offset += Self::comment_body_wrapped_lines(&comment.body, panel_inner_width);
             offset += 1; // spacing
         }

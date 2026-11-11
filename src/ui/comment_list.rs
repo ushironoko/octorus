@@ -1,5 +1,5 @@
 use super::chrome::{pane_block, PaneTitle};
-use super::common::{render_rally_status_bar, wrap_text};
+use super::common::{pending_comment_tag, render_rally_status_bar, wrap_text};
 use super::theme::{Attention, Theme, SELECTION_MARKER_WIDTH};
 use crate::app::{App, CommentTab};
 use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind, TabGroup};
@@ -515,6 +515,7 @@ fn render_review_thread_list_data_with_hits(
                 } else {
                     Span::raw("")
                 },
+                pending_comment_tag(comment, theme),
                 Span::raw(" on "),
                 Span::styled(
                     format!("{}{}", comment.path, line_info),
@@ -695,6 +696,7 @@ fn render_review_thread_data_with_hits(
                         Style::default().fg(Color::Cyan),
                     ),
                     resolved_badge,
+                    pending_comment_tag(comment, theme),
                     Span::raw(" on "),
                     Span::styled(
                         format!("{}{}", comment.path, line_info),
@@ -719,6 +721,7 @@ fn render_review_thread_data_with_hits(
                         Style::default().fg(Color::Cyan),
                     ),
                     resolved_badge,
+                    pending_comment_tag(comment, theme),
                     Span::raw("  "),
                     Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
                 ])
@@ -937,7 +940,9 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::github::comment::{DiscussionComment, ReviewComment};
+    use crate::github::comment::{
+        CommentPublication, DiscussionComment, ReviewComment, ReviewCommentLocation,
+    };
     use crate::github::User;
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
@@ -1635,5 +1640,119 @@ mod tests {
             !rendered.contains("@alice [resolved] on src/main.rs:30"),
             "thread whose only resolved comment is a reply must not display [resolved] on the root:\n{rendered}"
         );
+    }
+
+    /// A review comment on `src/main.rs` line 10, published or a draft.
+    fn thread_comment(
+        id: u64,
+        login: &str,
+        created_at: &str,
+        in_reply_to_id: Option<u64>,
+        publication: CommentPublication,
+    ) -> ReviewComment {
+        ReviewComment {
+            id,
+            path: "src/main.rs".to_string(),
+            line: Some(10),
+            start_line: None,
+            body: format!("comment {id}"),
+            user: User {
+                login: login.to_string(),
+            },
+            created_at: created_at.to_string(),
+            in_reply_to_id,
+            location: ReviewCommentLocation {
+                publication,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The Comments tab, with `comments` grouped into review threads.
+    fn review_threads_app(comments: Vec<ReviewComment>) -> App {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(comments);
+        app.build_review_threads();
+        app
+    }
+
+    #[test]
+    fn a_draft_thread_header_carries_the_pending_review_tag() {
+        let mut app = review_threads_app(vec![thread_comment(
+            100,
+            "alice",
+            "2026-11-10T00:00:00Z",
+            None,
+            CommentPublication::PendingDraft,
+        )]);
+
+        let text = render_full(&mut app);
+
+        assert!(
+            text.contains("@alice · pending review on src/main.rs:10"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_published_thread_header_has_no_tag() {
+        let mut app = review_threads_app(vec![thread_comment(
+            100,
+            "alice",
+            "2025-01-01T00:00:00Z",
+            None,
+            CommentPublication::Published,
+        )]);
+
+        let text = render_full(&mut app);
+
+        assert!(text.contains("@alice on src/main.rs:10"), "{text}");
+        assert!(!text.contains("pending review"), "{text}");
+    }
+
+    /// The expanded thread gives each comment its own header. A draft reply is
+    /// tagged too: GitHub can hold a reply in the pending review.
+    #[test]
+    fn expanded_thread_tags_each_draft_header_and_no_published_one() {
+        let mut app = review_threads_app(vec![
+            thread_comment(
+                100,
+                "alice",
+                "2025-01-01T00:00:00Z",
+                None,
+                CommentPublication::PendingDraft,
+            ),
+            thread_comment(
+                101,
+                "bob",
+                "2025-01-02T00:00:00Z",
+                Some(100),
+                CommentPublication::Published,
+            ),
+            thread_comment(
+                102,
+                "carol",
+                "2025-01-03T00:00:00Z",
+                Some(100),
+                CommentPublication::PendingDraft,
+            ),
+        ]);
+        app.cmt.expanded_thread = Some(0);
+        app.cmt.expanded_selected = 0;
+
+        let text = render_full(&mut app);
+
+        assert!(
+            text.contains("@alice · pending review on src/main.rs:10"),
+            "{text}"
+        );
+        assert!(text.contains("@bob  2025-01-02"), "{text}");
+        assert!(
+            text.contains("@carol · pending review  2025-01-03"),
+            "{text}"
+        );
+        assert_eq!(text.matches("pending review").count(), 2, "{text}");
     }
 }

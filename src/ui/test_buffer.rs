@@ -1,6 +1,10 @@
 use ratatui::buffer::Buffer;
 use unicode_width::UnicodeWidthStr;
 
+use crate::app::{App, DataState};
+use crate::github::comment::{CommentPublication, ReviewComment, ReviewCommentLocation};
+use crate::github::{Branch, ChangedFile, PullRequest, User};
+
 pub(crate) fn find_column(buf: &Buffer, y: u16, needle: &str) -> Option<u16> {
     let width = buf.area().width;
     let needle: Vec<char> = needle.chars().collect();
@@ -52,4 +56,71 @@ pub(crate) fn screen_text(buf: &Buffer) -> String {
         .map(|y| row_text(buf, y))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The patch `app_with_comment_on_added_line` loads. Its `+added` line is new
+/// line 2, which is diff row 2.
+const ADDED_LINE_PATCH: &str = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+
+/// A review comment on the `+added` line of `app_with_comment_on_added_line`,
+/// published or a draft in the viewer's pending review.
+pub(crate) fn comment_on_added_line(publication: CommentPublication) -> ReviewComment {
+    ReviewComment {
+        id: 7,
+        path: "src/main.rs".to_string(),
+        line: Some(2),
+        start_line: None,
+        body: "Consider a guard here".to_string(),
+        user: User {
+            login: "alice".to_string(),
+        },
+        created_at: "2026-11-10T00:00:00Z".to_string(),
+        in_reply_to_id: None,
+        location: ReviewCommentLocation {
+            publication,
+            ..Default::default()
+        },
+    }
+}
+
+/// An app on the diff of `src/main.rs`, with the comment panel open on the
+/// `+added` line. `comment` sits on that line as the diff's comment positions
+/// place it. The caller sets the app state.
+pub(crate) fn app_with_comment_on_added_line(comment: ReviewComment) -> App {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Title".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc".to_string(),
+            },
+            base: Branch {
+                ref_name: "main".to_string(),
+                sha: "def".to_string(),
+            },
+            user: User {
+                login: "owner".to_string(),
+            },
+            updated_at: "2026-11-10T00:00:00Z".to_string(),
+        }),
+        files: vec![ChangedFile {
+            filename: "src/main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some(ADDED_LINE_PATCH.to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+    app.cmt.review_comments = Some(vec![comment]);
+    app.update_file_comment_positions();
+    app.diff_scroll.selected_line = 2;
+    app.cmt.comment_panel_open = true;
+    app
 }

@@ -13,7 +13,7 @@ use syntect::easy::HighlightLines;
 
 use smallvec::smallvec;
 
-use super::common::render_rally_status_bar;
+use super::common::{pending_comment_tag, render_rally_status_bar};
 use crate::app::{
     hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext, SpanVec,
 };
@@ -1580,6 +1580,7 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
                     format!(" (line {})", comment.line.unwrap_or(0)),
                     Style::default().fg(Color::DarkGray),
                 ),
+                pending_comment_tag(comment, app.theme),
             ]));
 
             for line in comment.body.lines() {
@@ -3516,5 +3517,75 @@ mod pending_review_composer_tests {
             "{screen}"
         );
         assert!(!screen.contains("pending review"), "{screen}");
+    }
+}
+
+#[cfg(test)]
+mod pending_comment_panel_tests {
+    use super::*;
+    use crate::app::AppState;
+    use crate::github::comment::CommentPublication;
+    use crate::ui::test_buffer::{
+        app_with_comment_on_added_line, comment_on_added_line, find_column, row_text, screen_text,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    /// Draws the whole diff screen with the comment panel open.
+    fn draw(app: &mut App) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The row of the comment header, the one that names line 2.
+    fn header_row(buf: &Buffer) -> u16 {
+        (0..buf.area().height)
+            .find(|&y| row_text(buf, y).contains("(line 2)"))
+            .expect("the comment header is drawn")
+    }
+
+    #[test]
+    fn a_draft_header_carries_the_pending_review_tag_in_the_warning_color() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::PendingDraft));
+        app.state = AppState::DiffView;
+
+        let buf = draw(&mut app);
+
+        let row = header_row(&buf);
+        assert!(
+            row_text(&buf, row).contains("@alice (line 2) · pending review"),
+            "{}",
+            screen_text(&buf)
+        );
+        let tag = "pending review";
+        let x = find_column(&buf, row, tag).expect("the tag is drawn");
+        for dx in 0..tag.len() as u16 {
+            assert_eq!(buf[(x + dx, row)].fg, Color::Yellow, "tag cell {dx}");
+        }
+    }
+
+    #[test]
+    fn a_published_header_has_no_tag() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::DiffView;
+
+        let buf = draw(&mut app);
+
+        let row = header_row(&buf);
+        assert!(
+            row_text(&buf, row).contains("@alice (line 2)"),
+            "{}",
+            screen_text(&buf)
+        );
+        assert!(
+            !screen_text(&buf).contains("pending review"),
+            "{}",
+            screen_text(&buf)
+        );
     }
 }

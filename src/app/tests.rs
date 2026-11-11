@@ -5848,6 +5848,76 @@ fn test_max_comment_panel_scroll() {
     assert_eq!(max, 0);
 }
 
+/// A diff-view app whose `+added` line (diff row 2) carries one one-line comment
+/// per entry of `publications`, in order.
+fn panel_app_with_comments(publications: &[crate::github::comment::CommentPublication]) -> App {
+    let mut app = App::new_for_test();
+    app.state = AppState::DiffView;
+    app.cmt.review_comments = Some(
+        publications
+            .iter()
+            .enumerate()
+            .map(|(i, &publication)| crate::github::comment::ReviewComment {
+                id: i as u64 + 1,
+                path: "src/main.rs".to_string(),
+                line: Some(2),
+                start_line: None,
+                body: "one line".to_string(),
+                user: crate::github::User {
+                    login: "alice".to_string(),
+                },
+                created_at: "2026-11-10T00:00:00Z".to_string(),
+                in_reply_to_id: None,
+                location: crate::github::comment::ReviewCommentLocation {
+                    publication,
+                    ..Default::default()
+                },
+            })
+            .collect(),
+    );
+    app.cmt.file_comment_positions = (0..publications.len())
+        .map(|comment_index| CommentPosition {
+            diff_line_index: 2,
+            comment_index,
+        })
+        .collect();
+    app.diff_scroll.selected_line = 2;
+    app
+}
+
+/// A draft's header carries the pending-review tag, and in a narrow panel the tag
+/// wraps the header onto a second row. The scroll bound must count that row. A
+/// published header keeps its single row.
+#[test]
+fn a_draft_header_that_wraps_adds_a_row_to_the_panel_scroll_bound() {
+    use crate::github::comment::CommentPublication::{PendingDraft, Published};
+
+    // "@alice (line 2) · pending review" is 32 columns, so it takes two rows in a
+    // 20-column panel. "@alice (line 2)" takes one.
+    let draft_then_published = panel_app_with_comments(&[PendingDraft, Published]);
+    let published_twice = panel_app_with_comments(&[Published, Published]);
+
+    // Draft: header 2 + body 1 + spacing 1. Then separator 1, and the published
+    // comment: header 1 + body 1 + spacing 1.
+    assert_eq!(draft_then_published.comment_panel_content_lines(20), 8);
+    assert_eq!(published_twice.comment_panel_content_lines(20), 7);
+    // The published comment starts after the draft's two header rows.
+    assert_eq!(draft_then_published.comment_panel_offset_for(1, 20), 5);
+}
+
+#[test]
+fn a_draft_header_that_fits_adds_no_row_to_the_panel_scroll_bound() {
+    use crate::github::comment::CommentPublication::{PendingDraft, Published};
+
+    let draft = panel_app_with_comments(&[PendingDraft]);
+    let published = panel_app_with_comments(&[Published]);
+
+    assert_eq!(
+        draft.comment_panel_content_lines(80),
+        published.comment_panel_content_lines(80)
+    );
+}
+
 #[test]
 fn test_enter_reply_input_sets_mode() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";

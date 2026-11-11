@@ -11,7 +11,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::ai::RallyState;
 use crate::app::{App, DataState, PendingDrafts};
+use crate::github::comment::ReviewComment;
 use crate::github::CiStatus;
+
+use super::theme::Theme;
 
 /// Build PR info string for header display (shared between file_list and ai_rally)
 pub fn build_pr_info(app: &App) -> String {
@@ -65,6 +68,21 @@ pub fn build_pending_review_span(app: &App) -> Option<Span<'static>> {
             Style::default().fg(Color::Yellow),
         )),
         PendingDrafts::Known(_) | PendingDrafts::Unknown => None,
+    }
+}
+
+/// The tag after a draft comment's header in the comment panel and the thread
+/// views. It uses the words of the PR header note (issue #169).
+pub(crate) const PENDING_COMMENT_TAG: &str = " · pending review";
+
+/// The pending-review tag for a review comment's header line (issue #169). A draft
+/// gets the tag in the theme's warning color, as the header note has. A published
+/// comment gets an empty span, so its header renders as before.
+pub(crate) fn pending_comment_tag(comment: &ReviewComment, theme: Theme) -> Span<'static> {
+    if comment.is_pending_draft() {
+        Span::styled(PENDING_COMMENT_TAG, theme.warning.style())
+    } else {
+        Span::raw("")
     }
 }
 
@@ -361,5 +379,44 @@ mod pending_note_tests {
         app.cmt.pending_drafts = PendingDrafts::Known(3);
 
         assert!(build_pending_review_span(&app).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pending_comment_tag_tests {
+    use super::*;
+    use crate::config::ThemeConfig;
+    use crate::github::comment::CommentPublication;
+    use crate::ui::test_buffer::comment_on_added_line;
+
+    #[test]
+    fn a_draft_gets_the_tag_in_the_warning_color() {
+        let draft = comment_on_added_line(CommentPublication::PendingDraft);
+
+        let tag = pending_comment_tag(&draft, Theme::test_default());
+
+        assert_eq!(tag.content, " · pending review");
+        assert_eq!(tag.style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn a_published_comment_gets_no_tag() {
+        let published = comment_on_added_line(CommentPublication::Published);
+
+        let tag = pending_comment_tag(&published, Theme::test_default());
+
+        assert!(tag.content.is_empty(), "{:?}", tag.content);
+    }
+
+    /// Without color the words alone still tell a draft from a published comment.
+    #[test]
+    fn the_tag_keeps_its_words_when_color_is_off() {
+        let draft = comment_on_added_line(CommentPublication::PendingDraft);
+        let no_color = Theme::resolve(&ThemeConfig::default(), true);
+
+        let tag = pending_comment_tag(&draft, no_color);
+
+        assert_eq!(tag.content, " · pending review");
+        assert_eq!(tag.style.fg, None);
     }
 }
