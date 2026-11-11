@@ -69,6 +69,9 @@ pub struct CachedDiffLine {
     pub spans: SpanVec,
     /// Used to determine background color.
     pub line_type: LineType,
+    /// True for the `\ No newline at end of file` row. Its one span is the marker text alone: no
+    /// diff prefix and no syntax color. The renderer draws it in the theme's muted style.
+    pub no_newline_marker: bool,
 }
 
 /// Diff rendering cache.

@@ -381,6 +381,7 @@ fn render_diff_body(
                     bg_color,
                     None,
                     area.width.saturating_sub(2),
+                    theme,
                 ),
                 Some(visible_start),
             )
@@ -486,6 +487,7 @@ fn render_commit_diff_body(
                 bg_color,
                 None,
                 area.width.saturating_sub(2),
+                theme,
             ),
             Some(visible_start),
         )

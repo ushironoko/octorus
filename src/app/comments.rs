@@ -240,6 +240,15 @@ impl App {
         }
 
         let Some(line_number) = line_info.new_line_number else {
+            // The marker is a Context row with no line number. Say why `c` did nothing.
+            let row = patch.lines().nth(self.diff_scroll.selected_line);
+            if row.is_some_and(crate::diff::is_no_newline_marker) {
+                self.cmt.submission_result = Some((
+                    false,
+                    "Move to a code line to comment: this marker has no line".to_string(),
+                ));
+                self.cmt.submission_result_time = Some(Instant::now());
+            }
             return;
         };
 
