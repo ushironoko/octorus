@@ -142,7 +142,8 @@ fn render_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         row_offset += item_height;
     }
 
-    if total_items > 1 {
+    // Items can take several rows, so the test is the rows they take, not the count.
+    if item_heights.iter().sum::<usize>() > inner_area.height as usize {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("\u{25b2}"))
             .end_symbol(Some("\u{25bc}"));
@@ -317,6 +318,54 @@ fn render_detail(frame: &mut Frame, app: &mut App) {
 mod tests {
     use super::*;
     use crate::github::User;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn issue_comment(id: u32, body: &str) -> IssueComment {
+        IssueComment {
+            id: id.to_string(),
+            body: body.to_string(),
+            author: User {
+                login: "user1".to_string(),
+            },
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author_association: "OWNER".to_string(),
+            url: String::new(),
+        }
+    }
+
+    /// A comment whose body wraps onto two rows, so its item takes four rows.
+    fn four_row_comment(id: u32) -> IssueComment {
+        issue_comment(id, &"word ".repeat(40))
+    }
+
+    /// The issue's comment list on an 80x24 terminal.
+    fn comment_list_screen(comments: Vec<IssueComment>) -> String {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::IssueCommentList;
+        let mut state = crate::app::IssueState::new();
+        state.issue_comments = Some(comments);
+        app.issue_state = Some(state);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        crate::ui::test_buffer::screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn issue_comment_list_whose_rows_fit_draws_no_scrollbar() {
+        let text = comment_list_screen((1..=2).map(four_row_comment).collect());
+
+        assert!(!text.contains('▲'), "{text}");
+    }
+
+    /// Eight four-row items overflow a pane of about sixteen rows. The count
+    /// alone would fit, so the scrollbar must follow the rows.
+    #[test]
+    fn issue_comment_list_whose_rows_overflow_keeps_its_scrollbar() {
+        let text = comment_list_screen((1..=8).map(four_row_comment).collect());
+
+        assert!(text.contains('▲'), "{text}");
+    }
 
     #[test]
     fn test_format_comment_item_with_japanese_text_does_not_panic() {

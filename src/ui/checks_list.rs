@@ -66,12 +66,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 },
                 attention,
             );
+            let viewport_rows = block.inner(chunks[1]).height as usize;
             let list = attention.rows(theme).apply(List::new(items).block(block));
 
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
             app.chk.checks_scroll_offset = list_state.offset();
 
-            if total > 1 {
+            if total > viewport_rows {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
@@ -408,22 +409,22 @@ mod tests {
         │CI Checks: PR #42                                                                                 │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏▶ CI CHECKS (2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌  ✓  lint                            ci               -                                          ▲
-        ┃   ✓  integration-tests               nightly          -                                          █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  ▼
+        ┃▌  ✓  lint                            ci               -                                          ┃
+        ┃   ✓  integration-tests               nightly          -                                          ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │

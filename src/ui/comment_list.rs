@@ -238,6 +238,7 @@ fn render_comment_list_generic<T, F>(
 
     let block = attention.frame(theme);
     let total_items = items_data.len();
+    let viewport_rows = block.inner(area).height as usize;
 
     let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
@@ -245,7 +246,7 @@ fn render_comment_list_generic<T, F>(
     *scroll_offset = list_state.offset();
     register_comment_list_hits(hit_map, area, &item_heights, *scroll_offset);
 
-    if total_items > 1 {
+    if item_heights.iter().sum::<usize>() > viewport_rows {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
@@ -548,6 +549,7 @@ fn render_review_thread_list_data_with_hits(
         .with_selected(Some(data.selected));
 
     let block = attention.frame(theme);
+    let viewport_rows = block.inner(area).height as usize;
     let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
 
@@ -556,7 +558,7 @@ fn render_review_thread_list_data_with_hits(
         register_comment_list_hits(hit_map, area, &item_heights, *scroll_offset);
     }
 
-    if total_items > 1 {
+    if item_heights.iter().sum::<usize>() > viewport_rows {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
@@ -765,6 +767,7 @@ fn render_review_thread_data_with_hits(
         },
         attention,
     );
+    let viewport_rows = block.inner(area).height as usize;
     let list = attention.rows(theme).apply(List::new(items).block(block));
     frame.render_stateful_widget(list, area, &mut list_state);
 
@@ -773,7 +776,7 @@ fn render_review_thread_data_with_hits(
         register_comment_list_hits(hit_map, area, &item_heights, *scroll_offset);
     }
 
-    if total_items > 1 {
+    if item_heights.iter().sum::<usize>() > viewport_rows {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
@@ -1212,22 +1215,22 @@ mod tests {
         │ [Local Comments (2)]                                                                             │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ @dacuna on src/main.rs:10                                                                       ▲
-        ┃    Fix this variable naming                                                                      █
-        ┃                                                                                                  █
-        ┃  @dacuna [resolved] on src/lib.rs:42                                                             █
-        ┃    Consider error handling                                                                       █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  ▼
+        ┃▌ @dacuna on src/main.rs:10                                                                       ┃
+        ┃    Fix this variable naming                                                                      ┃
+        ┃                                                                                                  ┃
+        ┃  @dacuna [resolved] on src/lib.rs:42                                                             ┃
+        ┃    Consider error handling                                                                       ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
@@ -1460,22 +1463,22 @@ mod tests {
         │ [Review Threads (1)]  [Discussion (0)]                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏▶ THREAD  src/main.rs:10 (3 comments)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ @alice on src/main.rs:10                                                                        ▲
-        ┃    Needs refactoring                                                                             █
-        ┃                                                                                                  █
-        ┃    @bob  2025-01-02                                                                              █
-        ┃      Agreed, will fix                                                                            █
-        ┃                                                                                                  █
-        ┃    @alice  2025-01-03                                                                            █
-        ┃      Done in latest push                                                                         █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  ║
-        ┃                                                                                                  ▼
+        ┃▌ @alice on src/main.rs:10                                                                        ┃
+        ┃    Needs refactoring                                                                             ┃
+        ┃                                                                                                  ┃
+        ┃    @bob  2025-01-02                                                                              ┃
+        ┃      Agreed, will fix                                                                            ┃
+        ┃                                                                                                  ┃
+        ┃    @alice  2025-01-03                                                                            ┃
+        ┃      Done in latest push                                                                         ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │
@@ -1676,6 +1679,43 @@ mod tests {
         app.cmt.review_comments = Some(comments);
         app.build_review_threads();
         app
+    }
+
+    /// A thread whose body runs to `lines` rows, so its item is tall.
+    fn tall_thread(id: u64, lines: usize) -> ReviewComment {
+        let mut comment = thread_comment(
+            id,
+            "alice",
+            "2026-11-10T00:00:00Z",
+            None,
+            CommentPublication::Published,
+        );
+        comment.body = (1..=lines)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        comment
+    }
+
+    /// Items here take several rows each, so the scrollbar follows the rows
+    /// the threads take, not the thread count. Two short threads fit the
+    /// pane, so the scrollbar stays off even though there is more than one.
+    #[test]
+    fn a_comment_list_whose_threads_fit_draws_no_scrollbar() {
+        let mut app = review_threads_app(vec![tall_thread(100, 2), tall_thread(101, 2)]);
+
+        let text = render_full(&mut app);
+
+        assert!(!text.contains('▲'), "{text}");
+    }
+
+    #[test]
+    fn a_comment_list_whose_tall_threads_overflow_keeps_its_scrollbar() {
+        let mut app = review_threads_app((100..104).map(|id| tall_thread(id, 6)).collect());
+
+        let text = render_full(&mut app);
+
+        assert!(text.contains('▲'), "{text}");
     }
 
     #[test]

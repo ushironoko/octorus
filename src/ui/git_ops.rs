@@ -193,7 +193,7 @@ fn render_tree_pane(
             }
         }
 
-        if total > 1 {
+        if total > inner_area.height as usize {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
@@ -729,7 +729,7 @@ fn render_commits_pane(
         );
     }
 
-    if total > 1 {
+    if total > inner_area.height as usize {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
@@ -1692,6 +1692,39 @@ mod tests {
             "should show ↑3 in title, got: {}",
             output
         );
+    }
+
+    #[test]
+    fn test_commits_pane_whose_commits_fit_draws_no_scrollbar() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        ops.commit_log
+            .commits
+            .push(make_commit("abc123", "test commit"));
+        ops.commit_log
+            .commits
+            .push(make_commit("def456", "second commit"));
+        ops.commit_log.initialized = true;
+        app.git_ops_state = Some(ops);
+
+        let output = render_commits_pane_text(&mut app, false);
+        assert!(!output.contains('▲'), "{output}");
+    }
+
+    #[test]
+    fn test_commits_pane_with_commits_past_the_pane_keeps_its_scrollbar() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(Vec::new());
+        for n in 0..20 {
+            ops.commit_log
+                .commits
+                .push(make_commit(&format!("sha{n:04}"), "commit"));
+        }
+        ops.commit_log.initialized = true;
+        app.git_ops_state = Some(ops);
+
+        let output = render_commits_pane_text(&mut app, false);
+        assert!(output.contains('▲'), "{output}");
     }
 
     #[test]
