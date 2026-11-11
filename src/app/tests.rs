@@ -2511,10 +2511,65 @@ fn a_bad_theme_file_is_named_while_loading_and_listed_on_the_help_config_tab() {
     app.open_help(AppState::FileList);
     let help = render_screen(&mut app, 120, 40);
     assert!(help.contains("Config Warnings"), "{help}");
-    assert!(
-        help.contains("theme: expected a table, got integer \"5\" (using default)"),
-        "{help}"
+    assert_warning_listed_in_full(
+        &help,
+        &format!(
+            "{}: theme: expected a table, got integer \"5\" (using default)",
+            global.display()
+        ),
     );
+}
+
+/// Drops the spaces, box borders, and scrollbar glyphs from a rendered screen. The letters,
+/// digits, and punctuation that remain are the same however the rows break.
+fn without_layout(screen: &str) -> String {
+    screen
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_ascii_punctuation())
+        .collect()
+}
+
+/// Asserts that `warning` is listed in full on a rendered screen. `wrap_warning` breaks a
+/// warning at spaces and cuts a word too long for a row, so the characters are compared in
+/// order, with the rows and their layout ignored.
+fn assert_warning_listed_in_full(screen: &str, warning: &str) {
+    assert!(
+        without_layout(screen).contains(&without_layout(warning)),
+        "the warning is not listed in full:\n{screen}"
+    );
+}
+
+/// A macOS temp dir is deep (`/var/folders/<a>/<b>/T/.tmpXXXXXX`), so there the warning is
+/// wider than a 120-column row and wraps. Nesting the file that deep makes it wrap on every
+/// OS, not only on macOS.
+#[test]
+fn a_warning_with_a_macos_length_path_is_listed_in_full_on_the_help_config_tab() {
+    let dir = tempdir().unwrap();
+    let deep = dir
+        .path()
+        .join("var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/.tmp4Pkyf8");
+    std::fs::create_dir_all(&deep).unwrap();
+    let global = deep.join("global.toml");
+    let local = dir.path().join("missing-local.toml");
+    std::fs::write(&global, "theme = 5\n").unwrap();
+    let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+    let warning = format!(
+        "{}: theme: expected a table, got integer \"5\" (using default)",
+        global.display()
+    );
+    app.open_help(AppState::FileList);
+
+    // At 120 columns a space falls inside the message; at 80 the path itself is cut.
+    for width in [120, 80] {
+        let help = render_screen(&mut app, width, 40);
+
+        assert!(
+            !help.contains(&warning),
+            "the warning should wrap at {width} columns:\n{help}"
+        );
+        assert_warning_listed_in_full(&help, &warning);
+    }
 }
 
 #[test]
