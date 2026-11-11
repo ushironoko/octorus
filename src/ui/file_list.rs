@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     let pr_info = build_pr_info(app);
-    let ci_span = build_ci_status_span(app);
+    let ci_span = build_ci_status_span(app, app.theme);
 
     let mut header_block = Block::default().borders(Borders::ALL).title("octorus");
     // Right-aligned in the border, so it stays visible when the PR title is long.
@@ -666,7 +666,7 @@ mod pending_header_tests {
     use super::*;
     use crate::app::{App, AppState, DataState, PendingDrafts};
     use crate::config::ThemeColors;
-    use crate::github::{Branch, ChangedFile, PullRequest, User};
+    use crate::github::{Branch, ChangedFile, CiStatus, PullRequest, User};
     use crate::ui::test_buffer::{
         cells_of, no_color_theme, row_text, screen_text, theme_with, CUSTOM_WARNING,
     };
@@ -778,6 +778,27 @@ mod pending_header_tests {
             cells
                 .iter()
                 .all(|cell| cell.fg == Color::Reset && cell.modifier.is_empty()),
+            "{cells:?}"
+        );
+    }
+
+    /// The CI note in the file list header takes the theme's warning color while CI is pending.
+    #[test]
+    fn file_list_header_ci_note_takes_the_theme_warning_color() {
+        let mut app = loaded_app(PendingDrafts::Unknown);
+        app.chk.ci_status = Some(CiStatus::Pending);
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let cells = cells_of(terminal.backend().buffer(), "CI pending")
+            .expect("the note is drawn in the header");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
             "{cells:?}"
         );
     }

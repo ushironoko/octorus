@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let pr_info = build_pr_info(app);
-    let ci_span = build_ci_status_span(app);
+    let ci_span = build_ci_status_span(app, app.theme);
     let mut spans = vec![
         Span::styled(
             "PR Description",
@@ -256,6 +256,31 @@ mod tests {
             .expect("the note is drawn in the header");
         assert!(
             cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{cells:?}"
+        );
+    }
+
+    /// The CI note in the header takes the theme's danger color when CI failed.
+    #[test]
+    fn header_ci_note_takes_the_theme_danger_color() {
+        use crate::config::ThemeColors;
+        use crate::github::CiStatus;
+        use crate::ui::test_buffer::{cells_of, theme_with, CUSTOM_DANGER};
+
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::PrDescription;
+        app.chk.ci_status = Some(CiStatus::Failure);
+        app.theme = theme_with(ThemeColors {
+            danger: Some(CUSTOM_DANGER),
+            ..ThemeColors::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let cells = cells_of(terminal.backend().buffer(), "CI failed")
+            .expect("the note is drawn in the header");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_DANGER),
             "{cells:?}"
         );
     }
