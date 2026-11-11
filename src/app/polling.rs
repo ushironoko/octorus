@@ -502,6 +502,19 @@ impl App {
         self.reload_review_comments_for(origin_pr);
     }
 
+    /// An add reached the pending review, so the header count goes up now rather
+    /// than when the reload returns. The reload then sets the count it read. An
+    /// unread count stays unread: adding one to nothing would show a figure GitHub
+    /// has not confirmed.
+    pub(crate) fn count_added_draft(&mut self, origin_pr: u32) {
+        if self.pr_number != Some(origin_pr) {
+            return;
+        }
+        if let PendingDrafts::Known(count) = self.cmt.pending_drafts {
+            self.cmt.pending_drafts = PendingDrafts::Known(count + 1);
+        }
+    }
+
     /// A comment did not reach GitHub, or may not have. Its text is kept for the
     /// line, and `message` is shown as the whole failure text.
     fn finish_failed_comment_submit(&mut self, message: String) {
@@ -548,6 +561,7 @@ impl App {
                 self.finish_comment_submit(origin_pr, "Submitted");
             }
             Ok(CommentSubmitResult::AddedToPendingReview) => {
+                self.count_added_draft(origin_pr);
                 self.finish_comment_submit(origin_pr, "Added to pending review");
             }
             Ok(CommentSubmitResult::Unknown) => {

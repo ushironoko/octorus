@@ -10116,6 +10116,109 @@ async fn a_successful_add_keeps_nothing() {
     assert!(app.cmt.saved_drafts.is_empty());
 }
 
+/// Polls the review-comment reload until it is applied, as the event loop would.
+async fn wait_for_review_comments(app: &mut App) {
+    for _ in 0..500 {
+        app.poll_comment_updates();
+        if app.cmt.comment_receiver.is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the review comments did not reload");
+}
+
+/// A successful add raises the header count when the add reports, not when the
+/// reload returns. The reload is several GitHub reads, and the success message
+/// clears after 3 seconds, so the count does not wait for either.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn a_successful_add_raises_the_count_before_the_reload_returns() {
+    let gh = crate::github::fake_gh::FakeGh::install(
+        &serde_json::json!([[{
+            "id": 77,
+            "path": "src/app.rs",
+            "line": null,
+            "body": "summary",
+            "user": {"login": "me"},
+            "created_at": "2026-11-10T00:00:00Z",
+            "state": "PENDING",
+            "submitted_at": null,
+        }]])
+        .to_string(),
+        "",
+        "",
+        "",
+    );
+    let drafts: Vec<serde_json::Value> = (501..=504)
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "path": "test.rs",
+                "line": 2,
+                "body": "draft",
+                "user": {"login": "me"},
+                "created_at": "2026-11-10T00:00:00Z",
+            })
+        })
+        .collect();
+    gh.set_drafts(&serde_json::json!([drafts]).to_string());
+    let mut app = app_on_added_line();
+    app.cmt.pending_drafts = PendingDrafts::Known(2);
+    app.enter_comment_input();
+
+    start_inline_add_for_test(&mut app, "landed", async { Ok(()) });
+    wait_for_inline_add(&mut app).await;
+
+    // The add has reported and the reload is still in flight. The count has moved.
+    assert!(
+        app.cmt.comment_receiver.is_some(),
+        "the reload is in flight"
+    );
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(3));
+    let (success, message) = app.cmt.submission_result.clone().unwrap();
+    assert!(success);
+    insta::assert_snapshot!(message, @"Added to pending review");
+
+    // The reload reads the four drafts GitHub holds, and its count replaces the guess.
+    // The message is still up when the reload is applied, so the reload is not held
+    // back by it.
+    wait_for_review_comments(&mut app).await;
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(4));
+    assert_eq!(
+        app.cmt.submission_result,
+        Some((true, "Added to pending review".to_string()))
+    );
+    assert!(
+        gh.calls().contains("/reviews/77/comments"),
+        "{}",
+        gh.calls()
+    );
+}
+
+/// The optimistic count only moves a number that was read. Adding one to an
+/// unread count would show a figure GitHub has not confirmed.
+#[test]
+fn an_added_draft_leaves_an_unread_count_unknown() {
+    let mut app = app_on_added_line();
+    app.cmt.pending_drafts = PendingDrafts::Unknown;
+
+    app.count_added_draft(1);
+
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Unknown);
+}
+
+#[test]
+fn an_added_draft_does_not_count_on_a_pr_that_is_not_on_screen() {
+    let mut app = app_on_added_line();
+    app.cmt.pending_drafts = PendingDrafts::Known(2);
+
+    app.count_added_draft(9);
+
+    assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(2));
+}
+
 /// Two adds at once could both create a pending review, so a composer does not
 /// open while an add is in flight. Its keys would be ignored anyway.
 #[test]
@@ -10172,6 +10275,72 @@ fn a_pending_draft_shows_on_its_diff_line() {
     app.update_file_comment_positions();
 
     assert!(app.has_comment_at_current_line());
+}
+
+/// Two hunks. Positions: 1 ` a`, 2 `-b` (LEFT 2), 3 `+c` (RIGHT 2), 4 the second `@@`,
+/// 5 ` d` (RIGHT 10), 6 `+e` (RIGHT 11), 7 ` f` (RIGHT 12). Diff row 0 is the first `@@`,
+/// so each position's row is its line in this patch.
+const TWO_HUNK_PATCH: &str = "@@ -1,2 +1,2 @@\n a\n-b\n+c\n@@ -10,2 +10,3 @@\n d\n+e\n f";
+
+/// A pending draft as GitHub returns it when `line` is null: only `position` names
+/// its row (issue #169, live check on PR #244).
+fn pending_draft_at_position(id: u64, path: &str, position: u32, body: &str) -> ReviewComment {
+    let mut comment = sample_review_comment(id, body);
+    comment.path = path.to_string();
+    comment.line = None;
+    comment.location.position = Some(position);
+    comment.location.publication = crate::github::comment::CommentPublication::PendingDraft;
+    comment
+}
+
+#[test]
+fn a_pending_draft_with_only_a_position_is_placed_on_its_diff_row() {
+    let mut app = make_app_with_patch(TWO_HUNK_PATCH);
+    app.apply_review_comments(vec![pending_draft_at_position(
+        501,
+        "test.rs",
+        6,
+        "draft on e",
+    )]);
+
+    app.update_file_comment_positions();
+
+    // Position 6 is `+e`, which is new line 11 in the second hunk.
+    assert_eq!(app.cmt.file_comment_positions.len(), 1);
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 6);
+    assert_eq!(app.cmt.file_comment_positions[0].comment_index, 0);
+    let draft = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(draft.line, Some(11));
+    assert_eq!(draft.location.side.as_deref(), Some("RIGHT"));
+    app.diff_scroll.selected_line = 6;
+    assert_eq!(app.get_comment_indices_at_current_line(), vec![0]);
+}
+
+#[test]
+fn a_pending_draft_on_a_deleted_line_is_placed_on_the_left_side() {
+    let mut app = make_app_with_patch(TWO_HUNK_PATCH);
+    app.apply_review_comments(vec![pending_draft_at_position(502, "test.rs", 2, "on b")]);
+
+    app.update_file_comment_positions();
+
+    assert_eq!(app.cmt.file_comment_positions.len(), 1);
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 2);
+    let draft = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(draft.line, Some(2));
+    assert_eq!(draft.location.side.as_deref(), Some("LEFT"));
+}
+
+#[test]
+fn a_pending_draft_whose_position_left_the_patch_is_counted_but_not_placed() {
+    let mut app = make_app_with_patch(TWO_HUNK_PATCH);
+    app.apply_review_comments(vec![pending_draft_at_position(503, "test.rs", 40, "stale")]);
+
+    app.update_file_comment_positions();
+
+    assert!(app.cmt.file_comment_positions.is_empty());
+    let comments = app.cmt.review_comments.as_ref().unwrap();
+    assert_eq!(comments[0].line, None);
+    assert_eq!(super::comments::count_pending_drafts(comments), 1);
 }
 
 #[test]

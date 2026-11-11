@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
-use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
+use crate::diff::{
+    find_diff_line_index, parse_diff_side, position_to_side_line, DiffSide, SideLine,
+};
 use crate::github::comment::{CommentPublication, Review, ReviewComment};
 use crate::github::{self, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
@@ -155,6 +157,31 @@ fn classify_add_error(error: anyhow::Error) -> CommentSubmitResult {
         Ok(refused) => CommentSubmitResult::Refused(refused.to_string()),
         Err(error) => CommentSubmitResult::Error(error.to_string()),
     }
+}
+
+/// GitHub returns a pending draft with `line` null and only `position` set (issue
+/// #169). The position names a row of the file's patch, so the line and side come
+/// from that row. They are written back to the draft, so the thread list, the
+/// detail panel, and the anchor all read the same line. A draft that already has a
+/// line, or whose position is not in the patch, is left as it is.
+fn resolve_draft_position(draft: &mut ReviewComment, patch: &str) {
+    if draft.line.is_some() {
+        return;
+    }
+    let Some(position) = draft.location.position else {
+        return;
+    };
+    let Some(target) = position_to_side_line(patch, position) else {
+        return;
+    };
+    draft.line = Some(target.line);
+    draft.location.side = Some(
+        match target.side {
+            DiffSide::Left => "LEFT",
+            DiffSide::Right => "RIGHT",
+        }
+        .to_string(),
+    );
 }
 
 fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
@@ -1304,9 +1331,16 @@ impl App {
         };
         let filename = file.filename.clone();
 
-        let Some(ref comments) = self.cmt.review_comments else {
+        let Some(ref mut comments) = self.cmt.review_comments else {
             return;
         };
+        // The patch is first known here, so this is where a draft's position gets its line.
+        for draft in comments
+            .iter_mut()
+            .filter(|comment| comment.path == filename && comment.is_pending_draft())
+        {
+            resolve_draft_position(draft, &patch);
+        }
 
         for (i, comment) in comments.iter().enumerate() {
             // Skip comments for other files

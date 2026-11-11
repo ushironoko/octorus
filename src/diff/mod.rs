@@ -509,6 +509,71 @@ pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
     None
 }
 
+/// The row a GitHub review-comment `position` names, as the side and line number GitHub
+/// reports for it. A `-` row is LEFT with its old-file number. A `+` row and a context row are
+/// RIGHT with their new-file number.
+///
+/// Positions count the way [`get_line_info`] counts them: meta lines are skipped, the first `@@`
+/// is not counted, and each later `@@` is. The result is `None` for position 0, for a position
+/// past the patch, and for a row with no line: an `@@` header or the `\ No newline` marker.
+///
+/// A pending draft comes back from GitHub with `position` set and `line` null, so this is how
+/// its line is recovered. The patch must be the file's diff as it is shown now.
+pub fn position_to_side_line(patch: &str, position: u32) -> Option<SideLine> {
+    if position == 0 {
+        return None;
+    }
+    let mut old_line: Option<u32> = None;
+    let mut new_line: Option<u32> = None;
+    // None until the first `@@`, so rows above any hunk take no position.
+    let mut position_counter: Option<u32> = None;
+    let mut classifier = PatchClassifier::new();
+
+    for line in patch.lines() {
+        let (line_type, _) = classifier.classify(line);
+        match line_type {
+            LineType::Meta => {}
+            LineType::Header => {
+                if let Some((old_start, new_start)) = hunk_line_starts(line) {
+                    old_line = Some(old_start);
+                    new_line = Some(new_start);
+                }
+                let counter = position_counter.map_or(0, |p| p + 1);
+                position_counter = Some(counter);
+                if counter == position {
+                    return None;
+                }
+            }
+            LineType::Added | LineType::Context | LineType::Removed => {
+                let Some(counter) = position_counter.map(|p| p + 1) else {
+                    continue;
+                };
+                position_counter = Some(counter);
+                // The marker takes a position but is not a file row, so no counter moves for it.
+                let is_file_row = !is_no_newline_marker(line);
+                if counter == position {
+                    if !is_file_row {
+                        return None;
+                    }
+                    return match line_type {
+                        LineType::Removed => old_line.map(SideLine::left),
+                        _ => new_line.map(SideLine::right),
+                    };
+                }
+                if is_file_row {
+                    if line_type != LineType::Added {
+                        old_line = old_line.map(|n| n + 1);
+                    }
+                    if line_type != LineType::Removed {
+                        new_line = new_line.map(|n| n + 1);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Parse a unified diff output into a map of filename -> patch content
 ///
 /// This function splits the output of `git diff` or `gh pr diff` into individual
@@ -1441,6 +1506,74 @@ index 1234567..abcdefg 100644
     fn test_line_number_to_position_nonexistent_line() {
         assert_eq!(line_number_to_position(SAMPLE_PATCH, 999), None);
         assert_eq!(line_number_to_position(SAMPLE_PATCH, 0), None);
+    }
+
+    // --- position_to_side_line tests ---
+
+    #[test]
+    fn position_to_side_line_maps_each_row_kind_to_its_side() {
+        // `-` is LEFT with its old-file number. `+` and context are RIGHT with the new-file
+        // number, so the context row is RIGHT even though it also has an old line.
+        let patch = "@@ -1,3 +1,3 @@\n ctx one\n-gone two\n+new two\n ctx three";
+        assert_eq!(position_to_side_line(patch, 1), Some(SideLine::right(1)));
+        assert_eq!(position_to_side_line(patch, 2), Some(SideLine::left(2)));
+        assert_eq!(position_to_side_line(patch, 3), Some(SideLine::right(2)));
+        assert_eq!(position_to_side_line(patch, 4), Some(SideLine::right(3)));
+        assert_eq!(position_to_side_line(patch, 5), None);
+    }
+
+    #[test]
+    fn position_to_side_line_counts_later_hunk_headers_as_positions() {
+        let patch =
+            "@@ -1,2 +1,2 @@\n-old1\n+new1\n@@ -10,3 +10,3 @@\n ctx10\n-old11\n+new11\n ctx12";
+        assert_eq!(position_to_side_line(patch, 1), Some(SideLine::left(1)));
+        assert_eq!(position_to_side_line(patch, 2), Some(SideLine::right(1)));
+        // Position 3 is the second `@@` line itself, which has no line.
+        assert_eq!(position_to_side_line(patch, 3), None);
+        assert_eq!(position_to_side_line(patch, 4), Some(SideLine::right(10)));
+        assert_eq!(position_to_side_line(patch, 5), Some(SideLine::left(11)));
+        assert_eq!(position_to_side_line(patch, 6), Some(SideLine::right(11)));
+        assert_eq!(position_to_side_line(patch, 7), Some(SideLine::right(12)));
+        assert_eq!(position_to_side_line(patch, 8), None);
+    }
+
+    #[test]
+    fn position_to_side_line_is_none_for_position_zero_empty_patches_and_the_marker() {
+        let patch =
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file";
+        assert_eq!(position_to_side_line(patch, 0), None);
+        assert_eq!(position_to_side_line(patch, 1), Some(SideLine::left(1)));
+        // The marker takes a position but is not a file row, so it has no line.
+        assert_eq!(position_to_side_line(patch, 2), None);
+        assert_eq!(position_to_side_line(patch, 3), Some(SideLine::right(1)));
+        assert_eq!(position_to_side_line(patch, 4), None);
+        assert_eq!(position_to_side_line(patch, 5), None);
+        assert_eq!(position_to_side_line("", 1), None);
+    }
+
+    #[test]
+    fn position_to_side_line_names_the_row_that_get_line_info_numbers_with_it() {
+        // Every position a patch has resolves to a row that carries that position, so the
+        // mapping is the inverse of `get_line_info`'s numbering.
+        for patch in [
+            "@@ -1,3 +1,3 @@\n ctx one\n-gone two\n+new two\n ctx three",
+            "@@ -1,2 +1,2 @@\n-old1\n+new1\n@@ -10,3 +10,3 @@\n ctx10\n-old11\n+new11\n ctx12",
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file",
+        ] {
+            let rows = u32::try_from(patch.lines().count()).unwrap();
+            for position in 1..=rows {
+                let Some(target) = position_to_side_line(patch, position) else {
+                    continue;
+                };
+                let row = find_diff_line_index(patch, target)
+                    .unwrap_or_else(|| panic!("{target:?} is not in {patch:?}"));
+                assert_eq!(
+                    get_line_info(patch, row).unwrap().diff_position,
+                    Some(position),
+                    "{patch:?}"
+                );
+            }
+        }
     }
 
     // --- validate_multiline_range tests ---

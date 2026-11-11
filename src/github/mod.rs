@@ -43,6 +43,8 @@ macro_rules! define_state_filter {
     };
 }
 
+#[cfg(all(test, unix))]
+pub(crate) mod fake_gh;
 mod issue;
 mod pending_review;
 mod pr;

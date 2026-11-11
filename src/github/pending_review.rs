@@ -572,74 +572,8 @@ mod tests {
 #[cfg(all(test, unix))]
 mod fake_gh_tests {
     use super::*;
+    use crate::github::fake_gh::FakeGh;
     use serial_test::serial;
-
-    const FAKE_GH_VARS: [&str; 7] = [
-        "FAKE_GH_LOG",
-        "FAKE_GH_REVIEWS",
-        "FAKE_GH_CREATE",
-        "FAKE_GH_GRAPHQL",
-        "FAKE_GH_PUBLISH",
-        "FAKE_GH_PR_REVIEW",
-        "FAKE_GH_DRAFTS",
-    ];
-
-    /// Puts the test double first on PATH and sets its replies. Dropping it
-    /// restores PATH and clears the variables.
-    struct FakeGh {
-        _dir: tempfile::TempDir,
-        log: std::path::PathBuf,
-        old_path: Option<std::ffi::OsString>,
-    }
-
-    impl FakeGh {
-        fn install(reviews: &str, create: &str, graphql: &str, publish: &str) -> Self {
-            let dir = tempfile::tempdir().unwrap();
-            let log = dir.path().join("calls.log");
-            let old_path = std::env::var_os("PATH");
-            let mut path = std::ffi::OsString::from(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/fake-gh"
-            ));
-            path.push(":");
-            path.push(old_path.clone().unwrap_or_default());
-            std::env::set_var("PATH", path);
-            std::env::set_var("FAKE_GH_LOG", &log);
-            std::env::set_var("FAKE_GH_REVIEWS", reviews);
-            std::env::set_var("FAKE_GH_CREATE", create);
-            std::env::set_var("FAKE_GH_GRAPHQL", graphql);
-            std::env::set_var("FAKE_GH_PUBLISH", publish);
-            std::env::set_var("FAKE_GH_PR_REVIEW", "");
-            std::env::set_var("FAKE_GH_DRAFTS", "[[]]");
-            Self {
-                _dir: dir,
-                log,
-                old_path,
-            }
-        }
-
-        /// Sets the pending review's comments, as a paginated `--slurp` reply.
-        fn set_drafts(&self, json: &str) {
-            std::env::set_var("FAKE_GH_DRAFTS", json);
-        }
-
-        /// Every call made so far, as logged by the test double.
-        fn calls(&self) -> String {
-            std::fs::read_to_string(&self.log).unwrap_or_default()
-        }
-    }
-
-    impl Drop for FakeGh {
-        fn drop(&mut self) {
-            match &self.old_path {
-                Some(path) => std::env::set_var("PATH", path),
-                None => std::env::remove_var("PATH"),
-            }
-            for name in FAKE_GH_VARS {
-                std::env::remove_var(name);
-            }
-        }
-    }
 
     fn draft() -> InlineDraft {
         InlineDraft {
@@ -779,6 +713,25 @@ mod fake_gh_tests {
         assert!(drafts.iter().all(|draft| draft.is_pending_draft()));
         assert_eq!(drafts[0].id, 501);
         assert_eq!(drafts[1].body, "second");
+    }
+
+    /// GitHub gives a pending draft `line` and `side` null and only its `position`
+    /// (issue #169, live check on PR #244). The position must survive the read, so the
+    /// diff can place the draft.
+    #[tokio::test]
+    #[serial]
+    async fn fetch_draft_comments_keeps_the_position_of_a_draft_with_no_line() {
+        let gh = FakeGh::install("[[]]", "", "", "");
+        gh.set_drafts(
+            r#"[[{"id":601,"path":"README.md","position":5,"original_position":5,"line":null,"side":null,"start_line":null,"original_line":null,"commit_id":"head","diff_hunk":"@@ -155,7 +155,7 @@\n - Readline\n-- Review submission\n+- Review submission","body":"nit","user":{"login":"me"},"created_at":"2026-11-10T00:00:00Z"}]]"#,
+        );
+
+        let drafts = fetch_draft_comments("o/r", 7, 77).await.unwrap();
+
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].line, None);
+        assert_eq!(drafts[0].location.position, Some(5));
+        assert!(drafts[0].is_pending_draft());
     }
 
     #[tokio::test]

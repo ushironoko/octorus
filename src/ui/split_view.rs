@@ -301,7 +301,7 @@ fn render_file_list_pane(
     } else {
         "←/h: focus files"
     };
-    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer_line = super::footer::build_pane_help_line(app, help_text, is_focused);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         attention.border_style(theme),
@@ -701,6 +701,46 @@ mod tests {
             "dim title missing:\n{dim}"
         );
         assert!(!dim.contains("▶ FILES"), "dim title drew an arrow:\n{dim}");
+    }
+
+    /// The status line belongs to one footer. Both panes used to draw it, so a
+    /// message showed twice, on the file pane and on the diff pane. The file pane
+    /// keeps its own help text in both focus states.
+    #[test]
+    fn a_status_message_is_drawn_once_whichever_pane_has_focus() {
+        let mut app = loaded_app();
+        let focused_file_help = crate::ui::footer::footer_hint_back(&app.config.keybindings);
+        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+
+        for (state, file_pane_help) in [
+            (AppState::SplitViewFileList, focused_file_help.as_str()),
+            (AppState::SplitViewDiff, "←/h: focus files"),
+        ] {
+            app.state = state;
+
+            let text = draw(&mut app);
+
+            assert_eq!(
+                text.matches("Added to pending review").count(),
+                1,
+                "{state:?}:\n{text}"
+            );
+            assert!(
+                text.contains(file_pane_help),
+                "{state:?}: the file pane lost its help {file_pane_help:?}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reload_progress_is_drawn_once_in_the_split_view() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewFileList;
+        app.cmt.comments_loading = true;
+
+        let text = draw(&mut app);
+
+        assert_eq!(text.matches("Loading comments...").count(), 1, "{text}");
     }
 
     #[test]
