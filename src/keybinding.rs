@@ -376,7 +376,7 @@ impl KeySequence {
 
     /// Display only the primary sequence for compact, context-specific hints.
     pub fn display_primary(&self) -> String {
-        self.keys.iter().map(KeyBinding::display).collect()
+        display_keys(&self.keys)
     }
 
     /// Display string for help screen (shows primary | alt)
@@ -385,14 +385,22 @@ impl KeySequence {
         if self.alt.is_empty() {
             primary
         } else {
-            let alts: Vec<String> = self
-                .alt
-                .iter()
-                .map(|seq| seq.iter().map(|k| k.display()).collect::<String>())
-                .collect();
+            let alts: Vec<String> = self.alt.iter().map(|seq| display_keys(seq)).collect();
             format!("{}/{}", primary, alts.join("/"))
         }
     }
+}
+
+/// Renders one key sequence. Character keys run together (`gb`), but a named key
+/// gets a space after it, so `Space` then `/` reads `Space /`, not `Space/`.
+pub fn display_keys(keys: &[KeyBinding]) -> String {
+    let parts: Vec<String> = keys.iter().map(KeyBinding::display).collect();
+    let separator = if parts.iter().any(|part| part.chars().count() > 1) {
+        " "
+    } else {
+        ""
+    };
+    parts.join(separator)
 }
 
 // Custom deserializer for KeyBinding
@@ -908,6 +916,27 @@ mod tests {
     #[test]
     fn test_display_named() {
         assert_eq!(KeyBinding::named(NamedKey::Enter).display(), "Enter");
+    }
+
+    #[test]
+    fn test_sequence_display_separates_a_named_key_from_the_next() {
+        // The filter key is `Space` then `/`. Run together, they read as `Space/`.
+        let filter = KeySequence::double(KeyBinding::char(' '), KeyBinding::char('/'));
+        assert_eq!(filter.display(), "Space /");
+        assert_eq!(filter.display_primary(), "Space /");
+    }
+
+    #[test]
+    fn test_sequence_display_runs_character_keys_together() {
+        let jump = KeySequence::double(KeyBinding::char('g'), KeyBinding::char('g'));
+        assert_eq!(jump.display(), "gg");
+    }
+
+    #[test]
+    fn test_sequence_display_joins_alternatives_with_a_slash() {
+        let quit = KeySequence::single(KeyBinding::char('q'))
+            .with_alt(vec![KeyBinding::named(NamedKey::Esc)]);
+        assert_eq!(quit.display(), "q/Esc");
     }
 
     #[test]

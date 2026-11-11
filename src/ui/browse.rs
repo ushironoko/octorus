@@ -2016,7 +2016,7 @@ mod tests {
         ┃                          ┃│                                                  │
         ┃                          ┃│                                                  │
         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────────────────────────────────┘
-         Enter open | Space/ filter | s symbol search | q/Esc back
+         Enter open | Space / filter | s symbol search | q/Esc back
         ");
     }
 

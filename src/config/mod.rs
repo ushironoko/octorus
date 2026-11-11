@@ -569,7 +569,7 @@ mod tests {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.keybindings.approve.display(), "a");
         assert_eq!(config.keybindings.request_changes.display(), "r");
-        assert_eq!(config.keybindings.filter.display(), "Space/");
+        assert_eq!(config.keybindings.filter.display(), "Space /");
     }
 
     #[test]
@@ -580,7 +580,7 @@ mod tests {
             move_up = "k"
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.keybindings.filter.display(), "Space/");
+        assert_eq!(config.keybindings.filter.display(), "Space /");
     }
 
     #[test]
