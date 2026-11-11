@@ -19,18 +19,64 @@ const HELP_BANNER_LINE: &str =
 /// detection — `repo_detection_exit_writes_nothing_to_stdout` pins the contrast.
 const ALTERNATE_SCREEN_CSI: &str = "\u{1b}[?1049";
 
+/// Everything a run without a terminal writes to stdout on unix: the leave form,
+/// from the restore path. See `assert_args_reach_tui_startup`.
+#[cfg(unix)]
+const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
+
 /// A repository name that does not exist. Passing it with `--repo` takes the
 /// explicit-repository path, so these tests never depend on repo detection or on
 /// a real repository's data.
 const INVALID_REPO: &str = "invalid/nonexistent-repo-12345";
 
+/// The `or` binary, as `cargo_bin_cmd!("or")` builds it, but on unix detached from
+/// the controlling terminal (see [`detach_from_terminal`]).
+fn or_command() -> assert_cmd::Command {
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("or"));
+    detach_from_terminal(&mut command);
+    assert_cmd::Command::from_std(command)
+}
+
+/// Detach `command` from the controlling terminal, so that it runs as it does on CI.
+///
+/// crossterm opens `/dev/tty` to enable raw mode whenever stdin is not a terminal,
+/// so a child that keeps its parent's controlling terminal can put the developer's
+/// terminal into raw mode. `setsid` starts the child in a new session with no
+/// controlling terminal. `/dev/tty` then fails with `ENXIO`, terminal set-up fails
+/// before anything is written, and the run exits at once.
+///
+/// `process_group(0)` is not a substitute. The child keeps the controlling terminal,
+/// so `/dev/tty` still opens, and its raw-mode request stops it under job control
+/// until the timeout kills it.
+#[cfg(unix)]
+fn detach_from_terminal(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: `pre_exec` runs in the forked child before `exec`, where only
+    // async-signal-safe calls are sound. `setsid` is one of them, and the error path
+    // only reads `errno`, so the closure allocates nothing and takes no lock.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_from_terminal(_command: &mut std::process::Command) {}
+
 /// Run `or <args>` in `cwd` with HOME and the XDG directories pointed inside it,
 /// so the run cannot see the developer's config, cache or `gh` credentials.
 ///
-/// With a controlling terminal the TUI runs until the timeout kills it. Without
-/// one, terminal set-up fails and the run exits 1 at once. Callers therefore
-/// read the output rather than an exit status; the one status they may assume is
-/// "not a success", which holds in both cases.
+/// On unix the child has no controlling terminal, so it behaves as it does on CI:
+/// terminal set-up fails and the run exits 1 at once, and nothing reaches the
+/// developer's terminal. The timeout is only a safety net. Elsewhere the child keeps
+/// the console, and the TUI runs until the timeout kills it. Callers therefore read
+/// the output rather than an exit status; "not a success" is the one status they may
+/// assume, and it holds on every platform.
 fn run_isolated(args: &[&str], cwd: &Path) -> Output {
     let home = cwd.join("home");
     let config_home = cwd.join("config");
@@ -39,7 +85,7 @@ fn run_isolated(args: &[&str], cwd: &Path) -> Output {
         std::fs::create_dir_all(path).expect("create isolated environment directory");
     }
 
-    cargo_bin_cmd!("or")
+    or_command()
         .args(args)
         .current_dir(cwd)
         .env("HOME", home)
@@ -115,14 +161,14 @@ fn init_git_repo(test_name: &str, path: &Path) -> bool {
 /// detection, and return the run's output for callers that check more.
 ///
 /// This is as far as the binary can be driven from a test, and the name says
-/// "reaches TUI start-up" rather than "opens the screen" for that reason. What
-/// stdout holds depends on whether the test has a terminal. Without one (CI),
-/// the binary fails to enable raw mode before drawing anything and exits 1, so
-/// stdout holds only the leave form of the alternate-screen escape, written by
-/// the restore path. With one (a developer's terminal, or `script`), the enter
-/// form is followed by frames until the timeout kills the run. Either way no
-/// assertion here can name the screen that opened, and Cockpit reaches this same
-/// point identically.
+/// "reaches TUI start-up" rather than "opens the screen" for that reason. On unix
+/// the child has no terminal (see [`run_isolated`]), so terminal set-up fails before
+/// anything is drawn, and stdout holds exactly the leave form of the
+/// alternate-screen escape, written by the restore path. The exact check below pins
+/// that. Elsewhere the child may have the console, so the enter form can be followed
+/// by frames until the timeout kills the run, and only the shared prefix is checked.
+/// Either way no assertion here can name the screen that opened, and Cockpit reaches
+/// this same point identically.
 ///
 /// That gap is closed on the other side, in `src/main.rs`:
 /// `test_every_entry_point_flag_excludes_itself_from_is_no_args` pins the
@@ -139,6 +185,11 @@ fn assert_args_reach_tui_startup(args: &[&str], cwd: &Path) -> Output {
     assert!(
         stdout.contains(ALTERNATE_SCREEN_CSI),
         "`{command}` never reached TUI start-up; stdout:\n{stdout:?}\nstderr:\n{stderr}"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        stdout, LEAVE_ALTERNATE_SCREEN,
+        "`{command}` wrote more than the leave form to stdout; stderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("Use --repo to specify."),
@@ -168,13 +219,14 @@ fn assert_flag_reaches_tui_startup(flag: &str, cwd: &Path) {
 /// Assert `or --repo INVALID_REPO <args>` reaches TUI start-up and does not
 /// succeed.
 ///
-/// The repository is explicit, so repo detection never runs. The lookup that
-/// fails runs inside the TUI, and without a terminal it may never run at all, so
-/// no assertion here can name that failure in either environment. What both
-/// environments satisfy is checked instead: the alternate-screen sequence is on
-/// stdout, and the run is not a success. With a terminal the timeout kills the
-/// run, so there is no exit status to pin; without one the run exits 1. "Not a
-/// success" is the only status claim that holds in both.
+/// The repository is explicit, so repo detection never runs. The lookup's failure
+/// is shown inside the TUI, which is drawn only after terminal set-up. On unix
+/// set-up fails first, so the failure is never shown; elsewhere it may be shown
+/// inside a TUI that the timeout kills. No assertion here can name that failure in
+/// either case. What holds everywhere is checked instead: the alternate-screen
+/// sequence is on stdout, and the run is not a success. "Not a success" is the only
+/// status claim made, because elsewhere the timeout can kill the run, and no exit
+/// status is asserted on any platform.
 fn assert_invalid_repo_reaches_tui_startup(args: &[&str]) {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let mut full_args = vec!["--repo", INVALID_REPO];
@@ -184,7 +236,7 @@ fn assert_invalid_repo_reaches_tui_startup(args: &[&str]) {
     assert!(
         !output.status.success(),
         "`or --repo {INVALID_REPO} {}` reported success, but in this test the run can only \
-         end by being killed (with a terminal) or by failing at terminal set-up (without one)",
+         end by being killed by the timeout or by failing at terminal set-up",
         args.join(" ")
     );
 }
@@ -217,13 +269,15 @@ fn init_help_exits_successfully() {
 
 // No-args launches the Cockpit TUI (alternate screen), so we can't test
 // the full flow via assert_cmd. But we CAN verify that the binary does NOT
-// fall back to printing help — it should attempt to enter TUI mode and
-// eventually fail or hang (timeout), never printing "Usage:" to stdout.
+// fall back to printing help — it should attempt to enter TUI mode, never
+// printing "Usage:" to stdout. It runs detached from the terminal (see
+// `detach_from_terminal`): on unix it fails at terminal set-up and exits at
+// once, and elsewhere it may run until the timeout kills it.
 // The ASCII-art banner check is omitted because crossterm may render it
 // via escape sequences during TUI init, causing false positives.
 #[test]
 fn no_args_does_not_print_help() {
-    let output = cargo_bin_cmd!("or")
+    let output = or_command()
         .timeout(std::time::Duration::from_secs(3))
         .output()
         .expect("failed to execute");
@@ -232,6 +286,11 @@ fn no_args_does_not_print_help() {
     assert!(
         stdout.contains(ALTERNATE_SCREEN_CSI),
         "no-args never reached TUI start-up; stdout:\n{stdout:?}"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        stdout, LEAVE_ALTERNATE_SCREEN,
+        "no-args wrote more than the leave form to stdout"
     );
     assert!(
         !stdout.contains("Usage"),
@@ -302,10 +361,11 @@ fn repo_detection_exit_writes_nothing_to_stdout() {
     );
 }
 
-/// `--pr 1` for a repository that does not exist. The name describes the outcome
-/// without a terminal. With one, the lookup error is shown inside the TUI and the
-/// run exits 0 once the user quits, so the outcome pinned in both environments is
-/// only that the run does not succeed.
+/// `--pr 1` for a repository that does not exist. On unix the child has no terminal,
+/// so it exits 1 at terminal set-up and the lookup error is never shown. Elsewhere
+/// the lookup error can appear inside a TUI that the timeout kills, and a TUI that
+/// the user quits exits 0. So the outcome pinned on every platform is only that the
+/// run does not succeed.
 #[test]
 fn invalid_repo_exits_with_error() {
     assert_invalid_repo_reaches_tui_startup(&["--pr", "1"]);

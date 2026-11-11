@@ -1553,6 +1553,7 @@ dependencies = [
  "hearth-graph",
  "insta",
  "lasso",
+ "libc",
  "notify",
  "octorus-tree-sitter-moonbit",
  "octorus-tree-sitter-vue3 0.1.0",
