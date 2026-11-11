@@ -34,14 +34,13 @@ pub fn build_pr_info(app: &App) -> String {
     }
 }
 
-/// Build CI status span with color for header display
-pub fn build_ci_status_span(app: &App) -> Span<'static> {
+/// Build CI status span for header display. Each state takes the theme's token for it:
+/// warning while pending, success when passed, danger when failed.
+pub fn build_ci_status_span(app: &App, theme: Theme) -> Span<'static> {
     match app.chk.ci_status {
-        Some(CiStatus::Success) => Span::styled("  ✓ CI passed", Style::default().fg(Color::Green)),
-        Some(CiStatus::Failure) => Span::styled("  ✕ CI failed", Style::default().fg(Color::Red)),
-        Some(CiStatus::Pending) => {
-            Span::styled("  ○ CI pending", Style::default().fg(Color::Yellow))
-        }
+        Some(CiStatus::Success) => Span::styled("  ✓ CI passed", theme.success.style()),
+        Some(CiStatus::Failure) => Span::styled("  ✕ CI failed", theme.danger.style()),
+        Some(CiStatus::Pending) => Span::styled("  ○ CI pending", theme.warning.style()),
         Some(CiStatus::None) | None => Span::raw(""),
     }
 }
@@ -465,5 +464,89 @@ mod pending_comment_tag_tests {
 
         assert_eq!(tag.content, " · pending review");
         assert_eq!(tag.style.fg, None);
+    }
+}
+
+#[cfg(test)]
+mod ci_status_note_tests {
+    use super::*;
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{
+        no_color_theme, theme_with, CUSTOM_DANGER, CUSTOM_SUCCESS, CUSTOM_WARNING,
+    };
+
+    fn app_with_ci(status: CiStatus) -> App {
+        let mut app = App::new_for_test();
+        app.chk.ci_status = Some(status);
+        app
+    }
+
+    #[test]
+    fn ci_pending_takes_the_theme_warning_color() {
+        let app = app_with_ci(CiStatus::Pending);
+        let theme = Theme::test_default();
+
+        let note = build_ci_status_span(&app, theme);
+
+        assert_eq!(note.content, "  ○ CI pending");
+        assert_eq!(note.style, theme.warning.style());
+
+        let themed = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let note = build_ci_status_span(&app, themed);
+        assert_eq!(note.style.fg, Some(CUSTOM_WARNING));
+    }
+
+    #[test]
+    fn ci_passed_takes_the_theme_success_color() {
+        let app = app_with_ci(CiStatus::Success);
+        let theme = Theme::test_default();
+
+        let note = build_ci_status_span(&app, theme);
+
+        assert_eq!(note.content, "  ✓ CI passed");
+        assert_eq!(note.style, theme.success.style());
+
+        let themed = theme_with(ThemeColors {
+            success: Some(CUSTOM_SUCCESS),
+            ..ThemeColors::default()
+        });
+        let note = build_ci_status_span(&app, themed);
+        assert_eq!(note.style.fg, Some(CUSTOM_SUCCESS));
+    }
+
+    #[test]
+    fn ci_failed_takes_the_theme_danger_color() {
+        let app = app_with_ci(CiStatus::Failure);
+        let theme = Theme::test_default();
+
+        let note = build_ci_status_span(&app, theme);
+
+        assert_eq!(note.content, "  ✕ CI failed");
+        assert_eq!(note.style, theme.danger.style());
+
+        let themed = theme_with(ThemeColors {
+            danger: Some(CUSTOM_DANGER),
+            ..ThemeColors::default()
+        });
+        let note = build_ci_status_span(&app, themed);
+        assert_eq!(note.style.fg, Some(CUSTOM_DANGER));
+    }
+
+    /// Without color each note keeps its words and drops its color, as the rest of the theme does.
+    #[test]
+    fn ci_notes_keep_their_words_when_color_is_off() {
+        for (status, words) in [
+            (CiStatus::Pending, "  ○ CI pending"),
+            (CiStatus::Success, "  ✓ CI passed"),
+            (CiStatus::Failure, "  ✕ CI failed"),
+        ] {
+            let note = build_ci_status_span(&app_with_ci(status), no_color_theme());
+
+            assert_eq!(note.content, words);
+            assert_eq!(note.style.fg, None, "{words}");
+        }
     }
 }

@@ -1122,7 +1122,8 @@ fn build_lines_with_syntect(
 /// * `selected_line` – absolute index of the currently selected line.
 /// * `comment_lines` – set of diff line indices that have comments (for `●` marker).
 /// * `multiline_range` – 複数行選択範囲 (start, end) の inclusive range。None なら通常選択。
-/// * `theme` – the `\ No newline` row is drawn in its muted token.
+/// * `theme` – the `\ No newline` row is drawn in its muted token. The comment marker is
+///   drawn in its warning token.
 ///
 /// The argument list is the public render entry point, used by the benches and by each diff
 /// body. Bundling it into a struct would change every one of those call sites.
@@ -1147,6 +1148,7 @@ pub fn render_cached_lines<'a>(
     let safe_range = safe_start..safe_start.max(safe_end);
     let cw = content_width as usize;
     let muted = theme.muted.style();
+    let warning = theme.warning.style();
 
     cache.lines[safe_range.clone()]
         .iter()
@@ -1159,7 +1161,7 @@ pub fn render_cached_lines<'a>(
                 .unwrap_or(false);
 
             let marker = if comment_lines.contains(&abs_idx) {
-                Some(Span::styled("● ", Style::default().fg(Color::Yellow)))
+                Some(Span::styled("● ", warning))
             } else {
                 None
             };
@@ -1501,6 +1503,7 @@ fn parse_patch_to_lines(
         tab_width,
     );
     let muted = theme.muted.style();
+    let warning = theme.warning.style();
 
     cache
         .lines
@@ -1512,11 +1515,9 @@ fn parse_patch_to_lines(
                 Some(Span::styled(
                     "● ".to_string(),
                     if is_selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::REVERSED)
+                        warning.add_modifier(Modifier::REVERSED)
                     } else {
-                        Style::default().fg(Color::Yellow)
+                        warning
                     },
                 ))
             } else {
@@ -2026,6 +2027,8 @@ fn render_reply_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
 
     #[test]
     fn test_extract_diff_filename_simple() {
@@ -2632,6 +2635,117 @@ mod tests {
             cache.resolve(after_add.spans[1].content),
         );
         assert_eq!(rendered, " next");
+    }
+
+    /// A patch whose `+added` row is index 2. The marker tests below comment on that row.
+    const MARKED_PATCH: &str = "@@ -1,2 +1,3 @@\n context\n+added\n-removed";
+
+    /// The comment marker is drawn in the theme's warning color, as the header note is.
+    #[test]
+    fn comment_marker_takes_the_theme_warning_color() {
+        let cache = build_plain_diff_cache(MARKED_PATCH, 4);
+        let comment_lines = HashSet::from([2usize]);
+        let themed = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+
+        let rendered = render_cached_lines(
+            &cache,
+            0..cache.lines.len(),
+            0,
+            &comment_lines,
+            false,
+            None,
+            0,
+            themed,
+        );
+
+        let marker = &rendered[2].spans[0];
+        assert_eq!(marker.content, "● ");
+        assert_eq!(marker.style.fg, Some(CUSTOM_WARNING));
+    }
+
+    /// Without color the marker keeps its glyph and drops its color, as the rest of the theme does.
+    #[test]
+    fn comment_marker_keeps_its_glyph_and_drops_its_color_under_no_color() {
+        let cache = build_plain_diff_cache(MARKED_PATCH, 4);
+        let comment_lines = HashSet::from([2usize]);
+
+        let rendered = render_cached_lines(
+            &cache,
+            0..cache.lines.len(),
+            0,
+            &comment_lines,
+            false,
+            None,
+            0,
+            no_color_theme(),
+        );
+
+        let marker = &rendered[2].spans[0];
+        assert_eq!(marker.content, "● ");
+        assert_eq!(marker.style.fg, None);
+    }
+
+    /// The fallback path draws the marker in the warning color on the selected row and off it.
+    /// The selected marker keeps the reverse video of its row.
+    #[test]
+    fn fallback_comment_marker_takes_the_theme_warning_color() {
+        let comment_lines = HashSet::from([2usize]);
+        let themed = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+
+        let unselected = parse_patch_to_lines(
+            MARKED_PATCH,
+            0,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            4,
+            themed,
+        );
+        let selected = parse_patch_to_lines(
+            MARKED_PATCH,
+            2,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            4,
+            themed,
+        );
+
+        let marker = &unselected[2].spans[0];
+        assert_eq!(marker.content, "● ");
+        assert_eq!(marker.style.fg, Some(CUSTOM_WARNING));
+        assert!(!marker.style.add_modifier.contains(Modifier::REVERSED));
+
+        let marker = &selected[2].spans[0];
+        assert_eq!(marker.content, "● ");
+        assert_eq!(marker.style.fg, Some(CUSTOM_WARNING));
+        assert!(marker.style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn fallback_comment_marker_keeps_reverse_video_under_no_color() {
+        let comment_lines = HashSet::from([2usize]);
+
+        let selected = parse_patch_to_lines(
+            MARKED_PATCH,
+            2,
+            "test.rs",
+            "base16-ocean.dark",
+            &comment_lines,
+            4,
+            no_color_theme(),
+        );
+
+        let marker = &selected[2].spans[0];
+        assert_eq!(marker.content, "● ");
+        assert_eq!(marker.style.fg, None);
+        assert!(marker.style.add_modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
