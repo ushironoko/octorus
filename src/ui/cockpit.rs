@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, CockpitMenuItem, LoadState};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
@@ -21,16 +22,114 @@ const LOGO_LINES: [&str; 6] = [
     r"  ╚═════╝   ╚═════╝    ╚═╝     ╚═════╝  ╚═╝  ╚═╝  ╚═════╝  ╚══════╝",
 ];
 
+/// OCTORUS in double-line box drawing, six rows of 41 columns. The header draws it
+/// when `LOGO_LINES` is wider than the terminal allows.
+const COMPACT_LOGO_LINES: [&str; 6] = [
+    "╔═══╗ ╔════ ══╦══ ╔═══╗ ╔═══╗ ║   ║ ╔═══╗",
+    "║   ║ ║       ║   ║   ║ ║   ║ ║   ║ ║    ",
+    "║   ║ ║       ║   ║   ║ ╠═══╝ ║   ║ ╚═══╗",
+    "║   ║ ║       ║   ║   ║ ║   ║ ║   ║     ║",
+    "║   ║ ║       ║   ║   ║ ║   ║ ║   ║     ║",
+    "╚═══╝ ╚════   ║   ╚═══╝ ╚   ╝ ╚═══╝ ╚═══╝",
+];
+
+/// The word the header falls back to when even `COMPACT_LOGO_LINES` is too wide.
+const TEXT_MARK: &str = "OCTORUS";
+
 const GRADIENT_START: (u8, u8, u8) = (234, 175, 200); // #eaafc8
 const GRADIENT_END: (u8, u8, u8) = (101, 78, 163); // #654ea3
 
+/// The header gradient at `t`, from 0.0 (the start colour) to 1.0 (the end colour).
+fn gradient_at(t: f32) -> Color {
+    let mix = |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * t) as u8;
+    Color::Rgb(
+        mix(GRADIENT_START.0, GRADIENT_END.0),
+        mix(GRADIENT_START.1, GRADIENT_END.1),
+        mix(GRADIENT_START.2, GRADIENT_END.2),
+    )
+}
+
 fn logo_color(line_index: usize) -> Color {
     let steps = (LOGO_LINES.len() - 1) as f32;
-    let t = line_index as f32 / steps;
-    let r = (GRADIENT_START.0 as f32 + (GRADIENT_END.0 as f32 - GRADIENT_START.0 as f32) * t) as u8;
-    let g = (GRADIENT_START.1 as f32 + (GRADIENT_END.1 as f32 - GRADIENT_START.1 as f32) * t) as u8;
-    let b = (GRADIENT_START.2 as f32 + (GRADIENT_END.2 as f32 - GRADIENT_START.2 as f32) * t) as u8;
-    Color::Rgb(r, g, b)
+    gradient_at(line_index as f32 / steps)
+}
+
+/// Which mark the header draws. The widest one that fits wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeaderMark {
+    /// `LOGO_LINES`, 67 columns.
+    Full,
+    /// `COMPACT_LOGO_LINES`, 41 columns.
+    Compact,
+    /// `TEXT_MARK` as plain text, cut to the width.
+    Text,
+}
+
+/// The mark for a header whose content area is `inner_width` columns wide.
+fn select_header_mark(inner_width: usize) -> HeaderMark {
+    if logo_width(&LOGO_LINES) <= inner_width {
+        HeaderMark::Full
+    } else if logo_width(&COMPACT_LOGO_LINES) <= inner_width {
+        HeaderMark::Compact
+    } else {
+        HeaderMark::Text
+    }
+}
+
+/// The display width of the widest line in `lines`.
+fn logo_width(lines: &[&str]) -> usize {
+    lines.iter().map(|line| line.width()).max().unwrap_or(0)
+}
+
+/// The header rows for `mark`. Every mark takes the same six rows, so the counts
+/// line stays in place, and no row is wider than `inner_width`.
+fn mark_lines(mark: HeaderMark, inner_width: usize) -> Vec<Line<'static>> {
+    match mark {
+        HeaderMark::Full => gradient_lines(&LOGO_LINES),
+        HeaderMark::Compact => gradient_lines(&COMPACT_LOGO_LINES),
+        HeaderMark::Text => text_mark_lines(inner_width),
+    }
+}
+
+fn gradient_lines(rows: &[&'static str]) -> Vec<Line<'static>> {
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| Line::from(Span::styled(*row, Style::default().fg(logo_color(i)))))
+        .collect()
+}
+
+/// `TEXT_MARK` cut to `inner_width` columns, with a gradient across its letters. It
+/// sits in the middle row of the six, so the word is centred vertically.
+fn text_mark_lines(inner_width: usize) -> Vec<Line<'static>> {
+    let shown = truncate_to_width(TEXT_MARK, inner_width);
+    let last = (TEXT_MARK.chars().count().max(2) - 1) as f32;
+    let letters: Vec<Span<'static>> = shown
+        .char_indices()
+        .enumerate()
+        .map(|(pos, (start, ch))| {
+            let style = Style::default()
+                .fg(gradient_at(pos as f32 / last))
+                .add_modifier(Modifier::BOLD);
+            Span::styled(&shown[start..start + ch.len_utf8()], style)
+        })
+        .collect();
+
+    let mut rows = vec![Line::raw(""); LOGO_LINES.len()];
+    rows[(LOGO_LINES.len() - 1) / 2] = Line::from(letters);
+    rows
+}
+
+/// The longest prefix of `text` that is at most `max_width` columns wide. It cuts
+/// between chars, so a wide glyph that does not fit is dropped, never split.
+fn truncate_to_width(text: &str, max_width: usize) -> &str {
+    let mut used = 0;
+    for (start, ch) in text.char_indices() {
+        used += ch.width().unwrap_or(0);
+        if used > max_width {
+            return &text[..start];
+        }
+    }
+    text
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -64,17 +163,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let cockpit = app.cockpit_state.as_ref().unwrap();
 
-    let mut lines: Vec<Line> = LOGO_LINES
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(logo_color(i)),
-            ))
-        })
-        .collect();
+    let block = Block::default().borders(Borders::ALL).title("octorus");
+    let inner_width = block.inner(area).width as usize;
 
+    let mut lines = mark_lines(select_header_mark(inner_width), inner_width);
     lines.push(Line::raw(""));
 
     let mention_span = format_count_span("Issues: ", &cockpit.mentioned_issues_count, app);
@@ -91,7 +183,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let header = Paragraph::new(lines)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("octorus"));
+        .block(block);
     frame.render_widget(header, area);
 }
 
@@ -187,29 +279,47 @@ fn render_menu(
 mod tests {
     use super::*;
     use crate::app::CockpitMenuItem;
+    use crate::ui::test_buffer::screen_text;
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::Terminal;
 
+    /// Draws the cockpit at `width` x `height` and returns the drawn buffer.
+    fn render_at(app: &mut App, width: u16, height: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
     fn render_full(app: &mut App) -> String {
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                render(frame, app);
-            })
-            .unwrap();
-        let buf = terminal.backend().buffer();
-        let mut lines = Vec::new();
-        for y in 0..24u16 {
-            let mut line = String::new();
-            for x in 0..100u16 {
-                let cell = &buf[(x, y)];
-                line.push_str(cell.symbol());
-            }
-            lines.push(line.trim_end().to_string());
-        }
-        lines.join("\n")
+        screen_text(&render_at(app, 100, 24))
+    }
+
+    /// The cells inside the header's border on row `y`. Spaces are kept, so the
+    /// string is as wide as the header's inner area.
+    fn header_row(buf: &Buffer, y: u16) -> String {
+        let width = buf.area().width;
+        (1..width.saturating_sub(1))
+            .map(|x| buf[(x, y)].symbol())
+            .collect()
+    }
+
+    /// The inner rows the mark occupies, above the blank line and the counts.
+    fn mark_rows(buf: &Buffer) -> Vec<String> {
+        (1..=LOGO_LINES.len() as u16)
+            .map(|y| header_row(buf, y))
+            .collect()
+    }
+
+    /// The spaces before the first drawn cell of `row`. Spaces are one column each.
+    fn leading_spaces(row: &str) -> usize {
+        row.chars().take_while(|ch| *ch == ' ').count()
+    }
+
+    /// The spaces after the last drawn cell of `row`.
+    fn trailing_spaces(row: &str) -> usize {
+        row.chars().rev().take_while(|ch| *ch == ' ').count()
     }
 
     fn make_cockpit_app(repo_available: bool) -> App {
@@ -350,5 +460,188 @@ mod tests {
         │q: quit  ?: help  r: refresh                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    #[test]
+    fn test_cockpit_full_logo_is_drawn_whole_at_100_and_80_columns() {
+        for width in [100, 80] {
+            let mut app = make_cockpit_app(true);
+            let buf = render_at(&mut app, width, 24);
+            let rows: Vec<String> = mark_rows(&buf)
+                .iter()
+                .map(|row| row.trim().to_string())
+                .collect();
+            let expected: Vec<&str> = LOGO_LINES.iter().map(|line| line.trim()).collect();
+            assert_eq!(rows, expected, "width {width}");
+        }
+    }
+
+    #[test]
+    fn test_cockpit_compact_logo_replaces_full_logo_at_60_columns() {
+        let mut app = make_cockpit_app(true);
+        let buf = render_at(&mut app, 60, 24);
+        let rows: Vec<String> = mark_rows(&buf)
+            .iter()
+            .map(|row| row.trim().to_string())
+            .collect();
+        let expected: Vec<&str> = COMPACT_LOGO_LINES.iter().map(|line| line.trim()).collect();
+        assert_eq!(rows, expected);
+
+        let screen = screen_text(&buf);
+        assert!(
+            !screen.contains(LOGO_LINES[0].trim()),
+            "the 67-column logo must not be drawn at 60 columns"
+        );
+        assert!(
+            !screen.contains(TEXT_MARK),
+            "the compact logo is drawn, not the text fallback"
+        );
+    }
+
+    #[test]
+    fn test_cockpit_compact_logo_is_centred_with_room_to_spare_at_60_columns() {
+        let mut app = make_cockpit_app(true);
+        let buf = render_at(&mut app, 60, 24);
+        // The mark is as wide as its widest row, so its margins are the smallest
+        // leading and trailing spaces over the rows.
+        let rows = mark_rows(&buf);
+        let left = rows.iter().map(|row| leading_spaces(row)).min().unwrap();
+        let right = rows.iter().map(|row| trailing_spaces(row)).min().unwrap();
+        assert!(left >= 2 && right >= 2, "left {left}, right {right}");
+        assert!(left.abs_diff(right) <= 1, "left {left}, right {right}");
+    }
+
+    #[test]
+    fn test_cockpit_narrow_header_centres_the_word_without_overflow() {
+        for width in [30, 20, 10] {
+            let mut app = make_cockpit_app(true);
+            let buf = render_at(&mut app, width, 24);
+            let inner = usize::from(width) - 2;
+            let word_row = (1..=8)
+                .map(|y| header_row(&buf, y))
+                .find(|row| row.contains(TEXT_MARK))
+                .unwrap_or_else(|| panic!("width {width}: the word is not drawn"));
+            assert_eq!(word_row.width(), inner, "width {width}");
+            assert_eq!(word_row.trim(), TEXT_MARK, "width {width}");
+            let left = leading_spaces(&word_row);
+            let right = trailing_spaces(&word_row);
+            assert!(
+                left.abs_diff(right) <= 1,
+                "width {width}: left {left}, right {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cockpit_tiny_header_shows_as_much_of_the_word_as_fits() {
+        for width in 1..=12u16 {
+            let mut app = make_cockpit_app(true);
+            let buf = render_at(&mut app, width, 24);
+            let inner = usize::from(width.saturating_sub(2));
+            let expected: String = TEXT_MARK.chars().take(inner).collect();
+            let drawn: Vec<String> = mark_rows(&buf)
+                .iter()
+                .map(|row| row.trim().to_string())
+                .filter(|row| !row.is_empty())
+                .collect();
+            let expected_rows = if expected.is_empty() {
+                vec![]
+            } else {
+                vec![expected]
+            };
+            assert_eq!(drawn, expected_rows, "width {width}");
+        }
+    }
+
+    #[test]
+    fn test_cockpit_mark_rows_keep_the_gradient_by_line_index() {
+        for (width, logo) in [(100u16, &LOGO_LINES[..]), (60, &COMPACT_LOGO_LINES[..])] {
+            let mut app = make_cockpit_app(true);
+            let buf = render_at(&mut app, width, 24);
+            for i in 0..logo.len() {
+                let y = 1 + i as u16;
+                let x = 1 + leading_spaces(&header_row(&buf, y)) as u16;
+                assert_eq!(buf[(x, y)].fg, logo_color(i), "width {width}, row {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_cockpit_compact_logo_at_60_columns() {
+        let mut app = make_cockpit_app(true);
+        let cockpit = app.cockpit_state.as_mut().unwrap();
+        cockpit.mentioned_issues_count = LoadState::Loaded(3);
+        cockpit.review_prs_count = LoadState::Loaded(5);
+
+        assert_snapshot!(screen_text(&render_at(&mut app, 60, 24)), @"
+        ┌octorus───────────────────────────────────────────────────┐
+        │         ╔═══╗ ╔════ ══╦══ ╔═══╗ ╔═══╗ ║   ║ ╔═══╗        │
+        │         ║   ║ ║       ║   ║   ║ ║   ║ ║   ║ ║            │
+        │         ║   ║ ║       ║   ║   ║ ╠═══╝ ║   ║ ╚═══╗        │
+        │         ║   ║ ║       ║   ║   ║ ║   ║ ║   ║     ║        │
+        │         ║   ║ ║       ║   ║   ║ ║   ║ ║   ║     ║        │
+        │         ╚═══╝ ╚════   ║   ╚═══╝ ╚   ╝ ╚═══╝ ╚═══╝        │
+        │                                                          │
+        │                  Issues: 3  Review PRs: 5                │
+        └──────────────────────────────────────────────────────────┘
+        ┏▶ NAVIGATION━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃▌   PR List        Browse pull requests                   ┃
+        ┃    Issue List     Browse issues                          ┃
+        ┃    Local Diff     View local git diff                    ┃
+        ┃    Git Ops        Git operations (stage, commit, push)   ┃
+        ┃    Repo Browse    Browse the repository and jump by symbo┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+        ┌──────────────────────────────────────────────────────────┐
+        │q: quit  ?: help  r: refresh                              │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn test_header_mark_follows_the_inner_width() {
+        assert_eq!(logo_width(&LOGO_LINES), 67, "the full logo is 67 columns");
+        let compact = logo_width(&COMPACT_LOGO_LINES);
+
+        assert_eq!(select_header_mark(98), HeaderMark::Full, "100 columns");
+        assert_eq!(select_header_mark(67), HeaderMark::Full);
+        assert_eq!(select_header_mark(66), HeaderMark::Compact);
+        assert_eq!(select_header_mark(58), HeaderMark::Compact, "60 columns");
+        assert_eq!(select_header_mark(compact), HeaderMark::Compact);
+        assert_eq!(select_header_mark(compact - 1), HeaderMark::Text);
+        assert_eq!(select_header_mark(0), HeaderMark::Text);
+    }
+
+    #[test]
+    fn test_compact_logo_is_six_equal_rows_with_room_at_60_columns() {
+        let compact = logo_width(&COMPACT_LOGO_LINES);
+        assert!(COMPACT_LOGO_LINES.iter().all(|row| row.width() == compact));
+        assert!(
+            compact + 2 <= 58,
+            "two columns clear at 60 columns, got {compact}"
+        );
+    }
+
+    #[test]
+    fn test_truncate_to_width_cuts_between_glyphs() {
+        assert_eq!(truncate_to_width("OCTORUS", 7), "OCTORUS");
+        assert_eq!(truncate_to_width("OCTORUS", 4), "OCTO");
+        assert_eq!(truncate_to_width("OCTORUS", 0), "");
+        assert_eq!(truncate_to_width("日本語", 3), "日");
+        assert_eq!(truncate_to_width("日本語", 1), "");
+        assert_eq!(truncate_to_width("ab日", 3), "ab");
+        assert_eq!(truncate_to_width("ab日", 4), "ab日");
+    }
+
+    #[test]
+    fn test_every_mark_line_fits_the_inner_width() {
+        for inner in 0..=80 {
+            for line in mark_lines(select_header_mark(inner), inner) {
+                assert!(line.width() <= inner, "inner {inner}: {line:?}");
+            }
+        }
     }
 }
