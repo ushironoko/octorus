@@ -3325,8 +3325,12 @@ mod tests {
             },
         });
         let rendered = render_at(&mut dependents, 100, 16);
+        let selected_edge = rendered
+            .lines()
+            .find(|row| row.contains("[import] ./app"))
+            .unwrap_or_else(|| panic!("dependents edge row missing:\n{rendered}"));
         assert!(
-            rendered.contains("▌─┤│user2") || rendered.contains("▌─┤│"),
+            selected_edge.contains("▌─┤│[import] ./app"),
             "dependents selection dropped the branch:\n{rendered}"
         );
         assert!(
@@ -3336,7 +3340,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_graph_selection_keeps_the_box_and_the_first_character() {
+    fn narrow_graph_selected_edge_row_keeps_the_box_border_before_the_edge() {
         let panel = ModuleGraphPanel {
             path: "src/app.ts".to_string(),
             display_path: "src/app.ts".to_string(),
