@@ -1053,7 +1053,9 @@ mod tests {
                     return None;
                 }
                 let index: usize = text[start + 2..start + 4].parse().ok()?;
-                Some((columns[start], y, index))
+                // `start` is a byte offset; `columns` is indexed by display column.
+                let column = unicode_width::UnicodeWidthStr::width(&text[..start]);
+                Some((columns[column], y, index))
             })
             .unwrap_or_else(|| panic!("no scrolled symbol row"));
         let target = app
