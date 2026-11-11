@@ -56,16 +56,17 @@ pub fn pending_review_text(drafts: usize) -> String {
     }
 }
 
-/// The pending-review note as a header span. `None` when the viewer has no drafts
-/// on this PR, and in local mode, which has no pending review.
-pub fn build_pending_review_span(app: &App) -> Option<Span<'static>> {
+/// The pending-review note as a header span, in the theme's warning color as a
+/// draft's comment tag is. `None` when the viewer has no drafts on this PR, and in
+/// local mode, which has no pending review.
+pub fn build_pending_review_span(app: &App, theme: Theme) -> Option<Span<'static>> {
     if app.is_local_mode() {
         return None;
     }
     match app.cmt.pending_drafts {
         PendingDrafts::Known(drafts) if drafts > 0 => Some(Span::styled(
             pending_review_text(drafts),
-            Style::default().fg(Color::Yellow),
+            theme.warning.style(),
         )),
         PendingDrafts::Known(_) | PendingDrafts::Unknown => None,
     }
@@ -345,6 +346,8 @@ mod tests {
 mod pending_note_tests {
     use super::*;
     use crate::app::{App, PendingDrafts};
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
 
     #[test]
     fn pending_review_text_counts_drafts_in_the_right_form() {
@@ -356,19 +359,20 @@ mod pending_note_tests {
     #[test]
     fn pending_note_is_shown_only_for_known_drafts() {
         let mut app = App::new_for_test();
+        let theme = Theme::test_default();
         assert!(
-            build_pending_review_span(&app).is_none(),
+            build_pending_review_span(&app, theme).is_none(),
             "unknown is not shown"
         );
 
         app.cmt.pending_drafts = PendingDrafts::Known(0);
         assert!(
-            build_pending_review_span(&app).is_none(),
+            build_pending_review_span(&app, theme).is_none(),
             "zero is not shown"
         );
 
         app.cmt.pending_drafts = PendingDrafts::Known(3);
-        let note = build_pending_review_span(&app).expect("drafts are shown");
+        let note = build_pending_review_span(&app, theme).expect("drafts are shown");
         assert_eq!(note.content, "Pending review: 3 drafts");
     }
 
@@ -378,25 +382,68 @@ mod pending_note_tests {
         app.set_local_mode(true);
         app.cmt.pending_drafts = PendingDrafts::Known(3);
 
-        assert!(build_pending_review_span(&app).is_none());
+        assert!(build_pending_review_span(&app, Theme::test_default()).is_none());
+    }
+
+    #[test]
+    fn pending_note_takes_the_theme_warning_color() {
+        let mut app = App::new_for_test();
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        let theme = Theme::test_default();
+
+        let default_note = build_pending_review_span(&app, theme).expect("drafts are shown");
+        assert_eq!(default_note.style, theme.warning.style());
+
+        let themed = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let note = build_pending_review_span(&app, themed).expect("drafts are shown");
+        assert_eq!(note.style.fg, Some(CUSTOM_WARNING));
+    }
+
+    /// Without color the note keeps its words, as the comment tag does.
+    #[test]
+    fn pending_note_keeps_its_words_when_color_is_off() {
+        let mut app = App::new_for_test();
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+
+        let note = build_pending_review_span(&app, no_color_theme()).expect("drafts are shown");
+
+        assert_eq!(note.content, "Pending review: 3 drafts");
+        assert_eq!(note.style.fg, None);
     }
 }
 
 #[cfg(test)]
 mod pending_comment_tag_tests {
     use super::*;
-    use crate::config::ThemeConfig;
+    use crate::config::{ThemeColors, ThemeConfig};
     use crate::github::comment::CommentPublication;
-    use crate::ui::test_buffer::comment_on_added_line;
+    use crate::ui::test_buffer::{comment_on_added_line, theme_with, CUSTOM_WARNING};
 
     #[test]
     fn a_draft_gets_the_tag_in_the_warning_color() {
         let draft = comment_on_added_line(CommentPublication::PendingDraft);
+        let theme = Theme::test_default();
 
-        let tag = pending_comment_tag(&draft, Theme::test_default());
+        let tag = pending_comment_tag(&draft, theme);
 
         assert_eq!(tag.content, " · pending review");
-        assert_eq!(tag.style.fg, Some(Color::Yellow));
+        assert_eq!(tag.style, theme.warning.style());
+    }
+
+    #[test]
+    fn a_draft_tag_takes_a_custom_warning_color() {
+        let draft = comment_on_added_line(CommentPublication::PendingDraft);
+        let themed = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+
+        let tag = pending_comment_tag(&draft, themed);
+
+        assert_eq!(tag.style.fg, Some(CUSTOM_WARNING));
     }
 
     #[test]

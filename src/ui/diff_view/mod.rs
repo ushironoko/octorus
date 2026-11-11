@@ -1720,7 +1720,7 @@ fn render_comment_context(
     ];
     lines.push(Line::from(Span::styled(
         "Added to your pending review. Published when you submit the review.",
-        Style::default().fg(Color::DarkGray),
+        app.theme.muted.style(),
     )));
 
     let paragraph = Paragraph::new(lines)
@@ -3418,8 +3418,11 @@ mod priming_diff_tests {
 mod pending_review_composer_tests {
     use super::*;
     use crate::app::{App, AppState, InputMode, LineInputContext};
-    use crate::ui::test_buffer::screen_text;
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{cells_of, no_color_theme, screen_text, theme_with, CUSTOM_MUTED};
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::{Color, Modifier};
     use ratatui::Terminal;
 
     fn context() -> LineInputContext {
@@ -3466,6 +3469,14 @@ mod pending_review_composer_tests {
         );
     }
 
+    fn drawn(app: &App, width: u16, height: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_text_input(frame, app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
     #[test]
     fn comment_location_says_the_comment_waits_for_the_review() {
         let mut app = App::new_for_test();
@@ -3475,6 +3486,43 @@ mod pending_review_composer_tests {
         let screen = screen(&app, 60, 24);
 
         assert!(screen.contains("Added to your pending review."), "{screen}");
+    }
+
+    #[test]
+    fn comment_location_hint_takes_the_theme_muted_color() {
+        let mut app = App::new_for_test();
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Comment(context()));
+        app.theme = theme_with(ThemeColors {
+            muted: Some(CUSTOM_MUTED),
+            ..ThemeColors::default()
+        });
+
+        let buf = drawn(&app, 60, 24);
+
+        let cells = cells_of(&buf, "Added to your pending review.").expect("the hint is drawn");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_MUTED),
+            "{cells:?}"
+        );
+    }
+
+    #[test]
+    fn comment_location_hint_is_dim_and_uncolored_under_no_color() {
+        let mut app = App::new_for_test();
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Comment(context()));
+        app.theme = no_color_theme();
+
+        let buf = drawn(&app, 60, 24);
+
+        let cells = cells_of(&buf, "Added to your pending review.").expect("the hint is drawn");
+        assert!(
+            cells
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.modifier == Modifier::DIM),
+            "{cells:?}"
+        );
     }
 
     #[test]
@@ -3524,9 +3572,11 @@ mod pending_review_composer_tests {
 mod pending_comment_panel_tests {
     use super::*;
     use crate::app::AppState;
+    use crate::config::ThemeColors;
     use crate::github::comment::CommentPublication;
     use crate::ui::test_buffer::{
-        app_with_comment_on_added_line, comment_on_added_line, find_column, row_text, screen_text,
+        app_with_comment_on_added_line, cells_of, comment_on_added_line, no_color_theme, row_text,
+        screen_text, theme_with, CUSTOM_WARNING,
     };
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -3552,6 +3602,7 @@ mod pending_comment_panel_tests {
         let mut app =
             app_with_comment_on_added_line(comment_on_added_line(CommentPublication::PendingDraft));
         app.state = AppState::DiffView;
+        let warning = app.theme.warning.style().fg;
 
         let buf = draw(&mut app);
 
@@ -3561,11 +3612,51 @@ mod pending_comment_panel_tests {
             "{}",
             screen_text(&buf)
         );
-        let tag = "pending review";
-        let x = find_column(&buf, row, tag).expect("the tag is drawn");
-        for dx in 0..tag.len() as u16 {
-            assert_eq!(buf[(x + dx, row)].fg, Color::Yellow, "tag cell {dx}");
-        }
+        let cells = cells_of(&buf, "· pending review").expect("the tag is drawn");
+        assert!(
+            cells.iter().all(|cell| Some(cell.fg) == warning),
+            "{cells:?}"
+        );
+    }
+
+    #[test]
+    fn a_draft_tag_takes_a_custom_warning_color() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::PendingDraft));
+        app.state = AppState::DiffView;
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+
+        let buf = draw(&mut app);
+
+        let cells = cells_of(&buf, "· pending review").expect("the tag is drawn");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{cells:?}"
+        );
+    }
+
+    #[test]
+    fn a_draft_tag_keeps_its_words_and_drops_its_color_under_no_color() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::PendingDraft));
+        app.state = AppState::DiffView;
+        app.theme = no_color_theme();
+
+        let buf = draw(&mut app);
+
+        assert!(
+            row_text(&buf, header_row(&buf)).contains("@alice (line 2) · pending review"),
+            "{}",
+            screen_text(&buf)
+        );
+        let cells = cells_of(&buf, "· pending review").expect("the tag is drawn");
+        assert!(
+            cells.iter().all(|cell| cell.fg == Color::Reset),
+            "{cells:?}"
+        );
     }
 
     #[test]

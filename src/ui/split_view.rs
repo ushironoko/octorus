@@ -109,7 +109,7 @@ fn render_file_list_pane(
     };
 
     let mut header_block = pane_block(theme, PaneTitle::AsIs("octorus"), attention);
-    if let Some(note) = build_pending_review_span(app) {
+    if let Some(note) = build_pending_review_span(app, theme) {
         header_block = header_block.title(Line::from(note).right_aligned());
     }
     let header = Paragraph::new(pr_info).block(header_block);
@@ -765,7 +765,8 @@ mod tests {
 mod pending_header_tests {
     use super::*;
     use crate::app::{App, AppState, PendingDrafts};
-    use crate::ui::test_buffer::row_text;
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{cells_of, row_text, theme_with, CUSTOM_WARNING};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -782,6 +783,28 @@ mod pending_header_tests {
 
         let border = row_text(terminal.backend().buffer(), 0);
         assert!(border.contains("Pending review: 3 drafts"), "{border}");
+    }
+
+    #[test]
+    fn split_view_file_pane_border_note_takes_the_theme_warning_color() {
+        let mut app = App::new_for_test();
+        app.state = AppState::SplitViewFileList;
+        app.pr_number = Some(244);
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let cells = cells_of(terminal.backend().buffer(), "Pending review: 3 drafts")
+            .expect("the note is drawn on the border");
+        assert!(
+            cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{cells:?}"
+        );
     }
 }
 
