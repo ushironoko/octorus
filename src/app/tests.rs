@@ -2465,6 +2465,59 @@ fn test_open_help_from_split_view_diff_sets_help_return_state() {
 }
 
 #[test]
+fn open_help_lands_on_the_config_tab_when_the_config_has_warnings() {
+    let config = Config {
+        load_warnings: vec![String::from(
+            "/c/config.toml: theme: expected a table, got integer \"5\" (using default)",
+        )],
+        ..Config::default()
+    };
+    let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+    assert_eq!(app.help_tab, HelpTab::Keybindings);
+
+    app.open_help(AppState::FileList);
+
+    assert_eq!(app.help_tab, HelpTab::Config);
+}
+
+#[test]
+fn open_help_keeps_the_last_help_tab_without_config_warnings() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+    app.help_tab = HelpTab::Config;
+
+    app.open_help(AppState::FileList);
+
+    assert_eq!(app.help_tab, HelpTab::Config);
+}
+
+/// A bad theme file is named on the loading screen, and the Help screen that `?`
+/// opens lands on the Config tab, which lists the warning in full.
+#[test]
+fn a_bad_theme_file_is_named_while_loading_and_listed_on_the_help_config_tab() {
+    let dir = tempdir().unwrap();
+    let global = dir.path().join("global.toml");
+    let local = dir.path().join("missing-local.toml");
+    std::fs::write(&global, "theme = 5\n").unwrap();
+    let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+
+    let loading = render_screen(&mut app, 120, 12);
+    assert!(
+        loading.contains("1 config warning (? for details)"),
+        "{loading}"
+    );
+
+    app.open_help(AppState::FileList);
+    let help = render_screen(&mut app, 120, 40);
+    assert!(help.contains("Config Warnings"), "{help}");
+    assert!(
+        help.contains("theme: expected a table, got integer \"5\" (using default)"),
+        "{help}"
+    );
+}
+
+#[test]
 fn test_help_viewport_overhead_matches_render_layout() {
     // The render layout uses:
     //   Constraint::Length(3) for tab header + Constraint::Min(0) for content

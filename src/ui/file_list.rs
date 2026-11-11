@@ -340,7 +340,8 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
     let footer_text = app
         .pr_open_notice()
         .unwrap_or_else(|| format!("{} Please wait... (q: quit)", app.spinner_char()));
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let footer_line = super::footer::with_config_warning(app, Line::from(footer_text));
+    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -656,6 +657,41 @@ mod tests {
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ┌────────────────────────────────────────────────────────────────────────────────────────┐
         │PR #123 inferred from commit subject; GitHub did not confirm it                         │
+        └────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn config_warning_badge_is_visible_while_pr_data_is_still_loading() {
+        let mut app = App::new_for_test();
+        app.config.load_warnings = vec![String::from(
+            "/c/config.toml: theme: expected a table, got integer \"5\" (using default)",
+        )];
+        let backend = TestBackend::new(90, 9);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render_loading(frame, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..9)
+            .map(|y| {
+                (0..90)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_snapshot!(rendered, @"
+        ┌octorus─────────────────────────────────────────────────────────────────────────────────┐
+        │PR #1 - Loading...                                                                      │
+        └────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Changed Files───────────────────────────────────────────────────────────────────────────┐
+        │                                  ⠋ Loading PR data...                                  │
+        └────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌────────────────────────────────────────────────────────────────────────────────────────┐
+        │1 config warning (? for details)  ⠋ Please wait... (q: quit)                            │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }

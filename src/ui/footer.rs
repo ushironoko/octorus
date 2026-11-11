@@ -32,6 +32,9 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
 /// 4. Submission result
 /// 5. PR open notice
 /// 6. Default help text plus loading indicators
+///
+/// Whichever of these applies, the config-warning badge comes first when the config
+/// loaded with warnings.
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
     build_footer_line_with_focus(app, help_text, true)
 }
@@ -41,6 +44,10 @@ pub fn build_footer_line_with_focus<'a>(
     help_text: &'a str,
     is_focused: bool,
 ) -> Line<'a> {
+    with_config_warning(app, footer_status_line(app, help_text, is_focused))
+}
+
+fn footer_status_line<'a>(app: &'a App, help_text: &'a str, is_focused: bool) -> Line<'a> {
     if is_focused {
         if let Some(line) = shell_input_line(app) {
             return line;
@@ -114,6 +121,31 @@ fn shell_input_line(app: &App) -> Option<Line<'static>> {
         .then(|| render_shell_input_line(&shell.input, shell.cursor))
 }
 
+/// The badge that names the config warnings, e.g. `1 config warning (? for details)`.
+/// `None` when the config loaded cleanly.
+pub(crate) fn config_warning_span(app: &App) -> Option<Span<'static>> {
+    let count = app.config.load_warnings.len();
+    if count == 0 {
+        return None;
+    }
+    let noun = if count == 1 { "warning" } else { "warnings" };
+    let help_key = app.config.keybindings.help.display();
+    Some(Span::styled(
+        format!("{count} config {noun} ({help_key} for details)"),
+        app.theme.warning.style(),
+    ))
+}
+
+/// Draws the config-warning badge in front of a footer line, when there are warnings.
+/// The hints keep their place after it, so the badge takes width but never replaces them.
+pub(crate) fn with_config_warning<'a>(app: &App, mut line: Line<'a>) -> Line<'a> {
+    if let Some(badge) = config_warning_span(app) {
+        line.spans.insert(0, Span::raw("  "));
+        line.spans.insert(0, badge);
+    }
+    line
+}
+
 fn loading_comments_span(app: &App) -> Span<'static> {
     Span::styled(
         format!("{} Loading comments...", app.spinner_char()),
@@ -184,6 +216,7 @@ mod tests {
     use super::*;
     use crate::app::{App, AppState, PrOpenSource, ReviewAction};
     use crate::config::ThemeColors;
+    use crate::keybinding::{KeyBinding, KeySequence};
     use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
     use insta::assert_snapshot;
 
@@ -450,5 +483,48 @@ mod tests {
         let progress = progress_span(&line);
         assert_eq!(progress.style.fg, None);
         assert!(progress.content.contains("Loading comments..."));
+    }
+
+    fn with_config_warnings(app: &mut App, count: usize) {
+        app.config.load_warnings = (0..count)
+            .map(|index| {
+                format!("/c/config.toml: theme: expected a table, got integer \"{index}\" (using default)")
+            })
+            .collect();
+    }
+
+    #[test]
+    fn config_warning_badge_leads_the_idle_footer_and_keeps_the_hints() {
+        let mut app = App::new_for_test();
+        with_config_warnings(&mut app, 1);
+
+        let text = line_to_string(&build_footer_line(&app, HELP));
+
+        assert_eq!(text, format!("1 config warning (? for details)  {HELP}"));
+    }
+
+    #[test]
+    fn config_warning_badge_counts_the_warnings_and_names_the_configured_help_key() {
+        let mut app = App::new_for_test();
+        with_config_warnings(&mut app, 2);
+        app.config.keybindings.help = KeySequence::single(KeyBinding::char('h'));
+
+        let text = line_to_string(&build_footer_line(&app, HELP));
+
+        assert_eq!(text, format!("2 config warnings (h for details)  {HELP}"));
+    }
+
+    #[test]
+    fn config_warning_badge_stays_in_front_of_a_transient_result() {
+        let mut app = App::new_for_test();
+        with_config_warnings(&mut app, 1);
+        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+
+        let text = line_to_string(&build_footer_line(&app, HELP));
+
+        assert_eq!(
+            text,
+            "1 config warning (? for details)  \u{2713} Added to pending review"
+        );
     }
 }

@@ -10,7 +10,10 @@ use crate::ai::{PromptLoader, PromptSource};
 use crate::app::{App, HelpTab};
 use crate::config::{Config, KeybindingsConfig};
 use crate::syntax::available_themes;
+use crate::ui::common::wrap_text;
 use crate::ui::hit::{HitTarget, PaneKind, TabGroup};
+use crate::ui::theme::Theme;
+use unicode_width::UnicodeWidthStr;
 
 /// Format a key display with padding for alignment
 fn fmt_key(key: &str, width: usize) -> String {
@@ -150,8 +153,69 @@ fn render_keybindings_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Breaks a warning into rows of at most `width` columns. A row breaks at a space, so a
+/// word stays whole. A word wider than a row (a long path, say) is cut by character.
+fn wrap_warning(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for word in text.split(' ') {
+        if word.width() > width {
+            // The word fits no row, so it is cut. Its last piece starts the next row,
+            // which the words after it may still join.
+            if !row.is_empty() {
+                rows.push(std::mem::take(&mut row));
+            }
+            let mut pieces = wrap_text(word, width);
+            row = pieces.pop().unwrap_or_default();
+            rows.extend(pieces);
+        } else if row.is_empty() {
+            row.push_str(word);
+        } else if row.width() + 1 + word.width() > width {
+            rows.push(std::mem::take(&mut row));
+            row.push_str(word);
+        } else {
+            row.push(' ');
+            row.push_str(word);
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+/// The config warnings, each wrapped to `width` so the end of a long one is not clipped.
+/// Empty when the config loaded cleanly, so the tab is unchanged in that case.
+fn config_warning_lines(warnings: &[String], width: usize, theme: Theme) -> Vec<Line<'static>> {
+    if warnings.is_empty() {
+        return Vec::new();
+    }
+    let header_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let mut lines = vec![Line::from(Span::styled("Config Warnings", header_style))];
+    for warning in warnings {
+        for (index, row) in wrap_warning(warning, width.saturating_sub(4))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if index == 0 { "  ! " } else { "    " };
+            lines.push(Line::from(Span::styled(
+                format!("{lead}{row}"),
+                theme.warning.style(),
+            )));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        "  Fix the file and restart to clear these.",
+        theme.muted.style(),
+    )));
+    lines.push(Line::from(""));
+    lines
+}
+
 fn render_config_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    let config_lines = build_config_lines(&app.config);
+    let width = usize::from(area.width.saturating_sub(2));
+    let mut config_lines = config_warning_lines(&app.config.load_warnings, width, app.theme);
+    config_lines.extend(build_config_lines(&app.config));
     let total_lines = config_lines.len();
     let content_height = area.height.saturating_sub(2) as usize;
 
@@ -1562,6 +1626,83 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn config_tab_text(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn wrap_warning_breaks_between_words_and_cuts_only_a_word_too_long_for_a_row() {
+        assert_eq!(wrap_warning("aaa bbb ccc", 7), vec!["aaa bbb", "ccc"]);
+        assert_eq!(
+            wrap_warning("abcdefghijkl mn", 5),
+            vec!["abcde", "fghij", "kl mn"]
+        );
+        assert_eq!(wrap_warning("short", 40), vec!["short"]);
+    }
+
+    #[test]
+    fn config_tab_lists_each_warning_before_the_config_files() {
+        let mut app = App::new_for_test();
+        app.config.load_warnings = vec![
+            "/home/me/.config/octorus/config.toml: theme: expected a table, got integer \"5\" (using default)"
+                .to_string(),
+        ];
+        app.help_tab = HelpTab::Config;
+
+        let out = config_tab_text(&mut app, 120, 40);
+
+        assert!(out.contains("Config Warnings"), "{out}");
+        assert!(
+            out.contains("theme: expected a table, got integer \"5\" (using default)"),
+            "{out}"
+        );
+        assert!(
+            out.find("Config Warnings") < out.find("Config Files"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn config_tab_wraps_a_long_warning_so_its_end_is_not_clipped() {
+        let mut app = App::new_for_test();
+        app.config.load_warnings = vec![
+            "/home/me/some/very/long/path/that/keeps/going/config.toml: theme.colors.accent: invalid color \"cyann\" (using global ENDMARK)"
+                .to_string(),
+        ];
+        app.help_tab = HelpTab::Config;
+
+        let out = config_tab_text(&mut app, 50, 40);
+
+        assert!(
+            out.contains("ENDMARK)"),
+            "the warning end was clipped:\n{out}"
+        );
+    }
+
+    #[test]
+    fn config_tab_has_no_warnings_section_without_warnings() {
+        let mut app = App::new_for_test();
+        app.help_tab = HelpTab::Config;
+
+        let out = config_tab_text(&mut app, 120, 40);
+
+        assert!(!out.contains("Config Warnings"), "{out}");
+        assert!(out.contains("Config Files"), "{out}");
+    }
 
     #[test]
     fn test_build_config_lines_does_not_panic() {
