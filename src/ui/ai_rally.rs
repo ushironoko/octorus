@@ -17,6 +17,7 @@ use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let pr_info = build_pr_info(app);
+    let badge = super::footer::config_warning_span(app);
 
     let App {
         ai_rally_state,
@@ -40,7 +41,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let kb = &config.keybindings;
     render_header(frame, chunks[0], rally_state, &pr_info);
     render_main_content(frame, chunks[1], rally_state, kb, hit_map);
-    render_status_bar(frame, chunks[2], rally_state, kb);
+    render_status_bar(frame, chunks[2], rally_state, kb, badge);
 
     if rally_state.showing_log_detail {
         render_log_detail_modal(frame, rally_state);
@@ -661,7 +662,13 @@ fn render_log_detail_modal(frame: &mut Frame, state: &AiRallyState) {
     frame.render_widget(content, modal_area);
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &KeybindingsConfig) {
+fn render_status_bar(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiRallyState,
+    kb: &KeybindingsConfig,
+    badge: Option<Span<'static>>,
+) {
     let yes = kb.confirm_yes.display();
     let no = kb.confirm_no.display();
     let quit = kb.quit.display();
@@ -701,11 +708,11 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState, kb: &K
         }
     };
 
-    let status_bar = Paragraph::new(Line::from(vec![Span::styled(
+    let hints = Line::from(vec![Span::styled(
         help_text,
         Style::default().fg(Color::Cyan),
-    )]))
-    .block(
+    )]);
+    let status_bar = Paragraph::new(super::footer::with_badge(badge, hints)).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray)),
@@ -766,6 +773,24 @@ mod tests {
             lines.push(line.trim_end().to_string());
         }
         lines.join("\n")
+    }
+
+    #[test]
+    fn status_bar_leads_with_the_config_warning_badge() {
+        let mut app = App::new_for_test();
+        app.state = AppState::AiRally;
+        app.ai_rally_state = Some(make_rally_state());
+        app.config.load_warnings = vec![String::from(
+            "/c/config.toml: theme: expected a table, got integer \"5\" (using default)",
+        )];
+
+        let out = render_full(&mut app);
+
+        assert!(
+            out.lines()
+                .any(|line| line.contains("1 config warning (? for details)")),
+            "{out}"
+        );
     }
 
     #[test]

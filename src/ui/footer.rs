@@ -137,9 +137,14 @@ pub(crate) fn config_warning_span(app: &App) -> Option<Span<'static>> {
 }
 
 /// Draws the config-warning badge in front of a footer line, when there are warnings.
-/// The hints keep their place after it, so the badge takes width but never replaces them.
-pub(crate) fn with_config_warning<'a>(app: &App, mut line: Line<'a>) -> Line<'a> {
-    if let Some(badge) = config_warning_span(app) {
+pub(crate) fn with_config_warning<'a>(app: &App, line: Line<'a>) -> Line<'a> {
+    with_badge(config_warning_span(app), line)
+}
+
+/// Puts `badge`, when there is one, in front of `line`. The hints keep their place after
+/// it, so the badge takes width but never replaces them.
+pub(crate) fn with_badge<'a>(badge: Option<Span<'static>>, mut line: Line<'a>) -> Line<'a> {
+    if let Some(badge) = badge {
         line.spans.insert(0, Span::raw("  "));
         line.spans.insert(0, badge);
     }
