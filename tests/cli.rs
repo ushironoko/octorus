@@ -19,11 +19,18 @@ const HELP_BANNER_LINE: &str =
 /// detection — `repo_detection_exit_writes_nothing_to_stdout` pins the contrast.
 const ALTERNATE_SCREEN_CSI: &str = "\u{1b}[?1049";
 
+/// A repository name that does not exist. Passing it with `--repo` takes the
+/// explicit-repository path, so these tests never depend on repo detection or on
+/// a real repository's data.
+const INVALID_REPO: &str = "invalid/nonexistent-repo-12345";
+
 /// Run `or <args>` in `cwd` with HOME and the XDG directories pointed inside it,
 /// so the run cannot see the developer's config, cache or `gh` credentials.
 ///
-/// The TUI never exits on its own, so the run is killed on a timeout; callers
-/// read the output it produced before then rather than an exit status.
+/// With a controlling terminal the TUI runs until the timeout kills it. Without
+/// one, terminal set-up fails and the run exits 1 at once. Callers therefore
+/// read the output rather than an exit status; the one status they may assume is
+/// "not a success", which holds in both cases.
 fn run_isolated(args: &[&str], cwd: &Path) -> Output {
     let home = cwd.join("home");
     let config_home = cwd.join("config");
@@ -104,16 +111,18 @@ fn init_git_repo(test_name: &str, path: &Path) -> bool {
     git(&["add", "seed.txt"]) && git(&["commit", "-m", "seed commit"])
 }
 
-/// Assert `or <flag>` in `cwd` reaches TUI start-up instead of exiting at repo
-/// detection.
+/// Assert `or <args>` in `cwd` reaches TUI start-up instead of exiting at repo
+/// detection, and return the run's output for callers that check more.
 ///
 /// This is as far as the binary can be driven from a test, and the name says
-/// "reaches TUI start-up" rather than "opens the screen" for that reason.
-/// Measured, not assumed: with stdout piped the binary writes the eight-byte
-/// alternate-screen escape and then exits with "Device not configured" before
-/// drawing a single frame, so stdout holds that escape and nothing else. No
-/// assertion here can name the screen that opened, and Cockpit reaches this
-/// same point identically.
+/// "reaches TUI start-up" rather than "opens the screen" for that reason. What
+/// stdout holds depends on whether the test has a terminal. Without one (CI),
+/// the binary fails to enable raw mode before drawing anything and exits 1, so
+/// stdout holds only the leave form of the alternate-screen escape, written by
+/// the restore path. With one (a developer's terminal, or `script`), the enter
+/// form is followed by frames until the timeout kills the run. Either way no
+/// assertion here can name the screen that opened, and Cockpit reaches this same
+/// point identically.
 ///
 /// That gap is closed on the other side, in `src/main.rs`:
 /// `test_every_entry_point_flag_excludes_itself_from_is_no_args` pins the
@@ -121,30 +130,62 @@ fn init_git_repo(test_name: &str, path: &Path) -> bool {
 /// unnoticed. The screens themselves are covered where they can be rendered —
 /// `src/ui/browse.rs` for the Repository Browser, `src/ui/git_ops.rs` and
 /// `git_ops_screen_works_in_a_repo_less_session` below for Git Ops.
-fn assert_flag_reaches_tui_startup(flag: &str, cwd: &Path) {
-    let output = run_isolated(&[flag], cwd);
+fn assert_args_reach_tui_startup(args: &[&str], cwd: &Path) -> Output {
+    let command = format!("or {}", args.join(" "));
+    let output = run_isolated(args, cwd);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         stdout.contains(ALTERNATE_SCREEN_CSI),
-        "`or {flag}` never reached TUI start-up; stdout:\n{stdout:?}\nstderr:\n{stderr}"
+        "`{command}` never reached TUI start-up; stdout:\n{stdout:?}\nstderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("Use --repo to specify."),
-        "`or {flag}` took the hard repo-detection error path; stderr:\n{stderr}"
+        "`{command}` took the hard repo-detection error path; stderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("gh CLI error"),
-        "`or {flag}` took the gh CLI error path; stderr:\n{stderr}"
+        "`{command}` took the gh CLI error path; stderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("panicked"),
-        "`or {flag}` panicked; stderr:\n{stderr}"
+        "`{command}` panicked; stderr:\n{stderr}"
     );
     assert!(
         !stdout.contains("Usage"),
-        "`or {flag}` printed clap help instead of starting the TUI; stderr:\n{stderr}"
+        "`{command}` printed clap help instead of starting the TUI; stderr:\n{stderr}"
+    );
+
+    output
+}
+
+/// [`assert_args_reach_tui_startup`] for a single flag.
+fn assert_flag_reaches_tui_startup(flag: &str, cwd: &Path) {
+    assert_args_reach_tui_startup(&[flag], cwd);
+}
+
+/// Assert `or --repo INVALID_REPO <args>` reaches TUI start-up and does not
+/// succeed.
+///
+/// The repository is explicit, so repo detection never runs. The lookup that
+/// fails runs inside the TUI, and without a terminal it may never run at all, so
+/// no assertion here can name that failure in either environment. What both
+/// environments satisfy is checked instead: the alternate-screen sequence is on
+/// stdout, and the run is not a success. With a terminal the timeout kills the
+/// run, so there is no exit status to pin; without one the run exits 1. "Not a
+/// success" is the only status claim that holds in both.
+fn assert_invalid_repo_reaches_tui_startup(args: &[&str]) {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let mut full_args = vec!["--repo", INVALID_REPO];
+    full_args.extend_from_slice(args);
+    let output = assert_args_reach_tui_startup(&full_args, tmp.path());
+
+    assert!(
+        !output.status.success(),
+        "`or --repo {INVALID_REPO} {}` reported success, but in this test the run can only \
+         end by being killed (with a terminal) or by failing at terminal set-up (without one)",
+        args.join(" ")
     );
 }
 
@@ -261,48 +302,33 @@ fn repo_detection_exit_writes_nothing_to_stdout() {
     );
 }
 
+/// `--pr 1` for a repository that does not exist. The name describes the outcome
+/// without a terminal. With one, the lookup error is shown inside the TUI and the
+/// run exits 0 once the user quits, so the outcome pinned in both environments is
+/// only that the run does not succeed.
 #[test]
 fn invalid_repo_exits_with_error() {
-    cargo_bin_cmd!("or")
-        .args(["--repo", "invalid/nonexistent-repo-12345", "--pr", "1"])
-        .assert()
-        .failure();
+    assert_invalid_repo_reaches_tui_startup(&["--pr", "1"]);
 }
 
 #[test]
 fn pr_flag_only_enters_pr_list() {
-    cargo_bin_cmd!("or")
-        .args(["--repo", "invalid/nonexistent-repo-12345", "--pr"])
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("Usage").not());
+    assert_invalid_repo_reaches_tui_startup(&["--pr"]);
 }
 
 #[test]
 fn pr_short_flag_only_enters_pr_list() {
-    cargo_bin_cmd!("or")
-        .args(["--repo", "invalid/nonexistent-repo-12345", "-p"])
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("Usage").not());
+    assert_invalid_repo_reaches_tui_startup(&["-p"]);
 }
 
 #[test]
 fn issue_flag_only_enters_issue_list() {
-    cargo_bin_cmd!("or")
-        .args(["--repo", "invalid/nonexistent-repo-12345", "--issue"])
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("Usage").not());
+    assert_invalid_repo_reaches_tui_startup(&["--issue"]);
 }
 
 #[test]
 fn issue_short_flag_only_enters_issue_list() {
-    cargo_bin_cmd!("or")
-        .args(["--repo", "invalid/nonexistent-repo-12345", "-i"])
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("Usage").not());
+    assert_invalid_repo_reaches_tui_startup(&["-i"]);
 }
 
 #[test]
