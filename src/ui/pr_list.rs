@@ -4,7 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        ScrollbarState, Wrap,
     },
     Frame,
 };
@@ -15,7 +15,7 @@ use super::chrome::{pane_block, PaneTitle};
 use super::common::{fit_to_width, render_update_bar};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::{CiStatus, PullRequestSummary};
+use crate::github::{CiStatus, GhFailure, GhFailureKind, PullRequestSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -186,6 +186,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+    } else if let crate::app::LoadState::Error(failure) = &app.prs.pr_list {
+        let reason = Paragraph::new(failure_reason(failure))
+            .style(app.theme.danger.style())
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Pull Requests"),
+            );
+        frame.render_widget(reason, chunks[1]);
     } else {
         let empty = Paragraph::new("Failed to load pull requests").block(
             Block::default()
@@ -212,10 +222,46 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let help_text = super::footer::footer_hint_quit(&app.config.keybindings);
+    let kb = &app.config.keybindings;
+    let help_text = if matches!(app.prs.pr_list, crate::app::LoadState::Error(_)) {
+        super::footer::footer_hint_retry_quit(kb)
+    } else {
+        super::footer::footer_hint_quit(kb)
+    };
     let line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
+}
+
+/// Why the PR list failed to load, in words the user can act on. Every failure
+/// that reaches the pane is mapped here.
+fn failure_reason(failure: &GhFailure) -> String {
+    match failure.kind {
+        GhFailureKind::CliMissing => "GitHub CLI (gh) not found. Install it and retry.".to_string(),
+        GhFailureKind::Unauthenticated => {
+            "Not authenticated. Run `gh auth login`, then retry.".to_string()
+        }
+        GhFailureKind::Offline => "Network error. Check your connection and retry.".to_string(),
+        GhFailureKind::RateLimited => "GitHub rate limit exceeded. Wait and retry.".to_string(),
+        GhFailureKind::Other => {
+            // A missing repository shows as HTTP 404, or as GraphQL's unresolved
+            // repository. Both stay `Other`, so the text is what tells them apart.
+            let message = failure.message.trim();
+            let lowered = message.to_ascii_lowercase();
+            if lowered.contains("http 404")
+                || lowered.contains("not found")
+                || lowered.contains("could not resolve to a repository")
+            {
+                "Repository not found. Check the owner/repo name.".to_string()
+            } else if lowered.contains("http 403") || lowered.contains("forbidden") {
+                "No access to this repository. Check your permissions, then retry.".to_string()
+            } else if message.is_empty() {
+                "Failed to load pull requests.".to_string()
+            } else {
+                format!("Failed to load pull requests: {message}")
+            }
+        }
+    }
 }
 
 fn build_pr_list_items_ref(
@@ -711,5 +757,150 @@ mod tests {
         let text = screen_text(&buf);
         assert!(text.contains("Pull Requests (2)"), "{text}");
         assert!(!text.contains("▶ PULL REQUESTS"), "{text}");
+    }
+
+    fn failed_pr_list_app(failure: GhFailure) -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Error(failure);
+        app
+    }
+
+    #[test]
+    fn missing_repo_screen_says_why_and_offers_retry() {
+        let mut app = failed_pr_list_app(GhFailure::other(
+            "gh command failed: gh: Not Found (HTTP 404)",
+        ));
+        let buf = draw_pr_list(&mut app);
+        assert_snapshot!(screen_text(&buf), @"
+        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+        │PR List: test/repo (open)                                                                         │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌Pull Requests─────────────────────────────────────────────────────────────────────────────────────┐
+        │Repository not found. Check the owner/repo name.                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+        │r Retry | ? Help | ! Shell | q/Esc Quit                                                           │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn failed_load_reason_takes_the_theme_danger_color() {
+        let mut app = failed_pr_list_app(GhFailure::other(
+            "gh command failed: gh: Not Found (HTTP 404)",
+        ));
+        let buf = draw_pr_list(&mut app);
+        let cells = row_cells(&buf, "Repository not found");
+        let letter = cells
+            .iter()
+            .find(|cell| cell.symbol() == "R")
+            .expect("reason text missing");
+        assert_eq!(
+            letter.fg,
+            app.theme.danger.style().fg.expect("danger has a color")
+        );
+    }
+
+    #[test]
+    fn unauthenticated_screen_says_how_to_log_in_and_offers_retry() {
+        let mut app = failed_pr_list_app(GhFailure {
+            kind: GhFailureKind::Unauthenticated,
+            message:
+                "gh command failed: To get started with GitHub CLI, please run:  gh auth login"
+                    .to_string(),
+        });
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(
+            text.contains("Not authenticated. Run `gh auth login`, then retry."),
+            "{text}"
+        );
+        assert!(text.contains("r Retry"), "{text}");
+    }
+
+    #[test]
+    fn every_other_failure_kind_gets_a_reason_and_the_retry_footer() {
+        let cases = [
+            (
+                GhFailureKind::CliMissing,
+                "gh command failed: Failed to execute gh CLI - is it installed?",
+                "GitHub CLI (gh) not found. Install it and retry.",
+            ),
+            (
+                GhFailureKind::Offline,
+                "gh command failed: dial tcp: lookup api.github.com: no such host",
+                "Network error. Check your connection and retry.",
+            ),
+            (
+                GhFailureKind::RateLimited,
+                "gh command failed: API rate limit exceeded",
+                "GitHub rate limit exceeded. Wait and retry.",
+            ),
+            (
+                GhFailureKind::Other,
+                "gh command failed: HTTP 403: Forbidden",
+                "No access to this repository. Check your permissions, then retry.",
+            ),
+            (
+                GhFailureKind::Other,
+                "gh command failed: something unexpected",
+                "Failed to load pull requests: gh command failed: something unexpected",
+            ),
+        ];
+        for (kind, message, reason) in cases {
+            let mut app = failed_pr_list_app(GhFailure {
+                kind,
+                message: message.to_string(),
+            });
+            let text = screen_text(&draw_pr_list(&mut app));
+            assert!(
+                text.contains(reason),
+                "{kind:?}: missing {reason:?}\n{text}"
+            );
+            assert!(text.contains("r Retry"), "{kind:?}: no retry hint\n{text}");
+        }
+    }
+
+    #[test]
+    fn long_multi_line_and_empty_github_errors_stay_readable() {
+        let long = format!("gh command failed: {}END", "word ".repeat(40));
+        let mut app = failed_pr_list_app(GhFailure::other(long));
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("END"), "wrapped error lost its end:\n{text}");
+
+        let lines = "gh command failed: first line\nsecond line";
+        let mut app = failed_pr_list_app(GhFailure::other(lines));
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("first line"), "{text}");
+        assert!(text.contains("second line"), "{text}");
+
+        let mut app = failed_pr_list_app(GhFailure::other("  "));
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("Failed to load pull requests."), "{text}");
+    }
+
+    #[test]
+    fn never_loaded_list_keeps_the_generic_message_without_a_retry_hint() {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::NotLoaded;
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("Failed to load pull requests"), "{text}");
+        assert!(!text.contains("Retry"), "{text}");
     }
 }

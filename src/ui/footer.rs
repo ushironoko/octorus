@@ -25,6 +25,18 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
     )
 }
 
+/// The footer of a list whose load failed. The retry key comes first, since it is
+/// the way forward.
+pub fn footer_hint_retry_quit(kb: &KeybindingsConfig) -> String {
+    format!(
+        "{} Retry | {} Help | {} Shell | {} Quit",
+        kb.retry.display(),
+        kb.help.display(),
+        kb.shell_command.display(),
+        kb.quit.display(),
+    )
+}
+
 /// Priority cascade:
 /// 1. Shell input overlay (highest, focused pane only)
 /// 2. Approve confirmation
@@ -352,6 +364,24 @@ mod tests {
         let hint = footer_hint_quit(&kb);
         assert!(hint.contains("Quit"));
         assert!(hint.contains(&kb.help.display()));
+    }
+
+    #[test]
+    fn test_footer_hint_retry_quit_leads_with_the_retry_key() {
+        let kb = KeybindingsConfig::default();
+        assert_eq!(
+            footer_hint_retry_quit(&kb),
+            "r Retry | ? Help | ! Shell | q/Esc Quit"
+        );
+    }
+
+    #[test]
+    fn test_footer_hint_retry_quit_reads_the_retry_key_from_keybindings() {
+        let kb = KeybindingsConfig {
+            retry: crate::keybinding::KeySequence::single(crate::keybinding::KeyBinding::char('x')),
+            ..KeybindingsConfig::default()
+        };
+        assert!(footer_hint_retry_quit(&kb).starts_with("x Retry | "));
     }
 
     #[test]
