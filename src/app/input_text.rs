@@ -13,7 +13,7 @@ use crate::loader::CommentSubmitResult;
 use crate::ui::text_area::TextAreaAction;
 
 use super::types::*;
-use super::{App, SuggestionHighlightCache};
+use super::{App, SuggestionHighlightCache, INLINE_COMMENT_TIMEOUT};
 
 impl App {
     /// Note: the help keybinding (?) is intentionally not handled here
@@ -74,11 +74,76 @@ impl App {
         }
         Ok(())
     }
+    /// Closes the composer. Text typed into a comment or suggestion is kept for its
+    /// line rather than thrown away, so that reopening the line restores it.
     pub(crate) fn cancel_input(&mut self) {
+        if let Some(kind) = self.keep_unsent_draft() {
+            let key = match kind {
+                DraftKind::Comment => self.config.keybindings.comment.display(),
+                DraftKind::Suggestion => self.config.keybindings.suggestion.display(),
+            };
+            self.cmt.submission_result =
+                Some((true, format!("Draft kept for this line: {key} restores it")));
+            self.cmt.submission_result_time = Some(Instant::now());
+        }
         self.input_mode = None;
         self.input_text_area.clear();
         self.suggestion_highlight_cache = None;
         self.state = self.preview_return_state;
+    }
+
+    /// The line an inline composer writes to. Replies and issue comments post at
+    /// once and are not kept, so they have no anchor.
+    pub(crate) fn inline_draft_anchor(&self, mode: &InputMode) -> Option<DraftAnchor> {
+        let (ctx, kind) = match mode {
+            InputMode::Comment(ctx) => (ctx, DraftKind::Comment),
+            InputMode::Suggestion { context, .. } => (context, DraftKind::Suggestion),
+            InputMode::Reply { .. } | InputMode::IssueComment { .. } => return None,
+        };
+        let path = self.files().get(ctx.file_index)?.filename.clone();
+        Some(DraftAnchor {
+            pr_number: self.pr_number.unwrap_or_default(),
+            path,
+            line: ctx.line_number,
+            start_line: ctx.start_line_number,
+            kind,
+        })
+    }
+
+    /// Puts the composer into `mode`. The text starts as `initial`, unless a body
+    /// was kept for the same line, which is restored instead.
+    pub(crate) fn open_inline_composer(&mut self, mode: InputMode, initial: &str) {
+        let restored = self
+            .inline_draft_anchor(&mode)
+            .and_then(|anchor| self.cmt.saved_drafts.remove(&anchor));
+        self.input_mode = Some(mode);
+        match restored {
+            Some(body) => self.input_text_area.set_content_verbatim(&body),
+            None => self.input_text_area.set_content(initial),
+        }
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
+    }
+
+    /// Keeps the text of the open comment or suggestion for its line. Returns the
+    /// kind kept, or `None` when there was no text to keep.
+    fn keep_unsent_draft(&mut self) -> Option<DraftKind> {
+        let anchor = self.inline_draft_anchor(self.input_mode.as_ref()?)?;
+        let content = self.input_text_area.content();
+        if content.trim().is_empty() {
+            return None;
+        }
+        let kind = anchor.kind;
+        self.cmt.saved_drafts.insert(anchor, content);
+        Some(kind)
+    }
+
+    /// Keeps the text of the in-flight add when it ends without success, or is
+    /// abandoned with its result lost. The same line can then retry it.
+    pub(crate) fn keep_failed_add(&mut self) {
+        if let Some(add) = self.cmt.pending_add.take() {
+            self.cmt.saved_drafts.insert(add.anchor, add.body);
+        }
     }
 
     /// サジェスチョン入力のハイライトキャッシュを更新する
@@ -123,15 +188,26 @@ impl App {
         });
     }
     pub(crate) fn submit_comment(&mut self, ctx: LineInputContext, body: String) {
-        self.submit_review_comment_inner(ctx, body);
+        self.submit_review_comment_inner(ctx, DraftKind::Comment, body);
     }
 
     pub(crate) fn submit_suggestion(&mut self, ctx: LineInputContext, suggested_code: String) {
-        let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
-        self.submit_review_comment_inner(ctx, body);
+        self.submit_review_comment_inner(ctx, DraftKind::Suggestion, suggested_code);
     }
 
-    fn submit_review_comment_inner(&mut self, ctx: LineInputContext, body: String) {
+    /// Sends one inline comment or suggestion. `typed` is the text the user wrote.
+    /// A suggestion is wrapped in a `suggestion` fence only for GitHub, so the text
+    /// kept on failure is the unwrapped one the composer shows.
+    fn submit_review_comment_inner(
+        &mut self,
+        ctx: LineInputContext,
+        kind: DraftKind,
+        typed: String,
+    ) {
+        let body = match kind {
+            DraftKind::Comment => typed.clone(),
+            DraftKind::Suggestion => format!("```suggestion\n{}\n```", typed.trim_end()),
+        };
         if self.local_mode {
             self.submit_local_review_comment(ctx, body);
             return;
@@ -145,36 +221,34 @@ impl App {
         };
 
         let commit_id = pr.head.sha.clone();
-        let filename = file.filename.clone();
-        let repo = self.repo.clone();
+        let pr_node_id = pr.node_id.clone();
         let pr_number = self.pr_number();
-        let position = ctx.diff_position;
-        let start_line = ctx.start_line_number;
-        let end_line = ctx.line_number;
+        let path = file.filename.clone();
+        let anchor = DraftAnchor {
+            pr_number,
+            path: path.clone(),
+            line: ctx.line_number,
+            start_line: ctx.start_line_number,
+            kind,
+        };
+        let draft = github::InlineDraft {
+            path,
+            body,
+            line: ctx.line_number,
+            start_line: ctx.start_line_number,
+        };
+        let repo = self.repo.clone();
+        // Held until the result arrives, so that a failed add can keep the text.
+        self.cmt.pending_add = Some(PendingAdd {
+            anchor,
+            body: typed,
+        });
 
-        let (tx, rx) = mpsc::channel(1);
-        self.cmt.comment_submit_receiver = Some((pr_number, rx));
-        self.cmt.comment_submitting = true;
-
-        tokio::spawn(async move {
-            let result = if let Some(start) = start_line {
-                github::create_multiline_review_comment(
-                    &repo, pr_number, &commit_id, &filename, start, end_line, "RIGHT", &body,
-                )
+        // The comment joins the viewer's pending review. GitHub publishes it only
+        // when a review is submitted, so it is not posted on its own (issue #169).
+        self.spawn_inline_comment_add(pr_number, INLINE_COMMENT_TIMEOUT, async move {
+            github::add_inline_draft(&repo, pr_number, pr_node_id.as_deref(), &commit_id, &draft)
                 .await
-            } else {
-                github::create_review_comment(
-                    &repo, pr_number, &commit_id, &filename, position, &body,
-                )
-                .await
-            };
-
-            let _ = tx
-                .send(match result {
-                    Ok(_) => CommentSubmitResult::Success,
-                    Err(e) => CommentSubmitResult::Error(e.to_string()),
-                })
-                .await;
         });
     }
 

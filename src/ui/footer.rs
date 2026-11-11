@@ -42,10 +42,8 @@ pub fn build_footer_line_with_focus<'a>(
     is_focused: bool,
 ) -> Line<'a> {
     if is_focused {
-        if let Some(ref shell) = app.shell_state {
-            if matches!(shell.phase, ShellPhase::Input) {
-                return render_shell_input_line(&shell.input, shell.cursor);
-            }
+        if let Some(line) = shell_input_line(app) {
+            return line;
         }
     }
     if app.is_pending_approve_confirmation() {
@@ -67,20 +65,24 @@ pub fn build_footer_line_with_focus<'a>(
         } else {
             ("\u{2717}", Color::Red)
         };
-        Line::from(Span::styled(
+        let mut spans = vec![Span::styled(
             format!("{} {}", icon, message),
             Style::default().fg(color),
-        ))
+        )];
+        // A reload that follows a result is still running. Its progress is shown
+        // beside the result, so the wait is visible while the message is up.
+        if app.cmt.comments_loading {
+            spans.push(Span::raw("  "));
+            spans.push(loading_comments_span(app));
+        }
+        Line::from(spans)
     } else if let Some(message) = app.pr_open_notice() {
         Line::from(Span::styled(message, Style::default().fg(Color::Yellow)))
     } else {
         let mut spans = vec![Span::raw(help_text)];
         if app.cmt.comments_loading {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("{} Loading comments...", app.spinner_char()),
-                Style::default().fg(Color::Yellow),
-            ));
+            spans.push(loading_comments_span(app));
         }
         if app.symbol_search.is_searching() {
             spans.push(Span::raw("  "));
@@ -91,6 +93,32 @@ pub fn build_footer_line_with_focus<'a>(
         }
         Line::from(spans)
     }
+}
+
+/// The footer of a split-view pane that shows no status. Status messages are drawn
+/// in one footer, the diff pane's, so this pane shows the shell prompt while it is
+/// focused and otherwise its help text.
+pub fn build_pane_help_line<'a>(app: &'a App, help_text: &'a str, is_focused: bool) -> Line<'a> {
+    if is_focused {
+        if let Some(line) = shell_input_line(app) {
+            return line;
+        }
+    }
+    Line::from(Span::raw(help_text))
+}
+
+/// The shell command prompt, while the shell is open for input.
+fn shell_input_line(app: &App) -> Option<Line<'static>> {
+    let shell = app.shell_state.as_ref()?;
+    matches!(shell.phase, ShellPhase::Input)
+        .then(|| render_shell_input_line(&shell.input, shell.cursor))
+}
+
+fn loading_comments_span(app: &App) -> Span<'static> {
+    Span::styled(
+        format!("{} Loading comments...", app.spinner_char()),
+        Style::default().fg(Color::Yellow),
+    )
 }
 
 pub fn build_footer_block(app: &App) -> Block<'static> {
@@ -366,5 +394,23 @@ mod tests {
         let shell_debug = format!("{:?}", block_with_shell);
         let normal_debug = format!("{:?}", block_normal);
         assert_ne!(shell_debug, normal_debug);
+    }
+
+    /// The reload after a result is shown beside the result, so the wait is visible
+    /// while the result message is up.
+    #[test]
+    fn test_success_result_shows_the_reload_progress_beside_it() {
+        let mut app = App::new_for_test();
+        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.comments_loading = true;
+
+        let line = build_footer_line(&app, HELP);
+        let text = line_to_string(&line);
+
+        assert!(
+            text.starts_with("\u{2713} Added to pending review"),
+            "{text}"
+        );
+        assert!(text.contains("Loading comments..."), "{text}");
     }
 }

@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::diff::LineType;
-use crate::ui::common::{build_ci_status_span, build_pr_info};
+use crate::ui::common::{build_ci_status_span, build_pending_review_span, build_pr_info};
 use crate::ui::hit::{HitTarget, PaneKind};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let pr_info = build_pr_info(app);
     let ci_span = build_ci_status_span(app);
-    let header = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             "PR Description",
             Style::default().add_modifier(Modifier::BOLD),
@@ -39,8 +39,12 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw(" - "),
         Span::styled(pr_info, Style::default().fg(Color::Cyan)),
         ci_span,
-    ]))
-    .block(Block::default().borders(Borders::ALL));
+    ];
+    if let Some(note) = build_pending_review_span(app) {
+        spans.push(Span::raw("  "));
+        spans.push(note);
+    }
+    let header = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
     frame.render_widget(header, area);
 }
 

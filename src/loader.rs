@@ -27,8 +27,16 @@ pub struct SingleFileDiffResult {
 
 /// コメント送信結果
 pub enum CommentSubmitResult {
-    /// 送信成功
+    /// 送信成功（GitHub 上で即時に公開された）
     Success,
+    /// 自分の保留中（PENDING）レビューに追加された。レビュー送信まで公開されない。
+    AddedToPendingReview,
+    /// The add ran past its timeout. GitHub may already hold the draft, so this is
+    /// not reported as a failure.
+    Unknown,
+    /// Refused before anything was written. The text is kept so it can be retried.
+    /// The message is the whole footer text.
+    Refused(String),
     /// エラー
     Error(String),
 }

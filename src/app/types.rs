@@ -1231,6 +1231,52 @@ impl IssueState {
     }
 }
 
+/// How many drafts the viewer's pending review holds, as the TUI last read it
+/// (issue #169). The count is shown in the PR header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PendingDrafts {
+    /// Not read yet, or the last read failed.
+    #[default]
+    Unknown,
+    /// Read from GitHub. Zero when there is no pending review.
+    Known(usize),
+}
+
+/// The two inline composers whose text joins the pending review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DraftKind {
+    Comment,
+    Suggestion,
+}
+
+/// The line an inline draft is written to. A kept body is found by this key, so
+/// it only comes back on the same PR, line, and kind of composer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DraftAnchor {
+    pub pr_number: u32,
+    pub path: String,
+    pub line: u32,
+    pub start_line: Option<u32>,
+    pub kind: DraftKind,
+}
+
+/// An inline add in flight. Its text is held until the result arrives, so that a
+/// failed add can give the text back.
+#[derive(Debug)]
+pub struct PendingAdd {
+    pub anchor: DraftAnchor,
+    /// The text as typed, not the `suggestion` fence GitHub receives.
+    pub body: String,
+}
+
+/// What one review-comment fetch returned for the diff.
+#[derive(Debug)]
+pub struct ReviewCommentsFetch {
+    /// Published comments, the pending drafts (flagged), and review summary bodies.
+    pub comments: Vec<crate::github::comment::ReviewComment>,
+    pub pending_drafts: PendingDrafts,
+}
+
 #[derive(Default)]
 pub struct CommentState {
     pub review_comments: Option<Vec<crate::github::comment::ReviewComment>>,
@@ -1262,8 +1308,7 @@ pub struct CommentState {
     pub discussion_comments_loading: bool,
     pub discussion_comment_detail_mode: bool,
     pub discussion_comment_detail_scroll: usize,
-    pub(crate) comment_receiver:
-        super::PrReceiver<Result<Vec<crate::github::comment::ReviewComment>, String>>,
+    pub(crate) comment_receiver: super::PrReceiver<Result<ReviewCommentsFetch, String>>,
     pub(crate) discussion_comment_receiver:
         super::PrReceiver<Result<Vec<crate::github::comment::DiscussionComment>, String>>,
     pub(crate) comment_submit_receiver: super::PrReceiver<crate::loader::CommentSubmitResult>,
@@ -1273,6 +1318,13 @@ pub struct CommentState {
     pub(crate) submission_result_time: Option<std::time::Instant>,
     pub(crate) pending_approve_body: Option<String>,
     pub selected_inline_comment: usize,
+    /// The viewer's pending review as last read (issue #169).
+    pub pending_drafts: PendingDrafts,
+    /// Text of comments and suggestions that were not sent, by line. Kept by Esc
+    /// and by a failed add, and restored when that line is opened again.
+    pub saved_drafts: std::collections::HashMap<DraftAnchor, String>,
+    /// The inline add in flight, if any.
+    pub pending_add: Option<PendingAdd>,
 }
 
 impl CommentState {

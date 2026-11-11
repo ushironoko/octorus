@@ -7,11 +7,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
-use crate::diff::{find_diff_line_index, parse_diff_side, DiffSide, SideLine};
-use crate::github::comment::{Review, ReviewComment};
+use crate::diff::{
+    find_diff_line_index, parse_diff_side, position_to_side_line, DiffSide, SideLine,
+};
+use crate::github::comment::{CommentPublication, Review, ReviewComment};
 use crate::github::{self, ChangedFile};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
-use crate::loader::ReviewSubmitResult;
+use crate::loader::{CommentSubmitResult, ReviewSubmitResult};
 use crate::ui;
 
 use super::types::*;
@@ -32,13 +34,18 @@ pub(crate) fn split_local_comments(
     (comments, meta)
 }
 
-pub(crate) fn combine_review_fetch_results<EComments, EReviews>(
+/// Merges the three reads behind the diff's comments. The published comments
+/// and the drafts are one list, so the diff marks both. A failed draft read is
+/// reported as `Unknown` and does not fail the rest.
+pub(crate) fn combine_review_fetch_results<EComments, EReviews, EDrafts>(
     review_comments_result: Result<Vec<ReviewComment>, EComments>,
     reviews_result: Result<Vec<Review>, EReviews>,
-) -> Result<Vec<ReviewComment>, String>
+    drafts_result: Result<Vec<ReviewComment>, EDrafts>,
+) -> Result<ReviewCommentsFetch, String>
 where
     EComments: std::fmt::Display,
     EReviews: std::fmt::Display,
+    EDrafts: std::fmt::Display,
 {
     let mut all_comments = Vec::new();
     let comments_error = match review_comments_result {
@@ -47,6 +54,17 @@ where
             None
         }
         Err(error) => Some(error.to_string()),
+    };
+    let pending_drafts = match drafts_result {
+        Ok(drafts) => {
+            let count = drafts.len();
+            merge_drafts(&mut all_comments, drafts);
+            PendingDrafts::Known(count)
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to read the pending review; drafts are not shown");
+            PendingDrafts::Unknown
+        }
     };
     let reviews_error = match reviews_result {
         Ok(reviews) => {
@@ -74,14 +92,96 @@ where
 
     all_comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
+    let fetch = ReviewCommentsFetch {
+        comments: all_comments,
+        pending_drafts,
+    };
     match (comments_error, reviews_error) {
         (Some(message), Some(_)) => Err(message),
         (Some(message), None) | (None, Some(message)) => {
             tracing::warn!(error = %message, "Failed to fetch part of the review comments");
-            Ok(all_comments)
+            Ok(fetch)
         }
-        (None, None) => Ok(all_comments),
+        (None, None) => Ok(fetch),
     }
+}
+
+/// Adds the drafts to the published comments. GitHub may list a draft in both
+/// places, so a draft already present is flagged, not repeated.
+fn merge_drafts(comments: &mut Vec<ReviewComment>, drafts: Vec<ReviewComment>) {
+    for draft in drafts {
+        match comments.iter_mut().find(|comment| comment.id == draft.id) {
+            Some(existing) => existing.location.publication = CommentPublication::PendingDraft,
+            None => comments.push(draft),
+        }
+    }
+}
+
+/// How many comments in the list are drafts in the viewer's pending review.
+pub(crate) fn count_pending_drafts(comments: &[ReviewComment]) -> usize {
+    comments.iter().filter(|c| c.is_pending_draft()).count()
+}
+
+/// Reads what the diff shows for a PR: published comments, review summary
+/// bodies, and the viewer's pending drafts (issue #169). The drafts come from the
+/// review list, so they are read after it.
+async fn fetch_review_comments_for_view(
+    repo: &str,
+    pr_number: u32,
+) -> Result<ReviewCommentsFetch, String> {
+    let (review_comments_result, reviews_result) = tokio::join!(
+        github::comment::fetch_review_comments(repo, pr_number),
+        github::comment::fetch_reviews(repo, pr_number),
+    );
+    let drafts_result = match &reviews_result {
+        Ok(reviews) => match github::pending_review_id(reviews) {
+            Some(review_id) => github::fetch_draft_comments(repo, pr_number, review_id)
+                .await
+                .map_err(|e| e.to_string()),
+            None => Ok(Vec::new()),
+        },
+        Err(error) => Err(error.to_string()),
+    };
+    combine_review_fetch_results(review_comments_result, reviews_result, drafts_result)
+}
+
+/// Maps a failed inline add to the result the user sees. A refusal wrote nothing,
+/// so it can be retried as is. An unconfirmed add may already be on GitHub, so it
+/// is unknown rather than failed. Anything else is a failure.
+fn classify_add_error(error: anyhow::Error) -> CommentSubmitResult {
+    if error.is::<github::DraftUnconfirmed>() {
+        tracing::warn!(error = %error, "inline comment: not confirmed, outcome unknown");
+        return CommentSubmitResult::Unknown;
+    }
+    match error.downcast::<github::DraftRefused>() {
+        Ok(refused) => CommentSubmitResult::Refused(refused.to_string()),
+        Err(error) => CommentSubmitResult::Error(error.to_string()),
+    }
+}
+
+/// GitHub returns a pending draft with `line` null and only `position` set (issue
+/// #169). The position names a row of the file's patch, so the line and side come
+/// from that row. They are written back to the draft, so the thread list, the
+/// detail panel, and the anchor all read the same line. A draft that already has a
+/// line, or whose position is not in the patch, is left as it is.
+fn resolve_draft_position(draft: &mut ReviewComment, patch: &str) {
+    if draft.line.is_some() {
+        return;
+    }
+    let Some(position) = draft.location.position else {
+        return;
+    };
+    let Some(target) = position_to_side_line(patch, position) else {
+        return;
+    };
+    draft.line = Some(target.line);
+    draft.location.side = Some(
+        match target.side {
+            DiffSide::Left => "LEFT",
+            DiffSide::Right => "RIGHT",
+        }
+        .to_string(),
+    );
 }
 
 fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
@@ -115,6 +215,9 @@ fn left_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
 
 impl App {
     pub(crate) fn enter_comment_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -144,22 +247,22 @@ impl App {
             return;
         };
 
-        self.input_mode = Some(InputMode::Comment(LineInputContext {
-            file_index: self.selected_file,
-            line_number,
-            diff_position,
-            start_line_number: None,
-        }));
-        self.input_text_area.clear();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
+        self.open_inline_composer(
+            InputMode::Comment(LineInputContext {
+                file_index: self.selected_file,
+                line_number,
+                diff_position,
+                start_line_number: None,
+            }),
+            "",
+        );
     }
     pub(crate) fn submit_review(
         &mut self,
         action: ReviewAction,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        if self.is_submitting_review() {
+        if !self.review_submit_may_start() {
             return Ok(());
         }
         tracing::debug!(?action, "submit_review: start");
@@ -197,12 +300,53 @@ impl App {
         Ok(())
     }
 
+    /// Whether a review submit may start now. A comment still being added must
+    /// reach the pending review before the review publishes it, or the comment
+    /// would be left out. When a submit is refused, the reason goes to the toast.
+    pub(crate) fn review_submit_may_start(&mut self) -> bool {
+        if self.is_submitting_review() {
+            return false;
+        }
+        if self.cmt.comment_submitting {
+            self.cmt.submission_result = Some((
+                false,
+                "Wait for the comment to be added, then submit the review".to_string(),
+            ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return false;
+        }
+        true
+    }
+
+    /// Whether a new inline comment or suggestion may start now. Refused while a
+    /// review is publishing, so the new draft cannot race the publish. Also refused
+    /// while another add is in flight: the composer would open but ignore keys
+    /// until that add finishes.
+    fn inline_comment_may_start(&mut self) -> bool {
+        if self.is_submitting_review() {
+            self.cmt.submission_result = Some((
+                false,
+                "Wait for the review to finish submitting".to_string(),
+            ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return false;
+        }
+        if self.cmt.comment_submitting {
+            self.cmt.submission_result =
+                Some((false, "Wait for the comment to be added".to_string()));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return false;
+        }
+        true
+    }
+
     pub(crate) fn start_review_submit(&mut self, action: ReviewAction, body: String) {
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
+        // Publishes the pending review (with its inline drafts) when there is one.
         self.spawn_review_submit(action, async move {
-            github::submit_review(&repo, pr_number, action, &body).await
+            github::submit_review_publishing_pending(&repo, pr_number, action, &body).await
         });
     }
 
@@ -243,7 +387,35 @@ impl App {
         });
     }
 
+    /// Adds one inline comment to the pending review off the event loop. An add
+    /// still running after `timeout` is dropped, which kills its `gh` children, and
+    /// is reported as unknown rather than failed, because GitHub may already hold
+    /// the draft. A review submit is refused while an add is in flight, so this
+    /// bound also limits how long that refusal can last.
+    pub(crate) fn spawn_inline_comment_add<F>(&mut self, pr_number: u32, timeout: Duration, add: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel(1);
+        self.cmt.comment_submit_receiver = Some((pr_number, rx));
+        self.cmt.comment_submitting = true;
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(timeout, add).await {
+                Ok(Ok(())) => CommentSubmitResult::AddedToPendingReview,
+                Ok(Err(e)) => classify_add_error(e),
+                Err(_elapsed) => {
+                    tracing::warn!(?timeout, "inline comment: timed out, outcome unknown");
+                    CommentSubmitResult::Unknown
+                }
+            };
+            let _ = tx.send(result).await;
+        });
+    }
+
     pub(crate) fn enter_suggestion_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -275,20 +447,20 @@ impl App {
 
         let original_code = line_info.line_content.clone();
 
-        self.input_mode = Some(InputMode::Suggestion {
-            context: LineInputContext {
-                file_index: self.selected_file,
-                line_number,
-                diff_position,
-                start_line_number: None,
-            },
-            original_code: original_code.clone(),
-        });
         // サジェスチョンは元コードを初期値として設定
-        self.input_text_area.set_content(&original_code);
+        self.open_inline_composer(
+            InputMode::Suggestion {
+                context: LineInputContext {
+                    file_index: self.selected_file,
+                    line_number,
+                    diff_position,
+                    start_line_number: None,
+                },
+                original_code: original_code.clone(),
+            },
+            &original_code,
+        );
         self.update_suggestion_highlight_cache();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
     }
     /// 複数行選択モードを開始する（Shift+Enter）
     pub(crate) fn enter_multiline_selection(&mut self) {
@@ -315,6 +487,9 @@ impl App {
         });
     }
     pub(crate) fn enter_multiline_comment_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(ref selection) = self.multiline_selection else {
             return;
         };
@@ -369,17 +544,20 @@ impl App {
         // バリデーション成功後にのみ選択状態をクリア
         self.multiline_selection = None;
 
-        self.input_mode = Some(InputMode::Comment(LineInputContext {
-            file_index: self.selected_file,
-            line_number: end_line_number,
-            diff_position,
-            start_line_number: start_line,
-        }));
-        self.input_text_area.clear();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
+        self.open_inline_composer(
+            InputMode::Comment(LineInputContext {
+                file_index: self.selected_file,
+                line_number: end_line_number,
+                diff_position,
+                start_line_number: start_line,
+            }),
+            "",
+        );
     }
     pub(crate) fn enter_multiline_suggestion_input(&mut self) {
+        if !self.inline_comment_may_start() {
+            return;
+        }
         let Some(ref selection) = self.multiline_selection else {
             return;
         };
@@ -445,19 +623,19 @@ impl App {
         // バリデーション成功後にのみ選択状態をクリア
         self.multiline_selection = None;
 
-        self.input_mode = Some(InputMode::Suggestion {
-            context: LineInputContext {
-                file_index: self.selected_file,
-                line_number: end_line_number,
-                diff_position,
-                start_line_number: start_line,
+        self.open_inline_composer(
+            InputMode::Suggestion {
+                context: LineInputContext {
+                    file_index: self.selected_file,
+                    line_number: end_line_number,
+                    diff_position,
+                    start_line_number: start_line,
+                },
+                original_code: original_code.clone(),
             },
-            original_code: original_code.clone(),
-        });
-        self.input_text_area.set_content(&original_code);
+            &original_code,
+        );
         self.update_suggestion_highlight_cache();
-        self.preview_return_state = self.state;
-        self.state = AppState::TextInput;
     }
     pub(crate) fn open_comment_list(&mut self) {
         self.state = AppState::CommentList;
@@ -688,8 +866,11 @@ impl App {
             return;
         }
 
+        // Only a read that reached the pending review is cached, so a cached list
+        // always carries the drafts it had.
         if let Some(comments) = self.session_cache.get_review_comments(&cache_key) {
             self.cmt.local_comment_meta.clear();
+            self.cmt.pending_drafts = PendingDrafts::Known(count_pending_drafts(comments));
             self.apply_review_comments(comments.to_vec());
             return;
         }
@@ -703,10 +884,7 @@ impl App {
         let repo = self.repo.clone();
 
         tokio::spawn(async move {
-            let review_comments_result =
-                github::comment::fetch_review_comments(&repo, pr_number).await;
-            let reviews_result = github::comment::fetch_reviews(&repo, pr_number).await;
-            let combined = combine_review_fetch_results(review_comments_result, reviews_result);
+            let combined = fetch_review_comments_for_view(&repo, pr_number).await;
             let _ = tx.send(combined).await;
         });
     }
@@ -1153,9 +1331,16 @@ impl App {
         };
         let filename = file.filename.clone();
 
-        let Some(ref comments) = self.cmt.review_comments else {
+        let Some(ref mut comments) = self.cmt.review_comments else {
             return;
         };
+        // The patch is first known here, so this is where a draft's position gets its line.
+        for draft in comments
+            .iter_mut()
+            .filter(|comment| comment.path == filename && comment.is_pending_draft())
+        {
+            resolve_draft_position(draft, &patch);
+        }
 
         for (i, comment) in comments.iter().enumerate() {
             // Skip comments for other files
@@ -1233,6 +1418,22 @@ impl App {
         char_count.div_ceil(panel_width)
     }
 
+    /// Rows one comment's header takes in the panel. A published header is one row.
+    /// A draft's header also carries the pending-review tag, which can wrap it onto
+    /// a second row in a narrow panel (issue #169).
+    fn comment_header_rows(comment: &ReviewComment, panel_width: usize) -> usize {
+        if !comment.is_pending_draft() {
+            return 1;
+        }
+        let header = format!(
+            "@{} (line {}){}",
+            comment.user.login,
+            comment.line.unwrap_or(0),
+            ui::common::PENDING_COMMENT_TAG
+        );
+        Self::wrapped_line_count(&header, panel_width)
+    }
+
     /// コメント本文の折り返しを考慮した表示行数を計算
     pub(crate) fn comment_body_wrapped_lines(body: &str, panel_width: usize) -> usize {
         body.lines()
@@ -1258,7 +1459,7 @@ impl App {
             if i > 0 {
                 count += 1; // separator
             }
-            count += 1; // header
+            count += Self::comment_header_rows(comment, panel_inner_width);
             count += Self::comment_body_wrapped_lines(&comment.body, panel_inner_width);
             count += 1; // spacing
         }
@@ -1282,7 +1483,7 @@ impl App {
             if i > 0 {
                 offset += 1; // separator
             }
-            offset += 1; // header
+            offset += Self::comment_header_rows(comment, panel_inner_width);
             offset += Self::comment_body_wrapped_lines(&comment.body, panel_inner_width);
             offset += 1; // spacing
         }
@@ -1357,6 +1558,16 @@ impl App {
         let Some(comment) = comments.get(comment_idx) else {
             return;
         };
+        // A reply posts at once and is not part of the pending review, so a draft
+        // is refused until the review is submitted.
+        if comment.is_pending_draft() {
+            self.cmt.submission_result = Some((
+                false,
+                "Submit the pending review before replying to a draft".to_string(),
+            ));
+            self.cmt.submission_result_time = Some(Instant::now());
+            return;
+        }
 
         self.input_mode = Some(InputMode::Reply {
             comment_id: comment.id,

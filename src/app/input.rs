@@ -720,6 +720,7 @@ impl App {
     pub(crate) fn refresh_all(&mut self) {
         self.session_cache.invalidate_all();
         self.cmt.review_comments = None;
+        self.cmt.pending_drafts = PendingDrafts::Unknown;
         self.cmt.discussion_comments = None;
         self.cmt.comment_error = None;
         self.cmt.discussion_error = None;

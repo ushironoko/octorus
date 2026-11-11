@@ -1,0 +1,29 @@
+#!/bin/sh
+# Test double for `gh`. The pending-review tests in src/github/pending_review.rs
+# put this directory first on PATH. Each call is logged to $FAKE_GH_LOG as its
+# argument line, followed by its request body when the call sends one with
+# `--input -`. Only those calls read stdin: the others inherit the test
+# process's stdin, which may never reach end-of-file. The reply comes from the
+# FAKE_GH_* variables. FAKE_GH_DRAFTS answers the pending review's own comments
+# endpoint, and it is matched before the `--slurp` list that FAKE_GH_REVIEWS answers.
+case " $* " in
+    *" --input - "*)
+        {
+            printf 'CALL %s\n' "$*"
+            cat
+            printf '\n'
+        } >> "$FAKE_GH_LOG"
+        ;;
+    *)
+        printf 'CALL %s\n' "$*" >> "$FAKE_GH_LOG"
+        ;;
+esac
+
+case "$*" in
+    */reviews/*/comments*) printf '%s' "$FAKE_GH_DRAFTS" ;;
+    *--slurp*) printf '%s' "$FAKE_GH_REVIEWS" ;;
+    *graphql*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
+    */events*) printf '%s' "$FAKE_GH_PUBLISH" ;;
+    'pr review'*) printf '%s' "$FAKE_GH_PR_REVIEW" ;;
+    *) printf '%s' "$FAKE_GH_CREATE" ;;
+esac

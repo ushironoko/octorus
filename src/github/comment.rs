@@ -34,6 +34,19 @@ pub struct ReviewCommentLocation {
     pub original_commit_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject_type: Option<String>,
+    /// Set by the TUI when it reads the viewer's pending review. GitHub's JSON
+    /// does not carry it, so it is never serialized or deserialized.
+    #[serde(skip)]
+    pub publication: CommentPublication,
+}
+
+/// Whether a review comment is published, or a draft in the viewer's pending
+/// review (issue #169). A draft is published only when that review is submitted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CommentPublication {
+    #[default]
+    Published,
+    PendingDraft,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +63,13 @@ pub struct ReviewComment {
     pub in_reply_to_id: Option<u64>,
     #[serde(flatten)]
     pub location: ReviewCommentLocation,
+}
+
+impl ReviewComment {
+    /// Whether this comment is a draft in the viewer's pending review.
+    pub fn is_pending_draft(&self) -> bool {
+        self.location.publication == CommentPublication::PendingDraft
+    }
 }
 
 pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<ReviewComment>> {
@@ -387,7 +407,7 @@ mod tests {
             "created_at": "2025-01-01T00:00:00Z"
         });
         let comment: ReviewComment = serde_json::from_value(json).unwrap();
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z", in_reply_to_id: None, location: ReviewCommentLocation { original_line: None, original_start_line: None, side: None, start_side: None, position: None, original_position: None, commit_id: None, original_commit_id: None, subject_type: None } }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 555, path: "src/app.rs", line: Some(100), start_line: None, body: "Snapshot test body", user: User { login: "snapshot_user" }, created_at: "2025-01-01T00:00:00Z", in_reply_to_id: None, location: ReviewCommentLocation { original_line: None, original_start_line: None, side: None, start_side: None, position: None, original_position: None, commit_id: None, original_commit_id: None, subject_type: None, publication: Published } }"#);
     }
 
     #[test]
@@ -405,6 +425,6 @@ mod tests {
             in_reply_to_id: None,
             location: ReviewCommentLocation::default(),
         };
-        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Multiline review", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z", in_reply_to_id: None, location: ReviewCommentLocation { original_line: None, original_start_line: None, side: None, start_side: None, position: None, original_position: None, commit_id: None, original_commit_id: None, subject_type: None } }"#);
+        assert_snapshot!(format!("{:?}", comment), @r#"ReviewComment { id: 10, path: "src/app.rs", line: Some(50), start_line: Some(45), body: "Multiline review", user: User { login: "dacuna" }, created_at: "2026-03-25T00:00:00Z", in_reply_to_id: None, location: ReviewCommentLocation { original_line: None, original_start_line: None, side: None, start_side: None, position: None, original_position: None, commit_id: None, original_commit_id: None, subject_type: None, publication: Published } }"#);
     }
 }

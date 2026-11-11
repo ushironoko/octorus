@@ -10,8 +10,11 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::ai::RallyState;
-use crate::app::{App, DataState};
+use crate::app::{App, DataState, PendingDrafts};
+use crate::github::comment::ReviewComment;
 use crate::github::CiStatus;
+
+use super::theme::Theme;
 
 /// Build PR info string for header display (shared between file_list and ai_rally)
 pub fn build_pr_info(app: &App) -> String {
@@ -40,6 +43,46 @@ pub fn build_ci_status_span(app: &App) -> Span<'static> {
             Span::styled("  ○ CI pending", Style::default().fg(Color::Yellow))
         }
         Some(CiStatus::None) | None => Span::raw(""),
+    }
+}
+
+/// The pending-review note for a PR header: "Pending review: 1 draft" or
+/// "Pending review: 3 drafts" (issue #169).
+pub fn pending_review_text(drafts: usize) -> String {
+    if drafts == 1 {
+        "Pending review: 1 draft".to_string()
+    } else {
+        format!("Pending review: {drafts} drafts")
+    }
+}
+
+/// The pending-review note as a header span. `None` when the viewer has no drafts
+/// on this PR, and in local mode, which has no pending review.
+pub fn build_pending_review_span(app: &App) -> Option<Span<'static>> {
+    if app.is_local_mode() {
+        return None;
+    }
+    match app.cmt.pending_drafts {
+        PendingDrafts::Known(drafts) if drafts > 0 => Some(Span::styled(
+            pending_review_text(drafts),
+            Style::default().fg(Color::Yellow),
+        )),
+        PendingDrafts::Known(_) | PendingDrafts::Unknown => None,
+    }
+}
+
+/// The tag after a draft comment's header in the comment panel and the thread
+/// views. It uses the words of the PR header note (issue #169).
+pub(crate) const PENDING_COMMENT_TAG: &str = " · pending review";
+
+/// The pending-review tag for a review comment's header line (issue #169). A draft
+/// gets the tag in the theme's warning color, as the header note has. A published
+/// comment gets an empty span, so its header renders as before.
+pub(crate) fn pending_comment_tag(comment: &ReviewComment, theme: Theme) -> Span<'static> {
+    if comment.is_pending_draft() {
+        Span::styled(PENDING_COMMENT_TAG, theme.warning.style())
+    } else {
+        Span::raw("")
     }
 }
 
@@ -295,5 +338,85 @@ mod tests {
             fit_to_width("あ", 0).as_ref(),
             truncate_with_width("あ", 0).as_ref()
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_note_tests {
+    use super::*;
+    use crate::app::{App, PendingDrafts};
+
+    #[test]
+    fn pending_review_text_counts_drafts_in_the_right_form() {
+        assert_eq!(pending_review_text(1), "Pending review: 1 draft");
+        assert_eq!(pending_review_text(2), "Pending review: 2 drafts");
+        assert_eq!(pending_review_text(12), "Pending review: 12 drafts");
+    }
+
+    #[test]
+    fn pending_note_is_shown_only_for_known_drafts() {
+        let mut app = App::new_for_test();
+        assert!(
+            build_pending_review_span(&app).is_none(),
+            "unknown is not shown"
+        );
+
+        app.cmt.pending_drafts = PendingDrafts::Known(0);
+        assert!(
+            build_pending_review_span(&app).is_none(),
+            "zero is not shown"
+        );
+
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        let note = build_pending_review_span(&app).expect("drafts are shown");
+        assert_eq!(note.content, "Pending review: 3 drafts");
+    }
+
+    #[test]
+    fn pending_note_is_hidden_in_local_mode() {
+        let mut app = App::new_for_test();
+        app.set_local_mode(true);
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+
+        assert!(build_pending_review_span(&app).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pending_comment_tag_tests {
+    use super::*;
+    use crate::config::ThemeConfig;
+    use crate::github::comment::CommentPublication;
+    use crate::ui::test_buffer::comment_on_added_line;
+
+    #[test]
+    fn a_draft_gets_the_tag_in_the_warning_color() {
+        let draft = comment_on_added_line(CommentPublication::PendingDraft);
+
+        let tag = pending_comment_tag(&draft, Theme::test_default());
+
+        assert_eq!(tag.content, " · pending review");
+        assert_eq!(tag.style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn a_published_comment_gets_no_tag() {
+        let published = comment_on_added_line(CommentPublication::Published);
+
+        let tag = pending_comment_tag(&published, Theme::test_default());
+
+        assert!(tag.content.is_empty(), "{:?}", tag.content);
+    }
+
+    /// Without color the words alone still tell a draft from a published comment.
+    #[test]
+    fn the_tag_keeps_its_words_when_color_is_off() {
+        let draft = comment_on_added_line(CommentPublication::PendingDraft);
+        let no_color = Theme::resolve(&ThemeConfig::default(), true);
+
+        let tag = pending_comment_tag(&draft, no_color);
+
+        assert_eq!(tag.content, " · pending review");
+        assert_eq!(tag.style.fg, None);
     }
 }

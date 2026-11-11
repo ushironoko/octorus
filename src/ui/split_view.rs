@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::chrome::{pane_block, PaneTitle};
-use super::common::render_rally_status_bar;
+use super::common::{build_pending_review_span, pending_comment_tag, render_rally_status_bar};
 use super::diff_view;
 use super::file_list::{build_file_list_items, build_file_list_items_ref, build_tree_row_item};
 use super::theme::{Attention, SplitAttention, Theme};
@@ -108,8 +108,11 @@ fn render_file_list_pane(
         },
     };
 
-    let header =
-        Paragraph::new(pr_info).block(pane_block(theme, PaneTitle::AsIs("octorus"), attention));
+    let mut header_block = pane_block(theme, PaneTitle::AsIs("octorus"), attention);
+    if let Some(note) = build_pending_review_span(app) {
+        header_block = header_block.title(Line::from(note).right_aligned());
+    }
+    let header = Paragraph::new(pr_info).block(header_block);
     frame.render_widget(header, chunks[0]);
 
     let files = app.files();
@@ -298,7 +301,7 @@ fn render_file_list_pane(
     } else {
         "←/h: focus files"
     };
-    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer_line = super::footer::build_pane_help_line(app, help_text, is_focused);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         attention.border_style(theme),
@@ -419,6 +422,7 @@ fn render_diff_pane_with_comments(
                     format!(" (line {})", comment.line.unwrap_or(0)),
                     Style::default().fg(Color::DarkGray),
                 ),
+                pending_comment_tag(comment, theme),
             ]));
 
             for line in comment.body.lines() {
@@ -700,6 +704,46 @@ mod tests {
         assert!(!dim.contains("▶ FILES"), "dim title drew an arrow:\n{dim}");
     }
 
+    /// The status line belongs to one footer. Both panes used to draw it, so a
+    /// message showed twice, on the file pane and on the diff pane. The file pane
+    /// keeps its own help text in both focus states.
+    #[test]
+    fn a_status_message_is_drawn_once_whichever_pane_has_focus() {
+        let mut app = loaded_app();
+        let focused_file_help = crate::ui::footer::footer_hint_back(&app.config.keybindings);
+        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+
+        for (state, file_pane_help) in [
+            (AppState::SplitViewFileList, focused_file_help.as_str()),
+            (AppState::SplitViewDiff, "←/h: focus files"),
+        ] {
+            app.state = state;
+
+            let text = draw(&mut app);
+
+            assert_eq!(
+                text.matches("Added to pending review").count(),
+                1,
+                "{state:?}:\n{text}"
+            );
+            assert!(
+                text.contains(file_pane_help),
+                "{state:?}: the file pane lost its help {file_pane_help:?}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reload_progress_is_drawn_once_in_the_split_view() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewFileList;
+        app.cmt.comments_loading = true;
+
+        let text = draw(&mut app);
+
+        assert_eq!(text.matches("Loading comments...").count(), 1, "{text}");
+    }
+
     #[test]
     fn comment_panel_takes_the_arrow_from_the_diff() {
         let mut app = loaded_app();
@@ -714,5 +758,65 @@ mod tests {
             !text.contains("▶ DIFF"),
             "diff kept the arrow while comments are open:\n{text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_header_tests {
+    use super::*;
+    use crate::app::{App, AppState, PendingDrafts};
+    use crate::ui::test_buffer::row_text;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// The split view's file pane carries the PR header, so the note is on its border.
+    #[test]
+    fn split_view_file_pane_border_shows_the_pending_review_drafts() {
+        let mut app = App::new_for_test();
+        app.state = AppState::SplitViewFileList;
+        app.pr_number = Some(244);
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let border = row_text(terminal.backend().buffer(), 0);
+        assert!(border.contains("Pending review: 3 drafts"), "{border}");
+    }
+}
+
+#[cfg(test)]
+mod pending_comment_panel_tests {
+    use super::*;
+    use crate::app::AppState;
+    use crate::github::comment::CommentPublication;
+    use crate::ui::test_buffer::{
+        app_with_comment_on_added_line, comment_on_added_line, screen_text,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// The split view's diff pane with the comment panel open on the `+added` line.
+    fn split_screen(publication: CommentPublication) -> String {
+        let mut app = app_with_comment_on_added_line(comment_on_added_line(publication));
+        app.state = AppState::SplitViewDiff;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn split_panel_tags_a_draft_header() {
+        let text = split_screen(CommentPublication::PendingDraft);
+
+        assert!(text.contains("@alice (line 2) · pending review"), "{text}");
+    }
+
+    #[test]
+    fn split_panel_leaves_a_published_header_untagged() {
+        let text = split_screen(CommentPublication::Published);
+
+        assert!(text.contains("@alice (line 2)"), "{text}");
+        assert!(!text.contains("pending review"), "{text}");
     }
 }
