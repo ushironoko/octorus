@@ -6492,6 +6492,96 @@ async fn test_reload_pr_list_resets_state() {
     assert!(app.prs.pr_list_filter.is_none());
 }
 
+/// One PR, number 7, as the `gh pr list` double replies.
+#[cfg(unix)]
+const RECOVERED_PR_LIST: &str = r#"[{"number":7,"title":"Recovered PR","state":"open","author":{"login":"alice"},"isDraft":false,"labels":[],"updatedAt":"2025-01-01T00:00:00Z","statusCheckRollup":[]}]"#;
+
+/// Polls the PR list fetch until it settles, as the event loop does.
+#[cfg(unix)]
+async fn settle_pr_list(app: &mut App) {
+    for _ in 0..500 {
+        app.poll_pr_list_updates();
+        if !app.prs.pr_list.is_loading() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("PR list fetch did not settle: {:?}", app.prs.pr_list);
+}
+
+/// A failed first load leaves the list in Error. The retry key reloads it, as
+/// refresh does, and the list fills from the reply.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn test_retry_key_reloads_pr_list_after_a_failed_load() {
+    use crate::github::fake_gh::FakeGh;
+    use crate::github::GhFailure;
+
+    let gh = FakeGh::install("[]", RECOVERED_PR_LIST, "", "");
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.prs.pr_list = LoadState::Error(GhFailure::other(
+        "gh command failed: gh: Not Found (HTTP 404)",
+    ));
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('r')))
+        .await
+        .unwrap();
+
+    assert!(app.prs.pr_list.is_loading(), "retry did not start a reload");
+    settle_pr_list(&mut app).await;
+    let numbers: Vec<u32> = app
+        .prs
+        .pr_list
+        .as_loaded()
+        .expect("reload did not load the list")
+        .iter()
+        .map(|pr| pr.number)
+        .collect();
+    assert_eq!(numbers, vec![7]);
+    assert!(gh.calls().contains("pr list"), "{}", gh.calls());
+}
+
+/// `or -r owner/no-such-repo -p`: the first fetch reports the missing repository.
+/// The list says why and shows the retry key, and retry loads the list.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn test_missing_repo_at_startup_shows_reason_then_retry_loads_list() {
+    use crate::github::fake_gh::FakeGh;
+    use crate::github::GhFailure;
+    use tokio::sync::mpsc;
+
+    let _gh = FakeGh::install("[]", RECOVERED_PR_LIST, "", "");
+    let mut app = App::new_pr_list(
+        "owner/no-such-repo",
+        Config::default(),
+        RepositoryAvailability::Available,
+    );
+    let (tx, rx) = mpsc::channel(1);
+    app.set_pr_list_receiver(rx);
+    let error = anyhow::anyhow!(
+        "gh command failed: GraphQL: Could not resolve to a Repository with the name 'owner/no-such-repo'. (repository)"
+    );
+    tx.send(Err(GhFailure::from_error(&error))).await.unwrap();
+    app.poll_pr_list_updates();
+    assert!(matches!(app.prs.pr_list, LoadState::Error(_)));
+
+    let screen = render_top_lines(&mut app, 24, 24);
+    assert!(
+        screen.contains("Repository not found. Check the owner/repo name."),
+        "{screen}"
+    );
+    assert!(screen.contains("r Retry | "), "{screen}");
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('r')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    assert_eq!(app.prs.pr_list.as_loaded().map(|prs| prs.len()), Some(1));
+}
+
 #[test]
 fn test_load_more_prs_skips_when_loading() {
     let mut app = App::new_for_test();

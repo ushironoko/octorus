@@ -165,6 +165,14 @@ impl App {
             return Ok(());
         }
 
+        // The footer offers retry only after a failed load, so the key acts only then.
+        if matches!(self.prs.pr_list, LoadState::Error(_))
+            && self.matches_single_key(&key, &kb.retry)
+        {
+            self.reload_pr_list();
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.toggle_local_mode) {
             self.toggle_local_mode();
             return Ok(());

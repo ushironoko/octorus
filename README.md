@@ -653,6 +653,7 @@ so lazy loading, prefetching, and state transitions behave identically.
 | `S` | View CI checks status |
 | `Space /` | Keyword filter |
 | `R` | Refresh PR list |
+| `r` | Retry after a failed load |
 | `L` | Toggle local diff mode |
 | `Z` | Toggle zen mode |
 | `?` | Toggle help |
