@@ -2,6 +2,7 @@ use super::chrome::{pane_block, PaneTitle};
 use super::common::{pending_comment_tag, render_rally_status_bar, wrap_text};
 use super::theme::{Attention, Theme, SELECTION_MARKER_WIDTH};
 use crate::app::{App, CommentTab};
+use crate::github::comment::ReviewComment;
 use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind, TabGroup};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -14,6 +15,15 @@ use ratatui::{
     Frame,
 };
 use std::collections::HashSet;
+
+/// `:12`, or `:10-12` when the comment spans more than one line. Empty when the
+/// end line is unknown, so a comment with no line is labeled by its path only.
+fn review_line_suffix(comment: &ReviewComment) -> String {
+    comment
+        .line_span()
+        .map(|span| format!(":{span}"))
+        .unwrap_or_default()
+}
 
 fn register_comment_list_hits(
     hit_map: &mut HitMap,
@@ -487,7 +497,7 @@ fn render_review_thread_list_data_with_hits(
             let thread_index = data.visible_threads.map_or(i, |indices| indices[i]);
             let thread = data.threads.get(thread_index)?;
             let comment = &data.comments[thread.root];
-            let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
+            let line_info = review_line_suffix(comment);
             let resolved = data.resolved_ids.contains(&comment.id);
 
             let reply_count = thread.replies.len();
@@ -691,7 +701,7 @@ fn render_review_thread_data_with_hits(
             };
 
             let header_line = if is_root {
-                let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
+                let line_info = review_line_suffix(comment);
                 Line::from(vec![
                     Span::styled(
                         format!("@{}", comment.user.login),
@@ -746,10 +756,7 @@ fn render_review_thread_data_with_hits(
 
     let total_items = comment_indices.len();
     let root_comment = &all_comments[thread.root];
-    let line_info = root_comment
-        .line
-        .map(|l| format!(":{}", l))
-        .unwrap_or_default();
+    let line_info = review_line_suffix(root_comment);
     let title = format!(
         " {}{} ({} comments)",
         root_comment.path, line_info, total_items

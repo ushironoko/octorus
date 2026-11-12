@@ -6105,7 +6105,7 @@ fn right_comment_with_a_missing_start_stays_on_the_new_line() {
 }
 
 #[test]
-fn multiline_left_comment_marks_only_the_end_removed_line() {
+fn multiline_left_comment_marks_each_removed_line_in_the_range() {
     let patch = "\
 @@ -10,4 +10,3 @@
  kept-top
@@ -6125,19 +6125,56 @@ fn multiline_left_comment_marks_only_the_end_removed_line() {
     app.update_file_comment_positions();
     assert_eq!(
         app.cmt.file_comment_positions,
-        vec![CommentPosition {
-            diff_line_index: 3,
-            comment_index: 0,
-        }]
+        vec![
+            CommentPosition {
+                diff_line_index: 2,
+                comment_index: 0,
+            },
+            CommentPosition {
+                diff_line_index: 3,
+                comment_index: 0,
+            },
+        ]
     );
-    assert!(!app.cmt.file_comment_lines.contains(&2));
+    assert!(!app.cmt.file_comment_lines.contains(&4));
 
     install_plain_diff(&mut app);
     app.state = AppState::DiffView;
     let diff = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&diff, "old-start").contains('●'));
     assert!(row_containing(&diff, "old-end").contains('●'));
-    assert!(!row_containing(&diff, "old-start").contains('●'));
     assert!(!row_containing(&diff, "new-only").contains('●'));
+    assert!(!row_containing(&diff, "kept-top").contains('●'));
+}
+
+#[test]
+fn a_range_with_ends_on_different_sides_marks_both_endpoints() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(11),
+        Some("RIGHT"),
+        Some((11, "LEFT")),
+        "crosses the change",
+    )]);
+    app.update_file_comment_positions();
+
+    let rows: Vec<_> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| pos.diff_line_index)
+        .collect();
+    // LEFT 11 is `removed-left`. RIGHT 11 is `added-right`. Nothing between them.
+    assert_eq!(rows, vec![2, 3]);
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&diff, "removed-left").contains('●'));
+    assert!(row_containing(&diff, "added-right").contains('●'));
+    assert!(!row_containing(&diff, "kept-top").contains('●'));
+    assert!(!row_containing(&diff, "kept-bottom").contains('●'));
 }
 
 #[test]
@@ -7409,7 +7446,8 @@ async fn test_review_submit_reloads_review_comments_after_publishing() {
         pr_number: 1,
     };
     // The stale list from before the publish, both shown and cached.
-    app.session_cache.put_review_comments(key, Vec::new());
+    app.session_cache
+        .put_review_comments(key.clone(), Vec::new());
     app.cmt.review_comments = Some(Vec::new());
     let (tx, rx) = mpsc::channel(1);
     app.cmt.review_submit_receiver = Some((1, rx));
@@ -7421,9 +7459,12 @@ async fn test_review_submit_reloads_review_comments_after_publishing() {
 
     app.poll_review_submit_updates();
 
-    // The stale list is dropped and fetched again, not restored from the cache.
-    assert!(app.cmt.review_comments.is_none());
+    // The list on screen stays until the fetch replaces it, so a diff marker does
+    // not vanish for a frame. The cache is dropped, so this is a fetch, not a hit.
+    assert_eq!(app.cmt.review_comments.as_ref().map(Vec::len), Some(0));
     assert!(app.cmt.comments_loading);
+    assert!(app.cmt.comment_receiver.is_some());
+    assert!(app.session_cache.get_review_comments(&key).is_none());
 }
 
 #[tokio::test]
@@ -11064,4 +11105,180 @@ fn a_cached_comment_list_restores_the_draft_count() {
 
     assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(2));
     assert!(app.cmt.comment_receiver.is_none(), "no fetch was started");
+}
+
+const RANGE_PATCH: &str = "\
+@@ -10,4 +10,4 @@
+ kept-top
+-old-mid
++new-mid
+ kept-bot
+";
+
+/// A pending draft as GitHub returns a multi-line one: `line` and `start_line`
+/// are null, `position` is the end row, and `original_start_line` is the start.
+fn pending_range_draft() -> ReviewComment {
+    let mut draft = pending_draft_at_position(
+        501,
+        "test.rs",
+        4,
+        "first line of the draft\nsecond line of the draft",
+    );
+    draft.location.original_start_line = Some(10);
+    draft.location.original_line = Some(12);
+    draft
+}
+
+#[test]
+fn a_pending_draft_range_is_drawn_on_every_line_of_its_side() {
+    let mut app = make_app_with_patch(RANGE_PATCH);
+    app.apply_review_comments(vec![pending_range_draft()]);
+    app.update_file_comment_positions();
+
+    let draft = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(draft.line, Some(12));
+    assert_eq!(draft.start_line, Some(10));
+    assert_eq!(draft.location.side.as_deref(), Some("RIGHT"));
+    assert_eq!(draft.location.start_side.as_deref(), Some("RIGHT"));
+    assert_eq!(draft.line_span().as_deref(), Some("10-12"));
+    let rows: Vec<_> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| pos.diff_line_index)
+        .collect();
+    // kept-top (new 10), new-mid (new 11), kept-bot (new 12). Not the removed row.
+    assert_eq!(rows, vec![1, 3, 4]);
+    assert!(!app.cmt.file_comment_lines.contains(&2));
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    app.cmt.comment_panel_open = true;
+    app.diff_scroll.selected_line = 4;
+    let diff = render_screen(&mut app, 100, 32);
+    assert!(row_containing(&diff, "kept-top").contains('●'), "{diff}");
+    assert!(!row_containing(&diff, "old-mid").contains('●'), "{diff}");
+    assert!(row_containing(&diff, "new-mid").contains('●'), "{diff}");
+    assert!(row_containing(&diff, "kept-bot").contains('●'), "{diff}");
+    assert!(diff.contains("(line 10-12)"), "{diff}");
+    let first = diff
+        .lines()
+        .position(|line| line.contains("first line of the draft"))
+        .expect("first body line");
+    let second = diff
+        .lines()
+        .position(|line| line.contains("second line of the draft"))
+        .expect("second body line");
+    assert!(second > first, "the draft body is one row per line\n{diff}");
+
+    app.state = AppState::CommentList;
+    app.cmt.comment_tab = CommentTab::Review;
+    let list = render_screen(&mut app, 100, 16);
+    assert!(
+        row_containing(&list, "test.rs:10-12").contains("pending review"),
+        "{list}"
+    );
+    assert!(list.contains("first line of the draft"));
+    assert!(list.contains("second line of the draft"));
+    let first = list
+        .lines()
+        .position(|line| line.contains("first line of the draft"))
+        .unwrap();
+    let second = list
+        .lines()
+        .position(|line| line.contains("second line of the draft"))
+        .unwrap();
+    assert!(second > first, "{list}");
+}
+
+#[test]
+fn a_draft_that_already_has_its_end_line_still_recovers_its_start() {
+    let mut app = make_app_with_patch(RANGE_PATCH);
+    let mut draft = pending_draft_comment(501, "test.rs", 12, "span");
+    draft.location.side = Some("RIGHT".to_string());
+    draft.location.original_start_line = Some(10);
+    app.apply_review_comments(vec![draft]);
+    app.update_file_comment_positions();
+
+    let draft = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(draft.start_line, Some(10));
+    assert_eq!(draft.location.start_side.as_deref(), Some("RIGHT"));
+    assert_eq!(
+        app.cmt
+            .file_comment_positions
+            .iter()
+            .map(|pos| pos.diff_line_index)
+            .collect::<Vec<_>>(),
+        vec![1, 3, 4]
+    );
+}
+
+#[test]
+fn a_draft_keeps_the_end_row_when_its_original_start_left_the_patch() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    // Position 3 is `+added-right`, new line 11. The recorded start is not in
+    // this hunk, so the draft stays on that one row.
+    let mut draft = pending_draft_at_position(501, "test.rs", 3, "end only");
+    draft.location.original_start_line = Some(50);
+    app.apply_review_comments(vec![draft]);
+    app.update_file_comment_positions();
+
+    let draft = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(draft.line, Some(11));
+    assert_eq!(draft.start_line, None);
+    assert_eq!(draft.line_span().as_deref(), Some("11"));
+    assert_eq!(app.cmt.file_comment_positions.len(), 1);
+    assert_eq!(app.cmt.file_comment_positions[0].diff_line_index, 3);
+}
+
+/// The marker is drawn from the comments on screen. A reload must not clear
+/// those comments, or the `●` disappears while the footer says comments are
+/// loading and returns only when the fetch lands.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn the_diff_comment_marker_stays_while_comments_reload() {
+    let _gh = crate::github::fake_gh::FakeGh::install("[]", "[]", "", "");
+    let mut app = app_on_added_line();
+    app.apply_review_comments(vec![pending_draft_comment(501, "test.rs", 2, "keep me")]);
+    app.update_file_comment_positions();
+    install_plain_diff(&mut app);
+    app.cmt.comment_panel_open = true;
+    let shown = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&shown, "+added").contains('●'), "{shown}");
+
+    let key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 1,
+    };
+    app.session_cache
+        .put_review_comments(key.clone(), app.cmt.review_comments.clone().unwrap());
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.cmt.review_submit_receiver = Some((1, rx));
+    tx.send(crate::loader::ReviewSubmitResult::Submitted(
+        ReviewAction::Comment,
+    ))
+    .await
+    .unwrap();
+    app.poll_review_submit_updates();
+
+    assert!(app.cmt.comments_loading);
+    assert!(app.cmt.comment_receiver.is_some());
+    assert!(app.session_cache.get_review_comments(&key).is_none());
+    assert_eq!(
+        app.cmt
+            .review_comments
+            .as_ref()
+            .map(|comments| comments[0].id),
+        Some(501)
+    );
+    assert!(app.cmt.file_comment_lines.contains(&2));
+    let during = render_screen(&mut app, 100, 24);
+    assert!(
+        row_containing(&during, "+added").contains('●'),
+        "the marker must stay while the reload is in flight\n{during}"
+    );
+    assert!(during.contains("keep me"), "{during}");
+    assert!(during.contains("Loading comments"), "{during}");
 }

@@ -431,7 +431,7 @@ fn render_diff_pane_with_comments(
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(
-                    format!(" (line {})", comment.line.unwrap_or(0)),
+                    format!(" (line {})", comment.line_label()),
                     Style::default().fg(Color::DarkGray),
                 ),
                 pending_comment_tag(comment, theme),

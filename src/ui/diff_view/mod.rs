@@ -1645,7 +1645,7 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(
-                    format!(" (line {})", comment.line.unwrap_or(0)),
+                    format!(" (line {})", comment.line_label()),
                     Style::default().fg(Color::DarkGray),
                 ),
                 pending_comment_tag(comment, app.theme),

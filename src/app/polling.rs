@@ -525,6 +525,12 @@ impl App {
 
     /// Drops the cached review comments of `origin_pr` and fetches them again when
     /// that PR is still on screen. Call it after anything that changed them on GitHub.
+    ///
+    /// The comments already drawn stay until that fetch is applied. Clearing the
+    /// list here and recomputing positions would drop `file_comment_lines`, so the
+    /// diff's `●` would vanish for the frame where the footer says the comments
+    /// are loading (issue #265). The cache is still removed, so the fetch is not
+    /// served from the list that just went stale.
     fn reload_review_comments_for(&mut self, origin_pr: u32) {
         let cache_key = PrCacheKey {
             repo: self.repo.clone(),
@@ -533,9 +539,7 @@ impl App {
         self.session_cache.remove_review_comments(&cache_key);
         // PR が切り替わっていなければコメントを再取得
         if self.pr_number == Some(origin_pr) {
-            self.cmt.review_comments = None;
             self.load_review_comments();
-            self.update_file_comment_positions();
         }
     }
 
