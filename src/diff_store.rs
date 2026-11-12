@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::DiffCache;
 use crate::syntax::ParserPool;
-use crate::ui::diff_view::build_diff_cache_cancellable;
+use crate::ui::diff_view::build_diff_cache_for_prefetch;
 
 /// ハイライトキャッシュストアの最大エントリ数（メモリ上限）
 ///
@@ -287,6 +287,15 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         token
     }
 
+    /// A viewed-file highlight is running and has not been cancelled.
+    pub fn highlight_in_flight(&self) -> bool {
+        self.highlight_rx.is_some()
+            && self
+                .highlight_cancel
+                .as_ref()
+                .is_some_and(|token| !token.is_cancelled())
+    }
+
     fn cancel_highlight(&mut self) {
         if let Some(token) = self.highlight_cancel.take() {
             token.cancel();
@@ -521,10 +530,11 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
 
 /// Highlight every prefetch item on one thread, stopping between files.
 ///
-/// A file over the size cap or the per-file time budget is published as the
-/// plain diff (`highlighted: false`) so the next file is not stuck behind it
-/// and a later prefetch does not pick the same file forever. A cancelled job
-/// publishes nothing further: the result belongs to a view the user left.
+/// A file over the prefetch size cap or the per-file time budget is published
+/// as the plain diff (`highlighted: false`) so the next file is not stuck
+/// behind it and a later prefetch does not pick the same file forever. That
+/// plain cache is not a final decision: opening the file still runs the
+/// uncapped current-file highlight. A cancelled job publishes nothing further.
 pub(crate) fn prefetch_highlight_loop<K: Hash + Eq + Clone + Send + 'static>(
     items: Vec<PrefetchItem<K>>,
     theme: &str,
@@ -538,7 +548,7 @@ pub(crate) fn prefetch_highlight_loop<K: Hash + Eq + Clone + Send + 'static>(
         if cancel.is_cancelled() {
             return;
         }
-        let mut cache = build_diff_cache_cancellable(
+        let mut cache = build_diff_cache_for_prefetch(
             &item.patch,
             &item.filename,
             theme,
@@ -1254,10 +1264,10 @@ mod tests {
 
     #[test]
     fn prefetch_skips_an_over_cap_file_and_still_highlights_the_next() {
-        use crate::ui::diff_view::MAX_DIFF_HIGHLIGHT_BYTES;
+        use crate::ui::diff_view::PREFETCH_HIGHLIGHT_BYTES;
 
         let mut big = String::from("@@ -1 +1 @@\n+");
-        big.push_str(&"x".repeat(MAX_DIFF_HIGHLIGHT_BYTES));
+        big.push_str(&"x".repeat(PREFETCH_HIGHLIGHT_BYTES));
         let small = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n".to_string();
         let items = vec![
             PrefetchItem {

@@ -10,7 +10,8 @@ use crate::github;
 use crate::loader;
 use crate::syntax::ParserPool;
 use crate::ui::diff_view::{
-    build_commit_diff_cache_cancellable, build_diff_cache_cancellable, build_plain_diff_cache,
+    build_commit_diff_cache_cancellable, build_commit_diff_cache_prefetch,
+    build_diff_cache_cancellable, build_plain_diff_cache,
 };
 
 use super::types::*;
@@ -124,18 +125,28 @@ impl App {
         let sha = commit.sha.clone();
 
         if cl.diff_store.try_restore(&sha, None) {
+            let highlighted = cl
+                .diff_store
+                .current
+                .as_ref()
+                .is_some_and(|cache| cache.highlighted);
             cl.diff_loading = false;
             cl.diff_error = None;
             cl.diff_scroll.reset();
             if let Some(ref cache) = cl.diff_store.current {
                 cl.diff_scroll.set_line_count(cache.lines.len());
             }
-            cl.pending_diff_sha = None;
-            cl.diff_receiver = None;
-            return;
+            if highlighted {
+                cl.pending_diff_sha = None;
+                cl.diff_receiver = None;
+                return;
+            }
+            // Prefetch published a plain (or partially plain) commit. Keep those
+            // lines visible and fetch again so the viewed commit is highlighted
+            // without the prefetch budget.
         }
 
-        cl.diff_loading = true;
+        cl.diff_loading = cl.diff_store.current_key() != Some(&sha);
         cl.diff_error = None;
         cl.pending_diff_sha = Some(sha.clone());
 
@@ -226,7 +237,7 @@ impl App {
                 if cancel.is_cancelled() {
                     return;
                 }
-                let cache = build_commit_diff_cache_cancellable(
+                let cache = build_commit_diff_cache_prefetch(
                     &diff_text,
                     &theme,
                     &mut parser_pool,
@@ -614,10 +625,14 @@ impl App {
                     .current
                     .as_ref()
                     .is_some_and(|c| !c.highlighted);
-                if is_plain
-                    && cl.diff_store.store_contains_key(&current_sha)
-                    && cl.diff_store.try_restore(&current_sha, None)
-                {
+                let stored_highlighted = cl
+                    .diff_store
+                    .store
+                    .get(&current_sha)
+                    .is_some_and(|cache| cache.highlighted);
+                // Only a finished prefetch may replace the plain view. A plain
+                // prefetch result must not cancel the full highlight in flight.
+                if is_plain && stored_highlighted && cl.diff_store.try_restore(&current_sha, None) {
                     if let Some(ref c) = cl.diff_store.current {
                         cl.diff_scroll.set_line_count(c.lines.len());
                     }
@@ -642,15 +657,33 @@ impl App {
         };
 
         if ops.diff_store.current_key() == Some(&path) {
-            return;
+            let settled = ops.diff_patch_receiver.is_some()
+                || ops.diff_store.highlight_in_flight()
+                || ops
+                    .diff_store
+                    .current
+                    .as_ref()
+                    .is_some_and(|cache| cache.highlighted);
+            if settled {
+                return;
+            }
         }
 
         if ops.diff_store.try_restore(&path, None) {
+            let highlighted = ops
+                .diff_store
+                .current
+                .as_ref()
+                .is_some_and(|cache| cache.highlighted);
             if let Some(ref c) = ops.diff_store.current {
                 ops.diff_scroll.set_line_count(c.lines.len());
             }
             ops.diff_scroll.reset();
-            return;
+            if highlighted {
+                return;
+            }
+            // Prefetch published the plain diff. Leave it up and fetch the
+            // patch so the current-file highlight can replace it.
         }
 
         let (tx, rx) = mpsc::channel(1);

@@ -19,7 +19,9 @@ use crate::app::{
     hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext, SpanVec,
 };
 use crate::diff::{is_no_newline_marker, LineType, PatchClassifier};
-use crate::syntax::highlighter::{HighlightBudget, HighlightControl, HIGHLIGHT_QUERY_BUDGET};
+use crate::syntax::highlighter::{
+    CancelHighlight, HighlightBudget, HighlightControl, PREFETCH_QUERY_BUDGET,
+};
 use crate::syntax::{
     apply_line_highlights, collect_line_highlights_bounded,
     collect_line_highlights_with_injections_bounded, get_theme, highlight_code_line,
@@ -41,19 +43,24 @@ pub fn expand_tabs(s: &str, tab_width: u8) -> Cow<'_, str> {
     }
 }
 
-/// Skip syntax highlighting above this patch size. The plain diff still renders.
+/// Prefetch skips highlighting above this patch size and publishes the plain diff.
 ///
-/// Same ceiling as Repo Browse's file view (`MAX_VIEWABLE_FILE_BYTES`).
-pub const MAX_DIFF_HIGHLIGHT_BYTES: usize = 8 * 1024 * 1024;
+/// This is not a limit on the file the user is looking at. That file still
+/// highlights in the background and replaces the plain diff when the job
+/// finishes. Repo Browse's own view limits are separate and are not reused here
+/// as a product ceiling.
+pub const PREFETCH_HIGHLIGHT_BYTES: usize = 8 * 1024 * 1024;
 
-/// Skip syntax highlighting above this many patch lines.
+/// Prefetch skips highlighting above this many patch lines.
 ///
-/// Same ceiling as Repo Browse's file view (`MAX_VIEWABLE_FILE_LINES`).
-pub const MAX_DIFF_HIGHLIGHT_LINES: usize = 100_000;
+/// Same role as [`PREFETCH_HIGHLIGHT_BYTES`]: queue protection only.
+pub const PREFETCH_HIGHLIGHT_LINES: usize = 100_000;
 
-/// `true` when a diff should keep its plain coloring and not be syntax highlighted.
-pub fn diff_highlight_over_cap(patch: &str) -> bool {
-    patch.len() > MAX_DIFF_HIGHLIGHT_BYTES || patch.lines().count() > MAX_DIFF_HIGHLIGHT_LINES
+/// `true` when prefetch should publish the plain diff and move on.
+///
+/// The viewed file does not consult this.
+pub fn prefetch_highlight_over_cap(patch: &str) -> bool {
+    patch.len() > PREFETCH_HIGHLIGHT_BYTES || patch.lines().count() > PREFETCH_HIGHLIGHT_LINES
 }
 
 fn plain_highlight_fallback(patch: &str, tab_width: u8, markdown_rich: bool) -> DiffCache {
@@ -155,9 +162,8 @@ fn no_newline_marker_row(line: &str, interner: &mut Rodeo) -> CachedDiffLine {
 ///
 /// Returns a complete DiffCache with file_index set to 0 (caller should update).
 ///
-/// Patches over [`MAX_DIFF_HIGHLIGHT_BYTES`] / [`MAX_DIFF_HIGHLIGHT_LINES`], and
-/// highlights that exceed [`HIGHLIGHT_QUERY_BUDGET`], come back as the plain
-/// diff (`highlighted: false`).
+/// No size cap and no time budget: a very large file still highlights, then
+/// replaces the plain diff. Cancellation is a separate entry point.
 pub fn build_diff_cache(
     patch: &str,
     filename: &str,
@@ -166,23 +172,24 @@ pub fn build_diff_cache(
     markdown_rich: bool,
     tab_width: u8,
 ) -> DiffCache {
-    let budget = HighlightBudget::new(CancellationToken::new(), HIGHLIGHT_QUERY_BUDGET);
-    build_diff_cache_with_budget(
+    build_diff_cache_cancellable(
         patch,
         filename,
         theme_name,
         parser_pool,
         markdown_rich,
         tab_width,
-        &budget,
+        &CancellationToken::new(),
     )
 }
 
-/// [`build_diff_cache`] that also stops when `cancel` is signalled.
+/// [`build_diff_cache`] that stops when `cancel` is signalled.
 ///
-/// A cancelled job still returns the plain diff so callers have a cache, but
-/// they must drop it when `cancel` is already signalled. Publishing it would
-/// settle a file the user has left.
+/// There is no byte cap, line cap, or [`PREFETCH_QUERY_BUDGET`]. The plain diff
+/// is what the UI shows until this returns a highlighted cache. A cancelled job
+/// still returns the plain diff so callers have a value, but they must drop it
+/// when `cancel` is already signalled. Publishing it would settle a file the
+/// user has left.
 pub fn build_diff_cache_cancellable(
     patch: &str,
     filename: &str,
@@ -192,36 +199,67 @@ pub fn build_diff_cache_cancellable(
     tab_width: u8,
     cancel: &CancellationToken,
 ) -> DiffCache {
-    let budget = HighlightBudget::new(cancel.clone(), HIGHLIGHT_QUERY_BUDGET);
-    build_diff_cache_with_budget(
+    let control = CancelHighlight::new(cancel.clone());
+    build_diff_cache_controlled(
         patch,
         filename,
         theme_name,
         parser_pool,
         markdown_rich,
         tab_width,
-        &budget,
+        &control,
     )
 }
 
-fn build_diff_cache_with_budget(
+/// Prefetch highlight. A patch over [`PREFETCH_HIGHLIGHT_BYTES`] /
+/// [`PREFETCH_HIGHLIGHT_LINES`], or a query that exceeds [`PREFETCH_QUERY_BUDGET`],
+/// comes back as the plain diff so the next file can run.
+///
+/// Opening that file later must not treat this plain cache as final. The viewed
+/// file goes through [`build_diff_cache_cancellable`].
+pub fn build_diff_cache_for_prefetch(
     patch: &str,
     filename: &str,
     theme_name: &str,
     parser_pool: &mut ParserPool,
     markdown_rich: bool,
     tab_width: u8,
-    budget: &HighlightBudget,
+    cancel: &CancellationToken,
 ) -> DiffCache {
-    if budget.poll_abort().is_some() || diff_highlight_over_cap(patch) {
+    if cancel.is_cancelled() || prefetch_highlight_over_cap(patch) {
+        return plain_highlight_fallback(patch, tab_width, markdown_rich);
+    }
+    let expanded = expand_tabs(patch, tab_width);
+    if prefetch_highlight_over_cap(expanded.as_ref()) {
+        return plain_highlight_fallback(patch, tab_width, markdown_rich);
+    }
+    let control = HighlightBudget::new(cancel.clone(), PREFETCH_QUERY_BUDGET);
+    build_diff_cache_controlled(
+        patch,
+        filename,
+        theme_name,
+        parser_pool,
+        markdown_rich,
+        tab_width,
+        &control,
+    )
+}
+
+fn build_diff_cache_controlled(
+    patch: &str,
+    filename: &str,
+    theme_name: &str,
+    parser_pool: &mut ParserPool,
+    markdown_rich: bool,
+    tab_width: u8,
+    budget: &dyn HighlightControl,
+) -> DiffCache {
+    if budget.poll_abort().is_some() {
         return plain_highlight_fallback(patch, tab_width, markdown_rich);
     }
 
     let expanded = expand_tabs(patch, tab_width);
     let patch_body = expanded.as_ref();
-    if diff_highlight_over_cap(patch_body) {
-        return plain_highlight_fallback(patch, tab_width, markdown_rich);
-    }
 
     let patch_hash = hash_string(patch);
     let original_patch = patch;
@@ -371,10 +409,8 @@ pub fn build_commit_diff_cache(
 
 /// [`build_commit_diff_cache`] that stops between files when `cancel` is signalled.
 ///
-/// Each file has its own [`HIGHLIGHT_QUERY_BUDGET`]. A file over the size cap or
-/// the budget contributes its plain lines and the next file still runs, so one
-/// slow file cannot stall the rest of the commit. A cancelled job may return a
-/// partial cache; the caller drops it.
+/// Each file is highlighted without a time budget or a size cap, same as the
+/// viewed file. A cancelled job may return a partial cache; the caller drops it.
 pub fn build_commit_diff_cache_cancellable(
     full_diff: &str,
     theme_name: &str,
@@ -382,25 +418,73 @@ pub fn build_commit_diff_cache_cancellable(
     tab_width: u8,
     cancel: &CancellationToken,
 ) -> DiffCache {
+    build_commit_diff_cache_sections(full_diff, cancel, |filename, section_patch| {
+        build_diff_cache_cancellable(
+            section_patch,
+            filename,
+            theme_name,
+            parser_pool,
+            false,
+            tab_width,
+            cancel,
+        )
+    })
+}
+
+/// Prefetch a commit diff. Each file uses [`build_diff_cache_for_prefetch`], so
+/// a capped or timed-out file contributes its plain lines and the next file
+/// still runs.
+///
+/// `highlighted` is false when any file stayed plain. Opening that commit must
+/// run [`build_commit_diff_cache_cancellable`] instead of treating the prefetch
+/// as final. A cancelled job may return a partial cache; the caller drops it.
+pub fn build_commit_diff_cache_prefetch(
+    full_diff: &str,
+    theme_name: &str,
+    parser_pool: &mut ParserPool,
+    tab_width: u8,
+    cancel: &CancellationToken,
+) -> DiffCache {
+    build_commit_diff_cache_sections(full_diff, cancel, |filename, section_patch| {
+        if cancel.is_cancelled() {
+            return plain_highlight_fallback(section_patch, tab_width, false);
+        }
+        build_diff_cache_for_prefetch(
+            section_patch,
+            filename,
+            theme_name,
+            parser_pool,
+            false,
+            tab_width,
+            cancel,
+        )
+    })
+}
+
+fn build_commit_diff_cache_sections(
+    full_diff: &str,
+    cancel: &CancellationToken,
+    mut section: impl FnMut(&str, &str) -> DiffCache,
+) -> DiffCache {
     let patch_hash = hash_string(full_diff);
     let sections = split_diff_by_file(full_diff);
 
     let mut combined_interner = Rodeo::default();
     let mut combined_lines: Vec<CachedDiffLine> = Vec::new();
+    // An empty diff has nothing left to highlight. A plain section, or a cancel
+    // mid-commit, leaves `highlighted` false so a later open can run the full
+    // current-file path.
+    let mut highlighted = true;
 
     for (filename, section_patch) in &sections {
         if cancel.is_cancelled() {
+            highlighted = false;
             break;
         }
-        let section_cache = build_diff_cache_cancellable(
-            section_patch,
-            filename,
-            theme_name,
-            parser_pool,
-            false, // markdown_rich is not used for commit diffs
-            tab_width,
-            cancel,
-        );
+        let section_cache = section(filename, section_patch);
+        if !section_cache.highlighted {
+            highlighted = false;
+        }
         // Re-intern spans from section interner into the combined interner
         for line in &section_cache.lines {
             let spans: SpanVec = line
@@ -427,7 +511,7 @@ pub fn build_commit_diff_cache_cancellable(
         patch_hash,
         lines: combined_lines,
         interner: combined_interner,
-        highlighted: true,
+        highlighted,
         markdown_rich: false,
     }
 }
@@ -2595,40 +2679,71 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn diff_over_the_line_cap_stays_on_the_plain_diff() {
-        let mut patch = String::from("@@ -1,1 +1,1 @@\n");
-        for i in 0..=MAX_DIFF_HIGHLIGHT_LINES {
-            patch.push_str(&format!("+fn f{i}() {{}}\n"));
+    /// A patch past the prefetch line cap, whose only code line is one function.
+    ///
+    /// The extra rows are hunk headers, so they are not parsed. Highlighting the
+    /// real line stays cheap, and a size short-circuit on the viewed file would
+    /// leave that line with the plain two-span shape.
+    fn patch_over_prefetch_line_cap() -> String {
+        let mut patch = String::from("@@ -1 +1 @@\n+fn main() { let value = 1; }\n");
+        for _ in 0..PREFETCH_HIGHLIGHT_LINES {
+            patch.push_str("@@ pad\n");
         }
-        assert!(diff_highlight_over_cap(&patch));
+        patch
+    }
 
-        let started = std::time::Instant::now();
+    fn patch_over_prefetch_byte_cap() -> String {
+        let mut patch = String::from("@@ -1 +1 @@\n+fn main() { let value = 1; }\n@@ ");
+        patch.push_str(&"a".repeat(PREFETCH_HIGHLIGHT_BYTES));
+        patch.push('\n');
+        patch
+    }
+
+    fn fn_line_is_syntax_highlighted(cache: &DiffCache) -> bool {
+        cache.highlighted
+            && cache.lines.iter().any(|line| {
+                let text: String = line
+                    .spans
+                    .iter()
+                    .map(|span| cache.resolve(span.content))
+                    .collect();
+                text.contains("fn main") && line.spans.len() > 2
+            })
+    }
+
+    #[test]
+    fn current_file_over_the_prefetch_line_cap_still_highlights() {
+        let patch = patch_over_prefetch_line_cap();
+        assert!(prefetch_highlight_over_cap(&patch));
+        assert!(patch.lines().count() > PREFETCH_HIGHLIGHT_LINES);
+
         let mut parser_pool = ParserPool::new();
         let cache = build_diff_cache(&patch, "big.rs", "Dracula", &mut parser_pool, false, 4);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "an over-cap diff must not run the highlighter"
-        );
-        assert!(
-            !cache.highlighted,
-            "missing the line cap would syntax-highlight this file"
+            fn_line_is_syntax_highlighted(&cache),
+            "the viewed file must highlight past the prefetch line cap"
         );
 
-        let plain = build_plain_diff_cache(&patch, 4);
-        assert_eq!(cache.lines.len(), plain.lines.len());
-        assert_eq!(cache.patch_hash, plain.patch_hash);
-        assert_eq!(line_text(&cache, 1), line_text(&plain, 1));
-        // A highlighted `+fn f0() {}` splits `fn` into its own span. Plain keeps
-        // the marker and the rest of the line.
-        assert_eq!(cache.lines[1].spans.len(), plain.lines[1].spans.len());
-        assert_eq!(cache.lines[1].spans.len(), 2);
+        let mut prefetch_pool = ParserPool::new();
+        let prefetched = build_diff_cache_for_prefetch(
+            &patch,
+            "big.rs",
+            "Dracula",
+            &mut prefetch_pool,
+            false,
+            4,
+            &CancellationToken::new(),
+        );
+        assert!(
+            !prefetched.highlighted,
+            "prefetch may keep the plain diff for a patch over its own cap"
+        );
 
         let theme = crate::ui::theme::Theme::resolve(&crate::config::ThemeConfig::default(), false);
         let rendered = render_cached_lines(
             &cache,
-            0..8,
-            0,
+            0..4,
+            1,
             &std::collections::HashSet::new(),
             true,
             None,
@@ -2636,7 +2751,7 @@ mod tests {
             theme,
         );
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 4)).unwrap();
         terminal
             .draw(|frame| {
                 frame.render_widget(ratatui::widgets::Paragraph::new(rendered), frame.area());
@@ -2644,40 +2759,64 @@ mod tests {
             .unwrap();
         let screen = crate::ui::test_buffer::screen_text(terminal.backend().buffer());
         assert!(
-            screen.contains("+fn f0() {}"),
-            "the over-cap diff must still draw its plain lines, got:\n{screen}"
+            screen.contains("+fn main() { let value = 1; }"),
+            "the highlighted line must still draw, got:\n{screen}"
         );
-        let artifact =
-            format!("over-cap line count stays on the plain diff (no syntax tokens)\n\n{screen}\n");
+        let fn_spans = cache
+            .lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| cache.resolve(span.content).contains("fn"))
+            })
+            .map(|line| line.spans.len())
+            .unwrap_or(0);
+        let artifact = format!(
+            "current file past the prefetch line cap is highlighted (fn line spans: {fn_spans}, not the plain 2)\n\n{screen}\n"
+        );
         let _ = std::fs::create_dir_all("/opt/cursor/artifacts");
-        let _ = std::fs::write("/opt/cursor/artifacts/over-cap-plain-diff.txt", artifact);
+        let _ = std::fs::write(
+            "/opt/cursor/artifacts/over-cap-current-file-highlight.txt",
+            artifact,
+        );
     }
 
     #[test]
-    fn diff_over_the_byte_cap_stays_on_the_plain_diff() {
-        let mut patch = String::from("@@ -1 +1 @@\n+");
-        patch.push_str(&"a".repeat(MAX_DIFF_HIGHLIGHT_BYTES));
-        assert!(patch.len() > MAX_DIFF_HIGHLIGHT_BYTES);
-        assert!(diff_highlight_over_cap(&patch));
+    fn current_file_over_the_prefetch_byte_cap_still_highlights() {
+        let patch = patch_over_prefetch_byte_cap();
+        assert!(patch.len() > PREFETCH_HIGHLIGHT_BYTES);
+        assert!(prefetch_highlight_over_cap(&patch));
 
         let started = std::time::Instant::now();
         let mut parser_pool = ParserPool::new();
         let cache = build_diff_cache(&patch, "big.rs", "Dracula", &mut parser_pool, false, 4);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        assert!(!cache.highlighted);
-        let plain = build_plain_diff_cache(&patch, 4);
-        assert_eq!(cache.lines.len(), plain.lines.len());
-        assert_eq!(cache.patch_hash, plain.patch_hash);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the byte padding is a hunk header and must not be parsed as code"
+        );
+        assert!(fn_line_is_syntax_highlighted(&cache));
+
+        let mut prefetch_pool = ParserPool::new();
+        let prefetched = build_diff_cache_for_prefetch(
+            &patch,
+            "big.rs",
+            "Dracula",
+            &mut prefetch_pool,
+            false,
+            4,
+            &CancellationToken::new(),
+        );
+        assert!(!prefetched.highlighted);
     }
 
     #[test]
-    fn expired_highlight_budget_keeps_the_plain_diff() {
+    fn expired_budget_applies_to_prefetch_only() {
         let patch = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n";
-        let budget = crate::syntax::highlighter::HighlightBudget::already_expired(
-            tokio_util::sync::CancellationToken::new(),
-        );
+        let cancel = CancellationToken::new();
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache_with_budget(
+        let budget = HighlightBudget::already_expired(cancel.clone());
+        let prefetched = build_diff_cache_controlled(
             patch,
             "main.rs",
             "Dracula",
@@ -2687,12 +2826,24 @@ mod tests {
             &budget,
         );
         assert!(
-            !cache.highlighted,
-            "a deadline that has already passed must not syntax-highlight"
+            !prefetched.highlighted,
+            "an expired prefetch budget publishes the plain diff"
         );
-        let plain = build_plain_diff_cache(patch, 4);
-        assert_eq!(line_text(&cache, 1), line_text(&plain, 1));
-        assert_eq!(cache.lines[1].spans.len(), 2);
+        assert_eq!(prefetched.lines[1].spans.len(), 2);
+
+        let current = build_diff_cache_cancellable(
+            patch,
+            "main.rs",
+            "Dracula",
+            &mut parser_pool,
+            false,
+            4,
+            &cancel,
+        );
+        assert!(
+            fn_line_is_syntax_highlighted(&current),
+            "the viewed file must not inherit the prefetch deadline"
+        );
     }
 
     #[test]

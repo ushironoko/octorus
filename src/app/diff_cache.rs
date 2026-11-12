@@ -78,8 +78,10 @@ impl App {
                         return;
                     };
                     let current_hash = hash_string(patch);
-                    if cache.patch_hash == current_hash {
-                        return; // キャッシュ有効
+                    if cache.patch_hash == current_hash
+                        && (cache.highlighted || self.diff_store.highlight_in_flight())
+                    {
+                        return; // ハイライト済み、または構築中
                     }
                 }
             }
@@ -95,6 +97,7 @@ impl App {
         };
         let filename = file.filename.clone();
         let current_hash = hash_string(&patch);
+        let tab_width = self.config.diff.tab_width;
 
         // 2. ストアにハイライト済みキャッシュがあるか確認
         //    try_restore は patch_hash のみチェックするため、markdown_rich は別途確認
@@ -108,30 +111,48 @@ impl App {
                     .map(|c| c.markdown_rich == markdown_rich)
                     .unwrap_or(false);
             if md_ok {
-                return; // ストアから復元、バックグラウンド構築不要
+                let highlighted = self
+                    .diff_store
+                    .current
+                    .as_ref()
+                    .is_some_and(|cache| cache.highlighted);
+                if highlighted {
+                    return; // ストアから復元、バックグラウンド構築不要
+                }
+                // Prefetch published the plain diff. Keep it on screen and still
+                // start the uncapped current-file highlight so it can swap in.
+                self.spawn_current_file_highlight(
+                    file_index,
+                    patch,
+                    filename,
+                    markdown_rich,
+                    tab_width,
+                );
+                return;
             }
             // markdown_rich 不一致: current を破棄して再構築に進む
             self.diff_store.clear_current();
         }
 
         // 3. キャッシュミス: プレーンキャッシュを即座に構築（~1ms）
-        let tab_width = self.config.diff.tab_width;
         let mut plain_cache = crate::ui::diff_view::build_plain_diff_cache(&patch, tab_width);
         plain_cache.file_index = file_index;
-        if crate::ui::diff_view::diff_highlight_over_cap(&patch) {
-            // Settled: a later ensure_diff_cache sees the matching hash and
-            // does not start a highlight that the cap would only throw away.
-            // Markdown still records the rich flag so a toggle can rebuild.
-            plain_cache.markdown_rich = markdown_rich;
-            self.diff_store.set_current(file_index, plain_cache);
-            return;
-        }
+        plain_cache.markdown_rich = markdown_rich;
         self.diff_store.set_current(file_index, plain_cache);
+        self.spawn_current_file_highlight(file_index, patch, filename, markdown_rich, tab_width);
+    }
 
-        // 完全版キャッシュをバックグラウンドで構築
+    /// Highlight the file on screen. No size cap and no prefetch time budget.
+    fn spawn_current_file_highlight(
+        &mut self,
+        file_index: usize,
+        patch: String,
+        filename: String,
+        markdown_rich: bool,
+        tab_width: u8,
+    ) {
         let (tx, rx) = mpsc::channel(1);
         let cancel = self.diff_store.begin_highlight(rx);
-
         let theme = self.config.diff.theme.clone();
 
         tokio::task::spawn_blocking(move || {

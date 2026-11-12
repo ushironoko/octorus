@@ -33,6 +33,7 @@ use common::{generate_diff_patch, generate_haskell_diff_patch, generate_vue_diff
 use octorus::app::browse::{build_file_patch, BrowseState, OpenFile};
 use octorus::app::{App, AppState};
 use octorus::config::{Config, ThemeConfig};
+use octorus::ui::diff_view::build_diff_cache_for_prefetch;
 use octorus::ui::diff_view::build_plain_diff_cache;
 use octorus::ui::theme::Theme;
 use octorus::{build_diff_cache, render_cached_lines, ParserPool};
@@ -523,12 +524,14 @@ fn bench_highlighter_tree_sitter_rust(c: &mut Criterion) {
 /// do-notation, and type-level programming. Tests tree-sitter with
 /// a language that has significant syntactic complexity.
 ///
-/// The 10000-line case hits the 1s highlight budget inside `QueryCursor` and
-/// returns the plain diff. On `3b1ec19` the same generated
-/// input (which parses with `has_error() == true`) was measured at 159 ms /
-/// 1.4 s / 8.0 s for 1000 / 2000 / 4000 lines, and the weekly
-/// `highlighter/tree_sitter_haskell/10000` sample was ~77 s/iter. The budget
-/// is what lets that case finish; it is not a full highlight.
+/// The 100, 500, and 1000 line cases call `build_diff_cache`, the viewed-file
+/// path, which has no time budget. The 10000-line case calls
+/// `build_diff_cache_for_prefetch` instead. On `3b1ec19` the same generated
+/// input (`has_error() == true`) was measured at 159 ms / 1.4 s / 8.0 s for
+/// 1000 / 2000 / 4000 lines, and weekly run 41274858399 measured
+/// `highlighter/tree_sitter_haskell/10000` at 76.9 s/iter. That case uses the
+/// prefetch API so this weekly bench can finish; it is not the production
+/// path for the file on screen, and it is not a speedup of that path.
 fn bench_highlighter_tree_sitter_haskell(c: &mut Criterion) {
     let mut group = c.benchmark_group("highlighter/tree_sitter_haskell");
 
@@ -543,14 +546,29 @@ fn bench_highlighter_tree_sitter_haskell(c: &mut Criterion) {
                 b.iter_batched(
                     ParserPool::new,
                     |mut parser_pool| {
-                        black_box(build_diff_cache(
-                            black_box(patch),
-                            black_box("test.hs"), // tree-sitter
-                            black_box("Dracula"),
-                            black_box(&mut parser_pool),
-                            black_box(false),
-                            black_box(4),
-                        ))
+                        if line_count == 10000 {
+                            // Prefetch API, so the weekly bench does not run the
+                            // uncapped Haskell query. The viewed file does not
+                            // use this function.
+                            black_box(build_diff_cache_for_prefetch(
+                                black_box(patch),
+                                black_box("test.hs"),
+                                black_box("Dracula"),
+                                black_box(&mut parser_pool),
+                                black_box(false),
+                                black_box(4),
+                                &tokio_util::sync::CancellationToken::new(),
+                            ))
+                        } else {
+                            black_box(build_diff_cache(
+                                black_box(patch),
+                                black_box("test.hs"), // tree-sitter
+                                black_box("Dracula"),
+                                black_box(&mut parser_pool),
+                                black_box(false),
+                                black_box(4),
+                            ))
+                        }
                     },
                     criterion::BatchSize::SmallInput,
                 );

@@ -29,20 +29,28 @@ use super::parser_pool::ParserPool;
 use super::themes::ThemeStyleCache;
 use super::{convert_syntect_style, get_theme, syntax_for_file, syntax_set};
 
-/// Wall-clock budget for one file's tree-sitter or syntect highlight.
+/// Wall-clock budget for one *prefetch* file.
+///
+/// The file the user is looking at does not use this. A large linear file is
+/// allowed to finish and replace the plain diff. Prefetch uses the budget so
+/// one slow file cannot hold the queue.
 ///
 /// Measured on `3b1ec19` (bench profile, parser pool reused,
 /// `generate_haskell_diff_patch`, `has_error == true`): 1000 lines 159 ms,
-/// 2000 lines 1.38 s, 4000 lines 8.05 s. Rust at 10000 lines was 176 ms on the
-/// 2026-11-01 weekly benchmark run. One second lets those linear cases finish
-/// and bounds the superlinear Haskell query.
-pub const HIGHLIGHT_QUERY_BUDGET: Duration = Duration::from_secs(1);
+/// 2000 lines 1.38 s, 4000 lines 8.05 s.
+pub const PREFETCH_QUERY_BUDGET: Duration = Duration::from_secs(1);
 
-/// Documented maximum for [`QueryCursor::set_match_limit`].
+/// Documented maximum for [`QueryCursor::set_match_limit`] (`> 0` and `<= 65536`).
 ///
-/// On the same 2000-line generated Haskell input this limit was not exceeded
-/// (`did_exceed_match_limit == false`, runtime unchanged). It is a backstop for
-/// a query that piles up in-progress matches, not the fix for that Haskell case.
+/// This counts in-progress capture lists, not total captures. The default
+/// cursor limit is `u32::MAX` (grow as needed). Setting this value makes
+/// tree-sitter drop the earliest in-progress match once the pool is full
+/// (`tree-sitter` `api.h`). On the 2000-line generated Haskell input
+/// (`has_error == true`, 22,297 captures) the flag stayed false.
+///
+/// The cap cannot be raised. The viewed file therefore does not set it: a
+/// large file's captures would otherwise be stolen and the highlight thrown
+/// away. Prefetch still sets it and publishes the plain diff if it trips.
 pub const HIGHLIGHT_MATCH_LIMIT: u32 = 65_536;
 
 /// Why a highlight was thrown away. The caller keeps the plain diff.
@@ -50,7 +58,7 @@ pub const HIGHLIGHT_MATCH_LIMIT: u32 = 65_536;
 pub enum HighlightAbort {
     /// The file switch (or a dropped prefetch) cancelled the job.
     Cancelled,
-    /// [`HIGHLIGHT_QUERY_BUDGET`] elapsed during the query.
+    /// [`PREFETCH_QUERY_BUDGET`] elapsed during the query.
     TimedOut,
     /// [`HIGHLIGHT_MATCH_LIMIT`] in-progress matches was exceeded.
     MatchLimit,
@@ -60,6 +68,37 @@ pub enum HighlightAbort {
 /// progress callback (every 100 query operations).
 pub trait HighlightControl {
     fn poll_abort(&self) -> Option<HighlightAbort>;
+
+    /// `Some` installs [`QueryCursor::set_match_limit`] and discards the
+    /// highlight if tree-sitter reports that in-progress matches were stolen.
+    ///
+    /// `None` leaves the cursor at its default (`u32::MAX`). The viewed file
+    /// uses `None` because the documented maximum is [`HIGHLIGHT_MATCH_LIMIT`]
+    /// and a stolen-match result must not come back as the plain diff.
+    fn match_limit(&self) -> Option<u32> {
+        None
+    }
+}
+
+/// Cancellation only. The viewed file uses this: no deadline and no match cap,
+/// so a large highlight can finish and replace the plain diff. Switching files
+/// cancels `cancel`.
+pub struct CancelHighlight {
+    cancel: CancellationToken,
+}
+
+impl CancelHighlight {
+    pub fn new(cancel: CancellationToken) -> Self {
+        Self { cancel }
+    }
+}
+
+impl HighlightControl for CancelHighlight {
+    fn poll_abort(&self) -> Option<HighlightAbort> {
+        self.cancel
+            .is_cancelled()
+            .then_some(HighlightAbort::Cancelled)
+    }
 }
 
 /// No deadline and no cancel. Direct highlight callers (tests, suggestion text)
@@ -72,7 +111,10 @@ impl HighlightControl for OpenHighlight {
     }
 }
 
-/// Production budget: a cancellation token plus [`HIGHLIGHT_QUERY_BUDGET`].
+/// Prefetch budget: a cancellation token plus [`PREFETCH_QUERY_BUDGET`].
+///
+/// Not used for the file on screen. An expired budget publishes the plain diff
+/// for that prefetched file only.
 pub struct HighlightBudget {
     cancel: CancellationToken,
     deadline: Instant,
@@ -105,6 +147,10 @@ impl HighlightControl for HighlightBudget {
         } else {
             None
         }
+    }
+
+    fn match_limit(&self) -> Option<u32> {
+        Some(HIGHLIGHT_MATCH_LIMIT)
     }
 }
 
@@ -384,7 +430,10 @@ fn query_highlights(
     }
 
     let mut cursor = QueryCursor::new();
-    cursor.set_match_limit(HIGHLIGHT_MATCH_LIMIT);
+    let match_limit = control.match_limit();
+    if let Some(limit) = match_limit {
+        cursor.set_match_limit(limit);
+    }
     let aborted = Cell::new(None);
     let mut callback = |_state: &QueryCursorState| {
         if let Some(reason) = control.poll_abort() {
@@ -445,7 +494,7 @@ fn query_highlights(
     if let Some(reason) = aborted.get() {
         return Err(reason);
     }
-    if cursor.did_exceed_match_limit() {
+    if match_limit.is_some() && cursor.did_exceed_match_limit() {
         return Err(HighlightAbort::MatchLimit);
     }
     if let Some(reason) = control.poll_abort() {
