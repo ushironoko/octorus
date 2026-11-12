@@ -47,6 +47,7 @@ pub mod browse;
 pub(crate) mod browse_discussion;
 mod cockpit;
 mod comments;
+pub(crate) use comments::format_review_location;
 mod diff_cache;
 pub mod file_tree;
 mod filter;
