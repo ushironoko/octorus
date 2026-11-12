@@ -2132,6 +2132,11 @@ async fn test_multiline_select_extend_and_confirm_via_key_dispatch() {
         Some(1),
         "開始行が保持され複数行コメントになる"
     );
+    assert_eq!(
+        ctx.side,
+        crate::diff::DiffSide::Right,
+        "added and context rows are the new file"
+    );
 }
 
 #[tokio::test]
@@ -3961,6 +3966,7 @@ fn test_cancel_input_clears_mode() {
         line_number: 1,
         diff_position: 1,
         start_line_number: None,
+        side: crate::diff::DiffSide::Right,
     }));
     app.state = AppState::TextInput;
     app.preview_return_state = AppState::DiffView;
@@ -6006,16 +6012,514 @@ fn comment_on_no_newline_marker_says_why_it_cannot_take_one() {
 }
 
 #[test]
-fn comment_on_the_deleted_line_before_the_marker_stays_silent() {
+fn comment_on_the_deleted_line_before_the_marker_opens_on_the_old_line() {
     let patch = "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n";
     let mut app = make_app_with_patch(patch);
-    app.diff_scroll.selected_line = 2; // -b
+    app.diff_scroll.selected_line = 2; // -b, old line 2
     app.state = AppState::DiffView;
 
     app.enter_comment_input();
 
+    match app.input_mode {
+        Some(InputMode::Comment(ctx)) => {
+            assert_eq!(ctx.side, crate::diff::DiffSide::Left);
+            assert_eq!((ctx.line_number, ctx.diff_position), (2, 2));
+            assert_eq!(ctx.start_line_number, None);
+        }
+        other => panic!("expected a comment on -b, got {other:?}"),
+    }
+    assert_eq!(app.state, AppState::TextInput);
+    assert_eq!(app.cmt.submission_result, None);
+}
+
+#[tokio::test]
+async fn pressing_c_on_a_deleted_line_opens_comment_input() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.diff_scroll.selected_line = 2; // -removed-left, old line 11
+    app.state = AppState::DiffView;
+    app.update_diff_line_count();
+    install_plain_diff(&mut app);
+    let mut terminal = test_terminal();
+
+    app.handle_key_event(
+        KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        },
+        &mut terminal,
+    )
+    .await
+    .unwrap();
+
+    let Some(InputMode::Comment(ctx)) = app.input_mode.clone() else {
+        panic!("expected comment input, got {:?}", app.input_mode);
+    };
+    assert_eq!(ctx.side, crate::diff::DiffSide::Left);
+    assert_eq!(ctx.line_number, 11);
+    assert_eq!(ctx.start_line_number, None);
+    assert_eq!(app.state, AppState::TextInput);
+    assert!(
+        app.cmt.submission_result.is_none(),
+        "a deleted line is commentable, so it must not toast: {:?}",
+        app.cmt.submission_result
+    );
+
+    let screen = render_screen(&mut app, 100, 24);
+    assert!(screen.contains("Line: L11"), "{screen}");
+    assert!(
+        !screen.contains("this marker has no line"),
+        "the no-newline toast is for the marker, not a deleted line\n{screen}"
+    );
+    insta::assert_snapshot!(screen, @"
+    ┌Diff──────────────────────────────────────────────────────────────────────────────────────────────┐
+    │test.rs (+1 -1)                                                                                   │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌Comment Location──────────────────────────────────────────────────────────────────────────────────┐
+    │File: test.rs                                                                                     │
+    │Line: L11                                                                                         │
+    │Added to your pending review. Published when you submit the review.                               │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌Comment → pending review (Ctrl-s: add, Esc: cancel)───────────────────────────────────────────────┐
+    │Type your comment here...                                                                         │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ");
+}
+
+const LEFT_RANGE_PATCH: &str = "\
+@@ -10,4 +10,2 @@
+ kept
+-gone-a
+-gone-b
+ kept-end
+";
+
+#[test]
+fn a_suggestion_on_a_deleted_line_does_not_open() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.diff_scroll.selected_line = 2;
+    app.enter_suggestion_input();
     assert!(app.input_mode.is_none());
     assert_eq!(app.cmt.submission_result, None);
+}
+
+#[test]
+fn a_kept_comment_on_a_deleted_line_does_not_restore_on_the_added_line() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.state = AppState::DiffView;
+    app.diff_scroll.selected_line = 2;
+    app.enter_comment_input();
+    app.input_text_area
+        .set_content_verbatim("about the deletion");
+    app.handle_text_input(key_esc()).unwrap();
+
+    // `+added-right` is new line 11, the same number as the removed old line.
+    app.diff_scroll.selected_line = 3;
+    app.enter_comment_input();
+    assert!(app.input_text_area.content().is_empty());
+    app.cancel_input();
+
+    app.diff_scroll.selected_line = 2;
+    app.enter_comment_input();
+    assert_eq!(app.input_text_area.content(), "about the deletion");
+}
+
+#[test]
+fn a_range_that_mixes_a_deleted_line_with_the_new_file_does_not_open() {
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+    app.enter_multiline_comment_input();
+    assert!(app.input_mode.is_none());
+    assert!(
+        app.multiline_selection.is_some(),
+        "a cross-side range keeps the selection"
+    );
+    assert_eq!(app.cmt.submission_result, None);
+}
+
+#[tokio::test]
+async fn pressing_c_on_a_deleted_line_range_opens_a_left_comment() {
+    let mut app = make_app_with_patch(LEFT_RANGE_PATCH);
+    if let DataState::Loaded { ref mut files, .. } = app.data_state {
+        files[0].additions = 0;
+        files[0].deletions = 2;
+    }
+    app.state = AppState::DiffView;
+    app.diff_scroll.selected_line = 2;
+    app.update_diff_line_count();
+    let mut terminal = test_terminal();
+    let press = |code: KeyCode, mods: KeyModifiers| KeyEvent {
+        code,
+        modifiers: mods,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    };
+
+    app.handle_key_event(
+        press(KeyCode::Char('V'), KeyModifiers::SHIFT),
+        &mut terminal,
+    )
+    .await
+    .unwrap();
+    app.handle_key_event(press(KeyCode::Char('j'), KeyModifiers::NONE), &mut terminal)
+        .await
+        .unwrap();
+    app.handle_key_event(press(KeyCode::Char('c'), KeyModifiers::NONE), &mut terminal)
+        .await
+        .unwrap();
+
+    let Some(InputMode::Comment(ctx)) = app.input_mode.clone() else {
+        panic!("expected a left range comment, got {:?}", app.input_mode);
+    };
+    assert_eq!(ctx.side, crate::diff::DiffSide::Left);
+    assert_eq!(ctx.start_line_number, Some(11));
+    assert_eq!(ctx.line_number, 12);
+    assert!(app.cmt.submission_result.is_none());
+
+    let screen = render_screen(&mut app, 100, 24);
+    assert!(screen.contains("Line: L11-12"), "{screen}");
+    insta::assert_snapshot!(screen, @"
+    ┌Diff──────────────────────────────────────────────────────────────────────────────────────────────┐
+    │test.rs (+0 -2)                                                                                   │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌Comment Location──────────────────────────────────────────────────────────────────────────────────┐
+    │File: test.rs                                                                                     │
+    │Line: L11-12                                                                                      │
+    │Added to your pending review. Published when you submit the review.                               │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┌Comment → pending review (Ctrl-s: add, Esc: cancel)───────────────────────────────────────────────┐
+    │Type your comment here...                                                                         │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    │                                                                                                  │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ");
+}
+
+#[test]
+#[serial]
+fn a_comment_saved_on_a_removed_line_is_labeled_on_the_left() {
+    let tempdir = tempdir().unwrap();
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.pr_number = Some(0);
+    app.working_dir = Some(tempdir.path().to_string_lossy().to_string());
+    app.state = AppState::DiffView;
+    app.diff_scroll.selected_line = 2;
+
+    app.enter_comment_input();
+    let ctx = match app.input_mode.clone() {
+        Some(InputMode::Comment(ctx)) => ctx,
+        other => panic!("expected comment input, got {other:?}"),
+    };
+    assert_eq!(ctx.side, crate::diff::DiffSide::Left);
+    assert_eq!(ctx.line_number, 11);
+    app.submit_comment(ctx, "note the deletion".to_string());
+
+    let comment = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(comment.line, Some(11));
+    assert_eq!(comment.start_line, None);
+    assert_eq!(comment.location.side.as_deref(), Some("LEFT"));
+    assert_eq!(comment.location.start_side, None);
+    assert_eq!(
+        super::comments::format_review_location(comment, true),
+        "test.rs:L11"
+    );
+    app.cmt.review_comments.as_mut().unwrap()[0].user.login = "reviewer".to_string();
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    app.diff_scroll.selected_line = 2;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(
+        row_containing(&diff, "removed-left").contains('●'),
+        "{diff}"
+    );
+    assert!(
+        !row_containing(&diff, "added-right").contains('●'),
+        "{diff}"
+    );
+    insta::assert_snapshot!(diff, @"
+    ┏▶ DIFF━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃test.rs (+1 -1)                                                                                   ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃@@ -10,3 +10,3 @@                                                                                 ┃
+    ┃ kept-top                                                                                         ┃
+    ┃● -removed-left                                                                                   ┃
+    ┃+added-right                                                                                      ┃
+    ┃ kept-bottom                                                                                      ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │✓ Saved local comment                                                                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ");
+
+    app.build_review_threads();
+    app.state = AppState::CommentList;
+    app.cmt.comment_tab = CommentTab::Review;
+    let list = render_screen(&mut app, 100, 24);
+    assert!(list.contains("test.rs:L11"), "{list}");
+    assert!(list.contains("note the deletion"), "{list}");
+    insta::assert_snapshot!(list, @"
+    ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+    │ [Local Comments (1)]                                                                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃▌ @reviewer on test.rs:L11                                                                        ┃
+    ┃    note the deletion                                                                             ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │✓ Saved local comment                                                                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ");
+}
+
+#[test]
+#[serial]
+fn a_range_saved_on_deleted_lines_is_labeled_on_the_left() {
+    let tempdir = tempdir().unwrap();
+    let _cache_home = ScopedCacheHome::new(tempdir.path());
+    let mut app = make_app_with_patch(LEFT_RANGE_PATCH);
+    if let DataState::Loaded { ref mut files, .. } = app.data_state {
+        files[0].additions = 0;
+        files[0].deletions = 2;
+    }
+    app.local_mode = true;
+    app.repo = "owner/repo".to_string();
+    app.pr_number = Some(0);
+    app.working_dir = Some(tempdir.path().to_string_lossy().to_string());
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+    app.enter_multiline_comment_input();
+    let ctx = match app.input_mode.clone() {
+        Some(InputMode::Comment(ctx)) => ctx,
+        other => panic!("expected a left range, got {other:?}"),
+    };
+    assert_eq!(ctx.side, crate::diff::DiffSide::Left);
+    assert_eq!(ctx.start_line_number, Some(11));
+    assert_eq!(ctx.line_number, 12);
+    app.submit_comment(ctx, "both deletions".to_string());
+
+    let comment = &app.cmt.review_comments.as_ref().unwrap()[0];
+    assert_eq!(comment.line, Some(12));
+    assert_eq!(comment.start_line, Some(11));
+    assert_eq!(comment.location.side.as_deref(), Some("LEFT"));
+    assert_eq!(comment.location.start_side.as_deref(), Some("LEFT"));
+    assert_eq!(
+        super::comments::format_review_location(comment, true),
+        "test.rs:L11-12"
+    );
+    let rows: Vec<_> = app
+        .cmt
+        .file_comment_positions
+        .iter()
+        .map(|pos| pos.diff_line_index)
+        .collect();
+    assert_eq!(rows, vec![2, 3]);
+    app.cmt.review_comments.as_mut().unwrap()[0].user.login = "reviewer".to_string();
+
+    install_plain_diff(&mut app);
+    app.state = AppState::DiffView;
+    let diff = render_screen(&mut app, 100, 24);
+    assert!(row_containing(&diff, "gone-a").contains('●'), "{diff}");
+    assert!(row_containing(&diff, "gone-b").contains('●'), "{diff}");
+    assert!(!row_containing(&diff, "kept-end").contains('●'), "{diff}");
+    insta::assert_snapshot!(diff, @"
+    ┏▶ DIFF━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃test.rs (+0 -2)                                                                                   ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃@@ -10,4 +10,2 @@                                                                                 ┃
+    ┃ kept                                                                                             ┃
+    ┃● -gone-a                                                                                         ┃
+    ┃● -gone-b                                                                                         ┃
+    ┃ kept-end                                                                                         ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │✓ Saved local comment                                                                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ");
+
+    app.build_review_threads();
+    app.state = AppState::CommentList;
+    app.cmt.comment_tab = CommentTab::Review;
+    let list = render_screen(&mut app, 100, 24);
+    assert!(list.contains("test.rs:L11-12"), "{list}");
+    assert!(list.contains("both deletions"), "{list}");
+    insta::assert_snapshot!(list, @"
+    ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
+    │ [Local Comments (1)]                                                                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃▌ @reviewer on test.rs:L11-12                                                                     ┃
+    ┃    both deletions                                                                                ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┃                                                                                                  ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │✓ Saved local comment                                                                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn posting_a_comment_on_a_removed_line_sends_left_and_the_old_line() {
+    let gh =
+        crate::github::fake_gh::FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+    let mut app = make_app_with_patch(SIDE_PATCH);
+    app.state = AppState::DiffView;
+    app.diff_scroll.selected_line = 2;
+    app.enter_comment_input();
+    let ctx = match app.input_mode.clone() {
+        Some(InputMode::Comment(ctx)) => ctx,
+        other => panic!("expected comment input, got {other:?}"),
+    };
+    app.submit_comment(ctx, "note the deletion".to_string());
+    wait_for_inline_add(&mut app).await;
+
+    let calls = gh.calls();
+    assert!(calls.contains(r#""line":11"#), "{calls}");
+    assert!(calls.contains(r#""side":"LEFT""#), "{calls}");
+    assert!(!calls.contains("RIGHT"), "{calls}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn posting_a_range_on_deleted_lines_sends_left_for_both_ends() {
+    let gh =
+        crate::github::fake_gh::FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+    let mut app = make_app_with_patch(LEFT_RANGE_PATCH);
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 2,
+        cursor_line: 3,
+    });
+    app.enter_multiline_comment_input();
+    let ctx = match app.input_mode.clone() {
+        Some(InputMode::Comment(ctx)) => ctx,
+        other => panic!("expected a left range, got {other:?}"),
+    };
+    app.submit_comment(ctx, "both deletions".to_string());
+    wait_for_inline_add(&mut app).await;
+
+    let calls = gh.calls();
+    assert!(calls.contains(r#""start_line":11"#), "{calls}");
+    assert!(calls.contains(r#""line":12"#), "{calls}");
+    assert!(calls.contains(r#""start_side":"LEFT""#), "{calls}");
+    assert!(calls.contains(r#""side":"LEFT""#), "{calls}");
+    assert!(!calls.contains("RIGHT"), "{calls}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn posting_a_range_on_the_new_file_sends_right_from_the_selected_lines() {
+    let gh =
+        crate::github::fake_gh::FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+    let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 1,
+        cursor_line: 2,
+    });
+    app.enter_multiline_comment_input();
+    let ctx = match app.input_mode.clone() {
+        Some(InputMode::Comment(ctx)) => ctx,
+        other => panic!("expected a right range, got {other:?}"),
+    };
+    assert_eq!(ctx.side, crate::diff::DiffSide::Right);
+    assert_eq!(ctx.start_line_number, Some(1));
+    assert_eq!(ctx.line_number, 2);
+    app.submit_comment(ctx, "on the new file".to_string());
+    wait_for_inline_add(&mut app).await;
+
+    let calls = gh.calls();
+    assert!(calls.contains(r#""start_line":1"#), "{calls}");
+    assert!(calls.contains(r#""line":2"#), "{calls}");
+    assert!(calls.contains(r#""start_side":"RIGHT""#), "{calls}");
+    assert!(calls.contains(r#""side":"RIGHT""#), "{calls}");
+    assert!(!calls.contains("LEFT"), "{calls}");
 }
 
 #[test]

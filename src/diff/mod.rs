@@ -63,6 +63,8 @@ pub struct DiffLineInfo {
     pub line_content: String,
     /// Classification of the line type
     pub line_type: LineType,
+    /// Line number in the old file (None for added, header, and no-newline marker rows)
+    pub old_line_number: Option<u32>,
     /// Line number in the new file (None for removed, header, and no-newline marker rows)
     pub new_line_number: Option<u32>,
     /// Position within the patch (1-based). Corresponds to GitHub API's `position` parameter.
@@ -87,6 +89,8 @@ pub struct PatchIndex<'a> {
 pub struct PatchLineInfo<'a> {
     pub content: &'a str,
     pub line_type: LineType,
+    /// Line number in the old file (None for added, header, and no-newline marker rows)
+    pub old_line_number: Option<u32>,
     /// Line number in the new file (None for removed, header, and no-newline marker rows)
     pub new_line_number: Option<u32>,
     /// Position within the patch (1-based, GitHub API compatible)
@@ -102,6 +106,7 @@ impl<'a> PatchIndex<'a> {
         let line_iter: Vec<&'a str> = patch.lines().collect();
         let mut lines = Vec::with_capacity(line_iter.len());
 
+        let mut old_line_number: Option<u32> = None;
         let mut new_line_number: Option<u32> = None;
         let mut position_counter: Option<u32> = None;
         let mut classifier = PatchClassifier::new();
@@ -109,25 +114,27 @@ impl<'a> PatchIndex<'a> {
         for line in &line_iter {
             let line_clean = line.strip_suffix('\r').unwrap_or(line);
             let (line_type, content) = classifier.classify(line_clean);
-            let is_marker = is_no_newline_marker(line_clean);
-            let new_side_row =
-                matches!(line_type, LineType::Added | LineType::Context) && !is_marker;
+            let (on_old, on_new) = file_row_sides(line_type, line_clean);
 
             match line_type {
                 LineType::Meta => {}
                 LineType::Header => {
-                    new_line_number = parse_hunk_header(line_clean);
+                    match hunk_line_starts(line_clean) {
+                        Some((old_start, new_start)) => {
+                            old_line_number = Some(old_start);
+                            new_line_number = Some(new_start);
+                        }
+                        None => {
+                            old_line_number = None;
+                            new_line_number = None;
+                        }
+                    }
                     position_counter = Some(position_counter.map_or(0, |p| p + 1));
                 }
-                LineType::Added | LineType::Context => {
-                    position_counter = position_counter.map(|p| p + 1);
-                }
-                LineType::Removed => {
+                LineType::Added | LineType::Context | LineType::Removed => {
                     position_counter = position_counter.map(|p| p + 1);
                 }
             }
-
-            let current_new_line = if new_side_row { new_line_number } else { None };
 
             let current_position = match line_type {
                 LineType::Meta => None,
@@ -138,11 +145,15 @@ impl<'a> PatchIndex<'a> {
             lines.push(PatchLineInfo {
                 content,
                 line_type,
-                new_line_number: current_new_line,
+                old_line_number: old_line_number.filter(|_| on_old),
+                new_line_number: new_line_number.filter(|_| on_new),
                 diff_position: current_position,
             });
 
-            if new_side_row {
+            if on_old {
+                old_line_number = old_line_number.map(|n| n + 1);
+            }
+            if on_new {
                 new_line_number = new_line_number.map(|n| n + 1);
             }
         }
@@ -169,6 +180,7 @@ impl PatchLineInfo<'_> {
         DiffLineInfo {
             line_content: self.content.to_string(),
             line_type: self.line_type,
+            old_line_number: self.old_line_number,
             new_line_number: self.new_line_number,
             diff_position: self.diff_position,
         }
@@ -179,10 +191,20 @@ impl PatchLineInfo<'_> {
 ///
 /// `Left` is the old file (`-` and context lines). `Right` is the new file
 /// (`+` and context lines). GitHub review comments use the same names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiffSide {
     Left,
     Right,
+}
+
+impl DiffSide {
+    /// GitHub review-comment `side`: `LEFT` is the old file, `RIGHT` the new file.
+    pub fn as_github_side(self) -> &'static str {
+        match self {
+            Self::Left => "LEFT",
+            Self::Right => "RIGHT",
+        }
+    }
 }
 
 /// A line number that is only meaningful on one side of a diff.
@@ -366,6 +388,52 @@ pub(crate) fn is_no_newline_marker(line: &str) -> bool {
     line.starts_with('\\')
 }
 
+/// Whether a classified row carries an old-file number and a new-file number.
+///
+/// A removed row is old-file only. An added row is new-file only. A context row
+/// is both. The `\ No newline` marker is neither, and it does not advance either
+/// counter. Headers and meta rows are neither.
+fn file_row_sides(line_type: LineType, line: &str) -> (bool, bool) {
+    if is_no_newline_marker(line) {
+        return (false, false);
+    }
+    match line_type {
+        LineType::Removed => (true, false),
+        LineType::Added => (false, true),
+        LineType::Context => (true, true),
+        LineType::Header | LineType::Meta => (false, false),
+    }
+}
+
+/// GitHub `side` and file line for a review comment on this row.
+///
+/// A removed row is the old file (`LEFT`). An added or context row is the new
+/// file (`RIGHT`). A header, a meta row, and the `\ No newline` marker have no
+/// file line, so they are not commentable.
+pub fn review_comment_line(
+    line_type: LineType,
+    old_line_number: Option<u32>,
+    new_line_number: Option<u32>,
+) -> Option<(DiffSide, u32)> {
+    match line_type {
+        LineType::Removed => old_line_number.map(|line| (DiffSide::Left, line)),
+        LineType::Added | LineType::Context => new_line_number.map(|line| (DiffSide::Right, line)),
+        LineType::Header | LineType::Meta => None,
+    }
+}
+
+impl DiffLineInfo {
+    pub fn review_comment_line(&self) -> Option<(DiffSide, u32)> {
+        review_comment_line(self.line_type, self.old_line_number, self.new_line_number)
+    }
+}
+
+impl PatchLineInfo<'_> {
+    pub fn review_comment_line(&self) -> Option<(DiffSide, u32)> {
+        review_comment_line(self.line_type, self.old_line_number, self.new_line_number)
+    }
+}
+
 /// Get information about a specific line in a patch
 ///
 /// # Arguments
@@ -382,7 +450,7 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
         return None;
     }
 
-    // Track the current new file line number
+    let mut old_line_number: Option<u32> = None;
     let mut new_line_number: Option<u32> = None;
     // Track the position within the patch (1-based, skipping meta lines)
     let mut position_counter: Option<u32> = None;
@@ -390,9 +458,7 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
 
     for (i, line) in lines.iter().enumerate() {
         let (line_type, content) = classifier.classify(line);
-        let is_marker = is_no_newline_marker(line);
-        // Only a `+` or context row that is not the marker has a new-file line number.
-        let new_side_row = matches!(line_type, LineType::Added | LineType::Context) && !is_marker;
+        let (on_old, on_new) = file_row_sides(line_type, line);
 
         // Update position counter and line number BEFORE checking target
         match line_type {
@@ -400,22 +466,25 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
                 // Meta lines don't count toward position
             }
             LineType::Header => {
-                new_line_number = parse_hunk_header(line);
+                match hunk_line_starts(line) {
+                    Some((old_start, new_start)) => {
+                        old_line_number = Some(old_start);
+                        new_line_number = Some(new_start);
+                    }
+                    None => {
+                        old_line_number = None;
+                        new_line_number = None;
+                    }
+                }
                 // First @@ initializes to 0 (not counted); subsequent @@ lines increment
                 position_counter = Some(position_counter.map_or(0, |p| p + 1));
             }
-            LineType::Added | LineType::Context => {
-                position_counter = position_counter.map(|p| p + 1);
-            }
-            LineType::Removed => {
+            LineType::Added | LineType::Context | LineType::Removed => {
                 position_counter = position_counter.map(|p| p + 1);
             }
         }
 
         if i == line_index {
-            // For the target line, return the info
-            let current_new_line = if new_side_row { new_line_number } else { None };
-
             let current_position = match line_type {
                 // Meta lines and the first @@ header (position 0) have no valid position
                 LineType::Meta => None,
@@ -426,13 +495,16 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
             return Some(DiffLineInfo {
                 line_content: content.to_string(),
                 line_type,
-                new_line_number: current_new_line,
+                old_line_number: old_line_number.filter(|_| on_old),
+                new_line_number: new_line_number.filter(|_| on_new),
                 diff_position: current_position,
             });
         }
 
-        // Update new_line_number for next iteration
-        if new_side_row {
+        if on_old {
+            old_line_number = old_line_number.map(|n| n + 1);
+        }
+        if on_new {
             new_line_number = new_line_number.map(|n| n + 1);
         }
     }
@@ -519,6 +591,68 @@ pub fn validate_multiline_range(patch: &str, start: usize, end: usize) -> bool {
         }
     }
     true
+}
+
+/// A review comment covering diff rows `start..=end`, as GitHub wants it.
+///
+/// `line` is the last row's file number and `side` is that row's side. A range
+/// also sets `start_line` to the first row's file number. Both ends are on
+/// `side`: a run of removed rows is `LEFT` (old-file numbers), and a run of
+/// added or context rows is `RIGHT` (new-file numbers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewCommentSpan {
+    pub side: DiffSide,
+    pub start_line: Option<u32>,
+    pub line: u32,
+    pub diff_position: u32,
+}
+
+/// The comment GitHub can take for diff rows `start..=end`.
+///
+/// Every row must be a commentable file row on one side, inside one hunk. A
+/// removed run is the old file. An added/context run is the new file. A mix of
+/// those sides, a hunk header, a meta row, or the `\ No newline` marker is
+/// `None`. GitHub's `line` and `start_line` are numbers in one file, and this
+/// UI does not post a range whose ends sit on different files.
+pub fn review_comment_span(patch: &str, start: usize, end: usize) -> Option<ReviewCommentSpan> {
+    if start > end {
+        return None;
+    }
+    let index = PatchIndex::build(patch);
+    let mut side = None;
+    let mut first_line = None;
+    let mut last_line = None;
+    let mut position = None;
+    for idx in start..=end {
+        let row = index.get(idx)?;
+        let (row_side, line) = row.review_comment_line()?;
+        match side {
+            None => side = Some(row_side),
+            Some(expected) if expected != row_side => return None,
+            Some(_) => {}
+        }
+        if first_line.is_none() {
+            first_line = Some(line);
+        }
+        last_line = Some(line);
+        position = row.diff_position;
+    }
+    let side = side?;
+    let first = first_line?;
+    let last = last_line?;
+    let diff_position = position?;
+    // One row is a single-line comment. A longer selection whose file numbers
+    // do not increase is not a range GitHub accepts on one side.
+    let start_line = (first < last).then_some(first);
+    if start != end && start_line.is_none() {
+        return None;
+    }
+    Some(ReviewCommentSpan {
+        side,
+        start_line,
+        line: last,
+        diff_position,
+    })
 }
 
 /// Convert a file line number (new_line_number) to a patch position.
@@ -1690,8 +1824,78 @@ index 1234567..abcdefg 100644
     #[test]
     fn test_validate_multiline_range_all_removed() {
         let patch = "@@ -1,3 +0,0 @@\n-removed1\n-removed2\n-removed3";
-        // All lines are removed → invalid
+        // Suggestions still require a new-side range, so an all-removed run is invalid there.
         assert!(!validate_multiline_range(patch, 1, 3));
+    }
+
+    #[test]
+    fn removed_rows_carry_old_file_numbers() {
+        let patch = "@@ -10,3 +10,3 @@\n kept-top\n-removed-left\n+added-right\n kept-bottom";
+        let removed = get_line_info(patch, 2).unwrap();
+        assert_eq!(removed.line_type, LineType::Removed);
+        assert_eq!(removed.old_line_number, Some(11));
+        assert_eq!(removed.new_line_number, None);
+        assert_eq!(removed.review_comment_line(), Some((DiffSide::Left, 11)));
+        let context = get_line_info(patch, 1).unwrap();
+        assert_eq!(context.old_line_number, Some(10));
+        assert_eq!(context.review_comment_line(), Some((DiffSide::Right, 10)));
+        let added = get_line_info(patch, 3).unwrap();
+        assert_eq!(added.old_line_number, None);
+        assert_eq!(added.review_comment_line(), Some((DiffSide::Right, 11)));
+        // The marker takes neither file number.
+        let marked = "@@ -1,1 +1,1 @@\n-old\n\\ No newline at end of file\n+new\n";
+        let marker = get_line_info(marked, 2).unwrap();
+        assert_eq!(marker.old_line_number, None);
+        assert_eq!(marker.new_line_number, None);
+        assert_eq!(marker.review_comment_line(), None);
+    }
+
+    #[test]
+    fn review_comment_span_uses_left_for_a_removed_run_and_right_otherwise() {
+        let patch = "@@ -10,4 +10,3 @@\n kept\n-gone-a\n-gone-b\n+added\n kept-end";
+        assert_eq!(
+            review_comment_span(patch, 2, 2),
+            Some(ReviewCommentSpan {
+                side: DiffSide::Left,
+                start_line: None,
+                line: 11,
+                diff_position: 2,
+            })
+        );
+        assert_eq!(
+            review_comment_span(patch, 2, 3),
+            Some(ReviewCommentSpan {
+                side: DiffSide::Left,
+                start_line: Some(11),
+                line: 12,
+                diff_position: 3,
+            })
+        );
+        // kept (new 10) through +added (new 11) is not one side: the removed rows sit in between.
+        assert_eq!(review_comment_span(patch, 1, 4), None);
+        // A removed row beside an added row is two sides.
+        assert_eq!(review_comment_span(patch, 3, 4), None);
+        assert_eq!(
+            review_comment_span(patch, 4, 5),
+            Some(ReviewCommentSpan {
+                side: DiffSide::Right,
+                start_line: Some(11),
+                line: 12,
+                diff_position: 5,
+            })
+        );
+        // The marker has no file line, so it cannot sit inside a range.
+        let marked = "@@ -1,2 +1,2 @@\n-old-a\n-old-b\n\\ No newline at end of file\n+new\n";
+        assert_eq!(
+            review_comment_span(marked, 1, 2),
+            Some(ReviewCommentSpan {
+                side: DiffSide::Left,
+                start_line: Some(1),
+                line: 2,
+                diff_position: 2,
+            })
+        );
+        assert_eq!(review_comment_span(marked, 1, 3), None);
     }
 
     /// Validate that new-side line numbers are contiguous for a valid multiline range.
@@ -1774,6 +1978,10 @@ index 1234567..abcdefg 100644
                     assert_eq!(a.content, e.line_content, "line {i} content mismatch");
                     assert_eq!(a.line_type, e.line_type, "line {i} type mismatch");
                     assert_eq!(
+                        a.old_line_number, e.old_line_number,
+                        "line {i} old_line_number mismatch"
+                    );
+                    assert_eq!(
                         a.new_line_number, e.new_line_number,
                         "line {i} new_line_number mismatch"
                     );
@@ -1799,6 +2007,7 @@ index 1234567..abcdefg 100644
                 (Some(e), Some(a)) => {
                     assert_eq!(a.content, e.line_content, "line {i} content");
                     assert_eq!(a.line_type, e.line_type, "line {i} type");
+                    assert_eq!(a.old_line_number, e.old_line_number, "line {i} old_ln");
                     assert_eq!(a.new_line_number, e.new_line_number, "line {i} new_ln");
                     assert_eq!(a.diff_position, e.diff_position, "line {i} pos");
                 }
@@ -1819,6 +2028,7 @@ index 1234567..abcdefg 100644
                 (Some(e), Some(a)) => {
                     assert_eq!(a.content, e.line_content, "line {i} content");
                     assert_eq!(a.line_type, e.line_type, "line {i} type");
+                    assert_eq!(a.old_line_number, e.old_line_number, "line {i} old_ln");
                     assert_eq!(a.new_line_number, e.new_line_number, "line {i} new_ln");
                     assert_eq!(a.diff_position, e.diff_position, "line {i} pos");
                 }
@@ -1890,6 +2100,7 @@ index 1234567..abcdefg 100644
                 (Some(e), Some(a)) => {
                     assert_eq!(a.content, e.line_content, "line {i}");
                     assert_eq!(a.line_type, e.line_type, "line {i}");
+                    assert_eq!(a.old_line_number, e.old_line_number, "line {i} old");
                     assert_eq!(a.new_line_number, e.new_line_number, "line {i}");
                     assert_eq!(a.diff_position, e.diff_position, "line {i}");
                 }
@@ -1972,10 +2183,13 @@ index 1234567..abcdefg 100644
             .join("\n")
     }
 
-    fn numbering_key(info: &DiffLineInfo) -> (String, LineType, Option<u32>, Option<u32>) {
+    fn numbering_key(
+        info: &DiffLineInfo,
+    ) -> (String, LineType, Option<u32>, Option<u32>, Option<u32>) {
         (
             info.line_content.clone(),
             info.line_type,
+            info.old_line_number,
             info.new_line_number,
             info.diff_position,
         )

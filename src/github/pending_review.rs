@@ -34,10 +34,31 @@ pub enum DraftRefused {
 #[error("GitHub did not confirm the comment reached the pending review")]
 pub struct DraftUnconfirmed;
 
+/// Which file a draft's line numbers belong to.
+///
+/// `Left` is the old file (a removed line). `Right` is the new file (an added
+/// or context line). GitHub's review-comment API uses the same names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftSide {
+    Left,
+    Right,
+}
+
+impl DraftSide {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "LEFT",
+            Self::Right => "RIGHT",
+        }
+    }
+}
+
 /// One inline comment the viewer is adding.
 ///
-/// Lines are new-file numbers on the RIGHT side. The TUI only comments on added
-/// and context lines, so every draft targets that side.
+/// `line` is a file line on `side`: the old file for [`DraftSide::Left`], the
+/// new file for [`DraftSide::Right`]. A multi-line draft also sets `start_line`
+/// and `start_side`. A range is posted only when both ends are on the same
+/// side, so `start_side` matches `side`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineDraft {
     pub path: String,
@@ -46,6 +67,10 @@ pub struct InlineDraft {
     pub line: u32,
     /// The first line of a multi-line range. `None` for a single-line comment.
     pub start_line: Option<u32>,
+    /// Side of `line`.
+    pub side: DraftSide,
+    /// Side of `start_line`. Set only for a multi-line draft.
+    pub start_side: Option<DraftSide>,
 }
 
 /// The viewer's PENDING review on one pull request.
@@ -153,18 +178,18 @@ pub(crate) fn create_pending_review_body(head_sha: &str, draft: &InlineDraft) ->
     })
 }
 
-/// One entry of a review's `comments` array. Positions are the new-file lines
-/// on the RIGHT side, which the TUI always targets.
+/// One entry of a review's `comments` array. `side` and `start_side` are the
+/// sides of the selected lines, not a fixed RIGHT.
 fn draft_comment(draft: &InlineDraft) -> Value {
     let mut comment = json!({
         "path": draft.path,
         "body": draft.body,
         "line": draft.line,
-        "side": "RIGHT",
+        "side": draft.side.as_str(),
     });
     if let Some(start_line) = draft.start_line {
         comment["start_line"] = json!(start_line);
-        comment["start_side"] = json!("RIGHT");
+        comment["start_side"] = json!(draft.start_side.unwrap_or(draft.side).as_str());
     }
     comment
 }
@@ -210,11 +235,11 @@ pub(crate) fn add_thread_request(
         "path": draft.path,
         "body": draft.body,
         "line": draft.line,
-        "side": "RIGHT",
+        "side": draft.side.as_str(),
     });
     if let Some(start_line) = draft.start_line {
         variables["startLine"] = json!(start_line);
-        variables["startSide"] = json!("RIGHT");
+        variables["startSide"] = json!(draft.start_side.unwrap_or(draft.side).as_str());
     }
     json!({ "query": ADD_THREAD_MUTATION, "variables": variables })
 }
@@ -353,6 +378,8 @@ mod tests {
             body: "Consider a match here.".to_string(),
             line,
             start_line,
+            side: DraftSide::Right,
+            start_side: start_line.map(|_| DraftSide::Right),
         }
     }
 
@@ -502,6 +529,51 @@ mod tests {
         assert_eq!(request["variables"]["startSide"], json!("RIGHT"));
     }
 
+    fn left_draft(line: u32, start_line: Option<u32>) -> InlineDraft {
+        InlineDraft {
+            path: "src/app.rs".to_string(),
+            body: "This deletion needs a note.".to_string(),
+            line,
+            start_line,
+            side: DraftSide::Left,
+            start_side: start_line.map(|_| DraftSide::Left),
+        }
+    }
+
+    /// A removed line is the old file. The body carries LEFT and that line, and
+    /// it does not fall back to RIGHT.
+    #[test]
+    fn create_pending_review_body_uses_the_old_line_on_the_left() {
+        let body = create_pending_review_body("head", &left_draft(11, None));
+        assert_eq!(
+            body["comments"][0],
+            json!({
+                "path": "src/app.rs",
+                "body": "This deletion needs a note.",
+                "line": 11,
+                "side": "LEFT",
+            })
+        );
+        assert!(!body.to_string().contains("RIGHT"));
+    }
+
+    #[test]
+    fn a_left_range_sends_left_for_both_ends() {
+        let body = create_pending_review_body("head", &left_draft(12, Some(11)));
+        assert_eq!(body["comments"][0]["line"], json!(12));
+        assert_eq!(body["comments"][0]["start_line"], json!(11));
+        assert_eq!(body["comments"][0]["side"], json!("LEFT"));
+        assert_eq!(body["comments"][0]["start_side"], json!("LEFT"));
+        assert!(!body.to_string().contains("RIGHT"));
+
+        let request = add_thread_request("PR_node", "PRR_pending", &left_draft(12, Some(11)));
+        assert_eq!(request["variables"]["line"], json!(12));
+        assert_eq!(request["variables"]["startLine"], json!(11));
+        assert_eq!(request["variables"]["side"], json!("LEFT"));
+        assert_eq!(request["variables"]["startSide"], json!("LEFT"));
+        assert!(!request.to_string().contains("RIGHT"));
+    }
+
     #[test]
     fn request_bodies_keep_gh_looking_text_verbatim() {
         // `gh api -F` would read `@notes.txt` as a file. The JSON body must not.
@@ -510,6 +582,8 @@ mod tests {
             body: "@notes.txt\n日本語 `x` a=b".to_string(),
             line: 1,
             start_line: None,
+            side: DraftSide::Right,
+            start_side: None,
         };
         let expected = json!("@notes.txt\n日本語 `x` a=b");
         assert_eq!(
@@ -581,6 +655,8 @@ mod fake_gh_tests {
             body: "Consider a match here.".to_string(),
             line: 42,
             start_line: None,
+            side: DraftSide::Right,
+            start_side: None,
         }
     }
 
