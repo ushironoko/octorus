@@ -70,6 +70,25 @@ impl ReviewComment {
     pub fn is_pending_draft(&self) -> bool {
         self.location.publication == CommentPublication::PendingDraft
     }
+
+    /// File lines this comment covers, as `12` or `10-12`.
+    ///
+    /// `start_line` is the first line of a multi-line comment. A start that is
+    /// missing, or not above the end line, is a single line. `None` when the end
+    /// line itself is unknown.
+    pub fn line_span(&self) -> Option<String> {
+        let end = self.line?;
+        match self.start_line {
+            Some(start) if start < end => Some(format!("{start}-{end}")),
+            _ => Some(end.to_string()),
+        }
+    }
+
+    /// The panel's `(line …)` label. A comment with no line shows `0`, which is
+    /// what the panel showed before a span existed.
+    pub fn line_label(&self) -> String {
+        self.line_span().unwrap_or_else(|| "0".to_string())
+    }
 }
 
 pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<ReviewComment>> {

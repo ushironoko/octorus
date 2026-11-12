@@ -293,6 +293,58 @@ pub fn find_diff_line_index(patch: &str, target: SideLine) -> Option<usize> {
     None
 }
 
+/// Diff rows on `side` whose file line is in `start..=end`, in patch order.
+///
+/// `Left` is removed and context rows. `Right` is added and context rows.
+/// A removed row inside a right-hand range, and an added row inside a left-hand
+/// range, is not a row of that side, so it is left out. Headers and a
+/// `\ No newline` marker are not file rows.
+pub(crate) fn diff_rows_on_side(patch: &str, side: DiffSide, start: u32, end: u32) -> Vec<usize> {
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let mut old_line: Option<u32> = None;
+    let mut new_line: Option<u32> = None;
+    let mut rows = Vec::new();
+
+    for (index, line) in patch.lines().enumerate() {
+        if line.starts_with("@@") {
+            if let Some((old_start, new_start)) = hunk_line_starts(line) {
+                old_line = Some(old_start);
+                new_line = Some(new_start);
+            }
+            continue;
+        }
+
+        // Same row rules as `find_diff_line_index`: an empty row is context, and a
+        // `\ No newline` marker matches neither prefix, so it is skipped without
+        // moving either counter.
+        let on_old = line.starts_with('-') || line.starts_with(' ') || line.is_empty();
+        let on_new = line.starts_with('+') || line.starts_with(' ') || line.is_empty();
+        if !on_old && !on_new {
+            continue;
+        }
+
+        let number = match side {
+            DiffSide::Left => old_line.filter(|_| on_old),
+            DiffSide::Right => new_line.filter(|_| on_new),
+        };
+        if number.is_some_and(|number| (lo..=hi).contains(&number)) {
+            rows.push(index);
+        }
+        if on_old {
+            old_line = old_line.map(|number| number + 1);
+        }
+        if on_new {
+            new_line = new_line.map(|number| number + 1);
+        }
+    }
+
+    rows
+}
+
 /// `\ No newline at end of file`, which git writes after the last row of a side that has no
 /// trailing newline. No other diff row starts with `\`.
 ///
@@ -2178,6 +2230,25 @@ diff --git a/f.rs b/f.rs
         assert_eq!(find_diff_line_index(patch, SideLine::right(10)), Some(4));
         assert_eq!(find_diff_line_index(patch, SideLine::left(9)), None);
         assert_eq!(find_diff_line_index(patch, SideLine::right(9)), None);
+    }
+
+    #[test]
+    fn a_right_range_skips_removed_rows_and_a_left_range_skips_added_rows() {
+        let patch = "\
+@@ -10,4 +10,4 @@
+ kept-top
+-old-mid
++new-mid
+ kept-bot
+";
+        assert_eq!(
+            diff_rows_on_side(patch, DiffSide::Right, 10, 12),
+            vec![1, 3, 4]
+        );
+        assert_eq!(
+            diff_rows_on_side(patch, DiffSide::Left, 10, 12),
+            vec![1, 2, 4]
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
 use crate::diff::{
-    find_diff_line_index, parse_diff_side, position_to_side_line, DiffSide, SideLine,
+    diff_rows_on_side, find_diff_line_index, parse_diff_side, position_to_side_line, DiffSide,
+    SideLine,
 };
 use crate::github::comment::{CommentPublication, Review, ReviewComment};
 use crate::github::{self, ChangedFile};
@@ -162,26 +163,52 @@ fn classify_add_error(error: anyhow::Error) -> CommentSubmitResult {
 /// GitHub returns a pending draft with `line` null and only `position` set (issue
 /// #169). The position names a row of the file's patch, so the line and side come
 /// from that row. They are written back to the draft, so the thread list, the
-/// detail panel, and the anchor all read the same line. A draft that already has a
-/// line, or whose position is not in the patch, is left as it is.
+/// detail panel, and the anchor all read the same line. A draft whose position is
+/// not in the patch is left as it is.
+///
+/// A multi-line draft also comes back with `start_line` null. The start survives
+/// as `original_start_line` (issue #264). When that line is above the end and is
+/// still a row of this patch on the draft's side, it is written back too. A start
+/// that has left the patch is not copied: copying it would make a left-hand draft
+/// look outdated and drop the end row that can still be placed.
 fn resolve_draft_position(draft: &mut ReviewComment, patch: &str) {
-    if draft.line.is_some() {
+    if draft.line.is_none() {
+        let Some(position) = draft.location.position else {
+            return;
+        };
+        let Some(target) = position_to_side_line(patch, position) else {
+            return;
+        };
+        draft.line = Some(target.line);
+        draft.location.side = Some(
+            match target.side {
+                DiffSide::Left => "LEFT",
+                DiffSide::Right => "RIGHT",
+            }
+            .to_string(),
+        );
+    }
+    recover_draft_start_line(draft, patch);
+}
+
+fn recover_draft_start_line(draft: &mut ReviewComment, patch: &str) {
+    if draft.start_line.is_some() {
         return;
     }
-    let Some(position) = draft.location.position else {
+    let (Some(start), Some(end)) = (draft.location.original_start_line, draft.line) else {
         return;
     };
-    let Some(target) = position_to_side_line(patch, position) else {
+    if start >= end {
         return;
-    };
-    draft.line = Some(target.line);
-    draft.location.side = Some(
-        match target.side {
-            DiffSide::Left => "LEFT",
-            DiffSide::Right => "RIGHT",
-        }
-        .to_string(),
-    );
+    }
+    let side = parse_diff_side(draft.location.side.as_deref());
+    if find_diff_line_index(patch, SideLine { side, line: start }).is_none() {
+        return;
+    }
+    draft.start_line = Some(start);
+    if draft.location.start_side.is_none() {
+        draft.location.start_side = draft.location.side.clone();
+    }
 }
 
 fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
@@ -189,6 +216,58 @@ fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
         side: parse_diff_side(comment.location.side.as_deref()),
         line: comment.line?,
     })
+}
+
+/// Diff rows that should carry this comment's `●`.
+///
+/// A single-line comment marks its one row. A range whose start and end are both
+/// in the patch, and on the same side, marks every row of that side from the
+/// start line through the end line (issue #264). A removed row inside a
+/// right-hand range is not marked, and an added row inside a left-hand range is
+/// not marked. A start that is not in the patch does not stretch the mark: the
+/// right-hand comment stays on its end row, and a left-hand comment whose start
+/// has left the patch is not placed (`left_anchor_resolves`). A range whose ends
+/// sit on different sides marks those two rows only.
+fn comment_marker_rows(comment: &ReviewComment, patch: &str) -> Vec<usize> {
+    let Some(anchor) = comment_anchor(comment) else {
+        return Vec::new();
+    };
+    if anchor.side == DiffSide::Left && !left_anchor_resolves(comment, patch) {
+        return Vec::new();
+    }
+    let Some(end_row) = find_diff_line_index(patch, anchor) else {
+        return Vec::new();
+    };
+    let Some(start) = comment.start_line else {
+        return vec![end_row];
+    };
+    let start_side = parse_diff_side(
+        comment
+            .location
+            .start_side
+            .as_deref()
+            .or(comment.location.side.as_deref()),
+    );
+    // The same file line on the same side is one row. The same number on the
+    // other side is a different row (the removed line and the added line).
+    if start == anchor.line && start_side == anchor.side {
+        return vec![end_row];
+    }
+    let start_target = SideLine {
+        side: start_side,
+        line: start,
+    };
+    match find_diff_line_index(patch, start_target) {
+        Some(_) if start_side == anchor.side && start < anchor.line => {
+            diff_rows_on_side(patch, anchor.side, start, anchor.line)
+        }
+        Some(start_row) if start_row != end_row => {
+            let mut rows = vec![start_row, end_row];
+            rows.sort_unstable();
+            rows
+        }
+        _ => vec![end_row],
+    }
 }
 
 /// Every `LEFT` endpoint of a comment must hit an old-file row.
@@ -1349,13 +1428,7 @@ impl App {
             if comment.path != filename {
                 continue;
             }
-            let Some(anchor) = comment_anchor(comment) else {
-                continue;
-            };
-            if anchor.side == DiffSide::Left && !left_anchor_resolves(comment, &patch) {
-                continue;
-            }
-            if let Some(diff_index) = find_diff_line_index(&patch, anchor) {
+            for diff_index in comment_marker_rows(comment, &patch) {
                 self.cmt.file_comment_positions.push(CommentPosition {
                     diff_line_index: diff_index,
                     comment_index: i,
@@ -1430,7 +1503,7 @@ impl App {
         let header = format!(
             "@{} (line {}){}",
             comment.user.login,
-            comment.line.unwrap_or(0),
+            comment.line_label(),
             ui::common::PENDING_COMMENT_TAG
         );
         Self::wrapped_line_count(&header, panel_width)
