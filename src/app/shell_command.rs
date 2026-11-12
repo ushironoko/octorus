@@ -3,7 +3,7 @@ use crossterm::event::{self, KeyCode, KeyModifiers};
 use tokio::sync::mpsc;
 
 use super::types::{CachedShellLine, ShellCommandResult, ShellPhase, ShellState};
-use super::App;
+use super::{App, Toast};
 
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
@@ -252,8 +252,8 @@ impl App {
                 .is_some_and(|s| matches!(s.phase, ShellPhase::Cancelling))
             {
                 self.shell_state = None;
-                self.cmt.submission_result = Some((false, "Shell command cancelled".to_string()));
-                self.cmt.submission_result_time = Some(std::time::Instant::now());
+                self.cmt.submission_result =
+                    Some(Toast::failure("Shell command cancelled".to_string()));
             }
             return;
         };
@@ -278,8 +278,7 @@ impl App {
                 {
                     self.shell_state = None;
                     self.cmt.submission_result =
-                        Some((false, "Shell command cancelled".to_string()));
-                    self.cmt.submission_result_time = Some(std::time::Instant::now());
+                        Some(Toast::failure("Shell command cancelled".to_string()));
                 }
             }
         }

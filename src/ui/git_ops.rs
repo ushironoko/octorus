@@ -229,6 +229,7 @@ fn render_tree_pane(
         return;
     }
 
+    let mut op_toast = None;
     let help_text = if let Some(confirm) = pending {
         match confirm {
             crate::app::PendingGitOpsConfirm::Simulating { .. } => {
@@ -247,8 +248,9 @@ fn render_tree_pane(
             let spinner = app.spinner_char();
             confirm_text = format!("{} Pushing...", spinner);
             confirm_text.as_str()
-        } else if let Some((ref msg, _)) = ops.op_message {
-            msg.as_str()
+        } else if let Some(toast) = &ops.op_message {
+            op_toast = Some(toast);
+            ""
         } else if is_focused {
             confirm_text = super::footer::footer_hint_back(&app.config.keybindings);
             confirm_text.as_str()
@@ -256,7 +258,8 @@ fn render_tree_pane(
             "Tab/h: focus tree"
         }
     };
-    let footer_line = super::footer::build_footer_line_with_focus(app, help_text, is_focused);
+    let footer_line =
+        super::footer::build_footer_line_with_op_toast(app, op_toast, help_text, is_focused);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         attention.border_style(theme),
@@ -862,7 +865,7 @@ fn count_statuses(ops: &GitOpsState) -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::AppState;
+    use crate::app::{AppState, Toast};
     use crate::app::{
         DestructiveOp, DiscardInvocation, FileStatus, GitOpsState, GitStatusEntry,
         PendingGitOpsConfirm, RepositoryAvailability,
@@ -1395,21 +1398,61 @@ mod tests {
         );
     }
 
+    /// The colour of the first footer cell that shows `glyph`, in the tree pane.
+    fn tree_footer_glyph_color(app: &mut App, glyph: &str) -> Option<Color> {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 100, 20);
+        let theme = app.theme;
+        terminal
+            .draw(|frame| {
+                render_tree_pane(frame, app, area, Attention::Focused, theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let footer_start = area.height.saturating_sub(3);
+        (footer_start..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == glyph)
+            .map(|(x, y)| buf[(x, y)].fg)
+    }
+
+    #[test]
+    fn test_footer_op_message_success_is_a_green_check_and_failure_a_red_cross() {
+        let (mut app, _tx) = make_app();
+        let mut ops = GitOpsState::new(vec![entry(
+            "a.rs",
+            FileStatus::Unmodified,
+            FileStatus::Modified,
+        )]);
+        rebuild_tree(&mut ops);
+        ops.op_message = Some(Toast::success("Pushed to origin/main"));
+        app.git_ops_state = Some(ops);
+        assert_eq!(
+            tree_footer_glyph_color(&mut app, "\u{2713}"),
+            Some(Color::Green)
+        );
+
+        app.git_ops_state.as_mut().unwrap().op_message =
+            Some(Toast::failure("Error: push rejected"));
+        assert_eq!(
+            tree_footer_glyph_color(&mut app, "\u{2717}"),
+            Some(Color::Red)
+        );
+    }
+
     #[test]
     fn test_footer_op_message_focused() {
         let (mut app, _tx) = make_app();
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.op_message = Some((
-            "Pushed to origin/main".to_string(),
-            std::time::Instant::now(),
-        ));
+        ops.op_message = Some(Toast::success("Pushed to origin/main"));
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @r"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Pushed to origin/main                                                                             │
+        │✓ Pushed to origin/main                                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1420,16 +1463,13 @@ mod tests {
         let entries = vec![entry("a.rs", FileStatus::Unmodified, FileStatus::Modified)];
         let mut ops = GitOpsState::new(entries);
         rebuild_tree(&mut ops);
-        ops.op_message = Some((
-            "Pushed to origin/main".to_string(),
-            std::time::Instant::now(),
-        ));
+        ops.op_message = Some(Toast::success("Pushed to origin/main"));
         app.git_ops_state = Some(ops);
 
         // unfocused 時に op_message が見えるかどうか
         assert_snapshot!(render_tree_pane_footer(&mut app, false), @r"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Pushed to origin/main                                                                             │
+        │✓ Pushed to origin/main                                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1438,15 +1478,12 @@ mod tests {
     fn test_footer_op_message_empty_entries_focused() {
         let (mut app, _tx) = make_app();
         let mut ops = GitOpsState::new(Vec::new());
-        ops.op_message = Some((
-            "Pushed to origin/main".to_string(),
-            std::time::Instant::now(),
-        ));
+        ops.op_message = Some(Toast::success("Pushed to origin/main"));
         app.git_ops_state = Some(ops);
 
         assert_snapshot!(render_tree_pane_footer(&mut app, true), @r"
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │Pushed to origin/main                                                                             │
+        │✓ Pushed to origin/main                                                                           │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
     }

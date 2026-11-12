@@ -347,7 +347,7 @@ impl App {
                     Ok(Ok(msg)) => {
                         let was_pushing = ops.pushing;
                         ops.pushing = false;
-                        ops.op_message = Some((msg, Instant::now()));
+                        ops.op_message = Some(Toast::success(msg));
                         ops.op_receiver = None;
                         op_succeeded = true;
                         if was_pushing {
@@ -369,7 +369,7 @@ impl App {
                                 scroll_offset: 0,
                             });
                         } else {
-                            ops.op_message = Some((format!("Error: {}", msg), Instant::now()));
+                            ops.op_message = Some(Toast::failure(format!("Error: {}", msg)));
                             // Re-fetch status on error to rollback optimistic updates
                             op_succeeded = true;
                         }
@@ -605,11 +605,7 @@ impl App {
         }
 
         if let Some(ref mut ops) = self.git_ops_state {
-            if let Some((_, ref time)) = ops.op_message {
-                if time.elapsed().as_secs() >= 3 {
-                    ops.op_message = None;
-                }
-            }
+            super::toast::expire(&mut ops.op_message, Instant::now());
         }
     }
 
@@ -785,10 +781,7 @@ impl App {
         };
 
         if ops.has_unmerged_files() {
-            ops.op_message = Some((
-                "Cannot stage all with unmerged files".to_string(),
-                Instant::now(),
-            ));
+            ops.op_message = Some(Toast::failure("Cannot stage all with unmerged files"));
             return;
         }
 
@@ -863,17 +856,14 @@ impl App {
 
         if !ops.has_staged_files() {
             if let Some(ref mut ops) = self.git_ops_state {
-                ops.op_message = Some(("No staged files to commit".to_string(), Instant::now()));
+                ops.op_message = Some(Toast::failure("No staged files to commit"));
             }
             return Ok(());
         }
 
         if ops.has_unmerged_files() {
             if let Some(ref mut ops) = self.git_ops_state {
-                ops.op_message = Some((
-                    "Cannot commit with unmerged files".to_string(),
-                    Instant::now(),
-                ));
+                ops.op_message = Some(Toast::failure("Cannot commit with unmerged files"));
             }
             return Ok(());
         }
@@ -891,7 +881,7 @@ impl App {
         match status {
             Ok(s) if s.success() => {
                 if let Some(ref mut ops) = self.git_ops_state {
-                    ops.op_message = Some(("Commit created".to_string(), Instant::now()));
+                    ops.op_message = Some(Toast::success("Commit created"));
                     ops.undo_stack.push(UndoAction::Commit);
                     ops.commit_log.diff_store.clear();
                     ops.commit_log.commits.clear();
@@ -904,8 +894,7 @@ impl App {
             }
             _ => {
                 if let Some(ref mut ops) = self.git_ops_state {
-                    ops.op_message =
-                        Some(("Commit cancelled or failed".to_string(), Instant::now()));
+                    ops.op_message = Some(Toast::failure("Commit cancelled or failed"));
                 }
             }
         }
@@ -922,7 +911,7 @@ impl App {
             match ops.undo_stack.pop() {
                 Some(action) => action,
                 None => {
-                    ops.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
+                    ops.op_message = Some(Toast::failure("Nothing to undo"));
                     return;
                 }
             }
@@ -1414,9 +1403,8 @@ impl App {
         if self.matches_single_key(&key, &kb.git_ops_reset) {
             if !(self.local_mode || self.pr_number.is_none()) {
                 if let Some(ref mut ops) = self.git_ops_state {
-                    ops.op_message = Some((
-                        "Reset --soft is only available in local mode".to_string(),
-                        Instant::now(),
+                    ops.op_message = Some(Toast::failure(
+                        "Reset --soft is only available in local mode",
                     ));
                 }
                 return;
@@ -2644,12 +2632,9 @@ mod tests {
         app.execute_undo();
 
         let ops = app.git_ops_state.as_ref().unwrap();
-        assert!(ops
-            .op_message
-            .as_ref()
-            .unwrap()
-            .0
-            .contains("Nothing to undo"));
+        let toast = ops.op_message.as_ref().unwrap();
+        assert_eq!(toast.kind(), ToastKind::Failure);
+        assert_eq!(toast.message(), "Nothing to undo");
     }
 
     #[tokio::test]
@@ -2820,17 +2805,14 @@ mod tests {
             let op = action.to_destructive_op();
             ops_ref.pending_confirm = Some(PendingGitOpsConfirm::Simple { op });
         } else {
-            ops_ref.op_message = Some(("Nothing to undo".to_string(), Instant::now()));
+            ops_ref.op_message = Some(Toast::failure("Nothing to undo"));
         }
 
         let ops = app.git_ops_state.as_ref().unwrap();
         assert!(ops.pending_confirm.is_none());
-        assert!(ops
-            .op_message
-            .as_ref()
-            .unwrap()
-            .0
-            .contains("Nothing to undo"));
+        let toast = ops.op_message.as_ref().unwrap();
+        assert_eq!(toast.kind(), ToastKind::Failure);
+        assert_eq!(toast.message(), "Nothing to undo");
     }
 
     #[test]

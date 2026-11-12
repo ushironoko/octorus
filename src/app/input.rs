@@ -102,6 +102,12 @@ impl App {
                     return Ok(());
                 }
 
+                // A key settles the footer notice before it is handled (#250).
+                // Esc on a failure notice ends here: it must not Back or Quit.
+                if self.settle_toasts_on_key(&key) {
+                    return Ok(());
+                }
+
                 // Mouse-capture toggle works in every state, including loading,
                 // error, and overlays — that is when the user wants terminal-native
                 // text selection back.
@@ -595,9 +601,9 @@ impl App {
         }
 
         if self.mark_viewed_receiver.is_some() {
-            self.cmt.submission_result =
-                Some((false, "Mark viewed already in progress".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure(
+                "Mark viewed already in progress".to_string(),
+            ));
             return true;
         }
 
@@ -623,8 +629,8 @@ impl App {
         let target_paths = Self::collect_unviewed_directory_paths(self.files(), self.selected_file);
 
         if target_paths.is_empty() {
-            self.cmt.submission_result = Some((true, "No unviewed files in directory".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result =
+                Some(Toast::success("No unviewed files in directory".to_string()));
             return;
         }
 
@@ -638,18 +644,16 @@ impl App {
         }
 
         let Some(pr_number) = self.pr_number else {
-            self.cmt.submission_result = Some((false, "PR number not set".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure("PR number not set".to_string()));
             return;
         };
         let Some(pr) = self.pr() else {
-            self.cmt.submission_result = Some((false, "PR metadata not loaded".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure("PR metadata not loaded".to_string()));
             return;
         };
         let Some(pr_node_id) = pr.node_id.clone() else {
-            self.cmt.submission_result = Some((false, "PR node ID is unavailable".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result =
+                Some(Toast::failure("PR node ID is unavailable".to_string()));
             return;
         };
 
@@ -657,11 +661,10 @@ impl App {
         let (tx, rx) = mpsc::channel(1);
         self.mark_viewed_receiver = Some((pr_number, rx));
         let action_label = if set_viewed { "viewed" } else { "unviewed" };
-        self.cmt.submission_result = Some((
-            true,
-            format!("Marking {} file(s) as {}...", total_targets, action_label),
-        ));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::success(format!(
+            "Marking {} file(s) as {}...",
+            total_targets, action_label
+        )));
 
         tokio::spawn(async move {
             let mut marked_paths = Vec::with_capacity(total_targets);
@@ -1117,8 +1120,8 @@ impl App {
         let target_paths = Self::collect_unviewed_paths_under_dir(self.files(), &dir_path);
 
         if target_paths.is_empty() {
-            self.cmt.submission_result = Some((true, "No unviewed files in directory".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result =
+                Some(Toast::success("No unviewed files in directory".to_string()));
             return;
         }
 

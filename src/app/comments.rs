@@ -3,7 +3,7 @@ use crossterm::event;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashMap;
 use std::io::Stdout;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
@@ -243,11 +243,9 @@ impl App {
             // The marker is a Context row with no line number. Say why `c` did nothing.
             let row = patch.lines().nth(self.diff_scroll.selected_line);
             if row.is_some_and(crate::diff::is_no_newline_marker) {
-                self.cmt.submission_result = Some((
-                    false,
+                self.cmt.submission_result = Some(Toast::failure(
                     "Move to a code line to comment: this marker has no line".to_string(),
                 ));
-                self.cmt.submission_result_time = Some(Instant::now());
             }
             return;
         };
@@ -287,8 +285,7 @@ impl App {
             Ok(body) => body,
             Err(e) => {
                 tracing::debug!(%e, "submit_review: editor failed");
-                self.cmt.submission_result = Some((false, format!("Editor failed: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::failure(format!("Editor failed: {}", e)));
                 return Ok(());
             }
         };
@@ -299,8 +296,7 @@ impl App {
                 // Empty comment → show approve confirmation UI
                 self.cmt.pending_approve_body = Some(String::new());
             } else {
-                self.cmt.submission_result = Some((false, "Review cancelled".to_string()));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::failure("Review cancelled".to_string()));
             }
             return Ok(());
         };
@@ -317,11 +313,9 @@ impl App {
             return false;
         }
         if self.cmt.comment_submitting {
-            self.cmt.submission_result = Some((
-                false,
+            self.cmt.submission_result = Some(Toast::failure(
                 "Wait for the comment to be added, then submit the review".to_string(),
             ));
-            self.cmt.submission_result_time = Some(Instant::now());
             return false;
         }
         true
@@ -333,17 +327,15 @@ impl App {
     /// until that add finishes.
     fn inline_comment_may_start(&mut self) -> bool {
         if self.is_submitting_review() {
-            self.cmt.submission_result = Some((
-                false,
+            self.cmt.submission_result = Some(Toast::failure(
                 "Wait for the review to finish submitting".to_string(),
             ));
-            self.cmt.submission_result_time = Some(Instant::now());
             return false;
         }
         if self.cmt.comment_submitting {
-            self.cmt.submission_result =
-                Some((false, "Wait for the comment to be added".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure(
+                "Wait for the comment to be added".to_string(),
+            ));
             return false;
         }
         true
@@ -867,9 +859,10 @@ impl App {
                     self.cmt.review_comments = Some(vec![]);
                     self.cmt.local_comment_meta.clear();
                     self.cmt.comments_loading = false;
-                    self.cmt.submission_result =
-                        Some((false, format!("Failed to load local comments: {}", e)));
-                    self.cmt.submission_result_time = Some(Instant::now());
+                    self.cmt.submission_result = Some(Toast::failure(format!(
+                        "Failed to load local comments: {}",
+                        e
+                    )));
                 }
             }
             return;
@@ -1570,11 +1563,9 @@ impl App {
         // A reply posts at once and is not part of the pending review, so a draft
         // is refused until the review is submitted.
         if comment.is_pending_draft() {
-            self.cmt.submission_result = Some((
-                false,
+            self.cmt.submission_result = Some(Toast::failure(
                 "Submit the pending review before replying to a draft".to_string(),
             ));
-            self.cmt.submission_result_time = Some(Instant::now());
             return;
         }
 

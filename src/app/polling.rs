@@ -497,8 +497,7 @@ impl App {
         self.cmt.pending_add = None;
         self.cmt.comment_submitting = false;
         self.cmt.comment_submit_receiver = None;
-        self.cmt.submission_result = Some((true, message.to_string()));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::success(message.to_string()));
         self.reload_review_comments_for(origin_pr);
     }
 
@@ -521,8 +520,7 @@ impl App {
         self.keep_failed_add();
         self.cmt.comment_submitting = false;
         self.cmt.comment_submit_receiver = None;
-        self.cmt.submission_result = Some((false, message));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::failure(message));
     }
 
     /// Drops the cached review comments of `origin_pr` and fetches them again when
@@ -543,13 +541,7 @@ impl App {
 
     /// コメント送信結果のポーリング
     pub(crate) fn poll_comment_submit_updates(&mut self) {
-        // Clear old submission result after 3 seconds
-        if let Some(time) = self.cmt.submission_result_time {
-            if time.elapsed().as_secs() >= 3 {
-                self.cmt.submission_result = None;
-                self.cmt.submission_result_time = None;
-            }
-        }
+        super::toast::expire(&mut self.cmt.submission_result, Instant::now());
 
         let Some((origin_pr, rx)) = self.cmt.comment_submit_receiver.as_mut() else {
             return;
@@ -591,7 +583,7 @@ impl App {
         let (origin_pr, rx) = self.cmt.review_submit_receiver.as_mut()?;
         let origin_pr = *origin_pr;
 
-        let (success, message, outcome) = match rx.try_recv() {
+        let (kind, message, outcome) = match rx.try_recv() {
             Ok(ReviewSubmitResult::Submitted(action)) => {
                 let action_str = match action {
                     ReviewAction::Approve => "approved",
@@ -600,7 +592,7 @@ impl App {
                 };
                 tracing::debug!(action_str, "submit_review: success");
                 (
-                    true,
+                    ToastKind::Success,
                     format!("Review submitted ({action_str})"),
                     super::ReviewWaitOutcome::Submitted {
                         pr_number: origin_pr,
@@ -610,7 +602,7 @@ impl App {
             Ok(ReviewSubmitResult::Failed(text)) => {
                 tracing::debug!(%text, "submit_review: API failed");
                 (
-                    false,
+                    ToastKind::Failure,
                     format!("Review failed: {text}"),
                     super::ReviewWaitOutcome::Failed {
                         pr_number: origin_pr,
@@ -620,7 +612,7 @@ impl App {
             }
             Err(mpsc::error::TryRecvError::Empty) => return None,
             Ok(ReviewSubmitResult::Unknown) | Err(mpsc::error::TryRecvError::Disconnected) => (
-                false,
+                ToastKind::Failure,
                 super::REVIEW_RESULT_UNKNOWN.to_string(),
                 super::ReviewWaitOutcome::Unknown {
                     pr_number: origin_pr,
@@ -642,8 +634,7 @@ impl App {
         } else {
             format!("#{origin_pr} {message}")
         };
-        self.cmt.submission_result = Some((success, message));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::new(kind, message));
         Some(outcome)
     }
 
@@ -669,29 +660,28 @@ impl App {
                 match error {
                     Some(err) => {
                         if marked_paths.is_empty() {
-                            self.cmt.submission_result =
-                                Some((false, format!("Mark {} failed: {}", action_label, err)));
+                            self.cmt.submission_result = Some(Toast::failure(format!(
+                                "Mark {} failed: {}",
+                                action_label, err
+                            )));
                         } else {
-                            self.cmt.submission_result = Some((
-                                false,
-                                format!(
-                                    "Marked {}/{} files as {}, then failed: {}",
-                                    marked_paths.len(),
-                                    total_targets,
-                                    action_label,
-                                    err
-                                ),
-                            ));
+                            self.cmt.submission_result = Some(Toast::failure(format!(
+                                "Marked {}/{} files as {}, then failed: {}",
+                                marked_paths.len(),
+                                total_targets,
+                                action_label,
+                                err
+                            )));
                         }
                     }
                     None => {
-                        self.cmt.submission_result = Some((
-                            true,
-                            format!("Marked {} file(s) as {}", marked_paths.len(), action_label),
-                        ));
+                        self.cmt.submission_result = Some(Toast::success(format!(
+                            "Marked {} file(s) as {}",
+                            marked_paths.len(),
+                            action_label
+                        )));
                     }
                 }
-                self.cmt.submission_result_time = Some(Instant::now());
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1452,8 +1442,7 @@ impl App {
                 state.issue_comment_submit_receiver = None;
                 // Always show toast so users get feedback even if issue_detail
                 // is temporarily None during navigation/loading.
-                self.cmt.submission_result = Some((true, "Submitted".to_string()));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::success("Submitted".to_string()));
                 // Update local caches only when issue_detail is loaded and matches
                 if let Some(detail) = state.issue_detail.as_loaded_mut() {
                     if detail.number == origin {
@@ -1482,8 +1471,7 @@ impl App {
             Ok(Err(e)) => {
                 state.issue_comment_submitting = false;
                 state.issue_comment_submit_receiver = None;
-                self.cmt.submission_result = Some((false, format!("Failed: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::failure(format!("Failed: {}", e)));
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1513,13 +1501,13 @@ impl App {
             }
             Ok(SymbolSearchUpdate::NotFound) => {
                 self.symbol_search = SymbolSearchState::Idle;
-                self.cmt.submission_result = Some((false, "Definition not found".to_string()));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result =
+                    Some(Toast::failure("Definition not found".to_string()));
             }
             Ok(SymbolSearchUpdate::Failed(msg)) => {
                 self.symbol_search = SymbolSearchState::Idle;
-                self.cmt.submission_result = Some((false, format!("Search failed: {}", msg)));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result =
+                    Some(Toast::failure(format!("Search failed: {}", msg)));
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
