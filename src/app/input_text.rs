@@ -14,6 +14,14 @@ use crate::ui::text_area::TextAreaAction;
 use super::types::*;
 use super::{App, SuggestionHighlightCache, INLINE_COMMENT_TIMEOUT};
 
+/// GitHub's draft `side` for the diff side the composer is writing to.
+fn draft_side(side: crate::diff::DiffSide) -> github::DraftSide {
+    match side {
+        crate::diff::DiffSide::Left => github::DraftSide::Left,
+        crate::diff::DiffSide::Right => github::DraftSide::Right,
+    }
+}
+
 impl App {
     /// Note: the help keybinding (?) is intentionally not handled here
     /// because this is a free-form text input and ? is a literal character.
@@ -104,6 +112,7 @@ impl App {
             pr_number: self.pr_number.unwrap_or_default(),
             path,
             line: ctx.line_number,
+            side: ctx.side,
             start_line: ctx.start_line_number,
             kind,
         })
@@ -227,14 +236,20 @@ impl App {
             pr_number,
             path: path.clone(),
             line: ctx.line_number,
+            side: ctx.side,
             start_line: ctx.start_line_number,
             kind,
         };
+        // `side` comes from the selected rows. A removed line is LEFT and its
+        // number is the old file. A range is one side, so start_side matches.
+        let side = draft_side(ctx.side);
         let draft = github::InlineDraft {
             path,
             body,
             line: ctx.line_number,
             start_line: ctx.start_line_number,
+            side,
+            start_side: ctx.start_line_number.map(|_| side),
         };
         let repo = self.repo.clone();
         // Held until the result arrives, so that a failed add can keep the text.
@@ -284,7 +299,13 @@ impl App {
             },
             created_at: Utc::now().to_rfc3339(),
             in_reply_to_id: None,
-            location: Default::default(),
+            location: github::comment::ReviewCommentLocation {
+                side: Some(ctx.side.as_github_side().to_string()),
+                start_side: ctx
+                    .start_line_number
+                    .map(|_| ctx.side.as_github_side().to_string()),
+                ..Default::default()
+            },
         }));
 
         self.persist_local_review_comments(comments, "Saved local comment");
@@ -359,7 +380,10 @@ impl App {
             },
             created_at: Utc::now().to_rfc3339(),
             in_reply_to_id: Some(comment_id),
-            location: Default::default(),
+            location: github::comment::ReviewCommentLocation {
+                side: parent.location.side.clone(),
+                ..Default::default()
+            },
         }));
 
         self.persist_local_review_comments(comments, "Saved local reply");

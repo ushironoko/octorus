@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
-use crate::diff::LineType;
+use crate::diff::{DiffSide, LineType};
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
     ChangedFile, CommitListPage, GhFailure, IssueComment, IssueDetail, IssueListPage,
@@ -130,11 +130,17 @@ impl MultilineSelection {
 #[derive(Debug, Clone)]
 pub struct LineInputContext {
     pub file_index: usize,
+    /// File line of the comment, or of the last line of a range.
+    /// Old-file number when `side` is [`DiffSide::Left`], new-file number otherwise.
     pub line_number: u32,
     /// 1-based position within the patch; maps to GitHub API `position`.
     pub diff_position: u32,
-    /// Start line number in the new file (for multiline selections).
+    /// First file line of a multiline selection, on `side`. `None` for one line.
     pub start_line_number: Option<u32>,
+    /// GitHub side of this comment. A removed line is [`DiffSide::Left`].
+    /// Added and context lines are [`DiffSide::Right`]. A range uses one side
+    /// for both ends.
+    pub side: DiffSide,
 }
 
 /// Unified input mode.
@@ -1284,12 +1290,15 @@ pub enum DraftKind {
 }
 
 /// The line an inline draft is written to. A kept body is found by this key, so
-/// it only comes back on the same PR, line, and kind of composer.
+/// it only comes back on the same PR, line, side, and kind of composer.
+/// `side` keeps a deleted-line draft (old file) from opening on the new-file
+/// line that happens to use the same number.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DraftAnchor {
     pub pr_number: u32,
     pub path: String,
     pub line: u32,
+    pub side: crate::diff::DiffSide,
     pub start_line: Option<u32>,
     pub kind: DraftKind,
 }

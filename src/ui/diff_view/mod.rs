@@ -1773,9 +1773,13 @@ fn render_comment_context(
         .map(|f| f.filename.as_str())
         .unwrap_or("Unknown file");
 
+    let mark = match ctx.side {
+        crate::diff::DiffSide::Left => "L",
+        crate::diff::DiffSide::Right => "R",
+    };
     let line_display = match ctx.start_line_number {
-        Some(start) => format!("{}-{}", start, ctx.line_number),
-        None => ctx.line_number.to_string(),
+        Some(start) => format!("{mark}{start}-{}", ctx.line_number),
+        None => format!("{mark}{}", ctx.line_number),
     };
     let mut lines = vec![
         Line::from(vec![
@@ -3965,6 +3969,7 @@ mod pending_review_composer_tests {
             line_number: 3,
             diff_position: 3,
             start_line_number: None,
+            side: crate::diff::DiffSide::Right,
         }
     }
 

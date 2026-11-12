@@ -180,13 +180,7 @@ fn resolve_draft_position(draft: &mut ReviewComment, patch: &str) {
             return;
         };
         draft.line = Some(target.line);
-        draft.location.side = Some(
-            match target.side {
-                DiffSide::Left => "LEFT",
-                DiffSide::Right => "RIGHT",
-            }
-            .to_string(),
-        );
+        draft.location.side = Some(target.side.as_github_side().to_string());
     }
     recover_draft_start_line(draft, patch);
 }
@@ -381,16 +375,10 @@ impl App {
             return;
         };
 
-        // Only allow comments on Added or Context lines (not Removed/Header/Meta)
-        if !matches!(
-            line_info.line_type,
-            crate::diff::LineType::Added | crate::diff::LineType::Context
-        ) {
-            return;
-        }
-
-        let Some(line_number) = line_info.new_line_number else {
-            // The marker is a Context row with no line number. Say why `c` did nothing.
+        // Added and context rows comment on the new file (RIGHT). A removed row
+        // comments on the old file (LEFT). The no-newline marker is a context
+        // row with no file line: say why `c` did nothing.
+        let Some((side, line_number)) = line_info.review_comment_line() else {
             let row = patch.lines().nth(self.diff_scroll.selected_line);
             if row.is_some_and(crate::diff::is_no_newline_marker) {
                 self.cmt.submission_result = Some(Toast::failure(
@@ -410,6 +398,7 @@ impl App {
                 line_number,
                 diff_position,
                 start_line_number: None,
+                side,
             }),
             "",
         );
@@ -606,6 +595,7 @@ impl App {
                     line_number,
                     diff_position,
                     start_line_number: None,
+                    side: DiffSide::Right,
                 },
                 original_code: original_code.clone(),
             },
@@ -626,10 +616,9 @@ impl App {
         else {
             return;
         };
-        if !matches!(
-            line_info.line_type,
-            crate::diff::LineType::Added | crate::diff::LineType::Context
-        ) {
+        // The anchor has to be a commentable file row. A removed row is allowed,
+        // so a range of deleted lines can start. The no-newline marker is not.
+        if line_info.review_comment_line().is_none() {
             return;
         }
         self.multiline_selection = Some(MultilineSelection {
@@ -654,42 +643,11 @@ impl App {
             return;
         };
 
-        // 範囲内の全行が同一ハンク内の new-side 行であることを検証
-        if !crate::diff::validate_multiline_range(patch, start, end) {
+        // One side only. A removed run is LEFT (old-file numbers). An added or
+        // context run is RIGHT (new-file numbers). A mix, a hunk header, or the
+        // no-newline marker does not open the composer, and the selection stays.
+        let Some(span) = crate::diff::review_comment_span(patch, start, end) else {
             return;
-        }
-        let index = crate::diff::PatchIndex::build(patch);
-
-        // 終了行の情報を取得（GitHub API の line パラメータ）
-        let Some(end_info) = index.get(end) else {
-            return;
-        };
-        if !matches!(
-            end_info.line_type,
-            crate::diff::LineType::Added | crate::diff::LineType::Context
-        ) {
-            return;
-        }
-        let Some(end_line_number) = end_info.new_line_number else {
-            return;
-        };
-        let Some(diff_position) = end_info.diff_position else {
-            return;
-        };
-
-        // 開始行の情報を取得（GitHub API の start_line パラメータ）
-        let Some(start_info) = index.get(start) else {
-            return;
-        };
-        let Some(start_line_number) = start_info.new_line_number else {
-            return;
-        };
-
-        // 単一行の場合は start_line_number を None にする
-        let start_line = if start_line_number < end_line_number {
-            Some(start_line_number)
-        } else {
-            None
         };
 
         // バリデーション成功後にのみ選択状態をクリア
@@ -698,9 +656,10 @@ impl App {
         self.open_inline_composer(
             InputMode::Comment(LineInputContext {
                 file_index: self.selected_file,
-                line_number: end_line_number,
-                diff_position,
-                start_line_number: start_line,
+                line_number: span.line,
+                diff_position: span.diff_position,
+                start_line_number: span.start_line,
+                side: span.side,
             }),
             "",
         );
@@ -781,6 +740,7 @@ impl App {
                     line_number: end_line_number,
                     diff_position,
                     start_line_number: start_line,
+                    side: DiffSide::Right,
                 },
                 original_code: original_code.clone(),
             },
