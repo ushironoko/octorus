@@ -404,6 +404,7 @@ fn render_content(
         discussion,
         content_width,
         inner_height,
+        theme,
     );
 
     let building = matches!(state.index, crate::app::browse::IndexState::Building);
@@ -659,10 +660,14 @@ fn content_lines<'a>(
         discussion,
         content_width,
         max_rows,
+        Theme::test_default(),
     )
     .0
 }
 
+// The discussion dot and the cursor line number take `theme`. The other
+// arguments were already at clippy's limit.
+#[allow(clippy::too_many_arguments)]
 fn content_lines_with_logical_lines<'a>(
     window: &ContentWindow<'a>,
     cursor_line: usize,
@@ -671,6 +676,7 @@ fn content_lines_with_logical_lines<'a>(
     discussion: Option<&DiscussionIndex>,
     content_width: usize,
     max_rows: usize,
+    theme: Theme,
 ) -> (Vec<Line<'a>>, Vec<usize>) {
     let width = gutter_width(window.total);
     let discussion_width = discussion.map_or(0, |_| DISCUSSION_GUTTER_WIDTH);
@@ -693,22 +699,24 @@ fn content_lines_with_logical_lines<'a>(
             ));
         }
         if let Some(index) = discussion {
+            // A thread on this line. `info` is the status color (cyan on the dark
+            // preset); the diff comment marker is `warning`, and this one is not.
             prefix.push(Span::styled(
                 if index.thread_indices_at(line_index).is_empty() {
                     "  "
                 } else {
                     "● "
                 },
-                Style::default().fg(Color::Cyan),
+                theme.info.style(),
             ));
         }
         prefix.push(Span::styled(
             format!("{:>width$} ", line_index + 1),
-            Style::default().fg(if is_cursor {
-                Color::Yellow
+            if is_cursor {
+                theme.warning.style()
             } else {
-                Color::DarkGray
-            }),
+                Style::default().fg(Color::DarkGray)
+            },
         ));
         let content: Vec<(&'a str, Style)> = cached
             .spans
@@ -2538,6 +2546,66 @@ mod tests {
         assert!(!rendered.join("\n").contains("aaaaaaa"));
         assert!(rendered[0].starts_with("      1"), "{rendered:?}");
         assert!(rendered[1].starts_with("●     2"), "{rendered:?}");
+    }
+
+    fn discussion_gutter(theme: Theme) -> Vec<Vec<(String, Style)>> {
+        let cache = cache_of("first\nsecond\n");
+        let window = content_window(&cache, 0, 2);
+        let index = discussion_index(2, 1);
+        content_lines_with_logical_lines(
+            &window,
+            1,
+            false,
+            None,
+            Some(&index),
+            40,
+            usize::MAX,
+            theme,
+        )
+        .0
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| (span.content.to_string(), span.style))
+                .collect()
+        })
+        .collect()
+    }
+
+    /// The discussion dot is info (cyan on the dark preset), not the yellow warning
+    /// used by the diff comment marker. The cursor's line number is warning.
+    #[test]
+    fn discussion_gutter_uses_info_and_the_cursor_line_number_uses_warning() {
+        use crate::config::ThemeColors;
+        use crate::ui::test_buffer::{theme_with, CUSTOM_INFO, CUSTOM_WARNING};
+
+        let lines = discussion_gutter(theme_with(ThemeColors {
+            info: Some(CUSTOM_INFO),
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        }));
+        let (marker, marker_style) = &lines[1][0];
+        assert_eq!(marker, "● ");
+        assert_eq!(marker_style.fg, Some(CUSTOM_INFO));
+        let (number, number_style) = &lines[1][1];
+        assert!(number.contains('2'), "{number}");
+        assert_eq!(number_style.fg, Some(CUSTOM_WARNING));
+        // A line that is not the cursor keeps the hardcoded dark-gray number.
+        assert_eq!(lines[0][1].1.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn discussion_gutter_and_cursor_line_number_drop_color_under_no_color() {
+        use crate::ui::test_buffer::no_color_theme;
+
+        let lines = discussion_gutter(no_color_theme());
+        let (marker, marker_style) = &lines[1][0];
+        assert_eq!(marker, "● ");
+        assert_eq!(marker_style.fg, None);
+        let (number, number_style) = &lines[1][1];
+        assert!(number.contains('2'), "{number}");
+        assert_eq!(number_style.fg, None);
     }
 
     #[test]

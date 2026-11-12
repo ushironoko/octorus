@@ -1788,7 +1788,7 @@ fn render_comment_context(
         ]),
         Line::from(vec![
             Span::styled("Line: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(line_display, Style::default().fg(Color::Yellow)),
+            Span::styled(line_display, app.theme.warning.style()),
         ]),
     ];
     lines.push(Line::from(Span::styled(
@@ -1960,17 +1960,12 @@ fn render_suggestion_context(
         ]),
         Line::from(vec![
             Span::styled("Line: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                ctx.line_number.to_string(),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(ctx.line_number.to_string(), app.theme.warning.style()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Original code:",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            app.theme.warning.bold(),
         )]),
     ];
 
@@ -2691,6 +2686,110 @@ mod tests {
         let marker = &rendered[2].spans[0];
         assert_eq!(marker.content, "● ");
         assert_eq!(marker.style.fg, None);
+    }
+
+    fn paint_comment_location(theme: Theme) -> ratatui::buffer::Buffer {
+        use crate::diff::DiffSide;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new_for_test();
+        app.theme = theme;
+        let ctx = LineInputContext {
+            file_index: 0,
+            line_number: 12,
+            diff_position: 1,
+            start_line_number: None,
+            side: DiffSide::Right,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
+        terminal
+            .draw(|frame| render_comment_context(frame, &app, frame.area(), &ctx))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn paint_suggestion_context(theme: Theme) -> ratatui::buffer::Buffer {
+        use crate::diff::DiffSide;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new_for_test();
+        app.theme = theme;
+        let ctx = LineInputContext {
+            file_index: 0,
+            line_number: 12,
+            diff_position: 1,
+            start_line_number: None,
+            side: DiffSide::Right,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|frame| render_suggestion_context(frame, &app, frame.area(), &ctx, "let x = 1;"))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The comment location's line value, and the suggestion's line value and
+    /// `Original code:` label, take the theme's warning color.
+    #[test]
+    fn comment_location_and_suggestion_label_take_the_theme_warning_color() {
+        use crate::ui::test_buffer::cells_of;
+        use ratatui::style::Modifier;
+
+        let theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let location = paint_comment_location(theme);
+        let line_value = cells_of(&location, "R12").expect("line value");
+        assert!(
+            line_value.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{line_value:?}"
+        );
+        // The "Line:" label and the file name stay on their hardcoded colors.
+        let label = cells_of(&location, "Line:").expect("label");
+        assert!(label.iter().all(|cell| cell.fg == Color::DarkGray));
+        let file = cells_of(&location, "Unknown file").expect("file");
+        assert!(file.iter().all(|cell| cell.fg == Color::Cyan));
+
+        let suggestion = paint_suggestion_context(theme);
+        let original = cells_of(&suggestion, "Original code:").expect("label");
+        assert!(
+            original.iter().all(|cell| {
+                cell.fg == CUSTOM_WARNING && cell.modifier.contains(Modifier::BOLD)
+            }),
+            "{original:?}"
+        );
+        let suggestion_line = cells_of(&suggestion, "12").expect("suggestion line");
+        assert!(
+            suggestion_line.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{suggestion_line:?}"
+        );
+    }
+
+    #[test]
+    fn comment_location_and_suggestion_label_drop_color_under_no_color() {
+        use crate::ui::test_buffer::cells_of;
+        use ratatui::style::Modifier;
+
+        let location = paint_comment_location(no_color_theme());
+        let line_value = cells_of(&location, "R12").expect("line value");
+        assert!(
+            line_value
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.modifier.is_empty()),
+            "{line_value:?}"
+        );
+
+        let suggestion = paint_suggestion_context(no_color_theme());
+        let original = cells_of(&suggestion, "Original code:").expect("label");
+        assert!(
+            original
+                .iter()
+                .all(|cell| { cell.fg == Color::Reset && cell.modifier.contains(Modifier::BOLD) }),
+            "{original:?}"
+        );
     }
 
     /// The fallback path draws the marker in the warning color on the selected row and off it.

@@ -20,6 +20,12 @@ pub(crate) const CUSTOM_SUCCESS: Color = Color::Rgb(7, 8, 9);
 /// A danger color no preset uses, for the same reason as [`CUSTOM_WARNING`].
 pub(crate) const CUSTOM_DANGER: Color = Color::Rgb(10, 11, 12);
 
+/// An info color no preset uses, for the same reason as [`CUSTOM_WARNING`].
+pub(crate) const CUSTOM_INFO: Color = Color::Rgb(13, 14, 15);
+
+/// An accent color no preset uses, for the same reason as [`CUSTOM_WARNING`].
+pub(crate) const CUSTOM_ACCENT: Color = Color::Rgb(16, 17, 18);
+
 /// The dark preset with the given color overrides, as a `[theme]` config applies them.
 pub(crate) fn theme_with(colors: ThemeColors) -> Theme {
     Theme::resolve(

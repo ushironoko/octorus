@@ -14,6 +14,7 @@ use super::common::fit_to_width;
 use crate::app::App;
 use crate::github::CheckItem;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
+use crate::ui::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -51,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let total = checks.len();
             let theme = app.theme;
             let attention = app.sole_attention();
-            let items = build_check_list_items(checks);
+            let items = build_check_list_items(checks, theme);
 
             let mut list_state = ListState::default()
                 .with_offset(app.chk.checks_scroll_offset)
@@ -135,20 +136,21 @@ fn register_checks_list_hits(app: &mut App, area: ratatui::layout::Rect) {
     }
 }
 
-fn check_status_icon(check: &CheckItem) -> (char, Color) {
+fn check_status_icon(check: &CheckItem, theme: Theme) -> (char, Style) {
     match check.bucket.as_deref() {
-        Some("pass") => ('✓', Color::Green),
-        Some("fail") => ('✕', Color::Red),
-        Some("pending") => ('○', Color::Yellow),
-        Some("skipping") => ('-', Color::DarkGray),
-        Some("cancel") => ('✕', Color::DarkGray),
+        Some("pass") => ('✓', theme.success.style()),
+        Some("fail") => ('✕', theme.danger.style()),
+        Some("pending") => ('○', theme.warning.style()),
+        Some("skipping") => ('-', theme.muted.style()),
+        Some("cancel") => ('✕', theme.muted.style()),
         _ => match check.state.as_str() {
-            "SUCCESS" | "PASS" => ('✓', Color::Green),
-            "FAILURE" | "FAIL" | "STARTUP_FAILURE" | "ERROR" => ('✕', Color::Red),
-            "PENDING" | "QUEUED" | "IN_PROGRESS" => ('○', Color::Yellow),
-            "SKIPPING" | "NEUTRAL" => ('-', Color::DarkGray),
-            "CANCELLED" => ('✕', Color::DarkGray),
-            _ => ('?', Color::White),
+            "SUCCESS" | "PASS" => ('✓', theme.success.style()),
+            "FAILURE" | "FAIL" | "STARTUP_FAILURE" | "ERROR" => ('✕', theme.danger.style()),
+            "PENDING" | "QUEUED" | "IN_PROGRESS" => ('○', theme.warning.style()),
+            "SKIPPING" | "NEUTRAL" => ('-', theme.muted.style()),
+            "CANCELLED" => ('✕', theme.muted.style()),
+            // No token is white on the default presets, so the unknown mark stays white.
+            _ => ('?', Style::default().fg(Color::White)),
         },
     }
 }
@@ -179,11 +181,11 @@ fn format_duration(started: &Option<String>, completed: &Option<String>) -> Stri
     }
 }
 
-fn build_check_list_items(checks: &[CheckItem]) -> Vec<ListItem<'static>> {
+fn build_check_list_items(checks: &[CheckItem], theme: Theme) -> Vec<ListItem<'static>> {
     checks
         .iter()
         .map(|check| {
-            let (icon, icon_color) = check_status_icon(check);
+            let (icon, icon_style) = check_status_icon(check, theme);
             let duration = format_duration(&check.started_at, &check.completed_at);
 
             let workflow = if check.workflow.is_empty() {
@@ -196,7 +198,7 @@ fn build_check_list_items(checks: &[CheckItem]) -> Vec<ListItem<'static>> {
             let workflow_width = 15;
 
             let line = Line::from(vec![
-                Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
+                Span::styled(format!(" {} ", icon), icon_style),
                 Span::raw(" "),
                 Span::styled(
                     fit_to_width(&check.name, name_width).into_owned(),
@@ -205,10 +207,10 @@ fn build_check_list_items(checks: &[CheckItem]) -> Vec<ListItem<'static>> {
                 Span::raw("  "),
                 Span::styled(
                     fit_to_width(workflow, workflow_width).into_owned(),
-                    Style::default().fg(Color::DarkGray),
+                    theme.muted.style(),
                 ),
                 Span::raw("  "),
-                Span::styled(duration, Style::default().fg(Color::DarkGray)),
+                Span::styled(duration, theme.muted.style()),
             ]);
 
             ListItem::new(line)
@@ -218,9 +220,13 @@ fn build_check_list_items(checks: &[CheckItem]) -> Vec<ListItem<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_buffer::{find_column, screen_text};
+    use super::super::test_buffer::{
+        find_column, no_color_theme, screen_text, theme_with, CUSTOM_DANGER, CUSTOM_MUTED,
+        CUSTOM_SUCCESS, CUSTOM_WARNING,
+    };
     use super::*;
     use crate::app::AppState;
+    use crate::config::ThemeColors;
     use crate::ui::common::truncate_with_width;
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
@@ -239,9 +245,9 @@ mod tests {
             started_at: None,
             completed_at: None,
         };
-        let (icon, color) = check_status_icon(&check);
+        let (icon, style) = check_status_icon(&check, Theme::test_default());
         assert_eq!(icon, '✓');
-        assert_eq!(color, Color::Green);
+        assert_eq!(style.fg, Some(Color::Green));
     }
 
     #[test]
@@ -256,9 +262,93 @@ mod tests {
             started_at: None,
             completed_at: None,
         };
-        let (icon, color) = check_status_icon(&check);
+        let (icon, style) = check_status_icon(&check, Theme::test_default());
         assert_eq!(icon, '✕');
-        assert_eq!(color, Color::Red);
+        assert_eq!(style.fg, Some(Color::Red));
+    }
+
+    fn icon_for(bucket: Option<&str>, state: &str, theme: Theme) -> (char, Style) {
+        check_status_icon(
+            &CheckItem {
+                name: "test".to_string(),
+                state: state.to_string(),
+                bucket: bucket.map(str::to_string),
+                link: None,
+                workflow: String::new(),
+                description: None,
+                started_at: None,
+                completed_at: None,
+            },
+            theme,
+        )
+    }
+
+    /// Each check mark takes the token for its state. A custom `[theme.colors]` value
+    /// replaces the old hardcoded green, red, yellow, and dark gray.
+    #[test]
+    fn check_status_icons_take_theme_colors() {
+        let theme = theme_with(ThemeColors {
+            success: Some(CUSTOM_SUCCESS),
+            danger: Some(CUSTOM_DANGER),
+            warning: Some(CUSTOM_WARNING),
+            muted: Some(CUSTOM_MUTED),
+            ..ThemeColors::default()
+        });
+        let cases = [
+            (Some("pass"), "", '✓', CUSTOM_SUCCESS),
+            (Some("fail"), "", '✕', CUSTOM_DANGER),
+            (Some("pending"), "", '○', CUSTOM_WARNING),
+            (Some("skipping"), "", '-', CUSTOM_MUTED),
+            (Some("cancel"), "", '✕', CUSTOM_MUTED),
+            (None, "SUCCESS", '✓', CUSTOM_SUCCESS),
+            (None, "FAILURE", '✕', CUSTOM_DANGER),
+            (None, "PENDING", '○', CUSTOM_WARNING),
+            (None, "NEUTRAL", '-', CUSTOM_MUTED),
+            (None, "CANCELLED", '✕', CUSTOM_MUTED),
+        ];
+        for (bucket, state, glyph, color) in cases {
+            let (icon, style) = icon_for(bucket, state, theme);
+            assert_eq!(icon, glyph, "{bucket:?} {state}");
+            assert_eq!(style.fg, Some(color), "{bucket:?} {state}");
+        }
+        // No token is white, so the unknown mark stays white.
+        let (icon, style) = icon_for(None, "WEIRD", theme);
+        assert_eq!(icon, '?');
+        assert_eq!(style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn check_status_icons_keep_their_glyphs_and_drop_color_under_no_color() {
+        let theme = no_color_theme();
+        for (bucket, state, glyph) in [
+            (Some("pass"), "", '✓'),
+            (Some("fail"), "", '✕'),
+            (Some("pending"), "", '○'),
+            (Some("skipping"), "", '-'),
+        ] {
+            let (icon, style) = icon_for(bucket, state, theme);
+            assert_eq!(icon, glyph, "{bucket:?}");
+            assert_eq!(style.fg, None, "{bucket:?}");
+        }
+    }
+
+    #[test]
+    fn check_workflow_and_duration_take_the_theme_muted_color() {
+        let theme = theme_with(ThemeColors {
+            muted: Some(CUSTOM_MUTED),
+            ..ThemeColors::default()
+        });
+        let buf = render_checks_themed(
+            vec![timed_check("lint", "flow-token", "2024-01-01T00:00:45Z")],
+            theme,
+        );
+        for needle in ["flow-token", "45s"] {
+            let cells = crate::ui::test_buffer::cells_of(&buf, needle).expect(needle);
+            assert!(
+                cells.iter().all(|cell| cell.fg == CUSTOM_MUTED),
+                "{needle}: {cells:?}"
+            );
+        }
     }
 
     #[test]
@@ -317,7 +407,12 @@ mod tests {
     }
 
     fn render_checks(checks: Vec<CheckItem>) -> Buffer {
+        render_checks_themed(checks, Theme::test_default())
+    }
+
+    fn render_checks_themed(checks: Vec<CheckItem>, theme: Theme) -> Buffer {
         let mut app = App::new_for_test();
+        app.theme = theme;
         app.state = AppState::ChecksList;
         app.chk.checks_loading = false;
         app.chk.checks_target_pr = Some(42);

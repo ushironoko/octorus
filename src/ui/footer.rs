@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders},
 };
@@ -89,7 +89,7 @@ fn footer_status_line<'a>(
     if app.is_pending_approve_confirmation() {
         Line::from(Span::styled(
             app.approve_confirmation_footer_text(),
-            Style::default().fg(Color::Yellow),
+            app.theme.warning.style(),
         ))
     } else if app.is_submitting_comment()
         || app.is_issue_comment_submitting()
@@ -97,7 +97,7 @@ fn footer_status_line<'a>(
     {
         Line::from(Span::styled(
             format!("{} Submitting...", app.spinner_char()),
-            Style::default().fg(Color::Yellow),
+            app.theme.warning.style(),
         ))
     } else if let Some(toast) = &app.cmt.submission_result {
         let mut spans = vec![toast_span(toast, app.theme)];
@@ -109,7 +109,7 @@ fn footer_status_line<'a>(
         }
         Line::from(spans)
     } else if let Some(message) = app.pr_open_notice() {
-        Line::from(Span::styled(message, Style::default().fg(Color::Yellow)))
+        Line::from(Span::styled(message, app.theme.warning.style()))
     } else {
         let first = match op_toast {
             Some(toast) => toast_span(toast, app.theme),
@@ -124,7 +124,7 @@ fn footer_status_line<'a>(
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 format!("{} Searching...", app.spinner_char()),
-                Style::default().fg(Color::Yellow),
+                app.theme.warning.style(),
             ));
         }
         Line::from(spans)
@@ -157,7 +157,7 @@ fn toast_span(toast: &Toast, theme: Theme) -> Span<'static> {
 fn shell_input_line(app: &App) -> Option<Line<'static>> {
     let shell = app.shell_state.as_ref()?;
     matches!(shell.phase, ShellPhase::Input)
-        .then(|| render_shell_input_line(&shell.input, shell.cursor))
+        .then(|| render_shell_input_line(&shell.input, shell.cursor, app.theme))
 }
 
 /// The badge that names the config warnings, e.g. `1 config warning (? for details)`.
@@ -216,16 +216,16 @@ pub fn build_footer_block_with_focus(
             .as_ref()
             .is_some_and(|s| matches!(s.phase, ShellPhase::Input));
     let style = if shell_input_active {
-        Style::default().fg(Color::Cyan)
+        app.theme.accent.style()
     } else if app.is_pending_approve_confirmation() {
-        Style::default().fg(Color::Yellow)
+        app.theme.warning.style()
     } else {
         base_style
     };
     Block::default().borders(Borders::ALL).border_style(style)
 }
 
-fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
+fn render_shell_input_line(input: &str, cursor: usize, theme: Theme) -> Line<'static> {
     let chars: Vec<char> = input.chars().collect();
     let before: String = chars[..cursor.min(chars.len())].iter().collect();
     let cursor_char: String = if cursor < chars.len() {
@@ -240,12 +240,7 @@ fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
     };
 
     Line::from(vec![
-        Span::styled(
-            "! ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("! ", theme.warning.bold()),
         Span::raw(before),
         Span::styled(
             cursor_char,
@@ -261,8 +256,9 @@ mod tests {
     use crate::app::{App, AppState, PrOpenSource, ReviewAction, Toast};
     use crate::config::ThemeColors;
     use crate::keybinding::{KeyBinding, KeySequence};
-    use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
+    use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_ACCENT, CUSTOM_WARNING};
     use insta::assert_snapshot;
+    use ratatui::style::Color;
 
     const HELP: &str = "j/k: move | q: quit";
 
@@ -545,6 +541,138 @@ mod tests {
         let progress = progress_span(&line);
         assert_eq!(progress.style.fg, None);
         assert!(progress.content.contains("Loading comments..."));
+    }
+
+    fn warning_theme() -> Theme {
+        theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            accent: Some(CUSTOM_ACCENT),
+            ..ThemeColors::default()
+        })
+    }
+
+    #[test]
+    fn footer_notices_take_the_theme_warning_color() {
+        use crate::app::SymbolSearchState;
+
+        let mut app = App::new_for_test();
+        app.theme = warning_theme();
+        app.set_pending_approve_body_for_test(Some(String::new()));
+        let approve = build_footer_line(&app, HELP);
+        assert_eq!(approve.spans[0].style.fg, Some(CUSTOM_WARNING));
+        assert!(approve.spans[0].content.contains("confirm approve"));
+
+        app.set_pending_approve_body_for_test(None);
+        app.set_submitting_for_test(true);
+        let submitting = build_footer_line(&app, HELP);
+        assert_eq!(submitting.spans[0].style.fg, Some(CUSTOM_WARNING));
+        assert!(submitting.spans[0].content.contains("Submitting..."));
+
+        app.set_submitting_for_test(false);
+        app.state = AppState::FileList;
+        app.pr_number = Some(123);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        let notice = build_footer_line(&app, HELP);
+        assert_eq!(notice.spans[0].style.fg, Some(CUSTOM_WARNING));
+        assert!(notice.spans[0].content.contains("inferred"));
+
+        app.pr_open_source = PrOpenSource::Standard;
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        app.symbol_search = SymbolSearchState::Searching {
+            receiver: rx,
+            origin_file_index: 0,
+        };
+        let searching = build_footer_line(&app, HELP);
+        let search = searching
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Searching..."))
+            .expect("search notice");
+        assert_eq!(search.style.fg, Some(CUSTOM_WARNING));
+    }
+
+    #[test]
+    fn footer_notices_keep_their_words_and_drop_color_under_no_color() {
+        let mut app = App::new_for_test();
+        app.theme = no_color_theme();
+        app.set_pending_approve_body_for_test(Some(String::new()));
+        let approve = build_footer_line(&app, HELP);
+        assert_eq!(approve.spans[0].style.fg, None);
+        assert!(!approve.spans[0].content.is_empty());
+
+        app.set_pending_approve_body_for_test(None);
+        app.set_submitting_for_test(true);
+        let submitting = build_footer_line(&app, HELP);
+        assert_eq!(submitting.spans[0].style.fg, None);
+        assert!(submitting.spans[0].content.contains("Submitting..."));
+    }
+
+    #[test]
+    fn shell_prompt_takes_the_theme_warning_color_and_stays_bold() {
+        use crate::app::ShellState;
+
+        let mut app = App::new_for_test();
+        app.theme = warning_theme();
+        app.shell_state = Some(ShellState {
+            input: "ls".to_string(),
+            cursor: 0,
+            phase: ShellPhase::Input,
+            scroll_offset: 0,
+        });
+        let line = build_footer_line(&app, HELP);
+        assert_eq!(line.spans[0].content.as_ref(), "! ");
+        assert_eq!(line.spans[0].style.fg, Some(CUSTOM_WARNING));
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+
+        app.theme = no_color_theme();
+        let plain = build_footer_line(&app, HELP);
+        assert_eq!(plain.spans[0].content.as_ref(), "! ");
+        assert_eq!(plain.spans[0].style.fg, None);
+        assert!(plain.spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    fn border_cell(block: ratatui::widgets::Block<'static>) -> ratatui::buffer::Cell {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal = Terminal::new(TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(block, frame.area()))
+            .unwrap();
+        terminal.backend().buffer()[(0, 0)].clone()
+    }
+
+    #[test]
+    fn footer_border_takes_accent_for_shell_input_and_warning_for_approve() {
+        use crate::app::ShellState;
+
+        let mut app = App::new_for_test();
+        app.theme = warning_theme();
+        app.shell_state = Some(ShellState {
+            input: String::new(),
+            cursor: 0,
+            phase: ShellPhase::Input,
+            scroll_offset: 0,
+        });
+        let shell = border_cell(build_footer_block(&app));
+        assert_eq!(shell.fg, CUSTOM_ACCENT);
+
+        app.shell_state = None;
+        app.set_pending_approve_body_for_test(Some(String::new()));
+        let approve = border_cell(build_footer_block(&app));
+        assert_eq!(approve.fg, CUSTOM_WARNING);
+
+        app.theme = no_color_theme();
+        app.shell_state = Some(ShellState {
+            input: String::new(),
+            cursor: 0,
+            phase: ShellPhase::Input,
+            scroll_offset: 0,
+        });
+        let plain = border_cell(build_footer_block(&app));
+        assert_eq!(plain.fg, Color::Reset);
     }
 
     fn with_config_warnings(app: &mut App, count: usize) {
