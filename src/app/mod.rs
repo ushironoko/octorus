@@ -66,6 +66,11 @@ mod shell_command;
 mod symbol;
 #[cfg(test)]
 mod tests;
+mod toast;
+#[cfg(test)]
+mod toast_tests;
+
+pub(crate) use toast::{Toast, ToastKind};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -803,8 +808,7 @@ impl App {
         } else {
             "Zen mode: OFF"
         };
-        self.cmt.submission_result = Some((true, msg.to_string()));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::success(msg.to_string()));
     }
 
     pub(crate) fn enter_diff_from_file_list(&mut self) {

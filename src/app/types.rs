@@ -17,6 +17,8 @@ use crate::github::{
 };
 use crate::loader::SingleFileDiffResult;
 
+pub(crate) use super::toast::{Toast, ToastKind};
+
 /// Position of a comment within the diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommentPosition {
@@ -200,6 +202,35 @@ impl AppState {
                 | Self::RepoBrowseFile
                 | Self::RepoBrowseGraph
         )
+    }
+
+    /// Whether this screen's footer shows the submission notice. A screen with
+    /// its own footer or status line does not, so a notice held while it is up
+    /// is not on screen there (#250). Exhaustive on purpose: a new screen must
+    /// say which it is.
+    pub(crate) fn draws_submission_toast(self) -> bool {
+        match self {
+            Self::PullRequestList
+            | Self::FileList
+            | Self::DiffView
+            | Self::CommentList
+            | Self::SplitViewFileList
+            | Self::SplitViewDiff
+            | Self::IssueList
+            | Self::IssueDetail
+            | Self::IssueCommentList
+            | Self::GitOpsSplitTree
+            | Self::GitOpsSplitDiff
+            | Self::Cockpit => true,
+            Self::TextInput
+            | Self::Help
+            | Self::AiRally
+            | Self::PrDescription
+            | Self::ChecksList
+            | Self::RepoBrowseTree
+            | Self::RepoBrowseFile
+            | Self::RepoBrowseGraph => false,
+        }
     }
 
     /// Whether this is a Repository Browser screen.
@@ -1074,8 +1105,8 @@ pub struct GitOpsState {
     pub(crate) diff_patch_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
     /// Git operation result receiver (stage/unstage/discard/commit undo etc.).
     pub(crate) op_receiver: Option<mpsc::Receiver<Result<String, String>>>,
-    /// Operation result message with auto-clear timer.
-    pub op_message: Option<(String, std::time::Instant)>,
+    /// Result of the last git operation, shown in the tree pane's footer.
+    pub op_message: Option<Toast>,
     pub undo_stack: Vec<UndoAction>,
     pub pending_confirm: Option<PendingGitOpsConfirm>,
     /// Status-updated flag used to trigger prefetch.
@@ -1317,8 +1348,8 @@ pub struct CommentState {
     pub(crate) comment_submit_receiver: super::PrReceiver<crate::loader::CommentSubmitResult>,
     pub comment_submitting: bool,
     pub(crate) review_submit_receiver: super::PrReceiver<crate::loader::ReviewSubmitResult>,
-    pub submission_result: Option<(bool, String)>,
-    pub(crate) submission_result_time: Option<std::time::Instant>,
+    /// Result of the last comment or review action, shown in the footer.
+    pub submission_result: Option<Toast>,
     pub(crate) pending_approve_body: Option<String>,
     pub selected_inline_comment: usize,
     /// The viewer's pending review as last read (issue #169).

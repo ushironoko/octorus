@@ -180,7 +180,6 @@ impl App {
         });
 
         self.cmt.submission_result = None;
-        self.cmt.submission_result_time = None;
         self.symbol_search = super::SymbolSearchState::Searching {
             receiver: rx,
             origin_file_index,

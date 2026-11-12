@@ -1242,7 +1242,13 @@ fn test_toggle_auto_focus() {
     app.toggle_auto_focus();
     assert!(app.local_auto_focus);
     assert!(app.cmt.submission_result.is_some());
-    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("ON"));
+    assert!(app
+        .cmt
+        .submission_result
+        .as_ref()
+        .unwrap()
+        .message()
+        .contains("ON"));
 
     app.toggle_auto_focus();
     assert!(!app.local_auto_focus);
@@ -1251,7 +1257,7 @@ fn test_toggle_auto_focus() {
         .submission_result
         .as_ref()
         .unwrap()
-        .1
+        .message()
         .contains("OFF"));
 }
 
@@ -1267,7 +1273,7 @@ fn test_toggle_local_mode_blocks_during_ai_rally() {
         .submission_result
         .as_ref()
         .unwrap()
-        .1
+        .message()
         .contains("Cannot"));
 }
 
@@ -1370,7 +1376,7 @@ fn test_toggle_local_mode_pr_to_local_and_back() {
         .submission_result
         .as_ref()
         .unwrap()
-        .1
+        .message()
         .contains("Local"));
 
     // Local → PR: original_pr_number で復帰
@@ -1378,7 +1384,13 @@ fn test_toggle_local_mode_pr_to_local_and_back() {
     assert!(!app.local_mode);
     assert_eq!(app.pr_number, Some(42));
     assert_eq!(app.state, AppState::FileList);
-    assert!(app.cmt.submission_result.as_ref().unwrap().1.contains("PR"));
+    assert!(app
+        .cmt
+        .submission_result
+        .as_ref()
+        .unwrap()
+        .message()
+        .contains("PR"));
 }
 
 /// PR→Local→PR の2往復でも pr_number が安定すること
@@ -1494,7 +1506,7 @@ fn test_toggle_local_mode_from_local_startup_with_dummy_repo() {
             .submission_result
             .as_ref()
             .unwrap()
-            .1
+            .message()
             .contains("No PR"),
         "should show error message"
     );
@@ -1724,8 +1736,8 @@ async fn test_poll_mark_viewed_applies_unmark() {
         panic!("Expected DataState::Loaded");
     }
 
-    let (success, msg) = app.cmt.submission_result.unwrap();
-    assert!(success);
+    let (kind, msg) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
     assert!(msg.contains("unviewed"));
 }
 
@@ -2059,7 +2071,8 @@ fn test_enter_multiline_selection_rejected_on_header() {
 }
 
 /// A throwaway terminal for handlers that take one but do not draw.
-fn test_terminal() -> ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
+pub(crate) fn test_terminal(
+) -> ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
     ratatui::Terminal::with_options(
         ratatui::backend::CrosstermBackend::new(std::io::stdout()),
         ratatui::TerminalOptions {
@@ -3018,15 +3031,13 @@ fn test_key_event_kind_press_only() {
 fn test_pending_approve_choice_q_cancels_and_clears_prompt() {
     let mut app = App::new_for_test();
     app.cmt.pending_approve_body = Some(String::new());
-    app.cmt.submission_result = Some((true, "placeholder".to_string()));
-    app.cmt.submission_result_time = Some(Instant::now());
+    app.cmt.submission_result = Some(Toast::success("placeholder".to_string()));
 
     let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('q')));
 
     assert_eq!(choice, PendingApproveChoice::Cancel);
     assert!(app.cmt.pending_approve_body.is_none());
     assert!(app.cmt.submission_result.is_none());
-    assert!(app.cmt.submission_result_time.is_none());
 }
 
 #[test]
@@ -5989,11 +6000,11 @@ fn comment_on_no_newline_marker_says_why_it_cannot_take_one() {
 
     assert!(app.input_mode.is_none());
     assert_eq!(
-        app.cmt.submission_result,
-        Some((
-            false,
+        shown_toast(&app.cmt.submission_result),
+        (
+            ToastKind::Failure,
             "Move to a code line to comment: this marker has no line".to_string()
-        ))
+        )
     );
 }
 
@@ -6914,8 +6925,8 @@ async fn test_poll_comment_submit_success() {
     app.poll_comment_submit_updates();
 
     assert!(!app.cmt.comment_submitting);
-    let (success, _) = app.cmt.submission_result.unwrap();
-    assert!(success);
+    let (kind, _) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
 }
 
 #[tokio::test]
@@ -6935,8 +6946,8 @@ async fn test_poll_comment_submit_failure() {
     app.poll_comment_submit_updates();
 
     assert!(!app.cmt.comment_submitting);
-    let (success, msg) = app.cmt.submission_result.unwrap();
-    assert!(!success);
+    let (kind, msg) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(msg.contains("network error"));
 }
 
@@ -6958,8 +6969,8 @@ async fn test_poll_comment_submit_added_to_pending_review_is_reported_as_unpubli
 
     assert!(!app.cmt.comment_submitting);
     assert!(app.cmt.comment_submit_receiver.is_none());
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
     insta::assert_snapshot!(message, @"Added to pending review");
 }
 
@@ -6990,8 +7001,8 @@ async fn test_inline_comment_add_timeout_reports_unknown_and_frees_the_review_su
 
     assert!(!app.cmt.comment_submitting);
     assert!(app.cmt.comment_submit_receiver.is_none());
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(
         message,
         @"Comment result unknown: check GitHub before adding it again. Text kept."
@@ -7018,8 +7029,8 @@ fn test_enter_comment_input_is_refused_while_a_review_is_publishing() {
 
     assert!(app.input_mode.is_none());
     assert_eq!(app.state, AppState::DiffView);
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(message, @"Wait for the review to finish submitting");
 }
 
@@ -7067,8 +7078,8 @@ fn test_enter_multiline_comment_input_is_refused_while_a_review_is_publishing() 
     assert_eq!(app.state, AppState::DiffView);
     // The range is kept, so it can be commented once the publish has finished.
     assert!(app.multiline_selection.is_some());
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(message, @"Wait for the review to finish submitting");
 }
 
@@ -7109,8 +7120,8 @@ fn test_review_submit_waits_for_an_inflight_comment() {
 
     assert!(!app.review_submit_may_start());
 
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(
         message,
         @"Wait for the comment to be added, then submit the review"
@@ -7135,11 +7146,14 @@ async fn poll_review_submit_until_done(app: &mut App) {
     }
 }
 
-fn review_toast(app: &App) -> (bool, String) {
-    app.cmt
-        .submission_result
-        .clone()
-        .expect("review submit sets a toast")
+/// The kind and text of the footer toast. Panics when no toast is shown.
+fn shown_toast(slot: &Option<Toast>) -> (ToastKind, String) {
+    let toast = slot.as_ref().expect("a footer toast is shown");
+    (toast.kind(), toast.message().to_string())
+}
+
+fn review_toast(app: &App) -> (ToastKind, String) {
+    shown_toast(&app.cmt.submission_result)
 }
 
 #[tokio::test]
@@ -7156,8 +7170,8 @@ async fn test_review_submit_success_toast_names_each_action() {
         poll_review_submit_until_done(&mut app).await;
 
         assert!(!app.is_submitting_review());
-        let (success, message) = review_toast(&app);
-        assert!(success);
+        let (kind, message) = review_toast(&app);
+        assert_eq!(kind, ToastKind::Success);
         messages.push(message);
     }
     insta::assert_snapshot!(messages.join("\n"), @"
@@ -7177,8 +7191,8 @@ async fn test_review_submit_failure_shows_error_and_unlocks() {
     poll_review_submit_until_done(&mut app).await;
 
     assert!(!app.is_submitting_review());
-    let (success, message) = review_toast(&app);
-    assert!(!success);
+    let (kind, message) = review_toast(&app);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(message, @"Review failed: network error");
 }
 
@@ -7193,8 +7207,8 @@ async fn test_review_submit_disconnect_reports_unknown_result() {
     app.poll_review_submit_updates();
 
     assert!(!app.is_submitting_review());
-    let (success, message) = review_toast(&app);
-    assert!(!success);
+    let (kind, message) = review_toast(&app);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(!message.contains("Review failed"));
     insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
 
@@ -7274,8 +7288,8 @@ async fn test_review_submit_result_names_its_pr_after_a_pr_switch() {
     poll_review_submit_until_done(&mut app).await;
 
     assert!(!app.is_submitting_review());
-    let (success, message) = review_toast(&app);
-    assert!(success);
+    let (kind, message) = review_toast(&app);
+    assert_eq!(kind, ToastKind::Success);
     insta::assert_snapshot!(message, @"#1 Review submitted (approved)");
 }
 
@@ -7293,8 +7307,8 @@ async fn test_wait_for_review_submit_returns_once_the_submit_lands() {
         .await;
 
     assert!(outcome.stderr_line().is_none());
-    let (success, message) = review_toast(&app);
-    assert!(success);
+    let (kind, message) = review_toast(&app);
+    assert_eq!(kind, ToastKind::Success);
     insta::assert_snapshot!(message, @"Review submitted (approved)");
 }
 
@@ -7378,8 +7392,8 @@ async fn test_review_submit_task_panic_reports_unknown_result() {
     app.poll_review_submit_updates();
 
     assert!(!app.is_submitting_review());
-    let (success, message) = review_toast(&app);
-    assert!(!success);
+    let (kind, message) = review_toast(&app);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(!message.contains("Review failed"));
     insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
 }
@@ -7436,8 +7450,8 @@ async fn test_review_submit_timeout_reports_unknown_and_drops_the_submit() {
 
     assert_eq!(outcome, ReviewWaitOutcome::Unknown { pr_number: 1 });
     assert!(!app.is_submitting_review());
-    let (success, message) = review_toast(&app);
-    assert!(!success);
+    let (kind, message) = review_toast(&app);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(!message.contains("Review failed"));
     insta::assert_snapshot!(message, @"Review result unknown: check GitHub before resubmitting");
     insta::assert_snapshot!(outcome.stderr_line().unwrap(), @"#1 Review result unknown: check GitHub before resubmitting");
@@ -7484,8 +7498,8 @@ async fn test_poll_mark_viewed_success() {
     if let DataState::Loaded { files, .. } = &app.data_state {
         assert!(files[0].viewed);
     }
-    let (success, _) = app.cmt.submission_result.unwrap();
-    assert!(success);
+    let (kind, _) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
 }
 
 #[tokio::test]
@@ -7518,8 +7532,8 @@ async fn test_poll_mark_viewed_error() {
 
     app.poll_mark_viewed_updates();
 
-    let (success, msg) = app.cmt.submission_result.unwrap();
-    assert!(!success);
+    let (kind, msg) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(msg.contains("API error"));
 }
 
@@ -8214,8 +8228,8 @@ fn test_symbol_search_not_found_resets_to_idle() {
     app.poll_symbol_search_updates();
     assert!(matches!(app.symbol_search, SymbolSearchState::Idle));
     assert!(app.cmt.submission_result.is_some());
-    let (success, msg) = app.cmt.submission_result.unwrap();
-    assert!(!success);
+    let (kind, msg) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(msg.contains("not found"));
 }
 
@@ -8236,8 +8250,8 @@ fn test_symbol_search_failed_resets_to_idle() {
     app.poll_symbol_search_updates();
     assert!(matches!(app.symbol_search, SymbolSearchState::Idle));
     assert!(app.cmt.submission_result.is_some());
-    let (success, msg) = app.cmt.submission_result.unwrap();
-    assert!(!success);
+    let (kind, msg) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     assert!(msg.contains("Search failed"));
 }
 
@@ -8246,13 +8260,11 @@ fn test_symbol_search_clears_submission_result_on_new_search() {
     let mut app = App::new_for_test();
 
     // Set an old submission_result
-    app.cmt.submission_result = Some((true, "old result".to_string()));
-    app.cmt.submission_result_time = Some(std::time::Instant::now());
+    app.cmt.submission_result = Some(Toast::success("old result".to_string()));
 
     // Simulate starting a new search (same as what jump_to_symbol_definition_async does)
     let (_tx, rx) = tokio::sync::mpsc::channel(1);
     app.cmt.submission_result = None;
-    app.cmt.submission_result_time = None;
     app.symbol_search = SymbolSearchState::Searching {
         receiver: rx,
         origin_file_index: 0,
@@ -8262,7 +8274,6 @@ fn test_symbol_search_clears_submission_result_on_new_search() {
         app.cmt.submission_result.is_none(),
         "submission_result should be cleared when a new search starts"
     );
-    assert!(app.cmt.submission_result_time.is_none());
     assert!(app.symbol_search.is_searching());
 }
 
@@ -8272,7 +8283,6 @@ fn test_symbol_search_is_searching_visible_when_no_submission_result() {
 
     // Old submission_result cleared, new search started
     app.cmt.submission_result = None;
-    app.cmt.submission_result_time = None;
 
     let (_tx, rx) = tokio::sync::mpsc::channel(1);
     app.symbol_search = SymbolSearchState::Searching {
@@ -8641,7 +8651,7 @@ fn make_changed_file(name: &str) -> ChangedFile {
     }
 }
 
-fn make_app_with_files(filenames: &[&str]) -> App {
+pub(crate) fn make_app_with_files(filenames: &[&str]) -> App {
     let config = Config::default();
     let (mut app, _tx) =
         App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
@@ -10491,8 +10501,8 @@ fn esc_keeps_an_unsent_comment_for_its_line() {
 
     assert!(app.input_mode.is_none());
     assert_eq!(app.state, AppState::DiffView);
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
     insta::assert_snapshot!(message, @"Draft kept for this line: c restores it");
 
     // Reopening the same line gives back the text exactly, trailing newline included.
@@ -10571,8 +10581,8 @@ async fn a_refused_add_gives_its_text_back_on_the_same_line() {
     });
     wait_for_inline_add(&mut app).await;
 
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(
         message,
         @"Submit your pending review first (older commit), then retry. Text kept."
@@ -10595,8 +10605,8 @@ async fn an_unconfirmed_add_is_unknown_and_keeps_its_text() {
     });
     wait_for_inline_add(&mut app).await;
 
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(
         message,
         @"Comment result unknown: check GitHub before adding it again. Text kept."
@@ -10617,8 +10627,8 @@ async fn a_failed_add_keeps_its_text_with_the_error() {
     });
     wait_for_inline_add(&mut app).await;
 
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(message, @"Failed: HTTP 502: Bad Gateway");
     app.enter_comment_input();
     assert_eq!(app.input_text_area.content(), "try again");
@@ -10647,8 +10657,8 @@ async fn an_add_whose_task_vanishes_is_unknown_and_keeps_its_text() {
     app.poll_comment_submit_updates();
 
     assert!(!app.cmt.comment_submitting);
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(
         message,
         @"Comment result unknown: check GitHub before adding it again. Text kept."
@@ -10667,8 +10677,8 @@ async fn a_successful_add_keeps_nothing() {
     start_inline_add_for_test(&mut app, "landed", async { Ok(()) });
     wait_for_inline_add(&mut app).await;
 
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
     insta::assert_snapshot!(message, @"Added to pending review");
     assert!(app.cmt.pending_add.is_none());
     assert!(app.cmt.saved_drafts.is_empty());
@@ -10735,8 +10745,8 @@ async fn a_successful_add_raises_the_count_before_the_reload_returns() {
         "the reload is in flight"
     );
     assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(3));
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Success);
     insta::assert_snapshot!(message, @"Added to pending review");
 
     // The reload reads the four drafts GitHub holds, and its count replaces the guess.
@@ -10745,8 +10755,8 @@ async fn a_successful_add_raises_the_count_before_the_reload_returns() {
     wait_for_review_comments(&mut app).await;
     assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(4));
     assert_eq!(
-        app.cmt.submission_result,
-        Some((true, "Added to pending review".to_string()))
+        shown_toast(&app.cmt.submission_result),
+        (ToastKind::Success, "Added to pending review".to_string())
     );
     assert!(
         gh.calls().contains("/reviews/77/comments"),
@@ -10788,8 +10798,8 @@ fn an_inline_composer_is_refused_while_an_add_is_in_flight() {
 
     assert!(app.input_mode.is_none());
     assert_eq!(app.state, AppState::DiffView);
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(message, @"Wait for the comment to be added");
 }
 
@@ -10802,8 +10812,8 @@ fn reply_is_refused_on_a_pending_draft() {
     app.enter_reply_input();
 
     assert!(app.input_mode.is_none());
-    let (success, message) = app.cmt.submission_result.clone().unwrap();
-    assert!(!success);
+    let (kind, message) = shown_toast(&app.cmt.submission_result);
+    assert_eq!(kind, ToastKind::Failure);
     insta::assert_snapshot!(
         message,
         @"Submit the pending review before replying to a draft"

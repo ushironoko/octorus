@@ -1,7 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
 use crossterm::event::{self, KeyEvent};
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::cache::{
@@ -82,9 +81,9 @@ impl App {
                 DraftKind::Comment => self.config.keybindings.comment.display(),
                 DraftKind::Suggestion => self.config.keybindings.suggestion.display(),
             };
-            self.cmt.submission_result =
-                Some((true, format!("Draft kept for this line: {key} restores it")));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::success(format!(
+                "Draft kept for this line: {key} restores it"
+            )));
         }
         self.input_mode = None;
         self.input_text_area.clear();
@@ -265,9 +264,10 @@ impl App {
         {
             Ok(comments) => comments,
             Err(e) => {
-                self.cmt.submission_result =
-                    Some((false, format!("Failed to load local comments: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::failure(format!(
+                    "Failed to load local comments: {}",
+                    e
+                )));
                 return;
             }
         };
@@ -325,14 +325,13 @@ impl App {
             })
             .cloned()
         else {
-            self.cmt.submission_result = Some((false, "Reply target not found".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure("Reply target not found".to_string()));
             return;
         };
 
         let Some(line_number) = parent.line else {
-            self.cmt.submission_result = Some((false, "Reply target has no line".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result =
+                Some(Toast::failure("Reply target has no line".to_string()));
             return;
         };
 
@@ -340,9 +339,10 @@ impl App {
         {
             Ok(comments) => comments,
             Err(e) => {
-                self.cmt.submission_result =
-                    Some((false, format!("Failed to load local comments: {}", e)));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::failure(format!(
+                    "Failed to load local comments: {}",
+                    e
+                )));
                 return;
             }
         };
@@ -373,9 +373,10 @@ impl App {
         if let Err(e) =
             save_local_review_comments(&self.repo, self.working_dir.as_deref(), &comments)
         {
-            self.cmt.submission_result =
-                Some((false, format!("Failed to save local comments: {}", e)));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure(format!(
+                "Failed to save local comments: {}",
+                e
+            )));
             return;
         }
 
@@ -404,8 +405,7 @@ impl App {
         if tokio::runtime::Handle::try_current().is_ok() {
             self.ensure_diff_cache();
         }
-        self.cmt.submission_result = Some((true, success_message.to_string()));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::success(success_message.to_string()));
     }
 
     fn local_comment_author() -> String {
@@ -447,7 +447,6 @@ impl App {
         } else if self.matches_single_key(key, &self.config.keybindings.quit) {
             self.cmt.pending_approve_body = None;
             self.cmt.submission_result = None;
-            self.cmt.submission_result_time = None;
             PendingApproveChoice::Cancel
         } else {
             PendingApproveChoice::Ignore

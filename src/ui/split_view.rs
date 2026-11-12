@@ -603,7 +603,7 @@ fn render_diff_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AppState, DataState};
+    use crate::app::{App, AppState, DataState, Toast};
     use crate::github::{Branch, ChangedFile, PullRequest, User};
     use crate::ui::test_buffer::screen_text;
     use ratatui::backend::TestBackend;
@@ -720,7 +720,7 @@ mod tests {
     fn a_status_message_is_drawn_once_whichever_pane_has_focus() {
         let mut app = loaded_app();
         let focused_file_help = crate::ui::footer::footer_hint_back(&app.config.keybindings);
-        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.submission_result = Some(Toast::success("Added to pending review".to_string()));
 
         for (state, file_pane_help) in [
             (AppState::SplitViewFileList, focused_file_help.as_str()),

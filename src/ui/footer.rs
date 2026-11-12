@@ -4,7 +4,8 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 
-use crate::app::{App, ShellPhase};
+use super::theme::Theme;
+use crate::app::{App, ShellPhase, Toast, ToastKind};
 use crate::config::KeybindingsConfig;
 
 pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
@@ -56,10 +57,30 @@ pub fn build_footer_line_with_focus<'a>(
     help_text: &'a str,
     is_focused: bool,
 ) -> Line<'a> {
-    with_config_warning(app, footer_status_line(app, help_text, is_focused))
+    build_footer_line_with_op_toast(app, None, help_text, is_focused)
 }
 
-fn footer_status_line<'a>(app: &'a App, help_text: &'a str, is_focused: bool) -> Line<'a> {
+/// Like [`build_footer_line_with_focus`], but a git operation's notice takes the
+/// help text's place. That slot comes last, so the screen's other notices still
+/// come first.
+pub fn build_footer_line_with_op_toast<'a>(
+    app: &'a App,
+    op_toast: Option<&Toast>,
+    help_text: &'a str,
+    is_focused: bool,
+) -> Line<'a> {
+    with_config_warning(
+        app,
+        footer_status_line(app, op_toast, help_text, is_focused),
+    )
+}
+
+fn footer_status_line<'a>(
+    app: &'a App,
+    op_toast: Option<&Toast>,
+    help_text: &'a str,
+    is_focused: bool,
+) -> Line<'a> {
     if is_focused {
         if let Some(line) = shell_input_line(app) {
             return line;
@@ -78,16 +99,8 @@ fn footer_status_line<'a>(app: &'a App, help_text: &'a str, is_focused: bool) ->
             format!("{} Submitting...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
         ))
-    } else if let Some((success, message)) = &app.cmt.submission_result {
-        let (icon, color) = if *success {
-            ("\u{2713}", Color::Green)
-        } else {
-            ("\u{2717}", Color::Red)
-        };
-        let mut spans = vec![Span::styled(
-            format!("{} {}", icon, message),
-            Style::default().fg(color),
-        )];
+    } else if let Some(toast) = &app.cmt.submission_result {
+        let mut spans = vec![toast_span(toast, app.theme)];
         // A reload that follows a result is still running. Its progress is shown
         // beside the result, so the wait is visible while the message is up.
         if app.cmt.comments_loading {
@@ -98,7 +111,11 @@ fn footer_status_line<'a>(app: &'a App, help_text: &'a str, is_focused: bool) ->
     } else if let Some(message) = app.pr_open_notice() {
         Line::from(Span::styled(message, Style::default().fg(Color::Yellow)))
     } else {
-        let mut spans = vec![Span::raw(help_text)];
+        let first = match op_toast {
+            Some(toast) => toast_span(toast, app.theme),
+            None => Span::raw(help_text),
+        };
+        let mut spans = vec![first];
         if app.cmt.comments_loading {
             spans.push(Span::raw("  "));
             spans.push(loading_comments_span(app));
@@ -124,6 +141,16 @@ pub fn build_pane_help_line<'a>(app: &'a App, help_text: &'a str, is_focused: bo
         }
     }
     Line::from(Span::raw(help_text))
+}
+
+/// A notice as one footer span: `✓ text` in the theme's success colour, or `✗ text`
+/// in its danger colour.
+fn toast_span(toast: &Toast, theme: Theme) -> Span<'static> {
+    let (icon, ink) = match toast.kind() {
+        ToastKind::Success => ("\u{2713}", theme.success),
+        ToastKind::Failure => ("\u{2717}", theme.danger),
+    };
+    Span::styled(format!("{icon} {}", toast.message()), ink.style())
 }
 
 /// The shell command prompt, while the shell is open for input.
@@ -231,7 +258,7 @@ fn render_shell_input_line(input: &str, cursor: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AppState, PrOpenSource, ReviewAction};
+    use crate::app::{App, AppState, PrOpenSource, ReviewAction, Toast};
     use crate::config::ThemeColors;
     use crate::keybinding::{KeyBinding, KeySequence};
     use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
@@ -297,7 +324,7 @@ mod tests {
     #[test]
     fn test_success_result_shows_checkmark_only() {
         let mut app = App::new_for_test();
-        app.cmt.submission_result = Some((true, "Submitted".to_string()));
+        app.cmt.submission_result = Some(Toast::success("Submitted".to_string()));
         let line = build_footer_line(&app, HELP);
         let text = line_to_string(&line);
         assert!(text.contains("\u{2713}"));
@@ -313,7 +340,7 @@ mod tests {
     #[test]
     fn test_error_result_shows_cross_only() {
         let mut app = App::new_for_test();
-        app.cmt.submission_result = Some((false, "Failed: network error".to_string()));
+        app.cmt.submission_result = Some(Toast::failure("Failed: network error".to_string()));
         let line = build_footer_line(&app, HELP);
         let text = line_to_string(&line);
         assert!(text.contains("\u{2717}"));
@@ -471,7 +498,7 @@ mod tests {
     #[test]
     fn test_success_result_shows_the_reload_progress_beside_it() {
         let mut app = App::new_for_test();
-        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.submission_result = Some(Toast::success("Added to pending review".to_string()));
         app.cmt.comments_loading = true;
 
         let line = build_footer_line(&app, HELP);
@@ -494,7 +521,7 @@ mod tests {
     #[test]
     fn reload_progress_takes_the_theme_warning_color() {
         let mut app = App::new_for_test();
-        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.submission_result = Some(Toast::success("Added to pending review".to_string()));
         app.cmt.comments_loading = true;
         app.theme = theme_with(ThemeColors {
             warning: Some(CUSTOM_WARNING),
@@ -509,7 +536,7 @@ mod tests {
     #[test]
     fn reload_progress_keeps_its_words_and_drops_its_color_under_no_color() {
         let mut app = App::new_for_test();
-        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.submission_result = Some(Toast::success("Added to pending review".to_string()));
         app.cmt.comments_loading = true;
         app.theme = no_color_theme();
 
@@ -553,13 +580,32 @@ mod tests {
     fn config_warning_badge_stays_in_front_of_a_transient_result() {
         let mut app = App::new_for_test();
         with_config_warnings(&mut app, 1);
-        app.cmt.submission_result = Some((true, "Added to pending review".to_string()));
+        app.cmt.submission_result = Some(Toast::success("Added to pending review".to_string()));
 
         let text = line_to_string(&build_footer_line(&app, HELP));
 
         assert_eq!(
             text,
             "1 config warning (? for details)  \u{2713} Added to pending review"
+        );
+    }
+
+    #[test]
+    fn config_warning_badge_stays_in_front_of_an_op_toast() {
+        let mut app = App::new_for_test();
+        with_config_warnings(&mut app, 1);
+        let toast = Toast::failure("Push failed: rejected".to_string());
+
+        let text = line_to_string(&build_footer_line_with_op_toast(
+            &app,
+            Some(&toast),
+            HELP,
+            true,
+        ));
+
+        assert_eq!(
+            text,
+            "1 config warning (? for details)  \u{2717} Push failed: rejected"
         );
     }
 }

@@ -23,6 +23,8 @@ pub mod theme;
 
 #[cfg(test)]
 mod test_buffer;
+#[cfg(test)]
+mod toast_footer_tests;
 
 use anyhow::Result;
 use crossterm::{

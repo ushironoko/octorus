@@ -502,11 +502,10 @@ impl App {
         let seed_review = match self.build_seed_review_from_local_comments() {
             Ok(seed_review) => seed_review,
             Err(e) => {
-                self.cmt.submission_result = Some((
-                    false,
-                    format!("Failed to load local comments for AI Rally: {}", e),
-                ));
-                self.cmt.submission_result_time = Some(std::time::Instant::now());
+                self.cmt.submission_result = Some(Toast::failure(format!(
+                    "Failed to load local comments for AI Rally: {}",
+                    e
+                )));
                 return;
             }
         };

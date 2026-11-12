@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use notify::Watcher;
 
@@ -42,9 +41,9 @@ impl App {
     pub(crate) fn toggle_local_mode(&mut self) {
         // フォアグラウンド Rally 中はブロック
         if matches!(self.state, AppState::AiRally) {
-            self.cmt.submission_result =
-                Some((false, "Cannot toggle mode during AI Rally".to_string()));
-            self.cmt.submission_result_time = Some(Instant::now());
+            self.cmt.submission_result = Some(Toast::failure(
+                "Cannot toggle mode during AI Rally".to_string(),
+            ));
             return;
         }
 
@@ -55,8 +54,7 @@ impl App {
 
             if !has_valid_repo && !has_original_pr {
                 // GitHub repo を検出できず、復帰先 PR もない → 切替不可
-                self.cmt.submission_result = Some((false, "No PR to return to".to_string()));
-                self.cmt.submission_result_time = Some(Instant::now());
+                self.cmt.submission_result = Some(Toast::failure("No PR to return to".to_string()));
                 return;
             }
 
@@ -79,7 +77,7 @@ impl App {
                 self.reload_pr_list();
             }
 
-            self.cmt.submission_result = Some((true, "Switched to PR mode".to_string()));
+            self.cmt.submission_result = Some(Toast::success("Switched to PR mode".to_string()));
         } else {
             // PR → Local: PR状態を破棄 → Local モードをクリーン起動
             self.reset_view_state();
@@ -108,10 +106,8 @@ impl App {
             self.activate_watcher();
             self.retry_load();
 
-            self.cmt.submission_result = Some((true, "Switched to Local mode".to_string()));
+            self.cmt.submission_result = Some(Toast::success("Switched to Local mode".to_string()));
         }
-
-        self.cmt.submission_result_time = Some(Instant::now());
     }
 
     /// ビュー状態を全リセット（モード切替の共通前処理）
@@ -288,7 +284,6 @@ impl App {
         } else {
             "Auto-focus: OFF"
         };
-        self.cmt.submission_result = Some((true, msg.to_string()));
-        self.cmt.submission_result_time = Some(Instant::now());
+        self.cmt.submission_result = Some(Toast::success(msg.to_string()));
     }
 }
