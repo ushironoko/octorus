@@ -419,7 +419,7 @@ UI colors for lists, pane focus, and status text. This palette does not change s
 
 A non-empty `NO_COLOR` environment variable turns these colors off and ignores `[theme.colors]`.
 
-An invalid color or preset warns and falls back to the default, or to the global value when the global file still has that key, and does not stop startup.
+An invalid color or preset warns and falls back to the default, or to the global value when the global file still has that key, and does not stop startup. The warning is printed to stderr, shown as a badge in the footer (`? for details`), and listed in full on the Config tab of the help screen (`?`).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1114,6 +1114,8 @@ go_to_definition = ["g", "d"]
 | **List Operations** |||
 | `filter` | `Space /` | Keyword filter (PR list / file list) |
 | `shell_command` | `!` | Execute shell command |
+
+A binding that conflicts with another binding is reported when octorus starts, the same way as an invalid `[theme]` value: a line on stderr, a badge in the footer (`? for details`), and an entry on the Config tab of the help screen (`?`).
 
 ### Keyword Filter
 

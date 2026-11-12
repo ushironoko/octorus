@@ -747,6 +747,11 @@ impl App {
         self.state = AppState::Help;
         self.help_scroll_offset = 0;
         self.config_scroll_offset = 0;
+        // The config warnings are listed on the Config tab, and the footer badge points
+        // there, so `?` opens on that tab while there are warnings.
+        if !self.config.load_warnings.is_empty() {
+            self.help_tab = HelpTab::Config;
+        }
     }
 
     pub(crate) fn open_checks_list(&mut self, pr_number: u32) {

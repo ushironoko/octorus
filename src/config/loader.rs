@@ -165,6 +165,20 @@ fn warning_path(path: &Path) -> String {
     }
 }
 
+/// Escapes control characters, so a warning drawn in the TUI cannot move the cursor or
+/// change the colors. Other text is kept as it is.
+fn escape_control_chars(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_control() {
+            escaped.extend(ch.escape_default());
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
 fn theme_value_text(value: &toml::Value) -> String {
     match value {
         toml::Value::String(text) => text.clone(),
@@ -352,20 +366,20 @@ impl Config {
         config.ai.max_iterations = config.ai.max_iterations.min(MAX_ITERATIONS_LIMIT);
         config.ai.timeout_secs = config.ai.timeout_secs.min(MAX_TIMEOUT_SECS_LIMIT);
 
-        // Validate keybindings and warn on conflicts
-        for warning in theme_warnings {
+        // Keep the warnings for the TUI, and print each one to stderr for runs without it.
+        // tracing writes debug.log only when OR_DEBUG=1.
+        let mut warnings = theme_warnings;
+        if let Err(errors) = config.keybindings.validate() {
+            warnings.extend(errors);
+        }
+        config.load_warnings = warnings
+            .iter()
+            .map(|warning| escape_control_chars(warning))
+            .collect();
+        for warning in &config.load_warnings {
             #[allow(clippy::print_stderr)]
             {
                 eprintln!("Warning: {}", warning);
-            }
-        }
-        if let Err(errors) = config.keybindings.validate() {
-            for error in errors {
-                // Print on the terminal. tracing writes debug.log only when OR_DEBUG=1.
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!("Warning: {}", error);
-                }
             }
         }
 

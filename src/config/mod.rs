@@ -59,6 +59,11 @@ pub struct Config {
     /// Computed once at load time to avoid per-frame disk I/O.
     #[serde(skip)]
     pub local_overrides: HashSet<String>,
+    /// Warnings from loading the config files: malformed values that fell back to the
+    /// default or the global value, and keybinding conflicts. They are printed to stderr
+    /// at load time and kept here so the TUI can show them. Computed once at load time.
+    #[serde(skip)]
+    pub load_warnings: Vec<String>,
 }
 
 #[cfg(test)]
@@ -367,6 +372,82 @@ mod tests {
         assert_eq!(
             config.theme.colors.accent,
             Some(ratatui::style::Color::Green)
+        );
+    }
+
+    #[test]
+    fn load_warnings_keep_the_theme_warning_for_the_tui() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        fs::write(&global, "theme = 5\n").unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            config.load_warnings,
+            vec![format!(
+                "{}: theme: expected a table, got integer \"5\" (using default)",
+                global.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn load_warnings_keep_the_keybinding_conflicts_for_the_tui() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        fs::write(
+            &global,
+            "[keybindings]\ncomment = \"x\"\nsuggestion = \"x\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            config.load_warnings,
+            vec![String::from(
+                "duplicate keybinding: 'suggestion' and 'comment' both use x"
+            )]
+        );
+    }
+
+    #[test]
+    fn load_warnings_are_empty_for_a_clean_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        fs::write(&global, "[diff]\ntheme = \"Nord\"\n").unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+
+        assert!(
+            config.load_warnings.is_empty(),
+            "{:?}",
+            config.load_warnings
+        );
+    }
+
+    #[test]
+    fn load_warnings_escape_control_characters_before_the_tui_shows_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        fs::write(
+            &global,
+            "[keybindings]\ncomment = \"\\u001b\"\nsuggestion = \"\\u001b\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            config.load_warnings,
+            vec![String::from(
+                "duplicate keybinding: 'suggestion' and 'comment' both use \\u{1b}"
+            )]
         );
     }
 

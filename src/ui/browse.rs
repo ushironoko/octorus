@@ -1006,11 +1006,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
+    let line = Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)));
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(Color::DarkGray),
-        ))),
+        Paragraph::new(super::footer::with_config_warning(app, line)),
         area,
     );
 }
@@ -4488,6 +4486,21 @@ mod tests {
         }
         let out = render_at(&mut app, 80, 10);
         assert!(out.contains("No definition found"), "{out}");
+    }
+
+    #[test]
+    fn test_footer_leads_with_the_config_warning_badge_and_keeps_the_hints() {
+        let mut app = app_with_browse(&["src/app.rs"]);
+        app.config.load_warnings = vec![String::from(
+            "/c/config.toml: theme: expected a table, got integer \"5\" (using default)",
+        )];
+        let out = render_at(&mut app, 120, 10);
+        assert!(
+            out.lines()
+                .any(|line| line.contains("1 config warning (? for details)")
+                    && line.contains("filter")),
+            "the badge is not drawn in front of the hints:\n{out}"
+        );
     }
 
     #[test]
