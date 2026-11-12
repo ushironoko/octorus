@@ -690,6 +690,19 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Open issue list",
             fmt_key(&kb.issue_list.display(), key_width)
         )),
+        // `G` opens git ops here. `jump_to_last` is the same default key in other views.
+        Line::from(format!(
+            "{}  Open git ops",
+            fmt_key(&kb.git_ops.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open Repository Browser",
+            fmt_key(&kb.repo_browse.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Execute shell command",
+            fmt_key(&kb.shell_command.display(), key_width)
+        )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1247,7 +1260,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Focus diff pane",
-            fmt_key("Enter (file), l", key_width)
+            fmt_key(&key_label(&[&kb.open_panel, &kb.move_right]), key_width)
         )),
         Line::from(format!(
             "{}  Close git ops",
@@ -1259,9 +1272,19 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move commit selection",
-            fmt_key("j/k, Down/Up", key_width)
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
-        Line::from(format!("{}  Jump to first/last", fmt_key("g/G", key_width))),
+        Line::from(format!(
+            "{}  Jump to first/last",
+            fmt_key(
+                &format!(
+                    "{}/{}",
+                    kb.jump_to_first.display(),
+                    kb.jump_to_last.display()
+                ),
+                key_width
+            )
+        )),
         Line::from(format!(
             "{}  Undo last operation",
             fmt_key(&kb.git_ops_undo.display(), key_width)
@@ -1272,11 +1295,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Switch to tree pane",
-            fmt_key("Tab", key_width)
+            fmt_key(&kb.tab_switch.display(), key_width)
         )),
         Line::from(format!(
             "{}  Focus diff pane (commit diff)",
-            fmt_key("Enter, l", key_width)
+            fmt_key(&key_label(&[&kb.open_panel, &kb.move_right]), key_width)
         )),
         Line::from(vec![Span::styled(
             "  Diff Focus:",
@@ -1304,89 +1327,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
                 key_width
             )
         )),
-        Line::from("  h/Left/Esc      Back to previous pane"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Git Ops View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
         Line::from(format!(
-            "{}  Open git ops (from File List)",
-            fmt_key(&kb.git_ops.display(), key_width)
+            "{}  Back to previous pane",
+            fmt_key(&key_label(&[&kb.move_left, &kb.quit]), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Tree Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
-        Line::from(format!(
-            "{}  Move selection",
-            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
-        )),
-        Line::from(format!(
-            "{}  Stage/unstage file or directory",
-            fmt_key(&kb.git_ops_stage.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Stage all files",
-            fmt_key(&kb.git_ops_stage_all.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Discard changes",
-            fmt_key(&kb.git_ops_discard.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Commit (opens editor)",
-            fmt_key(&kb.git_ops_commit.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Undo last operation",
-            fmt_key(&kb.git_ops_undo.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Refresh status",
-            fmt_key(&kb.refresh.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Toggle directory expand/collapse",
-            fmt_key(&kb.open_panel.display(), key_width)
-        )),
-        Line::from(format!(
-            "{}  Focus diff pane",
-            fmt_key(&format!("{}, l", kb.tab_switch.display()), key_width)
-        )),
-        Line::from(format!(
-            "{}  Close git ops",
-            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
-        )),
-        Line::from(vec![Span::styled(
-            "  Diff Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
-        Line::from(format!(
-            "{}  Scroll diff",
-            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
-        )),
-        Line::from(format!(
-            "{}  Page scroll (also J/K)",
-            fmt_key(
-                &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
-                key_width
-            )
-        )),
-        Line::from(format!(
-            "{}  Jump to first/last",
-            fmt_key(
-                &format!(
-                    "{}/{}",
-                    kb.jump_to_first.display(),
-                    kb.jump_to_last.display()
-                ),
-                key_width
-            )
-        )),
-        Line::from("  h/Left/Esc      Back to previous pane"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "PR List View",
@@ -1889,6 +1833,171 @@ mod tests {
             pr_list.iter().any(|row| row.trim_start().starts_with("x ")
                 && row.ends_with("Retry after a failed load")),
             "{pr_list:#?}"
+        );
+    }
+
+    fn file_list_help(kb: &KeybindingsConfig) -> Vec<String> {
+        let rows = help_rows(kb);
+        help_section(&rows, "File List View", "Split View").to_vec()
+    }
+
+    fn git_ops_help(kb: &KeybindingsConfig) -> Vec<String> {
+        let rows = help_rows(kb);
+        help_section(&rows, "Git Ops View", "PR List View").to_vec()
+    }
+
+    /// File List documents `G` as git ops, plus repo browse and the shell key.
+    /// `jump_to_last` shares that default key and does not run on this screen.
+    fn assert_file_list_help_keys(kb: &KeybindingsConfig) {
+        let file_list = file_list_help(kb);
+        for row in &file_list {
+            assert!(
+                !row.contains("Jump to first") && !row.contains("Jump to last"),
+                "file list help still lists jump to first/last: {row}"
+            );
+        }
+        for (key, label) in [
+            (kb.git_ops.display(), "Open git ops"),
+            (kb.repo_browse.display(), "Open Repository Browser"),
+            (kb.shell_command.display(), "Execute shell command"),
+        ] {
+            assert!(
+                file_list.iter().any(|row| {
+                    help_key_column(row) == Some(key.as_str()) && row.ends_with(label)
+                }),
+                "file list help missing {key:?} {label:?}: {file_list:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_list_help_lists_git_ops_browse_and_shell_not_jump() {
+        let kb = KeybindingsConfig::default();
+        assert_file_list_help_keys(&kb);
+        let file_list = file_list_help(&kb);
+        for (key, label) in [
+            ("G", "Open git ops"),
+            ("b", "Open Repository Browser"),
+            ("!", "Execute shell command"),
+        ] {
+            assert!(
+                file_list
+                    .iter()
+                    .any(|row| help_key_column(row) == Some(key) && row.ends_with(label)),
+                "file list help missing {key:?} {label:?}: {file_list:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_list_help_follows_configured_git_ops_browse_and_shell_keys() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        let kb = KeybindingsConfig {
+            git_ops: KeySequence::single(KeyBinding::char('X')),
+            repo_browse: KeySequence::single(KeyBinding::char('B')),
+            shell_command: KeySequence::single(KeyBinding::char('@')),
+            ..KeybindingsConfig::default()
+        };
+        assert_file_list_help_keys(&kb);
+        let file_list = file_list_help(&kb);
+        assert!(
+            file_list
+                .iter()
+                .all(|row| help_key_column(row) != Some("G")),
+            "file list help kept the default git ops key: {file_list:#?}"
+        );
+    }
+
+    fn assert_git_ops_help_uses_bindings(kb: &KeybindingsConfig) {
+        let rows = help_rows(kb);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.as_str() == "Git Ops View")
+                .count(),
+            1,
+            "help should have one Git Ops section:\n{}",
+            rows.join("\n")
+        );
+        let section = git_ops_help(kb);
+        let jump = format!(
+            "{}/{}",
+            kb.jump_to_first.display(),
+            kb.jump_to_last.display()
+        );
+        let move_keys = key_label(&[&kb.move_down, &kb.move_up]);
+        let focus_diff = key_label(&[&kb.open_panel, &kb.move_right]);
+        let back = key_label(&[&kb.move_left, &kb.quit]);
+        let tab = kb.tab_switch.display();
+
+        let jump_rows: Vec<_> = section
+            .iter()
+            .filter(|row| row.ends_with("Jump to first/last"))
+            .collect();
+        assert_eq!(jump_rows.len(), 2, "{section:#?}");
+        assert!(
+            jump_rows
+                .iter()
+                .all(|row| help_key_column(row) == Some(jump.as_str())),
+            "git ops jump keys should be {jump}: {section:#?}"
+        );
+        for (key, label) in [
+            (tab.as_str(), "Switch to commits pane"),
+            (tab.as_str(), "Switch to tree pane"),
+            (move_keys.as_str(), "Move commit selection"),
+            (focus_diff.as_str(), "Focus diff pane"),
+            (focus_diff.as_str(), "Focus diff pane (commit diff)"),
+            (back.as_str(), "Back to previous pane"),
+        ] {
+            assert!(
+                section
+                    .iter()
+                    .any(|row| help_key_column(row) == Some(key) && row.ends_with(label)),
+                "git ops help missing {key:?} {label:?}: {section:#?}"
+            );
+        }
+        for stale in [
+            "g/G",
+            "Tab, l",
+            "Enter (file), l",
+            "j/k, Down/Up",
+            "h/Left/Esc",
+        ] {
+            assert!(
+                section
+                    .iter()
+                    .all(|row| help_key_column(row) != Some(stale)),
+                "git ops help kept hardcoded {stale:?}: {section:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_git_ops_help_is_one_section_whose_keys_follow_bindings() {
+        use crate::keybinding::{KeyBinding, KeySequence, NamedKey};
+
+        assert_git_ops_help_uses_bindings(&KeybindingsConfig::default());
+
+        let kb = KeybindingsConfig {
+            jump_to_first: KeySequence::double(KeyBinding::char('z'), KeyBinding::char('z')),
+            jump_to_last: KeySequence::single(KeyBinding::char('Z')),
+            tab_switch: KeySequence::single(KeyBinding::named(NamedKey::BackTab)),
+            move_down: KeySequence::single(KeyBinding::char('n')),
+            move_up: KeySequence::single(KeyBinding::char('p')),
+            open_panel: KeySequence::single(KeyBinding::char('o')),
+            move_right: KeySequence::single(KeyBinding::char('l')),
+            move_left: KeySequence::single(KeyBinding::char('h')),
+            quit: KeySequence::single(KeyBinding::char('q')),
+            ..KeybindingsConfig::default()
+        };
+        assert_git_ops_help_uses_bindings(&kb);
+        let section = git_ops_help(&kb);
+        assert!(
+            section.iter().all(|row| {
+                let key = help_key_column(row);
+                key != Some("Tab") && key != Some("g/G")
+            }),
+            "git ops help kept a hardcoded key: {section:#?}"
         );
     }
 

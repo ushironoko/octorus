@@ -418,16 +418,6 @@ impl App {
             }
         }
 
-        // G: Jump to last (shared across tree/flat modes)
-        if self.matches_single_key(&key, &kb.jump_to_last) {
-            if tree_active {
-                self.file_tree_jump_to_last();
-            } else if !self.files().is_empty() {
-                self.selected_file = self.files().len().saturating_sub(1);
-            }
-            return Ok(());
-        }
-
         // Open split view (Enter, Right arrow, or l)
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
@@ -1032,10 +1022,6 @@ impl App {
 
     pub(crate) fn file_tree_jump_to_first(&mut self) {
         self.with_file_tree(|t| t.jump_to_first());
-    }
-
-    pub(crate) fn file_tree_jump_to_last(&mut self) {
-        self.with_file_tree(|t| t.jump_to_last());
     }
 
     /// Handle Enter in tree mode.
