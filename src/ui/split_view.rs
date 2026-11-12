@@ -148,7 +148,7 @@ fn render_file_list_pane(
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
-            let items = build_file_list_items_ref(&filtered, &app.cmt.file_comment_counts);
+            let items = build_file_list_items_ref(&filtered, &app.cmt.file_comment_counts, theme);
             let detail = format!("({display_count}/{total_files})");
             let block = pane_block(
                 theme,
@@ -199,7 +199,9 @@ fn render_file_list_pane(
         let items: Vec<ListItem> = tree
             .visible_rows
             .iter()
-            .map(|row| build_tree_row_item(files, row, &app.cmt.file_comment_counts, col_width))
+            .map(|row| {
+                build_tree_row_item(files, row, &app.cmt.file_comment_counts, col_width, theme)
+            })
             .collect();
 
         let detail = format!("({total_files}) [tree]");
@@ -241,7 +243,7 @@ fn render_file_list_pane(
             );
         }
     } else {
-        let items = build_file_list_items(files, &app.cmt.file_comment_counts);
+        let items = build_file_list_items(files, &app.cmt.file_comment_counts, theme);
         let detail = format!("({total_files})");
         let block = pane_block(
             theme,

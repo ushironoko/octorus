@@ -6,7 +6,7 @@ use crate::github::comment::ReviewComment;
 use crate::ui::hit::{HitMap, HitTarget, ListKind, PaneKind, TabGroup};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -152,9 +152,7 @@ fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
         Span::raw(" "),
         Span::styled(
             format!("[Local Comments ({})]{}", count, loading),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            app.theme.warning.bold(),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL).title("octorus"));
@@ -201,7 +199,7 @@ fn render_comment_list_generic<T, F>(
 {
     if loading && comments.is_none() {
         let loading_msg = Paragraph::new(format!("Loading {}...", label))
-            .style(Style::default().fg(Color::Yellow))
+            .style(theme.warning.style())
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(loading_msg, area);
         register_comment_list_hits(hit_map, area, &[], 0);
@@ -210,7 +208,7 @@ fn render_comment_list_generic<T, F>(
 
     let Some(items_data) = comments else {
         let empty = Paragraph::new(format!("No {}", label))
-            .style(Style::default().fg(Color::DarkGray))
+            .style(theme.muted.style())
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(empty, area);
         register_comment_list_hits(hit_map, area, &[], 0);
@@ -219,7 +217,7 @@ fn render_comment_list_generic<T, F>(
 
     if items_data.is_empty() {
         let empty = Paragraph::new(format!("No {} found", label))
-            .style(Style::default().fg(Color::DarkGray))
+            .style(theme.muted.style())
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(empty, area);
         register_comment_list_hits(hit_map, area, &[], 0);
@@ -320,19 +318,15 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .unwrap_or(0);
 
     let review_style = if app.cmt.comment_tab == CommentTab::Review {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        app.theme.warning.bold()
     } else {
-        Style::default().fg(Color::DarkGray)
+        app.theme.muted.style()
     };
 
     let discussion_style = if app.cmt.comment_tab == CommentTab::Discussion {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        app.theme.warning.bold()
     } else {
-        Style::default().fg(Color::DarkGray)
+        app.theme.muted.style()
     };
 
     let loading_indicator = |loading: bool| -> String {
@@ -396,7 +390,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
 
     if app.cmt.comments_loading && comments.is_none() {
         let loading_msg = Paragraph::new("Loading review comments...")
-            .style(Style::default().fg(Color::Yellow))
+            .style(app.theme.warning.style())
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(loading_msg, area);
         return;
@@ -404,7 +398,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
 
     if threads.is_empty() {
         let empty = Paragraph::new("No review comments found")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(app.theme.muted.style())
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(empty, area);
         return;
@@ -499,29 +493,26 @@ fn render_review_thread_list_data_with_hits(
             };
 
             let header_line = Line::from(vec![
-                Span::styled(
-                    format!("@{}", comment.user.login),
-                    Style::default().fg(Color::Cyan),
-                ),
+                Span::styled(format!("@{}", comment.user.login), theme.info.style()),
                 if resolved {
                     Span::raw(" ")
                 } else {
                     Span::raw("")
                 },
                 if resolved {
-                    Span::styled("[resolved]", Style::default().fg(Color::DarkGray))
+                    Span::styled("[resolved]", theme.muted.style())
                 } else {
                     Span::raw("")
                 },
                 pending_comment_tag(comment, theme),
                 Span::raw(" on "),
-                Span::styled(location, Style::default().fg(Color::Green)),
+                Span::styled(location, theme.success.style()),
                 if data.outdated_ids.contains(&comment.id) {
                     Span::styled(" outdated", theme.muted.style())
                 } else {
                     Span::raw("")
                 },
-                Span::styled(reply_info, Style::default().fg(Color::DarkGray)),
+                Span::styled(reply_info, theme.muted.style()),
             ]);
 
             let mut lines = vec![header_line];
@@ -684,7 +675,7 @@ fn render_review_thread_data_with_hits(
             let is_root = i == 0;
             let resolved = resolved_ids.contains(&comment.id);
             let resolved_badge = if resolved {
-                Span::styled(" [resolved]", Style::default().fg(Color::DarkGray))
+                Span::styled(" [resolved]", theme.muted.style())
             } else {
                 Span::raw("")
             };
@@ -692,14 +683,11 @@ fn render_review_thread_data_with_hits(
             let header_line = if is_root {
                 let location = review_location(comment, !hidden_line_ids.contains(&comment.id));
                 Line::from(vec![
-                    Span::styled(
-                        format!("@{}", comment.user.login),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(format!("@{}", comment.user.login), theme.info.style()),
                     resolved_badge,
                     pending_comment_tag(comment, theme),
                     Span::raw(" on "),
-                    Span::styled(location, Style::default().fg(Color::Green)),
+                    Span::styled(location, theme.success.style()),
                     if outdated_ids.contains(&comment.id) {
                         Span::styled(" outdated", theme.muted.style())
                     } else {
@@ -714,14 +702,11 @@ fn render_review_thread_data_with_hits(
                     .unwrap_or(&comment.created_at);
                 Line::from(vec![
                     Span::styled("  ", Style::default()),
-                    Span::styled(
-                        format!("@{}", comment.user.login),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(format!("@{}", comment.user.login), theme.info.style()),
                     resolved_badge,
                     pending_comment_tag(comment, theme),
                     Span::raw("  "),
-                    Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(date.to_string(), theme.muted.style()),
                 ])
             };
 
@@ -809,12 +794,9 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
                 .unwrap_or(&comment.created_at);
 
             let header_line = Line::from(vec![
-                Span::styled(
-                    format!("@{}", comment.user.login),
-                    Style::default().fg(Color::Cyan),
-                ),
+                Span::styled(format!("@{}", comment.user.login), theme.info.style()),
                 Span::raw("  "),
-                Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
+                Span::styled(date.to_string(), theme.muted.style()),
             ]);
 
             let mut lines = vec![header_line];
@@ -826,7 +808,7 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
                     if line_count >= max_preview_lines {
                         lines.push(Line::from(vec![
                             Span::raw("  "),
-                            Span::styled("...", Style::default().fg(Color::DarkGray)),
+                            Span::styled("...", theme.muted.style()),
                         ]));
                         break 'outer;
                     }
@@ -876,12 +858,9 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
         .next()
         .unwrap_or(&comment.created_at);
     let header = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("@{}", comment.user.login),
-            Style::default().fg(Color::Cyan),
-        ),
+        Span::styled(format!("@{}", comment.user.login), app.theme.info.style()),
         Span::raw("  "),
-        Span::styled(date.to_string(), Style::default().fg(Color::DarkGray)),
+        Span::styled(date.to_string(), app.theme.muted.style()),
     ]))
     .block(
         Block::default()
@@ -933,12 +912,18 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::config::ThemeColors;
     use crate::github::comment::{
         CommentPublication, DiscussionComment, ReviewComment, ReviewCommentLocation,
     };
     use crate::github::User;
+    use crate::ui::test_buffer::{
+        cells_of, no_color_theme, theme_with, CUSTOM_INFO, CUSTOM_MUTED, CUSTOM_SUCCESS,
+        CUSTOM_WARNING,
+    };
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
     use ratatui::Terminal;
 
     fn render_full(app: &mut App) -> String {
@@ -1032,8 +1017,7 @@ mod tests {
         ");
     }
 
-    #[test]
-    fn test_with_review_comments() {
+    fn review_thread_app() -> App {
         let mut app = App::new_for_test();
         app.state = crate::app::AppState::CommentList;
         app.cmt.comment_tab = CommentTab::Review;
@@ -1051,7 +1035,79 @@ mod tests {
             location: Default::default(),
         }]);
         app.build_review_threads();
+        app
+    }
 
+    fn render_buf(app: &mut App) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn comment_list_author_location_and_tabs_take_theme_colors() {
+        let mut app = review_thread_app();
+        app.theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            info: Some(CUSTOM_INFO),
+            success: Some(CUSTOM_SUCCESS),
+            muted: Some(CUSTOM_MUTED),
+            ..ThemeColors::default()
+        });
+        let buf = render_buf(&mut app);
+        let tab = cells_of(&buf, "[Review Threads (1)]").expect("selected tab");
+        assert!(
+            tab.iter()
+                .all(|cell| cell.fg == CUSTOM_WARNING && cell.modifier.contains(Modifier::BOLD)),
+            "{tab:?}"
+        );
+        let idle = cells_of(&buf, "[Discussion (0)]").expect("idle tab");
+        assert!(idle.iter().all(|cell| cell.fg == CUSTOM_MUTED), "{idle:?}");
+        let author = cells_of(&buf, "@reviewer1").expect("author");
+        assert!(
+            author.iter().all(|cell| cell.fg == CUSTOM_INFO),
+            "{author:?}"
+        );
+        let location = cells_of(&buf, "src/main.rs:R10").expect("location");
+        assert!(
+            location.iter().all(|cell| cell.fg == CUSTOM_SUCCESS),
+            "{location:?}"
+        );
+    }
+
+    #[test]
+    fn comment_list_colors_drop_under_no_color_and_keep_the_text() {
+        let mut app = review_thread_app();
+        app.theme = no_color_theme();
+        let buf = render_buf(&mut app);
+        let tab = cells_of(&buf, "[Review Threads (1)]").expect("selected tab");
+        assert!(
+            tab.iter()
+                .all(|cell| cell.fg == Color::Reset && cell.modifier.contains(Modifier::BOLD)),
+            "{tab:?}"
+        );
+        let author = cells_of(&buf, "@reviewer1").expect("author");
+        assert!(
+            author.iter().all(|cell| cell.fg == Color::Reset),
+            "{author:?}"
+        );
+        let location = cells_of(&buf, "src/main.rs:R10").expect("location");
+        assert!(
+            location
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.symbol() != " "),
+            "{location:?}"
+        );
+    }
+
+    #[test]
+    fn test_with_review_comments() {
+        let mut app = review_thread_app();
         assert_snapshot!(render_full(&mut app), @"
         ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
         │ [Review Threads (1)]  [Discussion (0)]                                                           │

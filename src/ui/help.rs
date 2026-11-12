@@ -1,6 +1,5 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs},
     Frame,
@@ -134,7 +133,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_keybindings_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let kb = &app.config.keybindings;
-    let help_lines = build_help_lines(kb);
+    let help_lines = build_help_lines(kb, app.theme);
     let total_lines = help_lines.len();
     let content_height = area.height.saturating_sub(2) as usize;
 
@@ -210,9 +209,7 @@ fn config_warning_lines(warnings: &[String], width: usize, theme: Theme) -> Vec<
     if warnings.is_empty() {
         return Vec::new();
     }
-    let header_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
+    let header_style = theme.warning.bold();
     let mut lines = vec![Line::from(Span::styled("Config Warnings", header_style))];
     for warning in warnings {
         for (index, row) in wrap_warning(warning, width.saturating_sub(4))
@@ -237,7 +234,7 @@ fn config_warning_lines(warnings: &[String], width: usize, theme: Theme) -> Vec<
 fn render_config_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let width = usize::from(area.width.saturating_sub(2));
     let mut config_lines = config_warning_lines(&app.config.load_warnings, width, app.theme);
-    config_lines.extend(build_config_lines(&app.config));
+    config_lines.extend(build_config_lines(&app.config, app.theme));
     let total_lines = config_lines.len();
     let content_height = area.height.saturating_sub(2) as usize;
 
@@ -287,13 +284,14 @@ fn render_help_footer(frame: &mut Frame, app: &App, area: Rect) {
     );
     let footer = Paragraph::new(Line::from(Span::styled(
         footer_text,
-        Style::default().fg(Color::DarkGray),
+        app.theme.muted.style(),
     )));
     frame.render_widget(footer, area);
 }
 
 /// Build a config value line with optional "(local)" override marker.
 fn config_value_line(
+    theme: Theme,
     label: &str,
     value: &str,
     key: &str,
@@ -303,14 +301,14 @@ fn config_value_line(
     if overrides.contains(key) {
         Line::from(vec![
             Span::raw(format!("{}{}", fmt_label(label, label_width), value)),
-            Span::styled(" (local)", Style::default().fg(Color::Cyan)),
+            Span::styled(" (local)", theme.info.style()),
         ])
     } else {
         Line::from(format!("{}{}", fmt_label(label, label_width), value))
     }
 }
 
-pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
+pub fn build_config_lines(config: &Config, theme: Theme) -> Vec<Line<'static>> {
     let label_width = 20;
     let overrides = &config.local_overrides;
 
@@ -351,12 +349,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Config Files",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Config Files", theme.warning.bold())]),
         Line::from(format!(
             "{}{}",
             fmt_label("Global", label_width),
@@ -373,105 +366,106 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
             config.project_root.display()
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Diff Settings",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        config_value_line("Theme", &config.diff.theme, "diff.theme", overrides),
+        Line::from(vec![Span::styled("Diff Settings", theme.warning.bold())]),
+        config_value_line(theme, "Theme", &config.diff.theme, "diff.theme", overrides),
         config_value_line(
+            theme,
             "Tab width",
             &config.diff.tab_width.to_string(),
             "diff.tab_width",
             overrides,
         ),
         config_value_line(
+            theme,
             "Background color",
             &config.diff.bg_color.to_string(),
             "diff.bg_color",
             overrides,
         ),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Layout Settings",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Layout Settings", theme.warning.bold())]),
         config_value_line(
+            theme,
             "Left panel width",
             &format!("{}%", config.layout.left_panel_width),
             "layout.left_panel_width",
             overrides,
         ),
         config_value_line(
+            theme,
             "Zen mode",
             &config.layout.zen_mode.to_string(),
             "layout.zen_mode",
             overrides,
         ),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Mouse Settings",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Mouse Settings", theme.warning.bold())]),
         config_value_line(
+            theme,
             "Mouse support",
             &config.mouse.enabled.to_string(),
             "mouse.enabled",
             overrides,
         ),
         config_value_line(
+            theme,
             "Wheel step",
             &config.mouse.wheel_step.to_string(),
             "mouse.wheel_step",
             overrides,
         ),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Editor",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        config_value_line("Editor", &editor_display, "editor", overrides),
+        Line::from(vec![Span::styled("Editor", theme.warning.bold())]),
+        config_value_line(theme, "Editor", &editor_display, "editor", overrides),
         Line::from(""),
         Line::from(vec![Span::styled(
             "AI Rally Settings",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.warning.bold(),
         )]),
-        config_value_line("Reviewer", &config.ai.reviewer, "ai.reviewer", overrides),
-        config_value_line("Reviewee", &config.ai.reviewee, "ai.reviewee", overrides),
         config_value_line(
+            theme,
+            "Reviewer",
+            &config.ai.reviewer,
+            "ai.reviewer",
+            overrides,
+        ),
+        config_value_line(
+            theme,
+            "Reviewee",
+            &config.ai.reviewee,
+            "ai.reviewee",
+            overrides,
+        ),
+        config_value_line(
+            theme,
             "Max iterations",
             &config.ai.max_iterations.to_string(),
             "ai.max_iterations",
             overrides,
         ),
         config_value_line(
+            theme,
             "Timeout (secs)",
             &config.ai.timeout_secs.to_string(),
             "ai.timeout_secs",
             overrides,
         ),
         config_value_line(
+            theme,
             "Auto post",
             &config.ai.auto_post.to_string(),
             "ai.auto_post",
             overrides,
         ),
         config_value_line(
+            theme,
             "Review only",
             &config.ai.review_only.to_string(),
             "ai.review_only",
             overrides,
         ),
         config_value_line(
+            theme,
             "Prompt dir",
             &prompt_dir_display,
             "ai.prompt_dir",
@@ -486,6 +480,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         config.ai.reviewer_additional_tools.join(", ")
     };
     lines.push(config_value_line(
+        theme,
         "Reviewer tools",
         &reviewer_tools_display,
         "ai.reviewer_additional_tools",
@@ -499,6 +494,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         config.ai.reviewee_additional_tools.join(", ")
     };
     lines.push(config_value_line(
+        theme,
         "Reviewee tools",
         &reviewee_tools_display,
         "ai.reviewee_additional_tools",
@@ -512,6 +508,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         config.ai.reviewee_proposal_additional_tools.join(", ")
     };
     lines.push(config_value_line(
+        theme,
         "Proposal tools",
         &proposal_tools_display,
         "ai.reviewee_proposal_additional_tools",
@@ -525,6 +522,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
         crate::config::ProposalPostStrategy::None => "none",
     };
     lines.push(config_value_line(
+        theme,
         "Post proposals",
         post_strategy_display,
         "ai.post_reviewee_proposals",
@@ -534,11 +532,10 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         "Shell Settings",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        theme.warning.bold(),
     )]));
     lines.push(config_value_line(
+        theme,
         "Timeout (secs)",
         &config.shell.timeout_secs.to_string(),
         "shell.timeout_secs",
@@ -548,9 +545,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         "Prompt Resolution",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        theme.warning.bold(),
     )]));
 
     for (filename, source) in prompt_sources {
@@ -572,7 +567,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
     lines
 }
 
-fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
+fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> {
     let key_width = 14; // Width for key column
 
     // Several rows close with Esc as well as the quit key; `key_label` lists it once.
@@ -580,12 +575,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
 
     vec![
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Global",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Global", theme.warning.bold())]),
         Line::from(format!(
             "{}  Show this help",
             fmt_key(&kb.help.display(), key_width)
@@ -599,12 +589,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.quit.display(), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "File List View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("File List View", theme.warning.bold())]),
         Line::from(format!(
             "{}  Move selection",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -705,15 +690,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Split View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Split View", theme.warning.bold())]),
         Line::from(vec![Span::styled(
             "  File List Focus:",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(format!(
             "{}  Move file selection (diff follows)",
@@ -742,10 +722,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Back to file list",
             fmt_key(&key_label(&[&kb.move_left, &kb.quit]), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Diff Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  Diff Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  Scroll diff",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -827,12 +804,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.quit.display(), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Diff View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Diff View", theme.warning.bold())]),
         Line::from(format!(
             "{}  Move line selection",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -905,7 +877,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(vec![Span::styled(
             "  Multiline Select Mode:",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(format!(
             "{}  Extend selection",
@@ -930,7 +902,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(vec![Span::styled(
             "  Comment Panel (focused):",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(format!(
             "{}  Scroll panel",
@@ -977,9 +949,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![Span::styled(
             "Comment List View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.warning.bold(),
         )]),
         Line::from(format!(
             "{}  Switch tab (Review/Discussion)",
@@ -1001,19 +971,14 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Local Mode",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Local Mode", theme.warning.bold())]),
         Line::from(vec![Span::styled(
             "  In local mode, you can leave review comments on your own diff.",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(vec![Span::styled(
             "  Comments persist to disk across sessions.",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(format!(
             "{}  Add comment on diff line",
@@ -1042,9 +1007,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![Span::styled(
             "Input Mode (Comment/Suggestion/Reply)",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.warning.bold(),
         )]),
         Line::from(format!(
             "{}  Submit",
@@ -1053,7 +1016,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from("  Esc             Cancel (comment text kept per line)"),
         Line::from(vec![Span::styled(
             "  Readline-style editing keys:",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from("  Ctrl-A / Ctrl-E    Jump to line start / end"),
         Line::from("  Ctrl-B / Ctrl-F    Move cursor back / forward one char"),
@@ -1064,15 +1027,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from("  Ctrl-U             Kill to start of line"),
         Line::from("  Ctrl-W             Delete previous word"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "AI Rally View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("AI Rally View", theme.warning.bold())]),
         Line::from(vec![Span::styled(
             "  (When AI requests permission or clarification)",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(format!(
             "{}  Grant permission / Answer yes",
@@ -1099,20 +1057,12 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.quit.display(), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Repo Browse",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Repo Browse", theme.warning.bold())]),
         Line::from(format!(
             "{}  Open Repository Browser (from File List)",
             fmt_key(&kb.repo_browse.display(), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Tree Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  Tree Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  Open file / expand directory",
             fmt_key(&kb.open_panel.display(), key_width)
@@ -1121,10 +1071,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Filter paths",
             fmt_key(&kb.filter.display(), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  File Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  File Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  File outline",
             fmt_key(&kb.symbol_outline.display(), key_width)
@@ -1169,10 +1116,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Jump back",
             fmt_key(&kb.jump_back.display(), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Graph Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  Graph Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  Switch imports / imported by",
             fmt_key(
@@ -1204,20 +1148,12 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&format!("Esc / {}", kb.quit.display_primary()), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Git Ops View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Git Ops View", theme.warning.bold())]),
         Line::from(format!(
             "{}  Open git ops (from File List)",
             fmt_key(&kb.git_ops.display(), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Tree Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  Tree Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  Move selection",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -1266,10 +1202,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Close git ops",
             fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Commits Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  Commits Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  Move commit selection",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -1301,10 +1234,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Focus diff pane (commit diff)",
             fmt_key(&key_label(&[&kb.open_panel, &kb.move_right]), key_width)
         )),
-        Line::from(vec![Span::styled(
-            "  Diff Focus:",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(vec![Span::styled("  Diff Focus:", theme.muted.style())]),
         Line::from(format!(
             "{}  Scroll diff",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -1332,12 +1262,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&key_label(&[&kb.move_left, &kb.quit]), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "PR List View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("PR List View", theme.warning.bold())]),
         Line::from(format!(
             "{}  Move selection",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -1380,12 +1305,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Issue List View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Issue List View", theme.warning.bold())]),
         Line::from(format!(
             "{}  Move selection",
             fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
@@ -1425,9 +1345,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![Span::styled(
             "Issue Detail View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.warning.bold(),
         )]),
         Line::from(format!(
             "{}  Scroll body",
@@ -1464,9 +1382,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![Span::styled(
             "Issue Comment List View",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.warning.bold(),
         )]),
         Line::from(format!(
             "{}  Move selection",
@@ -1493,16 +1409,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Available Themes",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Available Themes", theme.warning.bold())]),
         Line::from(format!("  {}", available_themes().join(", "))),
         Line::from(vec![Span::styled(
             "  Set in ~/.config/octorus/config.toml: [diff] theme = \"Dracula\"",
-            Style::default().fg(Color::DarkGray),
+            theme.muted.style(),
         )]),
         Line::from(""),
     ]
@@ -1592,14 +1503,14 @@ mod tests {
     #[test]
     fn test_build_config_lines_does_not_panic() {
         let config = Config::default();
-        let lines = build_config_lines(&config);
+        let lines = build_config_lines(&config, Theme::test_default());
         assert!(!lines.is_empty());
     }
 
     #[test]
     fn test_build_config_lines_contains_sections() {
         let config = Config::default();
-        let lines = build_config_lines(&config);
+        let lines = build_config_lines(&config, Theme::test_default());
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         let joined = text.join("\n");
 
@@ -1611,13 +1522,73 @@ mod tests {
         assert!(joined.contains("Prompt Resolution"));
     }
 
+    fn span_named<'a>(lines: &'a [Line<'a>], needle: &str) -> &'a Span<'a> {
+        lines
+            .iter()
+            .find_map(|line| line.spans.iter().find(|span| span.content.contains(needle)))
+            .unwrap_or_else(|| panic!("missing span {needle}"))
+    }
+
+    #[test]
+    fn help_headings_notes_and_local_marker_take_theme_colors() {
+        use crate::config::ThemeColors;
+        use crate::ui::test_buffer::{theme_with, CUSTOM_INFO, CUSTOM_MUTED, CUSTOM_WARNING};
+        use ratatui::style::Modifier;
+
+        let theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            muted: Some(CUSTOM_MUTED),
+            info: Some(CUSTOM_INFO),
+            ..ThemeColors::default()
+        });
+        let help = build_help_lines(&KeybindingsConfig::default(), theme);
+        let heading = span_named(&help, "Global");
+        assert_eq!(heading.style.fg, Some(CUSTOM_WARNING));
+        assert!(heading.style.add_modifier.contains(Modifier::BOLD));
+        let note = span_named(&help, "File List Focus");
+        assert_eq!(note.style.fg, Some(CUSTOM_MUTED));
+
+        let mut config = Config::default();
+        config.local_overrides.insert("diff.theme".to_string());
+        let rows = build_config_lines(&config, theme);
+        let section = span_named(&rows, "Diff Settings");
+        assert_eq!(section.style.fg, Some(CUSTOM_WARNING));
+        assert!(section.style.add_modifier.contains(Modifier::BOLD));
+        let local = span_named(&rows, "(local)");
+        assert_eq!(local.content.as_ref(), " (local)");
+        assert_eq!(local.style.fg, Some(CUSTOM_INFO));
+    }
+
+    #[test]
+    fn help_headings_notes_and_local_marker_drop_color_under_no_color() {
+        use crate::ui::test_buffer::no_color_theme;
+        use ratatui::style::Modifier;
+
+        let theme = no_color_theme();
+        let help = build_help_lines(&KeybindingsConfig::default(), theme);
+        let heading = span_named(&help, "Global");
+        assert_eq!(heading.content.as_ref(), "Global");
+        assert_eq!(heading.style.fg, None);
+        assert!(heading.style.add_modifier.contains(Modifier::BOLD));
+        let note = span_named(&help, "File List Focus");
+        assert_eq!(note.style.fg, None);
+        assert!(note.style.add_modifier.contains(Modifier::DIM));
+
+        let mut config = Config::default();
+        config.local_overrides.insert("diff.theme".to_string());
+        let rows = build_config_lines(&config, theme);
+        let local = span_named(&rows, "(local)");
+        assert_eq!(local.content.as_ref(), " (local)");
+        assert_eq!(local.style.fg, None);
+    }
+
     #[test]
     fn test_build_help_lines_lists_readline_editing_keys() {
         // The text-input section in the help screen documents the emacs-style
         // editing bindings. Anchor on a few of them so a future refactor of
         // help.rs that drops the section is caught.
         let kb = KeybindingsConfig::default();
-        let lines = build_help_lines(&kb);
+        let lines = build_help_lines(&kb, Theme::test_default());
         let joined: String = lines
             .iter()
             .map(|l| l.to_string())
@@ -1634,7 +1605,7 @@ mod tests {
     #[test]
     fn test_submit_help_says_it_publishes_pending_drafts() {
         let kb = KeybindingsConfig::default();
-        let lines = build_help_lines(&kb);
+        let lines = build_help_lines(&kb, Theme::test_default());
         let texts: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         for label in [
             "Approve PR (publish pending drafts)",
@@ -1668,7 +1639,7 @@ mod tests {
             ..KeybindingsConfig::default()
         };
 
-        let joined = build_help_lines(&kb)
+        let joined = build_help_lines(&kb, Theme::test_default())
             .iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -1681,7 +1652,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_lists_all_blame_navigation_bindings() {
-        let lines = build_help_lines(&KeybindingsConfig::default());
+        let lines = build_help_lines(&KeybindingsConfig::default(), Theme::test_default());
         let joined = lines
             .iter()
             .map(|line| line.to_string())
@@ -1698,7 +1669,7 @@ mod tests {
 
     /// The rows of the keybindings tab as text.
     fn help_rows(kb: &KeybindingsConfig) -> Vec<String> {
-        build_help_lines(kb)
+        build_help_lines(kb, Theme::test_default())
             .iter()
             .map(|line| line.to_string())
             .collect()
@@ -2004,7 +1975,7 @@ mod tests {
     #[test]
     fn test_build_config_lines_shows_default_values() {
         let config = Config::default();
-        let lines = build_config_lines(&config);
+        let lines = build_config_lines(&config, Theme::test_default());
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         let joined = text.join("\n");
 

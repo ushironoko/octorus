@@ -17,6 +17,7 @@ use super::common::{
 use crate::app::{App, TreeRow};
 use crate::github::ChangedFile;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
+use crate::ui::theme::Theme;
 use std::collections::HashMap;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -77,7 +78,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
             let theme = app.theme;
             let attention = app.sole_attention();
-            let items = build_file_list_items_ref(&filtered, &app.cmt.file_comment_counts);
+            let items =
+                build_file_list_items_ref(&filtered, &app.cmt.file_comment_counts, app.theme);
             let detail = format!("({display_count}/{total_files})");
             let block = pane_block(
                 theme,
@@ -128,7 +130,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let items: Vec<ListItem> = tree
             .visible_rows
             .iter()
-            .map(|row| build_tree_row_item(files, row, &app.cmt.file_comment_counts, col_width))
+            .map(|row| {
+                build_tree_row_item(
+                    files,
+                    row,
+                    &app.cmt.file_comment_counts,
+                    col_width,
+                    app.theme,
+                )
+            })
             .collect();
 
         let theme = app.theme;
@@ -174,7 +184,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         let theme = app.theme;
         let attention = app.sole_attention();
-        let items = build_file_list_items(files, &app.cmt.file_comment_counts);
+        let items = build_file_list_items(files, &app.cmt.file_comment_counts, app.theme);
         let detail = format!("({total_files})");
         let block = pane_block(
             theme,
@@ -382,6 +392,7 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
 pub(crate) fn build_file_list_items<'a>(
     files: &'a [ChangedFile],
     comment_counts: &HashMap<String, usize>,
+    theme: Theme,
 ) -> Vec<ListItem<'a>> {
     let max_count = files
         .iter()
@@ -393,7 +404,7 @@ pub(crate) fn build_file_list_items<'a>(
         .iter()
         .map(|file| {
             let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
-            build_file_list_item(file, count, col_width)
+            build_file_list_item(file, count, col_width, theme)
         })
         .collect()
 }
@@ -401,6 +412,7 @@ pub(crate) fn build_file_list_items<'a>(
 pub(crate) fn build_file_list_items_ref<'a>(
     files: &[&'a ChangedFile],
     comment_counts: &HashMap<String, usize>,
+    theme: Theme,
 ) -> Vec<ListItem<'a>> {
     let max_count = files
         .iter()
@@ -412,7 +424,7 @@ pub(crate) fn build_file_list_items_ref<'a>(
         .iter()
         .map(|file| {
             let count = comment_counts.get(&file.filename).copied().unwrap_or(0);
-            build_file_list_item(file, count, col_width)
+            build_file_list_item(file, count, col_width, theme)
         })
         .collect()
 }
@@ -449,14 +461,9 @@ fn build_file_list_item<'a>(
     file: &'a ChangedFile,
     comment_count: usize,
     col_width: usize,
+    theme: Theme,
 ) -> ListItem<'a> {
-    let status_color = match file.status.as_str() {
-        "added" => Color::Green,
-        "removed" => Color::Red,
-        "modified" => Color::Yellow,
-        "copied" => Color::Cyan,
-        _ => Color::White,
-    };
+    let status_style = file_status_style(&file.status, theme);
 
     let status_char = match file.status.as_str() {
         "added" => 'A',
@@ -470,10 +477,7 @@ fn build_file_list_item<'a>(
     let comment_span = build_comment_column(comment_count, col_width);
 
     let spans = vec![
-        Span::styled(
-            format!("[{}]", status_char),
-            Style::default().fg(status_color),
-        ),
+        Span::styled(format!("[{}]", status_char), status_style),
         comment_span,
         if file.viewed {
             Span::styled("✓ ", Style::default().fg(Color::Green))
@@ -487,11 +491,22 @@ fn build_file_list_item<'a>(
     ListItem::new(Line::from(spans))
 }
 
+fn file_status_style(status: &str, theme: Theme) -> Style {
+    match status {
+        "added" => Style::default().fg(Color::Green),
+        "removed" => Style::default().fg(Color::Red),
+        "modified" => theme.warning.style(),
+        "copied" => Style::default().fg(Color::Cyan),
+        _ => Style::default().fg(Color::White),
+    }
+}
+
 pub(crate) fn build_tree_row_item<'a>(
     files: &'a [ChangedFile],
     row: &TreeRow,
     comment_counts: &HashMap<String, usize>,
     col_width: usize,
+    theme: Theme,
 ) -> ListItem<'a> {
     match row {
         TreeRow::Dir {
@@ -523,13 +538,7 @@ pub(crate) fn build_tree_row_item<'a>(
                 .map(|(_, name)| name)
                 .unwrap_or(&file.filename);
 
-            let status_color = match file.status.as_str() {
-                "added" => Color::Green,
-                "removed" => Color::Red,
-                "modified" => Color::Yellow,
-                "copied" => Color::Cyan,
-                _ => Color::White,
-            };
+            let status_style = file_status_style(&file.status, theme);
 
             let status_char = match file.status.as_str() {
                 "added" => 'A',
@@ -545,10 +554,7 @@ pub(crate) fn build_tree_row_item<'a>(
 
             let spans = vec![
                 Span::raw(indent),
-                Span::styled(
-                    format!("[{}]", status_char),
-                    Style::default().fg(status_color),
-                ),
+                Span::styled(format!("[{}]", status_char), status_style),
                 comment_span,
                 if file.viewed {
                     Span::styled("✓ ", Style::default().fg(Color::Green))
@@ -838,6 +844,96 @@ mod pending_header_tests {
             .expect("the note is drawn in the header");
         assert!(
             cells.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{cells:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod file_status_color_tests {
+    use super::*;
+    use crate::config::ThemeColors;
+    use crate::ui::test_buffer::{cells_of, no_color_theme, theme_with, CUSTOM_WARNING};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn changed(status: &str) -> ChangedFile {
+        ChangedFile {
+            filename: "src/lib.rs".to_string(),
+            status: status.to_string(),
+            additions: 3,
+            deletions: 1,
+            patch: None,
+            viewed: false,
+        }
+    }
+
+    fn paint(status: &str, theme: Theme) -> ratatui::buffer::Buffer {
+        let file = changed(status);
+        let items = build_file_list_items(std::slice::from_ref(&file), &HashMap::new(), theme);
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(List::new(items), frame.area());
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn modified_file_status_takes_the_theme_warning_color() {
+        let theme = theme_with(ThemeColors {
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let modified = cells_of(&paint("modified", theme), "[M]").expect("[M]");
+        assert!(
+            modified.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{modified:?}"
+        );
+        // The other letters stay on the colors this change does not own.
+        assert!(cells_of(&paint("added", theme), "[A]")
+            .unwrap()
+            .iter()
+            .all(|cell| cell.fg == Color::Green));
+        assert!(cells_of(&paint("removed", theme), "[D]")
+            .unwrap()
+            .iter()
+            .all(|cell| cell.fg == Color::Red));
+        assert!(cells_of(&paint("copied", theme), "[C]")
+            .unwrap()
+            .iter()
+            .all(|cell| cell.fg == Color::Cyan));
+
+        let file = changed("modified");
+        let row = TreeRow::File { index: 0, depth: 0 };
+        let item =
+            build_tree_row_item(std::slice::from_ref(&file), &row, &HashMap::new(), 1, theme);
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(List::new(vec![item]), frame.area()))
+            .unwrap();
+        let tree = cells_of(terminal.backend().buffer(), "[M]").expect("tree [M]");
+        assert!(
+            tree.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+            "{tree:?}"
+        );
+    }
+
+    #[test]
+    fn modified_file_status_keeps_its_letter_and_drops_color_under_no_color() {
+        let cells = cells_of(&paint("modified", no_color_theme()), "[M]").expect("[M]");
+        assert!(
+            cells.iter().all(|cell| cell.fg == Color::Reset),
+            "{cells:?}"
+        );
+    }
+
+    #[test]
+    fn modified_file_status_stays_yellow_on_the_default_theme() {
+        let cells = cells_of(&paint("modified", Theme::test_default()), "[M]").expect("[M]");
+        assert!(
+            cells.iter().all(|cell| cell.fg == Color::Yellow),
             "{cells:?}"
         );
     }

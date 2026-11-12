@@ -313,8 +313,8 @@ fn build_pr_list_items_ref(
 
             let ci_status = CiStatus::from_rollup(&pr.status_check_rollup);
             let ci_span = match ci_status {
-                CiStatus::Success => Span::styled("  ✓", Style::default().fg(Color::Green)),
-                CiStatus::Failure => Span::styled("  ✕", Style::default().fg(Color::Red)),
+                CiStatus::Success => Span::styled("  ✓", theme.success.style()),
+                CiStatus::Failure => Span::styled("  ✕", theme.danger.style()),
                 CiStatus::Pending => Span::styled("  ○", theme.warning.style()),
                 CiStatus::None => Span::raw(""),
             };
@@ -391,6 +391,83 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    fn rollup(conclusion: Option<&str>) -> Vec<crate::github::StatusCheckRollupItem> {
+        vec![crate::github::StatusCheckRollupItem {
+            type_name: "CheckRun".to_string(),
+            name: Some("ci".to_string()),
+            status: None,
+            conclusion: conclusion.map(str::to_string),
+            context: None,
+            state: None,
+        }]
+    }
+
+    fn ci_dot_cells(
+        conclusion: Option<&str>,
+        theme: Theme,
+        needle: &str,
+    ) -> Vec<ratatui::buffer::Cell> {
+        let mut pr = sample_pr(7, "Theme the dots", "alice");
+        pr.status_check_rollup = rollup(conclusion);
+        let refs = [&pr];
+        let items = build_pr_list_items_ref(&refs, 0, 40, theme);
+        let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(List::new(items), frame.area());
+            })
+            .unwrap();
+        super::super::test_buffer::cells_of(terminal.backend().buffer(), needle)
+            .unwrap_or_else(|| panic!("missing {needle}"))
+    }
+
+    /// The CI dots take the same tokens as the header CI note. Pending already did.
+    #[test]
+    fn pr_list_ci_dots_take_theme_colors() {
+        use crate::config::ThemeColors;
+        use crate::ui::test_buffer::{theme_with, CUSTOM_DANGER, CUSTOM_SUCCESS, CUSTOM_WARNING};
+
+        let theme = theme_with(ThemeColors {
+            success: Some(CUSTOM_SUCCESS),
+            danger: Some(CUSTOM_DANGER),
+            warning: Some(CUSTOM_WARNING),
+            ..ThemeColors::default()
+        });
+        let cases = [
+            (Some("SUCCESS"), "✓", CUSTOM_SUCCESS),
+            (Some("FAILURE"), "✕", CUSTOM_DANGER),
+            (None, "○", CUSTOM_WARNING),
+        ];
+        for (conclusion, glyph, color) in cases {
+            let cells = ci_dot_cells(conclusion, theme, glyph);
+            assert!(
+                cells.iter().all(|cell| cell.fg == color),
+                "{glyph}: {cells:?}"
+            );
+        }
+        // The author stays on its hardcoded cyan. This change is the dots only.
+        let author = ci_dot_cells(Some("SUCCESS"), theme, "by @alice");
+        assert!(
+            author.iter().all(|cell| cell.fg == Color::Cyan),
+            "{author:?}"
+        );
+    }
+
+    #[test]
+    fn pr_list_ci_dots_keep_their_glyphs_and_drop_color_under_no_color() {
+        use crate::ui::test_buffer::no_color_theme;
+
+        let theme = no_color_theme();
+        for (conclusion, glyph) in [(Some("SUCCESS"), "✓"), (Some("FAILURE"), "✕"), (None, "○")]
+        {
+            let cells = ci_dot_cells(conclusion, theme, glyph);
+            assert!(
+                cells.iter().all(|cell| cell.fg == Color::Reset),
+                "{glyph}: {cells:?}"
+            );
+        }
     }
 
     #[test]
