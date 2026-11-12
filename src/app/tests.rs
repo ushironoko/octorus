@@ -8978,7 +8978,7 @@ fn test_tree_jump_to_first_last() {
     app.toggle_file_tree();
 
     // jump to last
-    app.file_tree_jump_to_last();
+    app.file_tree_state.as_mut().unwrap().jump_to_last();
     let tree = app.file_tree_state.as_ref().unwrap();
     assert_eq!(tree.selected_row, tree.row_count() - 1);
 
