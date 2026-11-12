@@ -10,7 +10,9 @@ use ratatui::{
 };
 
 use super::chrome::{pane_block, PaneTitle};
-use super::common::{build_pending_review_span, pending_comment_tag, render_rally_status_bar};
+use super::common::{
+    build_pending_review_span, build_pr_info, pending_comment_tag, render_rally_status_bar,
+};
 use super::diff_view;
 use super::file_list::{build_file_list_items, build_file_list_items_ref, build_tree_row_item};
 use super::theme::{Attention, SplitAttention, Theme};
@@ -98,14 +100,21 @@ fn render_file_list_pane(
         .constraints(constraints)
         .split(area);
 
-    let pr_info = match &app.data_state {
-        DataState::Loaded { pr, .. } => {
-            format!("PR #{}: {}", pr.number, pr.title)
+    // Local mode shares the file list's wording (`[LOCAL] Local HEAD diff`).
+    // A loaded PR keeps `PR #n: title` — the author suffix the file list adds
+    // is clipped by this pane.
+    let pr_info = if app.is_local_mode() {
+        build_pr_info(app)
+    } else {
+        match &app.data_state {
+            DataState::Loaded { pr, .. } => {
+                format!("PR #{}: {}", pr.number, pr.title)
+            }
+            _ => match app.pr_number {
+                Some(n) => format!("PR #{}", n),
+                None => "PR".to_string(),
+            },
         }
-        _ => match app.pr_number {
-            Some(n) => format!("PR #{}", n),
-            None => "PR".to_string(),
-        },
     };
 
     let mut header_block = pane_block(theme, PaneTitle::AsIs("octorus"), attention);
@@ -711,6 +720,88 @@ mod tests {
             "dim title missing:\n{dim}"
         );
         assert!(!dim.contains("▶ FILES"), "dim title drew an arrow:\n{dim}");
+    }
+
+    fn loaded_local_app(auto_focus: bool) -> App {
+        let mut app = loaded_app();
+        app.set_local_mode(true);
+        app.set_local_auto_focus(auto_focus);
+        if let DataState::Loaded { pr, .. } = &mut app.data_state {
+            pr.number = 0;
+            pr.title = "Local HEAD diff".to_string();
+        }
+        app.state = AppState::SplitViewFileList;
+        app
+    }
+
+    fn draw_file_list(app: &mut App) -> String {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::file_list::render(frame, app))
+            .unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    /// The file list header comes from `build_pr_info`. The split view used to
+    /// format the loaded PR itself, so the synthetic local PR (number 0) read
+    /// `PR #0: Local HEAD diff`.
+    #[test]
+    fn local_mode_split_header_matches_the_file_list() {
+        for (auto_focus, expected) in [
+            (false, "[LOCAL] Local HEAD diff"),
+            (true, "[LOCAL AF] Local HEAD diff"),
+        ] {
+            let mut app = loaded_local_app(auto_focus);
+            assert_eq!(crate::ui::common::build_pr_info(&app), expected);
+
+            let split = draw(&mut app);
+            assert!(
+                split.contains(expected),
+                "auto_focus={auto_focus}:\n{split}"
+            );
+            assert!(
+                !split.contains("PR #0"),
+                "auto_focus={auto_focus} still says PR #0:\n{split}"
+            );
+
+            let list = draw_file_list(&mut app);
+            assert!(
+                list.contains(expected),
+                "file list auto_focus={auto_focus}:\n{list}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_mode_split_header_while_loading_is_not_pr_zero() {
+        let mut app = App::new_for_test();
+        app.set_local_mode(true);
+        app.pr_number = Some(0);
+        app.state = AppState::SplitViewFileList;
+
+        let text = draw(&mut app);
+
+        assert!(text.contains("[LOCAL] Local HEAD diff"), "{text}");
+        assert!(!text.contains("PR #0"), "{text}");
+    }
+
+    /// A loaded PR keeps `PR #n: title`. The file list adds `by @login`, which
+    /// this narrower pane clips (`Add zen mode by @us`).
+    #[test]
+    fn split_header_keeps_a_loaded_pr_title_without_the_author() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewFileList;
+
+        let split = draw(&mut app);
+        assert!(split.contains("PR #1: Title"), "{split}");
+        assert!(!split.contains("by @alice"), "{split}");
+
+        let list = draw_file_list(&mut app);
+        assert!(
+            list.contains("PR #1: Title by @alice"),
+            "file list header drifted:\n{list}"
+        );
     }
 
     /// The status line belongs to one footer. Both panes used to draw it, so a

@@ -258,28 +258,23 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: Rect, attention: Attentio
         })
         .collect();
 
+    // The label is the word focus uppercases (`FILES`, `FILTER:`). The query
+    // stays in the detail so `symbol.rs` is not shouted along with it.
     let block = match state.filter {
         Some(ref filter) if filter.input_active => {
-            let detail = format!("Filter: {}_", filter.query);
+            let detail = format!("{}_", filter.query);
             pane_block(
                 theme,
                 PaneTitle::Labeled {
-                    label: "",
+                    label: "Filter:",
                     detail: &detail,
                 },
                 attention,
             )
         }
         Some(ref filter) if !filter.query.is_empty() => {
-            let detail = format!("Files (/{})", filter.query);
-            pane_block(
-                theme,
-                PaneTitle::Labeled {
-                    label: "",
-                    detail: &detail,
-                },
-                attention,
-            )
+            let detail = format!("(/{})", filter.query);
+            files_block(&detail)
         }
         _ => files_block(""),
     };
@@ -4058,7 +4053,7 @@ mod tests {
         let state = app.browse_state.as_ref().unwrap();
         assert_eq!(state.filter.as_ref().unwrap().query, "a");
         let filter_render = render_at(&mut app, 120, 20);
-        assert!(filter_render.contains("Filter: a_"), "{filter_render}");
+        assert!(filter_render.contains("FILTER: a_"), "{filter_render}");
 
         if let Some(state) = app.browse_state.as_mut() {
             // The active filter consumes every character before shared
@@ -4192,9 +4187,87 @@ mod tests {
         assert!(state.tree.find_row_for_file(2).is_some());
 
         let rendered = render_at(&mut app, 120, 20);
-        assert!(rendered.contains("Files (/alpha)"), "{rendered}");
+        assert!(rendered.contains("FILES (/alpha)"), "{rendered}");
         assert!(!rendered.contains("Filter: alpha_"), "{rendered}");
         assert!(!rendered.contains("Symbol search"), "{rendered}");
+    }
+
+    /// Focused titles uppercase the label only (`▶ FILES`, `▶ FILTER:`).
+    /// The query stays in the detail, so it keeps the case the user typed.
+    /// An unfocused tree keeps the label's own case and draws no arrow.
+    #[test]
+    fn browse_filter_titles_follow_the_focused_label_case() {
+        let mut app = app_with_browse(&["src/symbol.rs", "README.md"]);
+        let filter_keys = app.config.keybindings.filter.keys.clone();
+        for binding in filter_keys {
+            app.handle_repo_browse_tree_input(press_binding(binding))
+                .unwrap();
+        }
+        for character in "symbol.rs".chars() {
+            app.handle_repo_browse_tree_input(press(KeyCode::Char(character)))
+                .unwrap();
+        }
+
+        let typing = render_at(&mut app, 120, 20);
+        assert!(
+            typing.contains("▶ FILTER: symbol.rs_"),
+            "focused filter title:\n{typing}"
+        );
+        assert!(
+            !typing.contains("▶ Filter:"),
+            "filter label stayed in sentence case:\n{typing}"
+        );
+        assert!(
+            !typing.contains("SYMBOL.RS"),
+            "the query was uppercased with the label:\n{typing}"
+        );
+
+        app.state = AppState::RepoBrowseFile;
+        let typing_dim = render_at(&mut app, 120, 20);
+        assert!(
+            typing_dim.contains("Filter: symbol.rs_"),
+            "dim filter title:\n{typing_dim}"
+        );
+        assert!(
+            !typing_dim.contains("FILTER:"),
+            "dim filter title was uppercased:\n{typing_dim}"
+        );
+        assert!(
+            !typing_dim.contains("▶ Filter:"),
+            "dim filter title drew an arrow:\n{typing_dim}"
+        );
+
+        app.state = AppState::RepoBrowseTree;
+        app.handle_repo_browse_tree_input(press(KeyCode::Enter))
+            .unwrap();
+        let committed = render_at(&mut app, 120, 20);
+        assert!(
+            committed.contains("▶ FILES (/symbol.rs)"),
+            "focused committed filter:\n{committed}"
+        );
+        assert!(
+            !committed.contains("▶ Files ("),
+            "files label stayed in sentence case:\n{committed}"
+        );
+        assert!(
+            !committed.contains("SYMBOL.RS"),
+            "the query was uppercased with the label:\n{committed}"
+        );
+
+        app.state = AppState::RepoBrowseFile;
+        let committed_dim = render_at(&mut app, 120, 20);
+        assert!(
+            committed_dim.contains("Files (/symbol.rs)"),
+            "dim committed filter:\n{committed_dim}"
+        );
+        assert!(
+            !committed_dim.contains("FILES ("),
+            "dim files title was uppercased:\n{committed_dim}"
+        );
+        assert!(
+            !committed_dim.contains("▶ Files"),
+            "dim files title drew an arrow:\n{committed_dim}"
+        );
     }
 
     #[test]
