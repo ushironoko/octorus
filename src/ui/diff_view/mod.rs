@@ -1661,7 +1661,6 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
     let theme = app.theme;
     let comments = app.diff_attention().comments;
-    let total_lines = lines.len();
 
     let block = super::chrome::pane_block(
         theme,
@@ -1677,6 +1676,8 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         .block(block)
         .wrap(Wrap { trim: true })
         .scroll((app.cmt.comment_panel_scroll, 0));
+    // The scroll counts wrapped rows, so the scrollbar measures those too.
+    let total_rows = paragraph.line_count(inner_area.width);
 
     frame.render_widget(paragraph, area);
     app.hit_map.push(
@@ -1686,12 +1687,12 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         },
     );
 
-    if total_lines > 1 {
+    if total_rows > inner_area.height as usize {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
 
-        let max_scroll = total_lines.saturating_sub(1);
+        let max_scroll = total_rows.saturating_sub(1);
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
 

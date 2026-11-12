@@ -156,7 +156,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
 
-            if total_display > 1 {
+            if total_display > inner_area.height as usize {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
@@ -371,22 +371,22 @@ mod tests {
         │Issue List: test/repo (open)                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏▶ ISSUES (2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ ● #10     Fix login bug                                                               by @alice ▲
-        ┃  ● #9      Add dark mode                                                                 by @bob █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  ▼
+        ┃▌ ● #10     Fix login bug                                                               by @alice ┃
+        ┃  ● #9      Add dark mode                                                                 by @bob ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Back                                                                     │

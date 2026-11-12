@@ -149,6 +149,7 @@ fn render_file_list_pane(
                 },
                 attention,
             );
+            let viewport_rows = block.inner(chunks[1]).height as usize;
             let list = attention.rows(theme).apply(List::new(items).block(block));
 
             let mut list_state = ListState::default()
@@ -159,7 +160,7 @@ fn render_file_list_pane(
 
             app.file_list_scroll_offset = list_state.offset();
 
-            if display_count > 1 {
+            if display_count > viewport_rows {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
@@ -201,6 +202,7 @@ fn render_file_list_pane(
             },
             attention,
         );
+        let viewport_rows = block.inner(chunks[1]).height as usize;
         let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
@@ -213,7 +215,7 @@ fn render_file_list_pane(
             tree.scroll_offset = list_state.offset();
         }
 
-        if row_count > 1 {
+        if row_count > viewport_rows {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
@@ -240,6 +242,7 @@ fn render_file_list_pane(
             },
             attention,
         );
+        let viewport_rows = block.inner(chunks[1]).height as usize;
         let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
@@ -253,7 +256,7 @@ fn render_file_list_pane(
             app.selected_file = sel;
         }
 
-        if total_files > 1 {
+        if total_files > viewport_rows {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
@@ -433,7 +436,6 @@ fn render_diff_pane_with_comments(
     }
 
     let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
-    let total_lines = lines.len();
 
     let block = pane_block(
         theme,
@@ -448,6 +450,8 @@ fn render_diff_pane_with_comments(
         .block(block)
         .wrap(Wrap { trim: true })
         .scroll((app.cmt.comment_panel_scroll, 0));
+    // The scroll counts wrapped rows, so the scrollbar measures those too.
+    let total_rows = paragraph.line_count(inner_area.width);
     frame.render_widget(paragraph, chunks[2]);
     app.hit_map.push(
         inner_area,
@@ -456,12 +460,12 @@ fn render_diff_pane_with_comments(
         },
     );
 
-    if total_lines > 1 {
+    if total_rows > inner_area.height as usize {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
 
-        let max_scroll = total_lines.saturating_sub(1);
+        let max_scroll = total_rows.saturating_sub(1);
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
 
@@ -617,6 +621,14 @@ mod tests {
     }
 
     fn loaded_app() -> App {
+        loaded_app_with(vec![
+            changed("src/a.rs"),
+            changed("src/b.rs"),
+            changed("src/c.rs"),
+        ])
+    }
+
+    fn loaded_app_with(files: Vec<ChangedFile>) -> App {
         let mut app = App::new_for_test();
         app.data_state = DataState::Loaded {
             pr: Box::new(PullRequest {
@@ -638,11 +650,7 @@ mod tests {
                 },
                 updated_at: "2025-01-01T00:00:00Z".to_string(),
             }),
-            files: vec![
-                changed("src/a.rs"),
-                changed("src/b.rs"),
-                changed("src/c.rs"),
-            ],
+            files,
         };
         app.toggle_file_tree();
         app
@@ -759,6 +767,29 @@ mod tests {
             !text.contains("▶ DIFF"),
             "diff kept the arrow while comments are open:\n{text}"
         );
+    }
+
+    #[test]
+    fn split_file_pane_whose_rows_fit_draws_no_scrollbar() {
+        let mut app = loaded_app();
+        app.state = AppState::SplitViewFileList;
+
+        let text = draw(&mut app);
+
+        assert!(!text.contains('▲'), "{text}");
+    }
+
+    #[test]
+    fn split_file_pane_with_rows_past_the_pane_keeps_its_scrollbar() {
+        let files = (1..=40)
+            .map(|n| changed(&format!("src/file{n}.rs")))
+            .collect();
+        let mut app = loaded_app_with(files);
+        app.state = AppState::SplitViewFileList;
+
+        let text = draw(&mut app);
+
+        assert!(text.contains('▲'), "{text}");
     }
 
     /// The marker sits between `-fn b() {}` and the `+` rows, as git writes it.
@@ -888,5 +919,44 @@ mod pending_comment_panel_tests {
 
         assert!(text.contains("@alice (line 2)"), "{text}");
         assert!(!text.contains("pending review"), "{text}");
+    }
+
+    /// The split diff pane with the comment panel open on the `+added` line,
+    /// whose comment has the given body.
+    fn split_screen_with_body(body: &str) -> String {
+        let mut comment = comment_on_added_line(CommentPublication::Published);
+        comment.body = body.to_string();
+        let mut app = app_with_comment_on_added_line(comment);
+        app.state = AppState::SplitViewDiff;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn split_comment_panel_whose_text_fits_draws_no_scrollbar() {
+        let text = split_screen_with_body("Short.");
+
+        assert!(!text.contains('▲'), "{text}");
+    }
+
+    #[test]
+    fn split_comment_panel_with_text_past_its_pane_keeps_its_scrollbar() {
+        let body = (1..=40)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let text = split_screen_with_body(&body);
+
+        assert!(text.contains('▲'), "{text}");
+    }
+
+    #[test]
+    fn split_comment_panel_counts_wrapped_rows_for_its_scrollbar() {
+        // One logical line that wraps past the pane still overflows it.
+        let text = split_screen_with_body(&"word ".repeat(200));
+
+        assert!(text.contains('▲'), "{text}");
     }
 }

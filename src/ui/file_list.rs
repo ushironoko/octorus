@@ -87,6 +87,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 },
                 attention,
             );
+            let viewport_rows = block.inner(chunks[1]).height as usize;
             let list = attention.rows(theme).apply(List::new(items).block(block));
 
             let mut list_state = ListState::default()
@@ -97,7 +98,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
             app.file_list_scroll_offset = list_state.offset();
 
-            if display_count > 1 {
+            if display_count > viewport_rows {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
@@ -141,6 +142,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             },
             attention,
         );
+        let viewport_rows = block.inner(chunks[1]).height as usize;
         let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
@@ -153,7 +155,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             tree.scroll_offset = list_state.offset();
         }
 
-        if row_count > 1 {
+        if row_count > viewport_rows {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
@@ -182,6 +184,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             },
             attention,
         );
+        let viewport_rows = block.inner(chunks[1]).height as usize;
         let list = attention.rows(theme).apply(List::new(items).block(block));
 
         let mut list_state = ListState::default()
@@ -195,7 +198,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             app.selected_file = sel;
         }
 
-        if total_files > 1 {
+        if total_files > viewport_rows {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));

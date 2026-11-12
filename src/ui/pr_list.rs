@@ -168,7 +168,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
 
-            if total_display > 1 {
+            if total_display > inner_area.height as usize {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
@@ -452,22 +452,22 @@ mod tests {
         │PR List: test/repo (open)                                                                         │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┏▶ PULL REQUESTS (2)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        ┃▌ #10     Fix login bug                                                                 by @alice ▲
-        ┃  #9      Add dark mode                                                                   by @bob █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  █
-        ┃                                                                                                  ▼
+        ┃▌ #10     Fix login bug                                                                 by @alice ┃
+        ┃  #9      Add dark mode                                                                   by @bob ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
+        ┃                                                                                                  ┃
         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
         │? Help | ! Shell | q/Esc Quit                                                                     │
@@ -892,6 +892,32 @@ mod tests {
         let mut app = failed_pr_list_app(GhFailure::other("  "));
         let text = screen_text(&draw_pr_list(&mut app));
         assert!(text.contains("Failed to load pull requests."), "{text}");
+    }
+
+    /// A list whose rows all fit the pane shows no scrollbar: a thumb there
+    /// suggests rows that are not on screen.
+    #[test]
+    fn pr_list_whose_rows_all_fit_draws_no_scrollbar() {
+        let buf = render_screen(vec![
+            sample_pr(10, "Fix login bug", "alice"),
+            sample_pr(9, "Add dark mode", "bob"),
+        ]);
+        let text = screen_text(&buf);
+        for glyph in ['▲', '▼', '█'] {
+            assert!(
+                !text.contains(glyph),
+                "scrollbar glyph {glyph} drawn:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_list_with_rows_past_the_pane_keeps_its_scrollbar() {
+        let prs = (1..=40)
+            .map(|number| sample_pr(number, "Fix login bug", "alice"))
+            .collect();
+        let text = screen_text(&render_screen(prs));
+        assert!(text.contains('▲'), "scrollbar missing:\n{text}");
     }
 
     #[test]

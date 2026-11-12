@@ -9,6 +9,7 @@ use ratatui::{
 use crate::ai::{PromptLoader, PromptSource};
 use crate::app::{App, HelpTab};
 use crate::config::{Config, KeybindingsConfig};
+use crate::keybinding::{display_keys, KeyBinding, KeySequence, NamedKey};
 use crate::syntax::available_themes;
 use crate::ui::common::wrap_text;
 use crate::ui::hit::{HitTarget, PaneKind, TabGroup};
@@ -23,6 +24,27 @@ fn fmt_key(key: &str, width: usize) -> String {
 /// Format a label with padding for alignment (used in config tab)
 fn fmt_label(label: &str, width: usize) -> String {
     format!("  {:<width$}", label, width = width)
+}
+
+/// The key column for a row that names several bindings, each key listed once.
+/// A binding's aliases are joined with `/` and bindings with `, `. A key an
+/// earlier binding already shows is dropped, so `q/Esc` then `Esc` reads `q/Esc`.
+fn key_label(bindings: &[&KeySequence]) -> String {
+    let mut shown: Vec<&[KeyBinding]> = Vec::new();
+    let mut groups = Vec::new();
+    for binding in bindings {
+        let mut keys = Vec::new();
+        for sequence in binding.all_sequences() {
+            if !shown.contains(&sequence) {
+                shown.push(sequence);
+                keys.push(display_keys(sequence));
+            }
+        }
+        if !keys.is_empty() {
+            groups.push(keys.join("/"));
+        }
+    }
+    groups.join(", ")
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -553,6 +575,9 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
 fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
     let key_width = 14; // Width for key column
 
+    // Several rows close with Esc as well as the quit key; `key_label` lists it once.
+    let esc = KeySequence::single(KeyBinding::named(NamedKey::Esc));
+
     vec![
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -582,14 +607,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Open split view",
@@ -686,14 +704,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move file selection (diff follows)",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Scroll diff page (regardless of focus)",
@@ -711,14 +722,12 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.filter.display(), key_width)
         )),
         Line::from(format!(
-            "{}, Right, {}     Focus diff pane",
-            fmt_key(&kb.open_panel.display(), 5),
-            kb.move_right.display()
+            "{}  Focus diff pane",
+            fmt_key(&key_label(&[&kb.open_panel, &kb.move_right]), key_width)
         )),
         Line::from(format!(
-            "  Left, {}, {}    Back to file list",
-            kb.move_left.display(),
-            kb.quit.display()
+            "{}  Back to file list",
+            fmt_key(&key_label(&[&kb.move_left, &kb.quit]), key_width)
         )),
         Line::from(vec![Span::styled(
             "  Diff Focus:",
@@ -726,14 +735,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Scroll diff",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Page scroll (also J/K)",
@@ -792,12 +794,20 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.open_panel.display(), key_width)
         )),
         Line::from(format!(
-            "  Right, {}       Open fullscreen diff",
-            kb.move_right.display()
+            "{}  Add comment at line",
+            fmt_key(&kb.comment.display(), key_width)
         )),
         Line::from(format!(
-            "  Left, {}        Back to file focus",
-            kb.move_left.display()
+            "{}  Add suggestion at line",
+            fmt_key(&kb.suggestion.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open fullscreen diff",
+            fmt_key(&kb.move_right.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Back to file focus",
+            fmt_key(&kb.move_left.display(), key_width)
         )),
         Line::from(format!(
             "{}  Back to file list",
@@ -812,14 +822,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move line selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Go to definition",
@@ -893,10 +896,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Extend selection",
-            fmt_key(
-                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Comment on selection",
@@ -913,7 +913,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Back to file list",
-            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(vec![Span::styled(
             "  Comment Panel (focused):",
@@ -921,10 +921,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Scroll panel",
-            fmt_key(
-                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Add comment",
@@ -960,7 +957,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
                 key_width
             )
         )),
-        Line::from(format!("  Esc/{}        Close panel", kb.quit.display())),
+        Line::from(format!(
+            "{}  Close panel",
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Comment List View",
@@ -977,14 +977,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Review: Jump to file | Discussion: View detail",
@@ -992,7 +985,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Back to file list",
-            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1214,14 +1207,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Stage/unstage file or directory",
@@ -1265,7 +1251,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Close git ops",
-            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(vec![Span::styled(
             "  Commits Focus:",
@@ -1298,14 +1284,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Scroll diff",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Page scroll (also J/K)",
@@ -1343,14 +1322,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Stage/unstage file or directory",
@@ -1386,7 +1358,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Close git ops",
-            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(vec![Span::styled(
             "  Diff Focus:",
@@ -1394,14 +1366,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Scroll diff",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Page scroll (also J/K)",
@@ -1431,14 +1396,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  View PR",
@@ -1472,6 +1430,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
         )),
+        Line::from(format!(
+            "{}  Retry after a failed load",
+            fmt_key(&kb.retry.display(), key_width)
+        )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1482,14 +1444,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  View issue detail",
@@ -1532,14 +1487,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Scroll body",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  Switch focus (Body/Linked PRs)",
@@ -1567,7 +1515,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Back to issue list",
-            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1578,14 +1526,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}  Move selection",
-            fmt_key(
-                &format!(
-                    "{}/{}, Down/Up",
-                    kb.move_down.display(),
-                    kb.move_up.display()
-                ),
-                key_width
-            )
+            fmt_key(&key_label(&[&kb.move_down, &kb.move_up]), key_width)
         )),
         Line::from(format!(
             "{}  View comment detail",
@@ -1605,7 +1546,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Back to issue detail",
-            fmt_key(&format!("{}, Esc", kb.quit.display()), key_width)
+            fmt_key(&key_label(&[&kb.quit, &esc]), key_width)
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1809,6 +1750,146 @@ mod tests {
         assert!(joined.contains("Open commit diff for the blamed line"));
         assert!(joined.contains("gp"));
         assert!(joined.contains("Open pull request for the blamed line"));
+    }
+
+    /// The rows of the keybindings tab as text.
+    fn help_rows(kb: &KeybindingsConfig) -> Vec<String> {
+        build_help_lines(kb)
+            .iter()
+            .map(|line| line.to_string())
+            .collect()
+    }
+
+    /// The rows from the `title` header up to, not including, the `next` header.
+    fn help_section<'a>(rows: &'a [String], title: &str, next: &str) -> &'a [String] {
+        let start = rows
+            .iter()
+            .position(|row| row == title)
+            .unwrap_or_else(|| panic!("help missing section {title:?}"));
+        let end = rows
+            .iter()
+            .position(|row| row == next)
+            .unwrap_or_else(|| panic!("help missing section {next:?}"));
+        &rows[start..end]
+    }
+
+    /// The key column of a help row: the text before the two-space gap that precedes its label.
+    fn help_key_column(row: &str) -> Option<&str> {
+        let body = row.trim_start();
+        body.find("  ").map(|gap| &body[..gap])
+    }
+
+    #[test]
+    fn test_help_rows_list_each_key_once() {
+        // The key column names keys with `/` between aliases and `,` between bindings.
+        for row in help_rows(&KeybindingsConfig::default()) {
+            let Some(column) = help_key_column(&row) else {
+                continue;
+            };
+            let mut seen = Vec::new();
+            for key in column
+                .split(['/', ','])
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+            {
+                assert!(!seen.contains(&key), "{key:?} repeated in help row {row:?}");
+                seen.push(key);
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_filter_key_reads_as_space_then_slash() {
+        let rows = help_rows(&KeybindingsConfig::default());
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Space /") && row.ends_with("Filter list")),
+            "help missing the filter key: {rows:#?}"
+        );
+        assert!(
+            rows.iter().all(|row| !row.contains("Space/")),
+            "help reads the filter key as Space/: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn test_key_label_lists_a_key_once_across_bindings() {
+        use crate::keybinding::{KeyBinding, KeySequence, NamedKey};
+
+        let quit = KeySequence::single(KeyBinding::char('q'))
+            .with_alt(vec![KeyBinding::named(NamedKey::Esc)]);
+        let esc = KeySequence::single(KeyBinding::named(NamedKey::Esc));
+        assert_eq!(key_label(&[&quit, &esc]), "q/Esc");
+
+        let quit_only = KeySequence::single(KeyBinding::char('z'));
+        assert_eq!(key_label(&[&quit_only, &esc]), "z, Esc");
+
+        let kb = KeybindingsConfig::default();
+        assert_eq!(key_label(&[&kb.move_down, &kb.move_up]), "j/Down, k/Up");
+    }
+
+    #[test]
+    fn test_split_view_help_names_each_arrow_and_escape_key_once() {
+        let rows = help_rows(&KeybindingsConfig::default());
+        let split = help_section(&rows, "Split View", "Diff View");
+        assert!(
+            split
+                .iter()
+                .any(|row| row.contains("Enter, l/Right") && row.ends_with("Focus diff pane")),
+            "{split:#?}"
+        );
+        assert!(
+            split
+                .iter()
+                .any(|row| row.contains("h/Left, q/Esc") && row.ends_with("Back to file list")),
+            "{split:#?}"
+        );
+    }
+
+    #[test]
+    fn test_split_view_diff_focus_lists_comment_and_suggestion_keys() {
+        let rows = help_rows(&KeybindingsConfig::default());
+        let split = help_section(&rows, "Split View", "Diff View");
+        for (key, label) in [
+            ("c", "Add comment at line"),
+            ("s", "Add suggestion at line"),
+        ] {
+            assert!(
+                split
+                    .iter()
+                    .any(|row| row.trim_start().starts_with(&format!("{key} "))
+                        && row.ends_with(label)),
+                "split view help missing {key:?} {label:?}: {split:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pr_list_help_offers_the_retry_key() {
+        let rows = help_rows(&KeybindingsConfig::default());
+        let pr_list = help_section(&rows, "PR List View", "Issue List View");
+        assert!(
+            pr_list.iter().any(|row| row.trim_start().starts_with("r ")
+                && row.ends_with("Retry after a failed load")),
+            "PR list help missing the retry key: {pr_list:#?}"
+        );
+    }
+
+    #[test]
+    fn test_pr_list_help_retry_follows_the_configured_key() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        let kb = KeybindingsConfig {
+            retry: KeySequence::single(KeyBinding::char('x')),
+            ..KeybindingsConfig::default()
+        };
+        let rows = help_rows(&kb);
+        let pr_list = help_section(&rows, "PR List View", "Issue List View");
+        assert!(
+            pr_list.iter().any(|row| row.trim_start().starts_with("x ")
+                && row.ends_with("Retry after a failed load")),
+            "{pr_list:#?}"
+        );
     }
 
     #[test]
