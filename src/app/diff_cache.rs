@@ -118,24 +118,36 @@ impl App {
         let tab_width = self.config.diff.tab_width;
         let mut plain_cache = crate::ui::diff_view::build_plain_diff_cache(&patch, tab_width);
         plain_cache.file_index = file_index;
+        if crate::ui::diff_view::diff_highlight_over_cap(&patch) {
+            // Settled: a later ensure_diff_cache sees the matching hash and
+            // does not start a highlight that the cap would only throw away.
+            // Markdown still records the rich flag so a toggle can rebuild.
+            plain_cache.markdown_rich = markdown_rich;
+            self.diff_store.set_current(file_index, plain_cache);
+            return;
+        }
         self.diff_store.set_current(file_index, plain_cache);
 
         // 完全版キャッシュをバックグラウンドで構築
         let (tx, rx) = mpsc::channel(1);
-        self.diff_store.set_highlight_rx(rx);
+        let cancel = self.diff_store.begin_highlight(rx);
 
         let theme = self.config.diff.theme.clone();
 
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
-            let mut cache = crate::ui::diff_view::build_diff_cache(
+            let mut cache = crate::ui::diff_view::build_diff_cache_cancellable(
                 &patch,
                 &filename,
                 &theme,
                 &mut parser_pool,
                 markdown_rich,
                 tab_width,
+                &cancel,
             );
+            if cancel.is_cancelled() {
+                return;
+            }
             cache.file_index = file_index;
             let _ = tx.try_send((file_index, cache));
         });

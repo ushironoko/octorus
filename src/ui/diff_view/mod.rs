@@ -19,11 +19,14 @@ use crate::app::{
     hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext, SpanVec,
 };
 use crate::diff::{is_no_newline_marker, LineType, PatchClassifier};
+use crate::syntax::highlighter::{HighlightBudget, HighlightControl, HIGHLIGHT_QUERY_BUDGET};
 use crate::syntax::{
-    apply_line_highlights, collect_line_highlights, collect_line_highlights_with_injections,
-    get_theme, highlight_code_line, syntax_for_file, Highlighter, ParserPool,
+    apply_line_highlights, collect_line_highlights_bounded,
+    collect_line_highlights_with_injections_bounded, get_theme, highlight_code_line,
+    syntax_for_file, Highlighter, ParserPool,
 };
 use crate::ui::hit::{HitMap, HitTarget, PaneKind};
+use tokio_util::sync::CancellationToken;
 
 /// Expand tab characters to spaces with fixed width.
 ///
@@ -36,6 +39,27 @@ pub fn expand_tabs(s: &str, tab_width: u8) -> Cow<'_, str> {
         let spaces = " ".repeat(tab_width as usize);
         Cow::Owned(s.replace('\t', &spaces))
     }
+}
+
+/// Skip syntax highlighting above this patch size. The plain diff still renders.
+///
+/// Same ceiling as Repo Browse's file view (`MAX_VIEWABLE_FILE_BYTES`).
+pub const MAX_DIFF_HIGHLIGHT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Skip syntax highlighting above this many patch lines.
+///
+/// Same ceiling as Repo Browse's file view (`MAX_VIEWABLE_FILE_LINES`).
+pub const MAX_DIFF_HIGHLIGHT_LINES: usize = 100_000;
+
+/// `true` when a diff should keep its plain coloring and not be syntax highlighted.
+pub fn diff_highlight_over_cap(patch: &str) -> bool {
+    patch.len() > MAX_DIFF_HIGHLIGHT_BYTES || patch.lines().count() > MAX_DIFF_HIGHLIGHT_LINES
+}
+
+fn plain_highlight_fallback(patch: &str, tab_width: u8, markdown_rich: bool) -> DiffCache {
+    let mut cache = build_plain_diff_cache(patch, tab_width);
+    cache.markdown_rich = markdown_rich;
+    cache
 }
 
 /// Build a plain DiffCache without syntax highlighting (diff coloring only).
@@ -130,6 +154,10 @@ fn no_newline_marker_row(line: &str, interner: &mut Rodeo) -> CachedDiffLine {
 /// * `markdown_rich` - Whether to apply markdown rich display overrides
 ///
 /// Returns a complete DiffCache with file_index set to 0 (caller should update).
+///
+/// Patches over [`MAX_DIFF_HIGHLIGHT_BYTES`] / [`MAX_DIFF_HIGHLIGHT_LINES`], and
+/// highlights that exceed [`HIGHLIGHT_QUERY_BUDGET`], come back as the plain
+/// diff (`highlighted: false`).
 pub fn build_diff_cache(
     patch: &str,
     filename: &str,
@@ -138,9 +166,66 @@ pub fn build_diff_cache(
     markdown_rich: bool,
     tab_width: u8,
 ) -> DiffCache {
-    let patch_hash = hash_string(patch);
+    let budget = HighlightBudget::new(CancellationToken::new(), HIGHLIGHT_QUERY_BUDGET);
+    build_diff_cache_with_budget(
+        patch,
+        filename,
+        theme_name,
+        parser_pool,
+        markdown_rich,
+        tab_width,
+        &budget,
+    )
+}
+
+/// [`build_diff_cache`] that also stops when `cancel` is signalled.
+///
+/// A cancelled job still returns the plain diff so callers have a cache, but
+/// they must drop it when `cancel` is already signalled. Publishing it would
+/// settle a file the user has left.
+pub fn build_diff_cache_cancellable(
+    patch: &str,
+    filename: &str,
+    theme_name: &str,
+    parser_pool: &mut ParserPool,
+    markdown_rich: bool,
+    tab_width: u8,
+    cancel: &CancellationToken,
+) -> DiffCache {
+    let budget = HighlightBudget::new(cancel.clone(), HIGHLIGHT_QUERY_BUDGET);
+    build_diff_cache_with_budget(
+        patch,
+        filename,
+        theme_name,
+        parser_pool,
+        markdown_rich,
+        tab_width,
+        &budget,
+    )
+}
+
+fn build_diff_cache_with_budget(
+    patch: &str,
+    filename: &str,
+    theme_name: &str,
+    parser_pool: &mut ParserPool,
+    markdown_rich: bool,
+    tab_width: u8,
+    budget: &HighlightBudget,
+) -> DiffCache {
+    if budget.poll_abort().is_some() || diff_highlight_over_cap(patch) {
+        return plain_highlight_fallback(patch, tab_width, markdown_rich);
+    }
+
     let expanded = expand_tabs(patch, tab_width);
-    let patch = expanded.as_ref();
+    let patch_body = expanded.as_ref();
+    if diff_highlight_over_cap(patch_body) {
+        return plain_highlight_fallback(patch, tab_width, markdown_rich);
+    }
+
+    let patch_hash = hash_string(patch);
+    let original_patch = patch;
+    let patch = patch_body;
     let mut interner = Rodeo::default();
 
     // Get file extension for injection support check
@@ -161,6 +246,9 @@ pub fn build_diff_cache(
 
     // Parse source (borrows parser_pool only for this call)
     let cst_result = highlighter.parse_source(&combined_source, parser_pool);
+    if budget.poll_abort().is_some() {
+        return plain_highlight_fallback(original_patch, tab_width, markdown_rich);
+    }
 
     // Check if tree-sitter parsing succeeded
     // Note: We no longer fall back based on error count, since tree-sitter's
@@ -190,13 +278,14 @@ pub fn build_diff_cache(
         {
             // Injection path: query is obtained inside the function to avoid borrow conflicts
             // Note: priming_lines offset is handled when applying highlights to diff lines
-            collect_line_highlights_with_injections(
+            collect_line_highlights_with_injections_bounded(
                 &combined_source,
                 &result.tree,
                 result.lang,
                 style_cache,
                 parser_pool,
                 ext,
+                budget,
             )
         } else {
             // Standard CST highlighting: get cached query
@@ -208,13 +297,17 @@ pub fn build_diff_cache(
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-            collect_line_highlights(
+            collect_line_highlights_bounded(
                 &combined_source,
                 &result.tree,
                 query,
                 &capture_names,
                 style_cache,
+                budget,
             )
+        };
+        let Ok(line_highlights) = line_highlights else {
+            return plain_highlight_fallback(original_patch, tab_width, markdown_rich);
         };
         build_lines_with_cst(
             patch,
@@ -227,7 +320,12 @@ pub fn build_diff_cache(
         )
     } else {
         // Syntect fallback path (no CST support for this file type)
-        build_lines_with_syntect(patch, filename, theme_name, &mut interner)
+        match build_lines_with_syntect(patch, filename, theme_name, &mut interner, budget) {
+            Ok(lines) => lines,
+            Err(_) => {
+                return plain_highlight_fallback(original_patch, tab_width, markdown_rich);
+            }
+        }
     };
 
     // Post-process: hide/replace markdown syntax in rich mode
@@ -262,6 +360,28 @@ pub fn build_commit_diff_cache(
     parser_pool: &mut ParserPool,
     tab_width: u8,
 ) -> DiffCache {
+    build_commit_diff_cache_cancellable(
+        full_diff,
+        theme_name,
+        parser_pool,
+        tab_width,
+        &CancellationToken::new(),
+    )
+}
+
+/// [`build_commit_diff_cache`] that stops between files when `cancel` is signalled.
+///
+/// Each file has its own [`HIGHLIGHT_QUERY_BUDGET`]. A file over the size cap or
+/// the budget contributes its plain lines and the next file still runs, so one
+/// slow file cannot stall the rest of the commit. A cancelled job may return a
+/// partial cache; the caller drops it.
+pub fn build_commit_diff_cache_cancellable(
+    full_diff: &str,
+    theme_name: &str,
+    parser_pool: &mut ParserPool,
+    tab_width: u8,
+    cancel: &CancellationToken,
+) -> DiffCache {
     let patch_hash = hash_string(full_diff);
     let sections = split_diff_by_file(full_diff);
 
@@ -269,13 +389,17 @@ pub fn build_commit_diff_cache(
     let mut combined_lines: Vec<CachedDiffLine> = Vec::new();
 
     for (filename, section_patch) in &sections {
-        let section_cache = build_diff_cache(
+        if cancel.is_cancelled() {
+            break;
+        }
+        let section_cache = build_diff_cache_cancellable(
             section_patch,
             filename,
             theme_name,
             parser_pool,
             false, // markdown_rich is not used for commit diffs
             tab_width,
+            cancel,
         );
         // Re-intern spans from section interner into the combined interner
         for line in &section_cache.lines {
@@ -1075,7 +1199,8 @@ fn build_lines_with_syntect(
     filename: &str,
     theme_name: &str,
     interner: &mut Rodeo,
-) -> Vec<CachedDiffLine> {
+    budget: &dyn HighlightControl,
+) -> Result<Vec<CachedDiffLine>, crate::syntax::HighlightAbort> {
     let syntax = syntax_for_file(filename);
     let theme = get_theme(theme_name);
     let mut highlighter = syntax.map(|s| HighlightLines::new(s, theme));
@@ -1092,23 +1217,25 @@ fn build_lines_with_syntect(
     }
 
     let mut classifier = PatchClassifier::new();
-    patch
-        .lines()
-        .map(|line| {
-            let (line_type, content) = classifier.classify(line);
-            if is_no_newline_marker(line) {
-                return no_newline_marker_row(line, interner);
-            }
+    let mut lines = Vec::new();
+    for line in patch.lines() {
+        if let Some(reason) = budget.poll_abort() {
+            return Err(reason);
+        }
+        let (line_type, content) = classifier.classify(line);
+        if is_no_newline_marker(line) {
+            lines.push(no_newline_marker_row(line, interner));
+            continue;
+        }
 
-            let spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
-
-            CachedDiffLine {
-                spans,
-                line_type,
-                no_newline_marker: false,
-            }
-        })
-        .collect()
+        let spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
+        lines.push(CachedDiffLine {
+            spans,
+            line_type,
+            no_newline_marker: false,
+        });
+    }
+    Ok(lines)
 }
 
 /// Convert cached diff lines to renderable [`Line`]s using zero-copy borrowing.
@@ -2460,6 +2587,134 @@ mod tests {
         );
     }
 
+    fn line_text(cache: &DiffCache, index: usize) -> String {
+        cache.lines[index]
+            .spans
+            .iter()
+            .map(|span| cache.resolve(span.content))
+            .collect()
+    }
+
+    #[test]
+    fn diff_over_the_line_cap_stays_on_the_plain_diff() {
+        let mut patch = String::from("@@ -1,1 +1,1 @@\n");
+        for i in 0..=MAX_DIFF_HIGHLIGHT_LINES {
+            patch.push_str(&format!("+fn f{i}() {{}}\n"));
+        }
+        assert!(diff_highlight_over_cap(&patch));
+
+        let started = std::time::Instant::now();
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(&patch, "big.rs", "Dracula", &mut parser_pool, false, 4);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "an over-cap diff must not run the highlighter"
+        );
+        assert!(
+            !cache.highlighted,
+            "missing the line cap would syntax-highlight this file"
+        );
+
+        let plain = build_plain_diff_cache(&patch, 4);
+        assert_eq!(cache.lines.len(), plain.lines.len());
+        assert_eq!(cache.patch_hash, plain.patch_hash);
+        assert_eq!(line_text(&cache, 1), line_text(&plain, 1));
+        // A highlighted `+fn f0() {}` splits `fn` into its own span. Plain keeps
+        // the marker and the rest of the line.
+        assert_eq!(cache.lines[1].spans.len(), plain.lines[1].spans.len());
+        assert_eq!(cache.lines[1].spans.len(), 2);
+
+        let theme = crate::ui::theme::Theme::resolve(&crate::config::ThemeConfig::default(), false);
+        let rendered = render_cached_lines(
+            &cache,
+            0..8,
+            0,
+            &std::collections::HashSet::new(),
+            true,
+            None,
+            40,
+            theme,
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new(rendered), frame.area());
+            })
+            .unwrap();
+        let screen = crate::ui::test_buffer::screen_text(terminal.backend().buffer());
+        assert!(
+            screen.contains("+fn f0() {}"),
+            "the over-cap diff must still draw its plain lines, got:\n{screen}"
+        );
+        let artifact =
+            format!("over-cap line count stays on the plain diff (no syntax tokens)\n\n{screen}\n");
+        let _ = std::fs::create_dir_all("/opt/cursor/artifacts");
+        let _ = std::fs::write("/opt/cursor/artifacts/over-cap-plain-diff.txt", artifact);
+    }
+
+    #[test]
+    fn diff_over_the_byte_cap_stays_on_the_plain_diff() {
+        let mut patch = String::from("@@ -1 +1 @@\n+");
+        patch.push_str(&"a".repeat(MAX_DIFF_HIGHLIGHT_BYTES));
+        assert!(patch.len() > MAX_DIFF_HIGHLIGHT_BYTES);
+        assert!(diff_highlight_over_cap(&patch));
+
+        let started = std::time::Instant::now();
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(&patch, "big.rs", "Dracula", &mut parser_pool, false, 4);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(!cache.highlighted);
+        let plain = build_plain_diff_cache(&patch, 4);
+        assert_eq!(cache.lines.len(), plain.lines.len());
+        assert_eq!(cache.patch_hash, plain.patch_hash);
+    }
+
+    #[test]
+    fn expired_highlight_budget_keeps_the_plain_diff() {
+        let patch = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n";
+        let budget = crate::syntax::highlighter::HighlightBudget::already_expired(
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache_with_budget(
+            patch,
+            "main.rs",
+            "Dracula",
+            &mut parser_pool,
+            false,
+            4,
+            &budget,
+        );
+        assert!(
+            !cache.highlighted,
+            "a deadline that has already passed must not syntax-highlight"
+        );
+        let plain = build_plain_diff_cache(patch, 4);
+        assert_eq!(line_text(&cache, 1), line_text(&plain, 1));
+        assert_eq!(cache.lines[1].spans.len(), 2);
+    }
+
+    #[test]
+    fn cancelled_highlight_keeps_the_plain_diff() {
+        let patch = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n";
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache_cancellable(
+            patch,
+            "main.rs",
+            "Dracula",
+            &mut parser_pool,
+            false,
+            4,
+            &cancel,
+        );
+        assert!(!cache.highlighted);
+        let plain = build_plain_diff_cache(patch, 4);
+        assert_eq!(line_text(&cache, 1), line_text(&plain, 1));
+    }
+
     #[test]
     fn render_cached_lines_inserts_comment_markers() {
         let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
@@ -3546,8 +3801,14 @@ mod priming_diff_tests {
 +const y = 2;"#;
 
         let mut interner = Rodeo::default();
-        let lines =
-            build_lines_with_syntect(patch, "Component.vue", "base16-ocean.dark", &mut interner);
+        let lines = build_lines_with_syntect(
+            patch,
+            "Component.vue",
+            "base16-ocean.dark",
+            &mut interner,
+            &crate::syntax::OpenHighlight,
+        )
+        .expect("open budget does not abort a 3-line vue patch");
 
         assert_eq!(lines.len(), 3);
 

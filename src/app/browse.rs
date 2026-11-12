@@ -1596,13 +1596,14 @@ impl App {
         tokio::task::spawn_blocking(move || {
             deliver_highlighted_cache(&cancel_token, &tx, || {
                 let mut pool = ParserPool::new();
-                let cache = crate::ui::diff_view::build_diff_cache(
+                let cache = crate::ui::diff_view::build_diff_cache_cancellable(
                     &patch,
                     &path,
                     &theme,
                     &mut pool,
                     markdown_rich,
                     tab_width,
+                    &cancel_token,
                 );
                 (path, cache)
             });

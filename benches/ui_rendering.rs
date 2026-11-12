@@ -522,6 +522,13 @@ fn bench_highlighter_tree_sitter_rust(c: &mut Criterion) {
 /// Haskell has complex syntax: type classes, GADTs, pattern matching,
 /// do-notation, and type-level programming. Tests tree-sitter with
 /// a language that has significant syntactic complexity.
+///
+/// The 10000-line case hits the 1s highlight budget inside `QueryCursor` and
+/// returns the plain diff. On `3b1ec19` the same generated
+/// input (which parses with `has_error() == true`) was measured at 159 ms /
+/// 1.4 s / 8.0 s for 1000 / 2000 / 4000 lines, and the weekly
+/// `highlighter/tree_sitter_haskell/10000` sample was ~77 s/iter. The budget
+/// is what lets that case finish; it is not a full highlight.
 fn bench_highlighter_tree_sitter_haskell(c: &mut Criterion) {
     let mut group = c.benchmark_group("highlighter/tree_sitter_haskell");
 
