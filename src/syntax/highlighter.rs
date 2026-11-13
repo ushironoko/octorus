@@ -8,13 +8,19 @@
 //!
 //! Syntect is used as a fallback for other languages (Vue, Svelte, YAML, Markdown, etc.).
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
+use std::time::{Duration, Instant};
 
 use lasso::Rodeo;
 use ratatui::style::Style;
 use smallvec::smallvec;
 use syntect::easy::HighlightLines;
-use tree_sitter::{Query, QueryCursor, StreamingIterator, Tree};
+use tokio_util::sync::CancellationToken;
+use tree_sitter::{
+    Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
+};
 
 use crate::app::{InternedSpan, SpanVec};
 use crate::language::SupportedLanguage;
@@ -22,6 +28,131 @@ use crate::language::SupportedLanguage;
 use super::parser_pool::ParserPool;
 use super::themes::ThemeStyleCache;
 use super::{convert_syntect_style, get_theme, syntax_for_file, syntax_set};
+
+/// Wall-clock budget for one *prefetch* file.
+///
+/// The file the user is looking at does not use this. A large linear file is
+/// allowed to finish and replace the plain diff. Prefetch uses the budget so
+/// one slow file cannot hold the queue.
+///
+/// Measured on `3b1ec19` (bench profile, parser pool reused,
+/// `generate_haskell_diff_patch`, `has_error == true`): 1000 lines 159 ms,
+/// 2000 lines 1.38 s, 4000 lines 8.05 s.
+pub const PREFETCH_QUERY_BUDGET: Duration = Duration::from_secs(1);
+
+/// Documented maximum for [`QueryCursor::set_match_limit`] (`> 0` and `<= 65536`).
+///
+/// This counts in-progress capture lists, not total captures. The default
+/// cursor limit is `u32::MAX` (grow as needed). Setting this value makes
+/// tree-sitter drop the earliest in-progress match once the pool is full
+/// (`tree-sitter` `api.h`). On the 2000-line generated Haskell input
+/// (`has_error == true`, 22,297 captures) the flag stayed false.
+///
+/// The cap cannot be raised. The viewed file therefore does not set it: a
+/// large file's captures would otherwise be stolen and the highlight thrown
+/// away. Prefetch still sets it and publishes the plain diff if it trips.
+pub const HIGHLIGHT_MATCH_LIMIT: u32 = 65_536;
+
+/// Why a highlight was thrown away. The caller keeps the plain diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightAbort {
+    /// The file switch (or a dropped prefetch) cancelled the job.
+    Cancelled,
+    /// [`PREFETCH_QUERY_BUDGET`] elapsed during the query.
+    TimedOut,
+    /// [`HIGHLIGHT_MATCH_LIMIT`] in-progress matches was exceeded.
+    MatchLimit,
+}
+
+/// Cooperative stop signal checked before a query and from tree-sitter's
+/// progress callback (every 100 query operations).
+pub trait HighlightControl {
+    fn poll_abort(&self) -> Option<HighlightAbort>;
+
+    /// `Some` installs [`QueryCursor::set_match_limit`] and discards the
+    /// highlight if tree-sitter reports that in-progress matches were stolen.
+    ///
+    /// `None` leaves the cursor at its default (`u32::MAX`). The viewed file
+    /// uses `None` because the documented maximum is [`HIGHLIGHT_MATCH_LIMIT`]
+    /// and a stolen-match result must not come back as the plain diff.
+    fn match_limit(&self) -> Option<u32> {
+        None
+    }
+}
+
+/// Cancellation only. The viewed file uses this: no deadline and no match cap,
+/// so a large highlight can finish and replace the plain diff. Switching files
+/// cancels `cancel`.
+pub struct CancelHighlight {
+    cancel: CancellationToken,
+}
+
+impl CancelHighlight {
+    pub fn new(cancel: CancellationToken) -> Self {
+        Self { cancel }
+    }
+}
+
+impl HighlightControl for CancelHighlight {
+    fn poll_abort(&self) -> Option<HighlightAbort> {
+        self.cancel
+            .is_cancelled()
+            .then_some(HighlightAbort::Cancelled)
+    }
+}
+
+/// No deadline and no cancel. Direct highlight callers (tests, suggestion text)
+/// use this so a small snippet is not subject to the diff-view budget.
+pub struct OpenHighlight;
+
+impl HighlightControl for OpenHighlight {
+    fn poll_abort(&self) -> Option<HighlightAbort> {
+        None
+    }
+}
+
+/// Prefetch budget: a cancellation token plus [`PREFETCH_QUERY_BUDGET`].
+///
+/// Not used for the file on screen. An expired budget publishes the plain diff
+/// for that prefetched file only.
+pub struct HighlightBudget {
+    cancel: CancellationToken,
+    deadline: Instant,
+}
+
+impl HighlightBudget {
+    pub fn new(cancel: CancellationToken, budget: Duration) -> Self {
+        let deadline = Instant::now()
+            .checked_add(budget)
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(1));
+        Self { cancel, deadline }
+    }
+
+    /// A budget that is already expired. Tests use this to prove the deadline
+    /// is consulted.
+    pub fn already_expired(cancel: CancellationToken) -> Self {
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        Self { cancel, deadline }
+    }
+}
+
+impl HighlightControl for HighlightBudget {
+    fn poll_abort(&self) -> Option<HighlightAbort> {
+        if self.cancel.is_cancelled() {
+            Some(HighlightAbort::Cancelled)
+        } else if Instant::now() >= self.deadline {
+            Some(HighlightAbort::TimedOut)
+        } else {
+            None
+        }
+    }
+
+    fn match_limit(&self) -> Option<u32> {
+        Some(HIGHLIGHT_MATCH_LIMIT)
+    }
+}
 
 /// Unified highlighter that can use either tree-sitter or syntect.
 ///
@@ -200,38 +331,139 @@ pub fn collect_line_highlights(
     capture_names: &[String],
     style_cache: &ThemeStyleCache,
 ) -> LineHighlights {
-    let mut cursor = QueryCursor::new();
-    let mut captures_by_line: HashMap<usize, Vec<LineCapture>> = HashMap::new();
+    collect_line_highlights_bounded(
+        source,
+        tree,
+        query,
+        capture_names,
+        style_cache,
+        &OpenHighlight,
+    )
+    .unwrap_or_else(|_| LineHighlights::empty())
+}
 
-    let line_offsets: Vec<usize> =
-        std::iter::once(0)
-            .chain(source.bytes().enumerate().filter_map(|(i, b)| {
+/// [`collect_line_highlights`] with a cancel/time budget.
+///
+/// `Err` means the captures collected so far were discarded. Callers keep the
+/// plain diff instead of applying a partial highlight.
+pub fn collect_line_highlights_bounded(
+    source: &str,
+    tree: &Tree,
+    query: &Query,
+    capture_names: &[String],
+    style_cache: &ThemeStyleCache,
+    control: &dyn HighlightControl,
+) -> Result<LineHighlights, HighlightAbort> {
+    let line_offsets = line_offsets(source);
+    let mut captures_by_line = HashMap::new();
+    query_highlights(
+        QuerySource {
+            text: source,
+            origin: 0,
+            line_offsets: &line_offsets,
+            source_len: source.len(),
+        },
+        tree,
+        query,
+        capture_names,
+        style_cache,
+        &mut captures_by_line,
+        control,
+    )?;
+
+    for captures in captures_by_line.values_mut() {
+        captures.sort_by_key(|c| c.local_start);
+    }
+
+    Ok(LineHighlights { captures_by_line })
+}
+
+fn line_offsets(source: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(source.bytes().enumerate().filter_map(
+            |(i, b)| {
                 if b == b'\n' {
                     Some(i + 1)
                 } else {
                     None
                 }
-            }))
-            .collect();
+            },
+        ))
+        .collect()
+}
 
-    let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
+/// One query's text, mapped back onto the parent source.
+///
+/// `origin` is added to each node's byte offset before the line lookup, so an
+/// injection query over a substring still addresses the parent source.
+struct QuerySource<'a> {
+    text: &'a str,
+    origin: usize,
+    line_offsets: &'a [usize],
+    source_len: usize,
+}
+
+/// Run one highlight query, recording captures into `out`.
+///
+/// The progress callback is the point where a `spawn_blocking` highlight can
+/// actually stop. `QueryCursor::matches` otherwise runs to completion, and
+/// splitting the same query with `set_byte_range` was measured slower on the
+/// generated Haskell input (and not capture-identical), so this slice does not
+/// chunk the query.
+fn query_highlights(
+    source: QuerySource<'_>,
+    tree: &Tree,
+    query: &Query,
+    capture_names: &[String],
+    style_cache: &ThemeStyleCache,
+    out: &mut HashMap<usize, Vec<LineCapture>>,
+    control: &dyn HighlightControl,
+) -> Result<(), HighlightAbort> {
+    let QuerySource {
+        text,
+        origin,
+        line_offsets,
+        source_len,
+    } = source;
+    if let Some(reason) = control.poll_abort() {
+        return Err(reason);
+    }
+
+    let mut cursor = QueryCursor::new();
+    let match_limit = control.match_limit();
+    if let Some(limit) = match_limit {
+        cursor.set_match_limit(limit);
+    }
+    let aborted = Cell::new(None);
+    let mut callback = |_state: &QueryCursorState| {
+        if let Some(reason) = control.poll_abort() {
+            aborted.set(Some(reason));
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = QueryCursorOptions::new().progress_callback(&mut callback);
+    let mut matches =
+        cursor.matches_with_options(query, tree.root_node(), text.as_bytes(), options);
     while let Some(mat) = matches.next() {
+        if aborted.get().is_some() {
+            break;
+        }
         for capture in mat.captures {
             let node = capture.node;
-            let start_byte = node.start_byte();
-            let end_byte = node.end_byte();
+            let start_byte = origin + node.start_byte();
+            let end_byte = origin + node.end_byte();
 
             let start_line = line_offsets
                 .binary_search(&start_byte)
                 .unwrap_or_else(|i| i.saturating_sub(1));
-
             let end_line = line_offsets
                 .binary_search(&end_byte)
                 .unwrap_or_else(|i| i.saturating_sub(1));
 
             let capture_name = &capture_names[capture.index as usize];
             let style = style_cache.get(capture_name);
-
             if style == Style::default() {
                 continue;
             }
@@ -241,32 +473,34 @@ pub fn collect_line_highlights(
                 let line_end = line_offsets
                     .get(line_idx + 1)
                     .map(|&off| off.saturating_sub(1))
-                    .unwrap_or(source.len());
+                    .unwrap_or(source_len);
 
                 let local_start = start_byte.saturating_sub(line_start);
                 let local_end = end_byte
                     .saturating_sub(line_start)
                     .min(line_end - line_start);
-
                 if local_start < local_end {
-                    captures_by_line
-                        .entry(line_idx)
-                        .or_default()
-                        .push(LineCapture {
-                            local_start,
-                            local_end,
-                            style,
-                        });
+                    out.entry(line_idx).or_default().push(LineCapture {
+                        local_start,
+                        local_end,
+                        style,
+                    });
                 }
             }
         }
     }
+    drop(matches);
 
-    for captures in captures_by_line.values_mut() {
-        captures.sort_by_key(|c| c.local_start);
+    if let Some(reason) = aborted.get() {
+        return Err(reason);
     }
-
-    LineHighlights { captures_by_line }
+    if match_limit.is_some() && cursor.did_exceed_match_limit() {
+        return Err(HighlightAbort::MatchLimit);
+    }
+    if let Some(reason) = control.poll_abort() {
+        return Err(reason);
+    }
+    Ok(())
 }
 
 /// Collect highlights with injection support for languages like Svelte.
@@ -293,11 +527,35 @@ pub fn collect_line_highlights_with_injections(
     parser_pool: &mut ParserPool,
     parent_ext: &str,
 ) -> LineHighlights {
+    collect_line_highlights_with_injections_bounded(
+        source,
+        tree,
+        lang,
+        style_cache,
+        parser_pool,
+        parent_ext,
+        &OpenHighlight,
+    )
+    .unwrap_or_else(|_| LineHighlights::empty())
+}
+
+/// [`collect_line_highlights_with_injections`] with a cancel/time budget.
+///
+/// `Err` discards parent and injection captures alike.
+pub fn collect_line_highlights_with_injections_bounded(
+    source: &str,
+    tree: &Tree,
+    lang: SupportedLanguage,
+    style_cache: &ThemeStyleCache,
+    parser_pool: &mut ParserPool,
+    parent_ext: &str,
+    control: &dyn HighlightControl,
+) -> Result<LineHighlights, HighlightAbort> {
     use crate::syntax::injection::{extract_injections, normalize_language_name};
 
     let query = match parser_pool.get_or_create_query(lang) {
         Some(q) => q,
-        None => return LineHighlights::empty(),
+        None => return Ok(LineHighlights::empty()),
     };
     let capture_names: Vec<String> = query
         .capture_names()
@@ -305,37 +563,29 @@ pub fn collect_line_highlights_with_injections(
         .map(|s| s.to_string())
         .collect();
 
-    let mut result = collect_line_highlights(source, tree, query, &capture_names, style_cache);
+    let mut result =
+        collect_line_highlights_bounded(source, tree, query, &capture_names, style_cache, control)?;
 
     let parent_lang = match SupportedLanguage::from_extension(parent_ext) {
         Some(lang) => lang,
-        None => return result,
+        None => return Ok(result),
     };
 
     let injection_query = match parent_ext {
         "svelte" => tree_sitter_svelte_ng::INJECTIONS_QUERY,
         "vue" => tree_sitter_vue3::INJECTIONS_QUERY,
         "md" | "markdown" => tree_sitter_md::INJECTION_QUERY_BLOCK,
-        _ => return result, // No injection support for other languages yet
+        _ => return Ok(result), // No injection support for other languages yet
     };
 
     let ts_language = parent_lang.ts_language();
     let injections = extract_injections(tree, source.as_bytes(), &ts_language, injection_query);
 
     if injections.is_empty() {
-        return result;
+        return Ok(result);
     }
 
-    let line_offsets: Vec<usize> =
-        std::iter::once(0)
-            .chain(source.bytes().enumerate().filter_map(|(i, b)| {
-                if b == b'\n' {
-                    Some(i + 1)
-                } else {
-                    None
-                }
-            }))
-            .collect();
+    let line_offsets = line_offsets(source);
 
     for injection in injections {
         let mut normalized_lang = normalize_language_name(&injection.language);
@@ -401,60 +651,23 @@ pub fn collect_line_highlights_with_injections(
             .map(|s| s.to_string())
             .collect();
 
-        let mut inj_cursor = QueryCursor::new();
-        let mut inj_matches =
-            inj_cursor.matches(inj_query, inj_tree.root_node(), inj_source.as_bytes());
-
-        while let Some(mat) = inj_matches.next() {
-            for capture in mat.captures {
-                let node = capture.node;
-                let local_start = node.start_byte();
-                let local_end = node.end_byte();
-
-                let abs_start = injection.range.start + local_start;
-                let abs_end = injection.range.start + local_end;
-
-                let start_line = line_offsets
-                    .binary_search(&abs_start)
-                    .unwrap_or_else(|i| i.saturating_sub(1));
-
-                let end_line = line_offsets
-                    .binary_search(&abs_end)
-                    .unwrap_or_else(|i| i.saturating_sub(1));
-
-                let capture_name = &inj_capture_names[capture.index as usize];
-                let style = style_cache.get(capture_name);
-
-                if style == Style::default() {
-                    continue;
-                }
-
-                for line_idx in start_line..=end_line {
-                    let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
-                    let line_end = line_offsets
-                        .get(line_idx + 1)
-                        .map(|&off| off.saturating_sub(1))
-                        .unwrap_or(source.len());
-
-                    let cap_local_start = abs_start.saturating_sub(line_start);
-                    let cap_local_end = abs_end
-                        .saturating_sub(line_start)
-                        .min(line_end - line_start);
-
-                    if cap_local_start < cap_local_end {
-                        result
-                            .captures_by_line
-                            .entry(line_idx)
-                            .or_default()
-                            .push(LineCapture {
-                                local_start: cap_local_start,
-                                local_end: cap_local_end,
-                                style,
-                            });
-                    }
-                }
-            }
+        if let Some(reason) = control.poll_abort() {
+            return Err(reason);
         }
+        query_highlights(
+            QuerySource {
+                text: inj_source,
+                origin: injection.range.start,
+                line_offsets: &line_offsets,
+                source_len: source.len(),
+            },
+            &inj_tree,
+            inj_query,
+            &inj_capture_names,
+            style_cache,
+            &mut result.captures_by_line,
+            control,
+        )?;
     }
 
     // Re-sort captures within each line by start position
@@ -470,7 +683,7 @@ pub fn collect_line_highlights_with_injections(
         });
     }
 
-    result
+    Ok(result)
 }
 
 /// Apply pre-computed highlights to a line, producing InternedSpans.
@@ -1276,6 +1489,67 @@ mod tests {
         assert!(
             color_span.unwrap().style.fg.is_some(),
             "'color' should have syntax highlighting as CSS property in Vue"
+        );
+    }
+
+    /// Counts `poll_abort` calls and cancels once `after` calls have been made.
+    struct CancelAfter {
+        hits: std::sync::atomic::AtomicUsize,
+        after: usize,
+    }
+
+    impl HighlightControl for CancelAfter {
+        fn poll_abort(&self) -> Option<HighlightAbort> {
+            let seen = self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if seen >= self.after {
+                Some(HighlightAbort::Cancelled)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// A cancelled highlight must not come back as captures. `after = 2` skips
+    /// the pre-query check and trips the progress callback, so removing that
+    /// callback makes this return `Ok`.
+    #[test]
+    fn progress_callback_cancel_discards_the_highlight() {
+        use std::sync::atomic::AtomicUsize;
+
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.rs", "Dracula");
+        let source: String = (0..200)
+            .map(|i| format!("fn f{i}() {{ let value = {i}; }}\n"))
+            .collect();
+        let parsed = highlighter
+            .parse_source(&source, &mut pool)
+            .expect("rust source parses");
+        let query = pool.get_or_create_query(parsed.lang).unwrap();
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let theme = crate::syntax::get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+        let control = CancelAfter {
+            hits: AtomicUsize::new(0),
+            after: 2,
+        };
+
+        let result = collect_line_highlights_bounded(
+            &source,
+            &parsed.tree,
+            query,
+            &capture_names,
+            &style_cache,
+            &control,
+        );
+
+        assert_eq!(result.err(), Some(HighlightAbort::Cancelled));
+        assert!(
+            control.hits.load(std::sync::atomic::Ordering::Relaxed) >= 2,
+            "cancel must be observed from inside the query, not only before it"
         );
     }
 }

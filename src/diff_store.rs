@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::app::DiffCache;
 use crate::syntax::ParserPool;
-use crate::ui::diff_view::build_diff_cache;
+use crate::ui::diff_view::build_diff_cache_for_prefetch;
 
 /// ハイライトキャッシュストアの最大エントリ数（メモリ上限）
 ///
@@ -204,7 +205,11 @@ pub struct DiffCacheStore<K: Hash + Eq + Clone + Send + 'static> {
     pub(crate) store: HashMap<K, DiffCache>,
     max_store_entries: usize,
     highlight_rx: Option<mpsc::Receiver<(K, DiffCache)>>,
+    /// Cancelled when the viewed file changes, so the in-flight highlight stops
+    /// and its result is not applied.
+    highlight_cancel: Option<CancellationToken>,
     prefetch_rx: Option<mpsc::Receiver<(K, DiffCache)>>,
+    prefetch_cancel: Option<CancellationToken>,
 }
 
 impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
@@ -215,7 +220,9 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
             store: HashMap::new(),
             max_store_entries,
             highlight_rx: None,
+            highlight_cancel: None,
             prefetch_rx: None,
+            prefetch_cancel: None,
         }
     }
 
@@ -236,6 +243,12 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
             }
             // 旧 current を store に退避
             self.retire_current();
+            self.cancel_highlight();
+            // Drop a queued result with the token. set_current / try_restore
+            // take the token, so poll_highlight can no longer see that the job
+            // was cancelled; leaving the receiver would apply that result to
+            // the file the user just opened.
+            self.highlight_rx = None;
             self.current = Some(cached);
             self.current_key = Some(key.clone());
             true
@@ -245,19 +258,53 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
     }
 
     /// current をセット。旧 current が highlighted なら store に退避。plain は破棄。
+    ///
+    /// Switching the viewed file cancels an in-flight highlight so a slow query
+    /// does not keep running, and so its result cannot replace the new file.
     pub fn set_current(&mut self, key: K, cache: DiffCache) {
         self.retire_current();
+        self.cancel_highlight();
+        self.highlight_rx = None;
         self.current = Some(cache);
         self.current_key = Some(key);
     }
 
     /// ハイライトレシーバー設定
     pub fn set_highlight_rx(&mut self, rx: mpsc::Receiver<(K, DiffCache)>) {
+        self.cancel_highlight();
         self.highlight_rx = Some(rx);
+    }
+
+    /// Arm a highlight job and return the token the worker must observe.
+    ///
+    /// Replaces any in-flight job: the previous token is cancelled and its
+    /// receiver is dropped, so a late send cannot be applied.
+    pub fn begin_highlight(&mut self, rx: mpsc::Receiver<(K, DiffCache)>) -> CancellationToken {
+        self.cancel_highlight();
+        let token = CancellationToken::new();
+        self.highlight_cancel = Some(token.clone());
+        self.highlight_rx = Some(rx);
+        token
+    }
+
+    /// A viewed-file highlight is running and has not been cancelled.
+    pub fn highlight_in_flight(&self) -> bool {
+        self.highlight_rx.is_some()
+            && self
+                .highlight_cancel
+                .as_ref()
+                .is_some_and(|token| !token.is_cancelled())
+    }
+
+    fn cancel_highlight(&mut self) {
+        if let Some(token) = self.highlight_cancel.take() {
+            token.cancel();
+        }
     }
 
     /// プリフェッチレシーバー設定
     pub fn set_prefetch_rx(&mut self, rx: mpsc::Receiver<(K, DiffCache)>) {
+        self.cancel_prefetch();
         self.prefetch_rx = Some(rx);
     }
 
@@ -271,6 +318,18 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         match rx.try_recv() {
             Ok((key, cache)) => {
                 self.highlight_rx = None;
+                if self
+                    .highlight_cancel
+                    .as_ref()
+                    .is_some_and(|token| token.is_cancelled())
+                {
+                    // The user switched files (or otherwise dropped the job)
+                    // after the result was queued. Do not apply it and do not
+                    // store it: a cancelled highlight is stale.
+                    self.highlight_cancel = None;
+                    return false;
+                }
+                self.highlight_cancel = None;
                 // stale チェック: current_key が一致し、patch_hash も一致する場合のみ current にセット
                 let is_current = self.current_key.as_ref() == Some(&key);
                 let hash_matches = self
@@ -340,25 +399,45 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         self.current = None;
         self.current_key = None;
         self.store.clear();
+        self.cancel_highlight();
         self.highlight_rx = None;
+        self.cancel_prefetch();
         self.prefetch_rx = None;
     }
 
     /// store + prefetch のみ破棄（current は維持してフラッシュを回避）
     pub fn clear_store_only(&mut self) {
         self.store.clear();
-        self.prefetch_rx = None;
+        self.drop_prefetch_rx();
     }
 
     pub fn clear_current(&mut self) {
         self.current = None;
         self.current_key = None;
+        self.cancel_highlight();
         self.highlight_rx = None;
     }
 
     /// prefetch_rx をドロップ（プリフェッチ停止）
     pub fn drop_prefetch_rx(&mut self) {
+        self.cancel_prefetch();
         self.prefetch_rx = None;
+    }
+
+    fn cancel_prefetch(&mut self) {
+        if let Some(token) = self.prefetch_cancel.take() {
+            token.cancel();
+        }
+    }
+
+    /// Arm a prefetch job. Dropping the receiver via [`Self::drop_prefetch_rx`]
+    /// cancels `token`, and the worker checks it between files.
+    pub fn begin_prefetch(&mut self, rx: mpsc::Receiver<(K, DiffCache)>) -> CancellationToken {
+        self.cancel_prefetch();
+        let token = CancellationToken::new();
+        self.prefetch_cancel = Some(token.clone());
+        self.prefetch_rx = Some(rx);
+        token
     }
 
     /// 全ファイルのハイライト済みキャッシュをバックグラウンドで事前構築
@@ -377,25 +456,11 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         }
         let channel_size = items.len();
         let (tx, rx) = mpsc::channel(channel_size);
-        self.prefetch_rx = Some(rx);
+        let cancel = self.begin_prefetch(rx);
 
         let theme = theme.to_string();
         tokio::task::spawn_blocking(move || {
-            let mut parser_pool = ParserPool::new();
-            for item in items {
-                let mut cache = build_diff_cache(
-                    &item.patch,
-                    &item.filename,
-                    &theme,
-                    &mut parser_pool,
-                    markdown_rich,
-                    tab_width,
-                );
-                cache.file_index = item.file_index;
-                if tx.blocking_send((item.key, cache)).is_err() {
-                    break;
-                }
-            }
+            prefetch_highlight_loop(items, &theme, markdown_rich, tab_width, &cancel, &tx);
         });
     }
 
@@ -426,7 +491,9 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
 
     /// snapshot を取得（receiver はドロップ）
     pub fn take_snapshot(&mut self) -> DiffCacheSnapshot<K> {
+        self.cancel_highlight();
         self.highlight_rx = None;
+        self.cancel_prefetch();
         self.prefetch_rx = None;
         DiffCacheSnapshot {
             current: self.current.take(),
@@ -440,7 +507,9 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         self.current = snapshot.current;
         self.current_key = snapshot.current_key;
         self.store = snapshot.store;
+        self.cancel_highlight();
         self.highlight_rx = None;
+        self.cancel_prefetch();
         self.prefetch_rx = None;
     }
 
@@ -459,10 +528,50 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
     }
 }
 
+/// Highlight every prefetch item on one thread, stopping between files.
+///
+/// A file over the prefetch size cap or the per-file time budget is published
+/// as the plain diff (`highlighted: false`) so the next file is not stuck
+/// behind it and a later prefetch does not pick the same file forever. That
+/// plain cache is not a final decision: opening the file still runs the
+/// uncapped current-file highlight. A cancelled job publishes nothing further.
+pub(crate) fn prefetch_highlight_loop<K: Hash + Eq + Clone + Send + 'static>(
+    items: Vec<PrefetchItem<K>>,
+    theme: &str,
+    markdown_rich: bool,
+    tab_width: u8,
+    cancel: &CancellationToken,
+    tx: &mpsc::Sender<(K, DiffCache)>,
+) {
+    let mut parser_pool = ParserPool::new();
+    for item in items {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let mut cache = build_diff_cache_for_prefetch(
+            &item.patch,
+            &item.filename,
+            theme,
+            &mut parser_pool,
+            markdown_rich,
+            tab_width,
+            cancel,
+        );
+        if cancel.is_cancelled() {
+            return;
+        }
+        cache.file_index = item.file_index;
+        if tx.blocking_send((item.key, cache)).is_err() {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use lasso::Rodeo;
+    use tokio_util::sync::CancellationToken;
 
     // ========================================
     // DiffScrollState テスト
@@ -1118,5 +1227,110 @@ mod tests {
         // key=2 は退避できない（ストア上限）
         assert!(!store.store_contains_key(&2));
         assert_eq!(store.store_len(), 2);
+    }
+
+    #[test]
+    fn file_switch_cancels_the_in_flight_highlight_and_does_not_apply_it() {
+        let mut store = DiffCacheStore::<usize>::new(50);
+        store.set_current(0, make_cache(false, 1));
+        let (tx_old, rx_old) = mpsc::channel(1);
+        let old = store.begin_highlight(rx_old);
+
+        // Switching files cancels the previous job and installs a new one.
+        store.set_current(1, make_cache(false, 2));
+        let (tx_new, rx_new) = mpsc::channel(1);
+        let current = store.begin_highlight(rx_new);
+
+        assert!(
+            old.is_cancelled(),
+            "the highlight for file 0 must be cancelled"
+        );
+        assert!(
+            tx_old.try_send((0, make_cache(true, 1))).is_err(),
+            "a cancelled job's receiver is dropped, so its highlight cannot land"
+        );
+        assert_eq!(store.current_key(), Some(&1));
+        assert!(!store.current.as_ref().unwrap().highlighted);
+
+        // Even if the result was already queued on the live channel, cancelling
+        // that job drops it instead of painting syntax onto the plain diff.
+        current.cancel();
+        tx_new.try_send((1, make_cache(true, 2))).unwrap();
+        assert!(!store.poll_highlight());
+        assert!(!store.current.as_ref().unwrap().highlighted);
+        assert!(!store.store_contains_key(&1));
+        assert!(!store.store_contains_key(&0));
+    }
+
+    #[test]
+    fn prefetch_skips_an_over_cap_file_and_still_highlights_the_next() {
+        use crate::ui::diff_view::PREFETCH_HIGHLIGHT_BYTES;
+
+        let mut big = String::from("@@ -1 +1 @@\n+");
+        big.push_str(&"x".repeat(PREFETCH_HIGHLIGHT_BYTES));
+        let small = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n".to_string();
+        let items = vec![
+            PrefetchItem {
+                key: 0,
+                file_index: 0,
+                filename: "big.rs".to_string(),
+                patch: big,
+            },
+            PrefetchItem {
+                key: 1,
+                file_index: 1,
+                filename: "small.rs".to_string(),
+                patch: small,
+            },
+        ];
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel(2);
+        let started = std::time::Instant::now();
+        prefetch_highlight_loop(items, "Dracula", false, 4, &cancel, &tx);
+        drop(tx);
+
+        let mut got = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            got.push(item);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the over-cap file must not stall the following file"
+        );
+        assert_eq!(got.len(), 2);
+        assert!(!got[0].1.highlighted, "the over-cap file stays plain");
+        assert!(
+            got[1].1.highlighted,
+            "the file after an over-cap diff must still be highlighted"
+        );
+        let small_line = got[1].1.lines.iter().find(|line| {
+            line.spans
+                .iter()
+                .any(|span| got[1].1.resolve(span.content).contains("fn"))
+        });
+        let small_line = small_line.expect("small.rs has an fn line");
+        assert!(
+            small_line.spans.len() > 2,
+            "fn must be its own syntax span, not a single plain run"
+        );
+    }
+
+    #[test]
+    fn cancelled_prefetch_publishes_nothing() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let items = vec![PrefetchItem {
+            key: 0,
+            file_index: 0,
+            filename: "small.rs".to_string(),
+            patch: "@@ -1 +1 @@\n+fn main() {}\n".to_string(),
+        }];
+        let (tx, mut rx) = mpsc::channel(1);
+        prefetch_highlight_loop(items, "Dracula", false, 4, &cancel, &tx);
+        drop(tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "a dropped prefetch must not publish a highlight that can be applied later"
+        );
     }
 }

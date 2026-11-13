@@ -36,8 +36,10 @@ pub mod parser_pool;
 pub mod themes;
 
 pub use highlighter::{
-    apply_line_highlights, collect_line_highlights, collect_line_highlights_with_injections,
-    CstParseResult, Highlighter, LineHighlights,
+    apply_line_highlights, collect_line_highlights, collect_line_highlights_bounded,
+    collect_line_highlights_with_injections, collect_line_highlights_with_injections_bounded,
+    CancelHighlight, CstParseResult, HighlightAbort, HighlightBudget, HighlightControl,
+    Highlighter, LineHighlights, OpenHighlight, PREFETCH_QUERY_BUDGET,
 };
 pub use parser_pool::ParserPool;
 pub use themes::ThemeStyleCache;

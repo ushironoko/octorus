@@ -4,11 +4,15 @@ use std::io::Stdout;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+use crate::diff_store::prefetch_highlight_loop;
 use crate::diff_store::MAX_PREFETCH_FILES;
 use crate::github;
 use crate::loader;
 use crate::syntax::ParserPool;
-use crate::ui::diff_view::{build_commit_diff_cache, build_diff_cache, build_plain_diff_cache};
+use crate::ui::diff_view::{
+    build_commit_diff_cache_cancellable, build_commit_diff_cache_prefetch,
+    build_diff_cache_cancellable, build_plain_diff_cache,
+};
 
 use super::types::*;
 use super::{App, AppState};
@@ -121,18 +125,28 @@ impl App {
         let sha = commit.sha.clone();
 
         if cl.diff_store.try_restore(&sha, None) {
+            let highlighted = cl
+                .diff_store
+                .current
+                .as_ref()
+                .is_some_and(|cache| cache.highlighted);
             cl.diff_loading = false;
             cl.diff_error = None;
             cl.diff_scroll.reset();
             if let Some(ref cache) = cl.diff_store.current {
                 cl.diff_scroll.set_line_count(cache.lines.len());
             }
-            cl.pending_diff_sha = None;
-            cl.diff_receiver = None;
-            return;
+            if highlighted {
+                cl.pending_diff_sha = None;
+                cl.diff_receiver = None;
+                return;
+            }
+            // Prefetch published a plain (or partially plain) commit. Keep those
+            // lines visible and fetch again so the viewed commit is highlighted
+            // without the prefetch budget.
         }
 
-        cl.diff_loading = true;
+        cl.diff_loading = cl.diff_store.current_key() != Some(&sha);
         cl.diff_error = None;
         cl.pending_diff_sha = Some(sha.clone());
 
@@ -191,7 +205,7 @@ impl App {
 
         let (fetch_tx, mut fetch_rx) = mpsc::channel::<(String, String)>(max_cache);
         let (result_tx, result_rx) = mpsc::channel(max_cache);
-        cl.diff_store.set_prefetch_rx(result_rx);
+        let cancel = cl.diff_store.begin_prefetch(result_rx);
 
         let use_local = self.local_mode || self.pr_number.is_none();
         let repo = self.repo.clone();
@@ -220,10 +234,21 @@ impl App {
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
             while let Some((sha, diff_text)) = fetch_rx.blocking_recv() {
-                let cache =
-                    build_commit_diff_cache(&diff_text, &theme, &mut parser_pool, tab_width);
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let cache = build_commit_diff_cache_prefetch(
+                    &diff_text,
+                    &theme,
+                    &mut parser_pool,
+                    tab_width,
+                    &cancel,
+                );
+                if cancel.is_cancelled() {
+                    return;
+                }
                 if result_tx.blocking_send((sha, cache)).is_err() {
-                    break;
+                    return;
                 }
             }
         });
@@ -541,21 +566,28 @@ impl App {
                                 }
                             }
 
-                            // Build syntax-highlighted version in background
+                            // Build syntax-highlighted version in background.
+                            // begin_highlight cancels whatever job was in flight
+                            // (including one set_current just cancelled when this
+                            // commit is the selection).
                             let theme = self.config.diff.theme.clone();
                             let sha_clone = sha.clone();
                             let selected = cl.selected;
                             let (tx, rx_hl) = mpsc::channel(1);
-                            cl.diff_store.set_highlight_rx(rx_hl);
+                            let cancel = cl.diff_store.begin_highlight(rx_hl);
 
                             tokio::task::spawn_blocking(move || {
                                 let mut parser_pool = ParserPool::new();
-                                let mut hl_cache = build_commit_diff_cache(
+                                let mut hl_cache = build_commit_diff_cache_cancellable(
                                     &diff_text,
                                     &theme,
                                     &mut parser_pool,
                                     tab_width,
+                                    &cancel,
                                 );
+                                if cancel.is_cancelled() {
+                                    return;
+                                }
                                 hl_cache.file_index = selected;
                                 let _ = tx.try_send((sha_clone, hl_cache));
                             });
@@ -593,10 +625,14 @@ impl App {
                     .current
                     .as_ref()
                     .is_some_and(|c| !c.highlighted);
-                if is_plain
-                    && cl.diff_store.store_contains_key(&current_sha)
-                    && cl.diff_store.try_restore(&current_sha, None)
-                {
+                let stored_highlighted = cl
+                    .diff_store
+                    .store
+                    .get(&current_sha)
+                    .is_some_and(|cache| cache.highlighted);
+                // Only a finished prefetch may replace the plain view. A plain
+                // prefetch result must not cancel the full highlight in flight.
+                if is_plain && stored_highlighted && cl.diff_store.try_restore(&current_sha, None) {
                     if let Some(ref c) = cl.diff_store.current {
                         cl.diff_scroll.set_line_count(c.lines.len());
                     }
@@ -621,15 +657,33 @@ impl App {
         };
 
         if ops.diff_store.current_key() == Some(&path) {
-            return;
+            let settled = ops.diff_patch_receiver.is_some()
+                || ops.diff_store.highlight_in_flight()
+                || ops
+                    .diff_store
+                    .current
+                    .as_ref()
+                    .is_some_and(|cache| cache.highlighted);
+            if settled {
+                return;
+            }
         }
 
         if ops.diff_store.try_restore(&path, None) {
+            let highlighted = ops
+                .diff_store
+                .current
+                .as_ref()
+                .is_some_and(|cache| cache.highlighted);
             if let Some(ref c) = ops.diff_store.current {
                 ops.diff_scroll.set_line_count(c.lines.len());
             }
             ops.diff_scroll.reset();
-            return;
+            if highlighted {
+                return;
+            }
+            // Prefetch published the plain diff. Leave it up and fetch the
+            // patch so the current-file highlight can replace it.
         }
 
         let (tx, rx) = mpsc::channel(1);
@@ -1963,20 +2017,24 @@ fn build_git_ops_diff_from_patch(
     let patch_owned = patch.to_string();
     let filename_owned = filename.to_string();
     let theme_owned = theme.to_string();
+    let cancel = ops.diff_store.begin_highlight(rx);
 
     tokio::task::spawn_blocking(move || {
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(
+        let cache = build_diff_cache_cancellable(
             &patch_owned,
             &filename_owned,
             &theme_owned,
             &mut parser_pool,
             markdown_rich,
             tab_width,
+            &cancel,
         );
+        if cancel.is_cancelled() {
+            return;
+        }
         let _ = tx.blocking_send((key, cache));
     });
-    ops.diff_store.set_highlight_rx(rx);
 }
 
 /// Rebuild the file tree for GitOpsState
@@ -2018,7 +2076,7 @@ fn start_git_ops_prefetch(
     }
 
     let (tx, rx) = mpsc::channel(items.len());
-    ops.diff_store.set_prefetch_rx(rx);
+    let cancel = ops.diff_store.begin_prefetch(rx);
 
     let theme = theme.to_string();
     let wd = working_dir;
@@ -2050,20 +2108,19 @@ fn start_git_ops_prefetch(
 
         let tx2 = tx;
         tokio::task::spawn_blocking(move || {
-            let mut parser_pool = ParserPool::new();
-            for (filename, patch) in diffs {
-                let cache = build_diff_cache(
-                    &patch,
-                    &filename,
-                    &theme,
-                    &mut parser_pool,
-                    markdown_rich,
-                    tab_width,
-                );
-                if tx2.blocking_send((filename, cache)).is_err() {
-                    break;
-                }
-            }
+            let items = diffs
+                .into_iter()
+                .enumerate()
+                .map(
+                    |(index, (filename, patch))| crate::diff_store::PrefetchItem {
+                        key: filename.clone(),
+                        file_index: index,
+                        filename,
+                        patch,
+                    },
+                )
+                .collect();
+            prefetch_highlight_loop(items, &theme, markdown_rich, tab_width, &cancel, &tx2);
         });
     });
 }

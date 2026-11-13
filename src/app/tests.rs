@@ -8692,6 +8692,61 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
     );
 }
 
+/// A plain cache published by prefetch is not final. Opening the file keeps
+/// those lines and starts the uncapped current-file highlight.
+#[tokio::test]
+async fn prefetch_plain_cache_still_starts_a_full_highlight() {
+    let patch = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n";
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "main.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+
+    let mut plain = crate::ui::diff_view::build_plain_diff_cache(patch, 4);
+    plain.file_index = 0;
+    assert!(!plain.highlighted);
+    app.diff_store.store.insert(0, plain);
+
+    app.ensure_diff_cache();
+    assert!(
+        app.diff_store.highlight_in_flight(),
+        "opening a prefetch-plain file must start a highlight"
+    );
+    assert!(
+        app.diff_store
+            .current
+            .as_ref()
+            .is_some_and(|cache| !cache.highlighted),
+        "the plain lines stay up until the highlight finishes"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if app.diff_store.poll_highlight() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let current = app.diff_store.current.as_ref().expect("plain cache stays");
+    assert!(
+        current.highlighted,
+        "the current-file highlight must replace the prefetch plain cache"
+    );
+    assert!(
+        current.lines.iter().any(|line| line.spans.len() > 2),
+        "fn must be its own syntax span after the swap"
+    );
+}
+
 /// ensure_diff_cache: markdownファイルでは markdown_rich 不一致時にキャッシュを再構築する
 #[tokio::test]
 async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
