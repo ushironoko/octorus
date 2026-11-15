@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794114352126,
+  "lastUpdate": 1794720542536,
   "repoUrl": "https://github.com/ushironoko/octorus",
   "entries": {
     "octorus Benchmark": [
@@ -18227,6 +18227,160 @@ window.BENCHMARK_DATA = {
             "name": "diff_parsing/get_line_info_complexity/complex",
             "value": 22157,
             "range": "± 159",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "ushironoko",
+            "username": "ushironoko",
+            "email": "apple19940820@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e3b7c4385563ac7e76b58c82d027e7d0d17d7aca",
+          "message": "Keep full diff highlight on the viewed file; cancel on switch and bound prefetch (#270)\n\n* Cap and cancel diff syntax highlighting\n\nA highlight in spawn_blocking could not be stopped, and one slow file\nstalled every file queued behind it. Skip highlighting above 8 MiB or\n100k lines, abort a query that runs past one second or the match limit,\nand drop a cancelled result instead of applying it.\n\nThe plain diff still renders immediately and is what stays on screen\nwhen the cap or the budget trips.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* Keep full highlight on the file being viewed\n\nThe size cap and the one-second budget stopped a large diff from ever\nreplacing its plain coloring. Those limits now apply only to prefetch.\nThe viewed file still cancels when the user switches away, and it does\nnot set QueryCursor's match limit, which cannot be raised past 65536.\n\nPrefetch may still time out or skip a huge patch, publish the plain\ndiff, and continue. Opening that file starts an uncapped highlight.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n---------\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>",
+          "timestamp": "2026-11-13T06:27:05Z",
+          "url": "https://github.com/ushironoko/octorus/commit/e3b7c4385563ac7e76b58c82d027e7d0d17d7aca"
+        },
+        "date": 1794720542070,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "diff_parsing/classify_line/header",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_diff",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_plus",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_minus",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/added",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/removed",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context_long",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/100",
+            "value": 411,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/500",
+            "value": 2061,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/1000",
+            "value": 4134,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/start/5",
+            "value": 1492,
+            "range": "± 97",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/middle/50",
+            "value": 1731,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/end/95",
+            "value": 1979,
+            "range": "± 151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/start/5",
+            "value": 6709,
+            "range": "± 210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/middle/250",
+            "value": 7924,
+            "range": "± 55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/end/495",
+            "value": 9112,
+            "range": "± 85",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/start/5",
+            "value": 13371,
+            "range": "± 100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/middle/500",
+            "value": 15797,
+            "range": "± 115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/end/995",
+            "value": 18259,
+            "range": "± 150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/simple",
+            "value": 14500,
+            "range": "± 70",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/complex",
+            "value": 15764,
+            "range": "± 1364",
             "unit": "ns/iter"
           }
         ]
