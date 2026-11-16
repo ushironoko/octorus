@@ -464,23 +464,21 @@ fn fit_failure_line(
             hints.to_string(),
         );
     }
-    if width >= NORMAL_FOOTER_WIDTH {
+    if width >= NORMAL_FOOTER_WIDTH || !notice.is_empty() {
+        // A notice that is not whole takes the columns hints would have used.
+        // Hints stay empty until the full notice, the reason, and the key fit.
         fit_failure_line_normal(notice, head, reason, action, hints, width)
-    } else if notice.is_empty() {
+    } else {
         let (head, reason, action, hints) = fit_failure(head, reason, action, hints, width);
         (String::new(), head, reason, action, hints)
-    } else {
-        // The notice is older than this failure. Hints are cut so at least
-        // `PR #N inferred…` stays, and the failure is fitted into the rest.
-        fit_failure_line_notice_first(notice, head, reason, action, hints, width)
     }
 }
 
-/// Keep the retry key and the whole help hint. The full notice outranks the
-/// reason, the key, the `?` hint, and every other hint. When the full notice,
-/// the reason, and the key fit, hints take only what is left. Otherwise the
-/// notice keeps its short floor and the narrow-width rules apply. With no
-/// notice, hints are cut before the reason.
+/// Keep the retry key. The full notice outranks the reason, and the reason
+/// outranks every hint. Hints, including the `?` hint, are drawn only once the
+/// full notice, the reason, and the key fit. Until then the freed columns grow
+/// the notice toward its full text before the reason grows past its minimum.
+/// With no notice, hints are cut before the reason.
 fn fit_failure_line_normal(
     notice: &str,
     head: &str,
@@ -497,6 +495,10 @@ fn fit_failure_line_normal(
     };
     let protected = if notice_locked {
         question_segment_that_fits(hints, notice, head, reason, action, width)
+    } else if !notice.is_empty() {
+        // The notice is still cut, so neither the `?` hint nor any other hint
+        // may take a column.
+        String::new()
     } else {
         question_hint_that_fits(hints, head, action, reason, notice, width)
     };
@@ -506,12 +508,15 @@ fn fit_failure_line_normal(
         hints.to_string()
     };
     let core_full = line_width(&notice_reserve, head, reason, action, &protected);
-    // The whole reason fits beside the reserved notice, the title, the key,
-    // and the `?` hint. Other hints take only the leftover, so a cut reason
-    // never sits next to an intact hint. When the reason does not fit, those
-    // hints are already gone and the reason keeps at least its minimum.
-    let reason_locked = notice_locked || core_full <= width;
-    let others = if !reason_locked {
+    // With no notice, other hints are shown only when the whole reason fits
+    // beside the title, the key, and the `?` hint. A notice that is not whole
+    // takes that room instead, and grows before the reason passes its minimum.
+    let reason_locked = if notice.is_empty() {
+        core_full <= width
+    } else {
+        notice_locked
+    };
+    let others = if (!notice.is_empty() && !notice_locked) || !reason_locked {
         String::new()
     } else if notice_locked {
         // The separator is measured on the combined line, so the notice is not
@@ -544,23 +549,6 @@ fn fit_failure_line_normal(
     }
     let (notice, reason) = share_notice_and_reason(notice, reason, width - base, reason_locked);
     (notice, head.to_string(), reason, action.to_string(), hints)
-}
-
-/// Reserve the notice floor, then fit the failure into what remains.
-fn fit_failure_line_notice_first(
-    notice: &str,
-    head: &str,
-    reason: &str,
-    action: &str,
-    hints: &str,
-    width: usize,
-) -> (String, String, String, String, String) {
-    let floor_cost = leading_cost(&notice_floor(notice)).min(width);
-    let (head, reason, action, hints) =
-        fit_failure(head, reason, action, hints, width - floor_cost);
-    let used = line_width("", &head, &reason, &action, &hints);
-    let notice = clip_leading(notice, width.saturating_sub(used));
-    (notice, head, reason, action, hints)
 }
 
 /// The `?` hint, kept whole, when it fits after the full notice, the reason,
@@ -1755,12 +1743,16 @@ mod tests {
         );
 
         let fitted = line_of(&app, "Esc: close", 98);
-        assert!(fitted.contains("inferred"), "{fitted}");
+        assert!(fitted.contains("from commit"), "{fitted}");
         assert!(fitted.contains("Couldn't load comments"), "{fitted}");
         assert!(fitted.contains("r: retry"), "{fitted}");
         assert!(
-            fitted.contains("comments failed"),
-            "the reason stays beside the notice: {fitted}"
+            fitted.contains("comme"),
+            "the reason keeps its minimum beside the notice: {fitted}"
+        );
+        assert!(
+            !fitted.contains("Esc: close"),
+            "a hint was drawn beside a cut notice: {fitted}"
         );
     }
 
@@ -1928,6 +1920,140 @@ mod tests {
             );
             assert!(!text.contains("r…"), "{width}: {text}");
         }
+    }
+
+    #[test]
+    fn a_cut_notice_never_keeps_a_hint() {
+        let reasons = [
+            "comments failed".to_string(),
+            sized_reason(63),
+            sized_reason(110),
+        ];
+        let closed_hints = footer_hint_back(&comment_app(false).config.keybindings);
+        let split_hints = "j/k/↑↓: scroll | n/N: jump | Tab: switch | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
+        for reason in &reasons {
+            let mut open = comment_app(true);
+            let mut closed = comment_app(false);
+            let mut files = file_list_app();
+            let mut split = split_app();
+            set_failure_reason(&mut open, reason);
+            set_failure_reason(&mut closed, reason);
+            set_failure_reason(&mut files, reason);
+            set_failure_reason(&mut split, reason);
+            assert_no_hint_beside_a_cut_notice(
+                "diff open",
+                &open,
+                "Esc: close",
+                "r: reply",
+                "Esc",
+                reason,
+            );
+            assert_no_hint_beside_a_cut_notice(
+                "diff closed",
+                &closed,
+                &closed_hints,
+                "r: retry",
+                "?",
+                reason,
+            );
+            assert_no_hint_beside_a_cut_notice(
+                "file list",
+                &files,
+                "q: quit",
+                "r: retry",
+                "q",
+                reason,
+            );
+            assert_no_hint_beside_a_cut_notice(
+                "split",
+                &split,
+                split_hints,
+                "r: reply",
+                "j/k",
+                reason,
+            );
+        }
+    }
+
+    fn assert_no_hint_beside_a_cut_notice(
+        name: &str,
+        app: &App,
+        hints: &str,
+        key: &str,
+        marker: &str,
+        reason: &str,
+    ) {
+        const FULL: &str = "PR #1 inferred from commit subject; GitHub did not confirm it";
+        for width in 40..=260 {
+            let text = line_of(app, hints, width);
+            assert!(
+                text.contains(key),
+                "{name} reason {} width {width} dropped {key}: {text}",
+                reason.len()
+            );
+            if !text.contains(FULL) {
+                assert!(
+                    !text.contains(marker),
+                    "{name} reason {} width {width} kept a hint beside a cut notice: {text}",
+                    reason.len()
+                );
+            }
+        }
+    }
+
+    fn comment_app(panel_open: bool) -> App {
+        use crate::github::comment::CommentPublication;
+        use crate::ui::test_buffer::{app_with_comment_on_added_line, comment_on_added_line};
+
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::DiffView;
+        if !panel_open {
+            app.cmt.comment_panel_open = false;
+            app.cmt.review_comments = Some(Vec::new());
+            app.update_file_comment_positions();
+        }
+        app.pr_number = Some(1);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        app
+    }
+
+    fn split_app() -> App {
+        let mut app = comment_app(true);
+        app.state = AppState::SplitViewDiff;
+        app
+    }
+
+    fn file_list_app() -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::FileList;
+        app.pr_number = Some(1);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        app
+    }
+
+    fn set_failure_reason(app: &mut App, reason: &str) {
+        use crate::app::DataState;
+        use crate::github::GhFailure;
+
+        if app.state == AppState::FileList {
+            app.data_state = DataState::Error(GhFailure::other(reason));
+        } else {
+            app.cmt.comment_error = Some(reason.to_string());
+        }
+    }
+
+    fn sized_reason(len: usize) -> String {
+        let mut text = "gh command failed: ".to_string();
+        while text.len() < len {
+            text.push('x');
+        }
+        text.truncate(len);
+        text
     }
 
     fn hint_segments(hints: &str) -> Vec<&str> {
