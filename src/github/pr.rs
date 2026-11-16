@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::client::{
-    check_graphql_errors, gh_api, gh_api_graphql, gh_api_paginate, gh_command,
-    gh_command_allow_exit_codes, FieldValue,
+    check_graphql_errors, format_gh_error, gh_api, gh_api_graphql, gh_api_paginate, gh_command,
+    gh_command_allow_exit_codes, gh_command_output, FieldValue,
 };
 use crate::app::ReviewAction;
 
@@ -504,7 +504,7 @@ const PR_LIST_GRAPHQL_PAGE_MAX: u32 = 100;
 /// `closed` includes merged. The screen reads the title, draft flag, author,
 /// label names, and the CI mark. Checks and labels stop at 100, which is the
 /// window `gh pr list --json` already used.
-const PR_LIST_QUERY: &str = "query($owner:String!,$name:String!,$limit:Int!,$states:[PullRequestState!],$after:String){repository(owner:$owner,name:$name){pullRequests(states:$states,first:$limit,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number title state isDraft updatedAt author{login} labels(first:100){nodes{name}} commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ...on CheckRun{status conclusion} ...on StatusContext{state}}}}}}}} pageInfo{hasNextPage endCursor}}}}";
+const PR_LIST_QUERY: &str = "query($owner:String!,$name:String!,$limit:Int!,$states:[PullRequestState!],$after:String){repository(owner:$owner,name:$name){pullRequests(states:$states,first:$limit,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number title state isDraft updatedAt author{__typename login} labels(first:100){nodes{name}} commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ...on CheckRun{status conclusion} ...on StatusContext{state}}}}}}}} pageInfo{hasNextPage endCursor}}}}";
 
 pub async fn fetch_pr_list(repo: &str, state: PrStateFilter, limit: u32) -> Result<PrListPage> {
     fetch_pr_list_after(repo, state, None, limit).await
@@ -577,11 +577,68 @@ async fn request_pr_list_page(
 ) -> Result<PrListPage> {
     let args = pr_list_command_args(repo, state, after, limit)?;
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = gh_command(&arg_refs).await?;
+    let output = gh_command_output(&arg_refs).await?;
+    // `gh api graphql` exits 1 and prints `gh: <message>` plus the JSON body.
+    // `gh pr list` prints `GraphQL: <message> (<path>)` and no body. The footer
+    // reads that wording, so surface the errors array the same way.
+    if let Some(message) = graphql_failure_message(output.stdout.trim()) {
+        anyhow::bail!("gh command failed: {message}");
+    }
+    if !output.success {
+        anyhow::bail!(
+            "{}",
+            format_gh_error(output.stderr.trim(), output.stdout.trim())
+        );
+    }
     let body: serde_json::Value =
-        serde_json::from_str(&output).context("Failed to parse PR list response")?;
+        serde_json::from_str(&output.stdout).context("Failed to parse PR list response")?;
     check_graphql_errors(&body)?;
     parse_pr_list_payload(body, repo)
+}
+
+/// `gh pr list`'s GraphQL error line: `GraphQL: <message> (<path>)`, with
+/// further errors joined by `, `. `None` when stdout is not that error body,
+/// so a network or HTTP failure keeps the stderr `gh` already printed.
+fn graphql_failure_message(stdout: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    let errors = body.get("errors")?.as_array()?;
+    if errors.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for error in errors {
+        let Some(message) = error.get("message").and_then(|message| message.as_str()) else {
+            continue;
+        };
+        let message = message.trim();
+        if message.is_empty() {
+            continue;
+        }
+        let path = error
+            .get("path")
+            .and_then(|path| path.as_array())
+            .map(|segments| {
+                segments
+                    .iter()
+                    .filter_map(|segment| match segment {
+                        serde_json::Value::String(text) => Some(text.clone()),
+                        serde_json::Value::Number(number) => Some(number.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+            .filter(|path| !path.is_empty());
+        match path {
+            Some(path) => parts.push(format!("{message} ({path})")),
+            None => parts.push(message.to_string()),
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("GraphQL: {}", parts.join(", ")))
+    }
 }
 
 fn pr_list_state_values(state: PrStateFilter) -> &'static [&'static str] {
@@ -673,6 +730,8 @@ struct GqlNamed {
 
 #[derive(Debug, Deserialize)]
 struct GqlActor {
+    #[serde(default, rename = "__typename")]
+    type_name: Option<String>,
     login: Option<String>,
 }
 
@@ -774,10 +833,7 @@ fn parse_pr_list_payload(body: serde_json::Value, repo: &str) -> Result<PrListPa
 }
 
 fn summary_from_node(node: GqlPrNode) -> PullRequestSummary {
-    let login = node
-        .author
-        .and_then(|author| author.login)
-        .unwrap_or_default();
+    let login = list_author_login(node.author);
     let labels = node
         .labels
         .map(|labels| {
@@ -798,6 +854,18 @@ fn summary_from_node(node: GqlPrNode) -> PullRequestSummary {
         labels,
         updated_at: node.updated_at,
         status_check_rollup: rollup_from_commits(node.commits),
+    }
+}
+
+/// `gh pr list --json author` writes a bot as `app/<login>`. A user keeps
+/// `login`. A deleted account is `author: null`, which the JSON list leaves blank.
+fn list_author_login(author: Option<GqlActor>) -> String {
+    match author {
+        Some(author) if author.type_name.as_deref() == Some("Bot") => {
+            format!("app/{}", author.login.unwrap_or_default())
+        }
+        Some(author) => author.login.unwrap_or_default(),
+        None => String::new(),
     }
 }
 
@@ -1275,7 +1343,7 @@ mod tests {
         assert!(query.contains("labels(first:100)"));
         assert!(query.contains("contexts(first:100)"));
         assert!(query.contains("isDraft"));
-        assert!(query.contains("author{login}"));
+        assert!(query.contains("author{__typename login}"));
         assert!(query.contains("...on CheckRun{status conclusion}"));
         assert!(query.contains("...on StatusContext{state}"));
         assert!(!query.contains("workflowName"));
@@ -1470,6 +1538,39 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn pr_list_author_login_matches_gh_pr_list() {
+        let mut bot = list_node(1, false, Some("dependabot"), &[], serde_json::json!([]));
+        bot["author"]["__typename"] = serde_json::json!("Bot");
+        let mut user = list_node(2, false, Some("alice"), &[], serde_json::json!([]));
+        user["author"]["__typename"] = serde_json::json!("User");
+        let deleted = list_node(3, false, None, &[], serde_json::json!([]));
+        let page = super::parse_pr_list_payload(
+            list_page(vec![bot, user, deleted], false, None),
+            "owner/repo",
+        )
+        .unwrap();
+        let logins: Vec<&str> = page
+            .items
+            .iter()
+            .map(|pr| pr.author.login.as_str())
+            .collect();
+        assert_eq!(logins, vec!["app/dependabot", "alice", ""]);
+    }
+
+    #[test]
+    fn pr_list_graphql_error_uses_the_gh_pr_list_wording() {
+        let stdout = r#"{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"locations":[{"line":1,"column":9}],"message":"Could not resolve to a Repository with the name 'owner/missing'."}]}"#;
+        assert_eq!(
+            super::graphql_failure_message(stdout).as_deref(),
+            Some(
+                "GraphQL: Could not resolve to a Repository with the name 'owner/missing'. (repository)"
+            )
+        );
+        assert!(super::graphql_failure_message("not json").is_none());
+        assert!(super::graphql_failure_message(r#"{"data":{"repository":null}}"#).is_none());
     }
 
     #[test]
