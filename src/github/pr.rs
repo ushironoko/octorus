@@ -857,15 +857,19 @@ fn summary_from_node(node: GqlPrNode) -> PullRequestSummary {
     }
 }
 
-/// `gh pr list --json author` writes a bot as `app/<login>`. A user keeps
-/// `login`. A deleted account is `author: null`, which the JSON list leaves blank.
+/// `gh pr list --json author` is `Author.MarshalJSON` (`api/queries_issue.go`).
+/// The list field is `author{login,...on User{id,name}}` (`api/query_builder.go`),
+/// so `id` is set only for a User. An empty id is written as `app/` plus the
+/// login: every other actor, and a null author (`app/` + ""). A User keeps
+/// `login`. The same object sets `is_bot`; the list stores `login` only, which
+/// is what the row and the text filter read.
 fn list_author_login(author: Option<GqlActor>) -> String {
     match author {
-        Some(author) if author.type_name.as_deref() == Some("Bot") => {
-            format!("app/{}", author.login.unwrap_or_default())
+        Some(author) if author.type_name.as_deref() == Some("User") => {
+            author.login.unwrap_or_default()
         }
-        Some(author) => author.login.unwrap_or_default(),
-        None => String::new(),
+        Some(author) => format!("app/{}", author.login.unwrap_or_default()),
+        None => "app/".to_string(),
     }
 }
 
@@ -1427,7 +1431,7 @@ mod tests {
         labels: &[&str],
         checks: serde_json::Value,
     ) -> serde_json::Value {
-        let author = author.map(|login| serde_json::json!({"login": login}));
+        let author = author.map(|login| serde_json::json!({"__typename": "User", "login": login}));
         serde_json::json!({
             "number": number,
             "title": format!("PR {number}"),
@@ -1544,11 +1548,20 @@ mod tests {
     fn pr_list_author_login_matches_gh_pr_list() {
         let mut bot = list_node(1, false, Some("dependabot"), &[], serde_json::json!([]));
         bot["author"]["__typename"] = serde_json::json!("Bot");
-        let mut user = list_node(2, false, Some("alice"), &[], serde_json::json!([]));
-        user["author"]["__typename"] = serde_json::json!("User");
-        let deleted = list_node(3, false, None, &[], serde_json::json!([]));
+        let mut mannequin = list_node(2, false, Some("aatmmr"), &[], serde_json::json!([]));
+        mannequin["author"]["__typename"] = serde_json::json!("Mannequin");
+        let mut org = list_node(3, false, Some("acme"), &[], serde_json::json!([]));
+        org["author"]["__typename"] = serde_json::json!("Organization");
+        let mut enterprise = list_node(4, false, Some("ent"), &[], serde_json::json!([]));
+        enterprise["author"]["__typename"] = serde_json::json!("EnterpriseUserAccount");
+        let user = list_node(5, false, Some("alice"), &[], serde_json::json!([]));
+        let deleted = list_node(6, false, None, &[], serde_json::json!([]));
         let page = super::parse_pr_list_payload(
-            list_page(vec![bot, user, deleted], false, None),
+            list_page(
+                vec![bot, mannequin, org, enterprise, user, deleted],
+                false,
+                None,
+            ),
             "owner/repo",
         )
         .unwrap();
@@ -1557,7 +1570,17 @@ mod tests {
             .iter()
             .map(|pr| pr.author.login.as_str())
             .collect();
-        assert_eq!(logins, vec!["app/dependabot", "alice", ""]);
+        assert_eq!(
+            logins,
+            vec![
+                "app/dependabot",
+                "app/aatmmr",
+                "app/acme",
+                "app/ent",
+                "alice",
+                "app/",
+            ]
+        );
     }
 
     #[test]
@@ -1583,7 +1606,7 @@ mod tests {
         let page = super::parse_pr_list_payload(body, "owner/repo").unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].number, 7);
-        assert_eq!(page.items[0].author.login, "");
+        assert_eq!(page.items[0].author.login, "app/");
         assert!(!page.has_more);
         assert!(page.end_cursor.is_none());
     }

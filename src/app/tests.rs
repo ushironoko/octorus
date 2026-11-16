@@ -7950,7 +7950,7 @@ fn pr_list_node(
         "state": "OPEN",
         "isDraft": draft,
         "updatedAt": "2025-01-01T00:00:00Z",
-        "author": {"login": login},
+        "author": {"__typename": "User", "login": login},
         "labels": {
             "nodes": labels
                 .iter()
