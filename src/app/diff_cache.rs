@@ -2,11 +2,52 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
+use crate::diff::{get_line_info, PatchLookup};
 use crate::github::{ChangedFile, PullRequest};
 use crate::syntax::ParserPool;
 
 use super::types::*;
 use super::{App, DataState};
+
+/// The patch index last built for one file.
+///
+/// `files_id`, `patch_ptr`, and `patch_len` name allocations. They are
+/// compared, never dereferenced. `generation` moves when the file list is
+/// edited in place, so a recycled patch buffer cannot pass the pointer check.
+pub(crate) struct CachedPatchLookup {
+    file_index: usize,
+    filename: String,
+    files_id: usize,
+    patch_hash: u64,
+    patch_ptr: usize,
+    patch_len: usize,
+    generation: u64,
+    pub(crate) lookup: PatchLookup,
+}
+
+enum LookupDecision {
+    Retarget {
+        files_id: usize,
+        ptr: usize,
+        len: usize,
+    },
+    Rebuild {
+        filename: String,
+        files_id: usize,
+        hash: u64,
+        ptr: usize,
+        len: usize,
+        lookup: Box<PatchLookup>,
+    },
+}
+
+/// Owned suggestion range taken from the cached index.
+pub(crate) struct CachedSuggestion {
+    pub end_line: u32,
+    pub start_line: u32,
+    pub diff_position: u32,
+    pub original_code: String,
+}
 
 impl App {
     pub(crate) fn calc_diff_line_count(files: &[ChangedFile], selected: usize) -> usize {
@@ -52,6 +93,207 @@ impl App {
         self.request_lazy_diff();
         self.ensure_diff_cache();
     }
+    #[cfg(test)]
+    pub(crate) fn patch_lookup_builds(&self) -> u64 {
+        self.patch_lookup_builds
+    }
+
+    pub(crate) fn bump_files_generation(&mut self) {
+        self.files_generation = self.files_generation.wrapping_add(1);
+    }
+
+    /// Build the patch index for the selected file, or reuse it.
+    ///
+    /// The plain diff is drawn without this. Callers are line lookup and
+    /// comment placement, so the first paint of a file does not wait on it.
+    /// A hit compares the file-list allocation and the patch buffer and does
+    /// not hash or scan. The same text in a new buffer (highlight keep,
+    /// shared-file `make_mut`, a watcher refresh of an unchanged file)
+    /// retargets the existing index. Different text rebuilds it.
+    pub(crate) fn ensure_patch_lookup(&mut self) -> bool {
+        let decision = {
+            let DataState::Loaded { files, .. } = &self.data_state else {
+                self.cached_patch_lookup = None;
+                return false;
+            };
+            let files_id = files.allocation_id();
+            let Some(file) = files.get(self.selected_file) else {
+                self.cached_patch_lookup = None;
+                return false;
+            };
+            let Some(patch) = file.patch.as_deref() else {
+                return false;
+            };
+            let ptr = patch.as_ptr() as usize;
+            let len = patch.len();
+            let file_index = self.selected_file;
+            let generation = self.files_generation;
+            let hit = self.cached_patch_lookup.as_ref().is_some_and(|cached| {
+                cached.generation == generation
+                    && cached.files_id == files_id
+                    && cached.file_index == file_index
+                    && cached.filename == file.filename
+                    && cached.patch_ptr == ptr
+                    && cached.patch_len == len
+            });
+            if hit {
+                return true;
+            }
+            let hash = hash_string(patch);
+            if self.cached_patch_lookup.as_ref().is_some_and(|cached| {
+                cached.filename == file.filename
+                    && cached.patch_hash == hash
+                    && !cached.lookup.is_fallback()
+            }) {
+                LookupDecision::Retarget { files_id, ptr, len }
+            } else {
+                let lookup = Box::new(PatchLookup::build(patch));
+                LookupDecision::Rebuild {
+                    filename: file.filename.clone(),
+                    files_id,
+                    hash,
+                    ptr,
+                    len,
+                    lookup,
+                }
+            }
+        };
+        match decision {
+            LookupDecision::Retarget { files_id, ptr, len } => {
+                if let Some(cached) = self.cached_patch_lookup.as_mut() {
+                    cached.file_index = self.selected_file;
+                    cached.files_id = files_id;
+                    cached.patch_ptr = ptr;
+                    cached.patch_len = len;
+                    cached.generation = self.files_generation;
+                }
+                true
+            }
+            LookupDecision::Rebuild {
+                filename,
+                files_id,
+                hash,
+                ptr,
+                len,
+                lookup,
+            } => {
+                self.patch_lookup_builds = self.patch_lookup_builds.saturating_add(1);
+                let lookup = *lookup;
+                self.cached_patch_lookup = Some(CachedPatchLookup {
+                    file_index: self.selected_file,
+                    filename,
+                    files_id,
+                    patch_hash: hash,
+                    patch_ptr: ptr,
+                    patch_len: len,
+                    generation: self.files_generation,
+                    lookup,
+                });
+                true
+            }
+        }
+    }
+
+    fn selected_patch_and_lookup(&self) -> Option<(&str, &PatchLookup)> {
+        let DataState::Loaded { files, .. } = &self.data_state else {
+            return None;
+        };
+        let patch = files.get(self.selected_file)?.patch.as_deref()?;
+        let lookup = &self.cached_patch_lookup.as_ref()?.lookup;
+        Some((patch, lookup))
+    }
+
+    /// [`crate::diff::get_line_info`] for the selected file, from the cached index.
+    pub(crate) fn cached_line_info(
+        &mut self,
+        line_index: usize,
+    ) -> Option<crate::diff::DiffLineInfo> {
+        if !self.ensure_patch_lookup() {
+            return None;
+        }
+        let (patch, lookup) = self.selected_patch_and_lookup()?;
+        if lookup.is_fallback() {
+            get_line_info(patch, line_index)
+        } else {
+            lookup.line_info(patch, line_index)
+        }
+    }
+
+    /// [`crate::diff::review_comment_span`] for the selected file, from the cached index.
+    pub(crate) fn cached_review_span(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Option<crate::diff::ReviewCommentSpan> {
+        if !self.ensure_patch_lookup() {
+            return None;
+        }
+        let (patch, lookup) = self.selected_patch_and_lookup()?;
+        if lookup.is_fallback() {
+            crate::diff::review_comment_span(patch, start, end)
+        } else {
+            lookup.review_comment_span(start, end)
+        }
+    }
+
+    /// Suggestion range for the selected file, from the cached index.
+    ///
+    /// `None` when the range is not a new-file run. The checks match
+    /// [`crate::diff::validate_multiline_range`] followed by the line reads
+    /// the multiline suggestion composer used to take from [`crate::diff::PatchIndex`].
+    pub(crate) fn cached_suggestion(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Option<CachedSuggestion> {
+        if !self.ensure_patch_lookup() {
+            return None;
+        }
+        let (patch, lookup) = self.selected_patch_and_lookup()?;
+        let row_info = |row: usize| {
+            if lookup.is_fallback() {
+                get_line_info(patch, row)
+            } else {
+                lookup.line_info(patch, row)
+            }
+        };
+        let valid = if lookup.is_fallback() {
+            crate::diff::validate_multiline_range(patch, start, end)
+        } else {
+            lookup.is_suggestion_range(start, end)
+        };
+        if !valid {
+            return None;
+        }
+        let end_info = row_info(end)?;
+        if !matches!(
+            end_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return None;
+        }
+        let end_line = end_info.new_line_number?;
+        let diff_position = end_info.diff_position?;
+        let start_line = row_info(start)?.new_line_number?;
+        let mut original_lines = Vec::new();
+        for row in start..=end {
+            if let Some(info) = row_info(row) {
+                if matches!(
+                    info.line_type,
+                    crate::diff::LineType::Added | crate::diff::LineType::Context
+                ) {
+                    original_lines.push(info.line_content);
+                }
+            }
+        }
+        Some(CachedSuggestion {
+            end_line,
+            start_line,
+            diff_position,
+            original_code: original_lines.join("\n"),
+        })
+    }
+
     pub fn ensure_diff_cache(&mut self) {
         let file_index = self.selected_file;
         let markdown_rich = self.markdown_rich;

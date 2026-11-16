@@ -273,6 +273,18 @@ pub struct App {
     /// マウスドラッグの状態機械
     pub(crate) drag_state: input_mouse::DragState,
     pub theme: Theme,
+    /// Line and position index for the patch currently being queried.
+    ///
+    /// Keyed by the patch allocation and its hash. A highlight swap keeps the
+    /// same patch text, so the index stays. A refresh, a watcher update, or a
+    /// newly filled untracked patch misses the key and is rebuilt or dropped.
+    cached_patch_lookup: Option<diff_cache::CachedPatchLookup>,
+    /// Bumped when the file list is replaced or edited, so a recycled patch
+    /// allocation cannot keep serving the previous index.
+    files_generation: u64,
+    /// How many times the index was built. Tests use this to show a refresh
+    /// reuses the index when the patch text is unchanged.
+    patch_lookup_builds: u64,
 }
 
 /// 入力ハンドラ用の画面サイズ。`Terminal::size()` は実端末への問い合わせのため
@@ -369,6 +381,9 @@ impl App {
             hit_map: crate::ui::hit::HitMap::default(),
             drag_state: input_mouse::DragState::default(),
             theme,
+            cached_patch_lookup: None,
+            files_generation: 0,
+            patch_lookup_builds: 0,
         }
     }
 

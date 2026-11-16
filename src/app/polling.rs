@@ -735,6 +735,10 @@ impl App {
     /// write so [`SharedFiles::make_mut`] does not copy the patches. Otherwise
     /// the screen list is edited and the cache is pointed at that `Arc`.
     fn edit_shared_files<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
+        // A unique `make_mut` can replace a patch string in the same buffer
+        // address. Bump before the write so the line index cannot treat that
+        // address as the text it already indexed.
+        self.bump_files_generation();
         let key = self.current_cache_key();
         let data_state = &mut self.data_state;
         let session_cache = &mut self.session_cache;

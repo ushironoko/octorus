@@ -6198,6 +6198,65 @@ fn test_update_file_comment_positions_with_comments() {
 }
 
 #[test]
+fn patch_lookup_is_reused_until_the_patch_text_changes() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.update_file_comment_positions();
+    assert_eq!(
+        app.patch_lookup_builds(),
+        0,
+        "a file with no comments does not build an index"
+    );
+
+    app.cmt.review_comments = Some(vec![review_on(
+        1,
+        Some(1),
+        None,
+        None,
+        "on the context line",
+    )]);
+    app.update_file_comment_positions();
+    assert_eq!(app.patch_lookup_builds(), 1);
+    let positions = app.cmt.file_comment_positions.clone();
+    assert_eq!(positions.len(), 1);
+
+    app.update_file_comment_positions();
+    assert_eq!(
+        app.patch_lookup_builds(),
+        1,
+        "the same patch is not reindexed"
+    );
+    assert_eq!(app.cmt.file_comment_positions, positions);
+
+    // Highlight keep and a watcher refresh of an unchanged file move the bytes
+    // into a new allocation. The index stays.
+    {
+        let DataState::Loaded { files, .. } = &mut app.data_state else {
+            panic!("files are loaded");
+        };
+        files.make_mut()[0].patch = Some(patch.to_string());
+    }
+    app.bump_files_generation();
+    app.update_file_comment_positions();
+    assert_eq!(app.patch_lookup_builds(), 1);
+    assert_eq!(app.cmt.file_comment_positions, positions);
+
+    {
+        let DataState::Loaded { files, .. } = &mut app.data_state else {
+            panic!("files are loaded");
+        };
+        files.make_mut()[0].patch = Some("@@ -8,1 +8,1 @@\n-old\n+new\n".to_string());
+    }
+    app.bump_files_generation();
+    app.update_file_comment_positions();
+    assert_eq!(app.patch_lookup_builds(), 2);
+    assert!(
+        app.cmt.file_comment_positions.is_empty(),
+        "line 1 is not in the replacement patch"
+    );
+}
+
+#[test]
 fn test_update_file_comment_positions_stale_comment() {
     let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
     let mut app = make_app_with_patch(patch);

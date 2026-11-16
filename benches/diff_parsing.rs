@@ -9,7 +9,8 @@ mod common;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use common::{generate_diff_patch, generate_simple_patch};
-use octorus::{get_line_info, PatchClassifier};
+use octorus::diff::DiffSide;
+use octorus::{get_line_info, linear_marker_rows, CommentAnchor, PatchClassifier, PatchLookup};
 
 fn bench_classify_line(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff_parsing/classify_line");
@@ -120,11 +121,119 @@ fn bench_get_line_info_complexity(c: &mut Criterion) {
     group.finish();
 }
 
+/// Indexed line lookup. The index is built outside the timed loop.
+fn bench_patch_lookup_line(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff_parsing/patch_lookup_line");
+
+    for line_count in [100, 500, 1000] {
+        let patch = generate_diff_patch(line_count);
+        let lookup = PatchLookup::build(&patch);
+        for (position_name, position) in [
+            ("start", 5_usize),
+            ("middle", line_count / 2),
+            ("end", line_count.saturating_sub(5)),
+        ] {
+            group.bench_with_input(
+                BenchmarkId::new(format!("{line_count}/{position_name}"), position),
+                &(patch.clone(), position),
+                |b, (patch, pos)| {
+                    b.iter(|| {
+                        black_box(lookup.line_info(black_box(patch), black_box(*pos)));
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+/// One index build, then every comment. Compared with a linear scan per comment.
+fn bench_comment_positions(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff_parsing/comment_positions");
+    group.sample_size(10);
+
+    for line_count in [1_000_usize, 100_000, 1_000_000] {
+        let patch = generate_diff_patch(line_count);
+        let lookup = PatchLookup::build(&patch);
+        let anchors = comment_anchors(&lookup, &patch, 64);
+        let patch_linear = patch.clone();
+        let anchors_linear = anchors.clone();
+
+        group.throughput(Throughput::Elements(anchors.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("indexed", line_count),
+            &patch,
+            |b, patch| {
+                b.iter(|| {
+                    let lookup = PatchLookup::build(black_box(patch));
+                    black_box(
+                        anchors
+                            .iter()
+                            .map(|anchor| lookup.marker_rows(*anchor))
+                            .collect::<Vec<_>>(),
+                    );
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("linear", line_count),
+            &patch_linear,
+            |b, patch| {
+                b.iter(|| {
+                    black_box(
+                        anchors_linear
+                            .iter()
+                            .map(|anchor| linear_marker_rows(black_box(patch), *anchor))
+                            .collect::<Vec<_>>(),
+                    );
+                });
+            },
+        );
+        // The lookup above is rebuilt inside the loop. Keep this build live so
+        // the anchor harvest cannot be optimized out of the setup.
+        black_box(lookup.len());
+    }
+
+    group.finish();
+}
+
+fn comment_anchors(lookup: &PatchLookup, patch: &str, count: usize) -> Vec<CommentAnchor> {
+    let mut anchors = Vec::with_capacity(count);
+    let step = (lookup.len() / count.max(1)).max(1);
+    for row in (0..lookup.len()).step_by(step) {
+        let Some(info) = lookup.line_info(patch, row) else {
+            continue;
+        };
+        let Some(line) = info.new_line_number.or(info.old_line_number) else {
+            continue;
+        };
+        let side = if info.new_line_number.is_some() {
+            DiffSide::Right
+        } else {
+            DiffSide::Left
+        };
+        let start_line = (line > 2 && anchors.len() % 2 == 0).then_some(line - 2);
+        anchors.push(CommentAnchor {
+            side,
+            line,
+            start_line,
+            start_side: side,
+        });
+        if anchors.len() == count {
+            break;
+        }
+    }
+    anchors
+}
+
 criterion_group!(
     benches,
     bench_classify_line,
     bench_classify_line_batch,
     bench_get_line_info,
     bench_get_line_info_complexity,
+    bench_patch_lookup_line,
+    bench_comment_positions,
 );
 criterion_main!(benches);

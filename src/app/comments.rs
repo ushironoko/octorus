@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 
 use crate::cache::{load_local_review_comments, LocalCommentMeta, LocalReviewComment, PrCacheKey};
 use crate::diff::{
-    diff_rows_on_side, find_diff_line_index, parse_diff_side, position_to_side_line, DiffSide,
-    SideLine,
+    find_diff_line_index, linear_marker_rows, parse_diff_side, position_to_side_line,
+    CommentAnchor, DiffSide, PatchLookup, SideLine,
 };
 use crate::github::comment::{CommentPublication, Review, ReviewComment};
 use crate::github::{self, ChangedFile};
@@ -171,21 +171,21 @@ fn classify_add_error(error: anyhow::Error) -> CommentSubmitResult {
 /// still a row of this patch on the draft's side, it is written back too. A start
 /// that has left the patch is not copied: copying it would make a left-hand draft
 /// look outdated and drop the end row that can still be placed.
-fn resolve_draft_position(draft: &mut ReviewComment, patch: &str) {
+fn resolve_draft_position(draft: &mut ReviewComment, patch: &str, lookup: Option<&PatchLookup>) {
     if draft.line.is_none() {
         let Some(position) = draft.location.position else {
             return;
         };
-        let Some(target) = position_to_side_line(patch, position) else {
+        let Some(target) = position_line(patch, lookup, position) else {
             return;
         };
         draft.line = Some(target.line);
         draft.location.side = Some(target.side.as_github_side().to_string());
     }
-    recover_draft_start_line(draft, patch);
+    recover_draft_start_line(draft, patch, lookup);
 }
 
-fn recover_draft_start_line(draft: &mut ReviewComment, patch: &str) {
+fn recover_draft_start_line(draft: &mut ReviewComment, patch: &str, lookup: Option<&PatchLookup>) {
     if draft.start_line.is_some() {
         return;
     }
@@ -196,7 +196,7 @@ fn recover_draft_start_line(draft: &mut ReviewComment, patch: &str) {
         return;
     }
     let side = parse_diff_side(draft.location.side.as_deref());
-    if find_diff_line_index(patch, SideLine { side, line: start }).is_none() {
+    if locate_line(patch, lookup, SideLine { side, line: start }).is_none() {
         return;
     }
     draft.start_line = Some(start);
@@ -205,10 +205,32 @@ fn recover_draft_start_line(draft: &mut ReviewComment, patch: &str) {
     }
 }
 
-fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
-    Some(SideLine {
+fn position_line(patch: &str, lookup: Option<&PatchLookup>, position: u32) -> Option<SideLine> {
+    match lookup {
+        Some(lookup) if !lookup.is_fallback() => lookup.side_line_at_position(position),
+        _ => position_to_side_line(patch, position),
+    }
+}
+
+fn locate_line(patch: &str, lookup: Option<&PatchLookup>, target: SideLine) -> Option<usize> {
+    match lookup {
+        Some(lookup) if !lookup.is_fallback() => lookup.find_line(target),
+        _ => find_diff_line_index(patch, target),
+    }
+}
+
+fn comment_anchor_span(comment: &ReviewComment) -> Option<CommentAnchor> {
+    Some(CommentAnchor {
         side: parse_diff_side(comment.location.side.as_deref()),
         line: comment.line?,
+        start_line: comment.start_line,
+        start_side: parse_diff_side(
+            comment
+                .location
+                .start_side
+                .as_deref()
+                .or(comment.location.side.as_deref()),
+        ),
     })
 }
 
@@ -220,70 +242,24 @@ fn comment_anchor(comment: &ReviewComment) -> Option<SideLine> {
 /// right-hand range is not marked, and an added row inside a left-hand range is
 /// not marked. A start that is not in the patch does not stretch the mark: the
 /// right-hand comment stays on its end row, and a left-hand comment whose start
-/// has left the patch is not placed (`left_anchor_resolves`). A range whose ends
-/// sit on different sides marks those two rows only.
+/// has left the patch is not placed. A range whose ends sit on different sides
+/// marks those two rows only. The rules live in [`crate::diff::marker_rows`].
 fn comment_marker_rows(comment: &ReviewComment, patch: &str) -> Vec<usize> {
-    let Some(anchor) = comment_anchor(comment) else {
-        return Vec::new();
-    };
-    if anchor.side == DiffSide::Left && !left_anchor_resolves(comment, patch) {
-        return Vec::new();
-    }
-    let Some(end_row) = find_diff_line_index(patch, anchor) else {
-        return Vec::new();
-    };
-    let Some(start) = comment.start_line else {
-        return vec![end_row];
-    };
-    let start_side = parse_diff_side(
-        comment
-            .location
-            .start_side
-            .as_deref()
-            .or(comment.location.side.as_deref()),
-    );
-    // The same file line on the same side is one row. The same number on the
-    // other side is a different row (the removed line and the added line).
-    if start == anchor.line && start_side == anchor.side {
-        return vec![end_row];
-    }
-    let start_target = SideLine {
-        side: start_side,
-        line: start,
-    };
-    match find_diff_line_index(patch, start_target) {
-        Some(_) if start_side == anchor.side && start < anchor.line => {
-            diff_rows_on_side(patch, anchor.side, start, anchor.line)
-        }
-        Some(start_row) if start_row != end_row => {
-            let mut rows = vec![start_row, end_row];
-            rows.sort_unstable();
-            rows
-        }
-        _ => vec![end_row],
-    }
+    comment_marker_rows_with(comment, patch, None)
 }
 
-/// Every `LEFT` endpoint of a comment must hit an old-file row.
-/// A `RIGHT` start line is not required. New-file placement ignores it.
-fn left_anchor_resolves(comment: &ReviewComment, patch: &str) -> bool {
-    let Some(line) = comment.line else {
-        return false;
+fn comment_marker_rows_with(
+    comment: &ReviewComment,
+    patch: &str,
+    lookup: Option<&PatchLookup>,
+) -> Vec<usize> {
+    let Some(anchor) = comment_anchor_span(comment) else {
+        return Vec::new();
     };
-    if find_diff_line_index(patch, SideLine::left(line)).is_none() {
-        return false;
+    match lookup {
+        Some(lookup) if !lookup.is_fallback() => lookup.marker_rows(anchor),
+        _ => linear_marker_rows(patch, anchor),
     }
-    let Some(start) = comment.start_line else {
-        return true;
-    };
-    let start_side = parse_diff_side(
-        comment
-            .location
-            .start_side
-            .as_deref()
-            .or(comment.location.side.as_deref()),
-    );
-    start_side == DiffSide::Right || find_diff_line_index(patch, SideLine::left(start)).is_some()
 }
 
 /// Footer text when opening a review comment lands on row 0 because its line
@@ -365,13 +341,13 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
-        let Some(patch) = file.patch.as_ref() else {
+        if file.patch.is_none() {
             return;
-        };
+        }
+        let selected = self.diff_scroll.selected_line;
 
         // Get actual line number from diff
-        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
-        else {
+        let Some(line_info) = self.cached_line_info(selected) else {
             return;
         };
 
@@ -379,7 +355,11 @@ impl App {
         // comments on the old file (LEFT). The no-newline marker is a context
         // row with no file line: say why `c` did nothing.
         let Some((side, line_number)) = line_info.review_comment_line() else {
-            let row = patch.lines().nth(self.diff_scroll.selected_line);
+            let row = self
+                .files()
+                .get(self.selected_file)
+                .and_then(|file| file.patch.as_deref())
+                .and_then(|patch| patch.lines().nth(selected));
             if row.is_some_and(crate::diff::is_no_newline_marker) {
                 self.cmt.submission_result = Some(Toast::failure(
                     "Move to a code line to comment: this marker has no line".to_string(),
@@ -559,13 +539,12 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
-        let Some(patch) = file.patch.as_ref() else {
+        if file.patch.is_none() {
             return;
-        };
+        }
 
         // Check if this line can have a suggestion
-        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
-        else {
+        let Some(line_info) = self.cached_line_info(self.diff_scroll.selected_line) else {
             return;
         };
 
@@ -609,11 +588,10 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
-        let Some(patch) = file.patch.as_ref() else {
+        if file.patch.is_none() {
             return;
-        };
-        let Some(line_info) = crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
-        else {
+        }
+        let Some(line_info) = self.cached_line_info(self.diff_scroll.selected_line) else {
             return;
         };
         // The anchor has to be a commentable file row. A removed row is allowed,
@@ -639,14 +617,14 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
-        let Some(patch) = file.patch.as_ref() else {
+        if file.patch.is_none() {
             return;
-        };
+        }
 
         // One side only. A removed run is LEFT (old-file numbers). An added or
         // context run is RIGHT (new-file numbers). A mix, a hunk header, or the
         // no-newline marker does not open the composer, and the selection stays.
-        let Some(span) = crate::diff::review_comment_span(patch, start, end) else {
+        let Some(span) = self.cached_review_span(start, end) else {
             return;
         };
 
@@ -677,52 +655,18 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
-        let Some(patch) = file.patch.as_ref() else {
+        if file.patch.is_none() {
             return;
-        };
+        }
 
         // 範囲内の全行が同一ハンク内の new-side 行であることを検証
-        if !crate::diff::validate_multiline_range(patch, start, end) {
-            return;
-        }
-        let index = crate::diff::PatchIndex::build(patch);
-
-        // 終了行の情報を取得
-        let Some(end_info) = index.get(end) else {
+        let Some(suggestion) = self.cached_suggestion(start, end) else {
             return;
         };
-        if !matches!(
-            end_info.line_type,
-            crate::diff::LineType::Added | crate::diff::LineType::Context
-        ) {
-            return;
-        }
-        let Some(end_line_number) = end_info.new_line_number else {
-            return;
-        };
-        let Some(diff_position) = end_info.diff_position else {
-            return;
-        };
-
-        // 開始行の情報を取得
-        let Some(start_info) = index.get(start) else {
-            return;
-        };
-        let Some(start_line_number) = start_info.new_line_number else {
-            return;
-        };
-        let mut original_lines = Vec::new();
-        for line_idx in start..=end {
-            if let Some(info) = index.get(line_idx) {
-                if matches!(
-                    info.line_type,
-                    crate::diff::LineType::Added | crate::diff::LineType::Context
-                ) {
-                    original_lines.push(info.content);
-                }
-            }
-        }
-        let original_code = original_lines.join("\n");
+        let end_line_number = suggestion.end_line;
+        let start_line_number = suggestion.start_line;
+        let diff_position = suggestion.diff_position;
+        let original_code = suggestion.original_code;
 
         let start_line = if start_line_number < end_line_number {
             Some(start_line_number)
@@ -1483,20 +1427,49 @@ impl App {
         }
     }
 
-    /// Update file_comment_positions based on current file and review_comments
+    /// Update file_comment_positions based on current file and review_comments.
+    ///
+    /// The patch is borrowed. Its line index is built once for this text and
+    /// reused for every comment. A file with no comments does not build it, so
+    /// opening a large diff still paints the plain text first.
     pub(crate) fn update_file_comment_positions(&mut self) {
         self.cmt.file_comment_positions.clear();
         self.cmt.file_comment_lines.clear();
 
-        let Some(file) = self.files().get(self.selected_file) else {
+        let Some(filename) = self
+            .files()
+            .get(self.selected_file)
+            .filter(|file| file.patch.is_some())
+            .map(|file| file.filename.clone())
+        else {
             return;
         };
-        let Some(patch) = file.patch.clone() else {
+        let has_comment_here = self
+            .cmt
+            .review_comments
+            .as_ref()
+            .is_some_and(|comments| comments.iter().any(|comment| comment.path == filename));
+        if !has_comment_here {
             return;
-        };
-        let filename = file.filename.clone();
+        }
+        if !self.ensure_patch_lookup() {
+            return;
+        }
 
-        let Some(ref mut comments) = self.cmt.review_comments else {
+        let DataState::Loaded { files, .. } = &self.data_state else {
+            return;
+        };
+        let Some(patch) = files
+            .get(self.selected_file)
+            .and_then(|file| file.patch.as_deref())
+        else {
+            return;
+        };
+        let lookup = self
+            .cached_patch_lookup
+            .as_ref()
+            .map(|cached| &cached.lookup);
+        let Some(comments) = self.cmt.review_comments.as_mut() else {
             return;
         };
         // The patch is first known here, so this is where a draft's position gets its line.
@@ -1504,7 +1477,7 @@ impl App {
             .iter_mut()
             .filter(|comment| comment.path == filename && comment.is_pending_draft())
         {
-            resolve_draft_position(draft, &patch);
+            resolve_draft_position(draft, patch, lookup);
         }
 
         for (i, comment) in comments.iter().enumerate() {
@@ -1512,7 +1485,7 @@ impl App {
             if comment.path != filename {
                 continue;
             }
-            for diff_index in comment_marker_rows(comment, &patch) {
+            for diff_index in comment_marker_rows_with(comment, patch, lookup) {
                 self.cmt.file_comment_positions.push(CommentPosition {
                     diff_line_index: diff_index,
                     comment_index: i,

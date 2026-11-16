@@ -27,6 +27,9 @@ pub mod ui;
 
 // Re-export commonly used types for benchmarks
 pub use app::{CachedDiffLine, DiffCache, InternedSpan};
-pub use diff::{get_line_info, LineType, PatchClassifier, PatchIndex, PatchLineInfo};
+pub use diff::{
+    get_line_info, linear_marker_rows, marker_rows, CommentAnchor, LineType, PatchClassifier,
+    PatchIndex, PatchLineInfo, PatchLookup,
+};
 pub use syntax::ParserPool;
 pub use ui::diff_view::{build_diff_cache, render_cached_lines};
