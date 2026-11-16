@@ -59,11 +59,13 @@ fn git_ops_notice(app: &App) -> Option<&Toast> {
 // ---- success: 5 seconds, or the next key -------------------------------
 
 #[test]
-fn a_success_toast_is_still_up_at_4_9_seconds() {
+fn a_success_toast_is_still_up_at_4_seconds() {
+    // The exact 5.000s / 5.001s boundary is in `toast::tests`. This scenario
+    // uses the wall clock, so the margin has to survive a stalled runner.
     let mut app = file_list_showing(aged(
         ToastKind::Success,
         "Submitted",
-        Duration::from_millis(4900),
+        Duration::from_secs(4),
     ));
 
     app.poll_comment_submit_updates();
@@ -257,11 +259,13 @@ async fn a_git_op_failure_is_not_removed_by_time() {
 }
 
 #[tokio::test]
-async fn a_git_op_success_is_still_up_at_4_9_seconds() {
+async fn a_git_op_success_is_still_up_at_4_seconds() {
+    // Same margin as the footer scenario: 4.9s left no room for the runtime
+    // to start before `poll_git_ops_updates` read the clock.
     let mut app = git_ops_showing(Some(aged(
         ToastKind::Success,
         "Commit created",
-        Duration::from_millis(4900),
+        Duration::from_secs(4),
     )));
 
     app.poll_git_ops_updates();
