@@ -433,10 +433,6 @@ impl SharedFiles {
         Arc::make_mut(&mut self.inner)
     }
 
-    pub fn as_ptr(&self) -> *const ChangedFile {
-        self.inner.as_ptr()
-    }
-
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
@@ -482,9 +478,6 @@ pub struct SessionCache {
     browser_review_comment_order: Vec<PrCacheKey>,
     discussion_comments: HashMap<PrCacheKey, Vec<DiscussionComment>>,
     commit_pr_resolutions: HashMap<String, CommitPrResolution>,
-    /// Filename → index for the current [`PrData::files`] allocation.
-    /// Rebuilt when the file list is replaced; patch updates keep it valid.
-    file_index: HashMap<PrCacheKey, HashMap<String, usize>>,
 }
 
 impl Default for SessionCache {
@@ -503,26 +496,7 @@ impl SessionCache {
             browser_review_comment_order: Vec::new(),
             discussion_comments: HashMap::new(),
             commit_pr_resolutions: HashMap::new(),
-            file_index: HashMap::new(),
         }
-    }
-
-    fn index_files(files: &[ChangedFile]) -> HashMap<String, usize> {
-        let mut index = HashMap::with_capacity(files.len());
-        for (idx, file) in files.iter().enumerate() {
-            // First match wins, matching the previous linear `find`.
-            index.entry(file.filename.clone()).or_insert(idx);
-        }
-        index
-    }
-
-    fn rebuild_file_index(&mut self, key: &PrCacheKey) {
-        let Some(files) = self.pr_data.get(key).map(|data| data.files.clone()) else {
-            self.file_index.remove(key);
-            return;
-        };
-        self.file_index
-            .insert(key.clone(), Self::index_files(&files));
     }
 
     /// アクセス順序リストでキーを末尾に移動（最新としてマーク）
@@ -539,7 +513,6 @@ impl SessionCache {
             if let Some(oldest_key) = self.access_order.first().cloned() {
                 self.access_order.remove(0);
                 self.pr_data.remove(&oldest_key);
-                self.file_index.remove(&oldest_key);
                 self.review_comments.remove(&oldest_key);
                 self.discussion_comments.remove(&oldest_key);
             } else {
@@ -558,9 +531,7 @@ impl SessionCache {
     }
 
     pub fn put_pr_data(&mut self, key: PrCacheKey, data: PrData) {
-        let index = Self::index_files(&data.files);
         self.touch(&key);
-        self.file_index.insert(key.clone(), index);
         self.pr_data.insert(key, data);
         self.evict_if_needed();
     }
@@ -569,33 +540,8 @@ impl SessionCache {
         self.pr_data.contains_key(key)
     }
 
-    pub fn files_ptr(&self, key: &PrCacheKey) -> Option<*const ChangedFile> {
-        self.pr_data.get(key).map(|data| data.files.as_ptr())
-    }
-
-    pub fn clone_files(&self, key: &PrCacheKey) -> Option<SharedFiles> {
-        self.pr_data.get(key).map(|data| data.files.clone())
-    }
-
-    /// Replace the cached file list and rebuild the filename index.
-    pub fn set_files(&mut self, key: &PrCacheKey, files: SharedFiles) {
-        if !self.pr_data.contains_key(key) {
-            return;
-        }
-        let index = Self::index_files(&files);
-        self.file_index.insert(key.clone(), index);
-        if let Some(data) = self.pr_data.get_mut(key) {
-            data.files = files;
-        }
-    }
-
-    pub fn with_files_mut<R>(
-        &mut self,
-        key: &PrCacheKey,
-        f: impl FnOnce(&mut [ChangedFile]) -> R,
-    ) -> Option<R> {
-        let data = self.pr_data.get_mut(key)?;
-        Some(f(data.files.make_mut()))
+    pub(crate) fn files_mut(&mut self, key: &PrCacheKey) -> Option<&mut SharedFiles> {
+        self.pr_data.get_mut(key).map(|data| &mut data.files)
     }
 
     pub fn get_review_comments(&self, key: &PrCacheKey) -> Option<&[ReviewComment]> {
@@ -667,98 +613,6 @@ impl SessionCache {
         self.commit_pr_resolutions.insert(sha, resolution);
     }
 
-    /// 特定ファイルの patch を更新（lazy diff ロード結果の反映用）。
-    ///
-    /// ファイル名 → index のマップで引く。線形探索は index が壊れているときだけ。
-    pub fn update_file_patch(&mut self, key: &PrCacheKey, filename: &str, patch: Option<String>) {
-        self.write_patches(key, [(filename.to_string(), patch)], false);
-    }
-
-    /// Set patches that are still missing. Returns indices that gained a patch.
-    pub fn fill_missing_file_patches(
-        &mut self,
-        key: &PrCacheKey,
-        updates: impl IntoIterator<Item = (String, Option<String>)>,
-    ) -> Vec<usize> {
-        self.write_patches(key, updates, true)
-    }
-
-    fn write_patches(
-        &mut self,
-        key: &PrCacheKey,
-        updates: impl IntoIterator<Item = (String, Option<String>)>,
-        only_if_missing: bool,
-    ) -> Vec<usize> {
-        if !self.pr_data.contains_key(key) {
-            return Vec::new();
-        }
-        if !self.file_index.contains_key(key) {
-            self.rebuild_file_index(key);
-        }
-
-        let mut planned = Vec::new();
-        let mut retry = Vec::new();
-        if let Some(index) = self.file_index.get(key) {
-            for (name, patch) in updates {
-                match index.get(&name).copied() {
-                    Some(idx) => planned.push((idx, name, patch)),
-                    None => retry.push((name, patch)),
-                }
-            }
-        }
-
-        let mut filled = Vec::new();
-        let stale = {
-            let Some(pr_data) = self.pr_data.get_mut(key) else {
-                return Vec::new();
-            };
-            let files = pr_data.files.make_mut();
-            let mut stale = false;
-            for (idx, name, patch) in planned {
-                let Some(file) = files.get_mut(idx) else {
-                    stale = true;
-                    retry.push((name, patch));
-                    continue;
-                };
-                if file.filename != name {
-                    stale = true;
-                    retry.push((name, patch));
-                    continue;
-                }
-                if Self::assign_patch(file, patch, only_if_missing) {
-                    filled.push(idx);
-                }
-            }
-            for (name, patch) in retry {
-                let Some(idx) = files.iter().position(|file| file.filename == name) else {
-                    continue;
-                };
-                stale = true;
-                if Self::assign_patch(&mut files[idx], patch, only_if_missing) {
-                    filled.push(idx);
-                }
-            }
-            stale
-        };
-        if stale {
-            self.rebuild_file_index(key);
-        }
-        filled
-    }
-
-    /// Returns true when a missing patch was filled. Overwrites always report false.
-    fn assign_patch(file: &mut ChangedFile, patch: Option<String>, only_if_missing: bool) -> bool {
-        if only_if_missing {
-            if file.patch.is_some() || patch.is_none() {
-                return false;
-            }
-            file.patch = patch;
-            return true;
-        }
-        file.patch = patch;
-        false
-    }
-
     pub fn invalidate_all(&mut self) {
         self.pr_data.clear();
         self.access_order.clear();
@@ -767,7 +621,6 @@ impl SessionCache {
         self.browser_review_comment_order.clear();
         self.discussion_comments.clear();
         self.commit_pr_resolutions.clear();
-        self.file_index.clear();
     }
 
     #[cfg(test)]
@@ -784,6 +637,37 @@ impl SessionCache {
     fn browser_review_comment_entry_count(&self) -> usize {
         self.browser_review_comments.len()
     }
+}
+
+/// Fill patches that are still missing. The first filename wins.
+/// Returns the indices that gained a patch.
+pub fn fill_missing_patches(
+    files: &mut [ChangedFile],
+    updates: &[(String, Option<String>)],
+) -> Vec<usize> {
+    let mut index: HashMap<&str, usize> = HashMap::with_capacity(files.len());
+    for (idx, file) in files.iter().enumerate() {
+        index.entry(file.filename.as_str()).or_insert(idx);
+    }
+    let planned: Vec<(usize, String)> = updates
+        .iter()
+        .filter_map(|(name, patch)| {
+            let patch = patch.clone()?;
+            Some((*index.get(name.as_str())?, patch))
+        })
+        .collect();
+    let mut filled = Vec::new();
+    for (idx, patch) in planned {
+        let Some(file) = files.get_mut(idx) else {
+            continue;
+        };
+        if file.patch.is_some() {
+            continue;
+        }
+        file.patch = Some(patch);
+        filled.push(idx);
+    }
+    filled
 }
 
 #[cfg(test)]
@@ -1993,119 +1877,41 @@ mod tests {
     }
 
     #[test]
-    fn test_update_file_patch_indexes_by_filename() {
-        let mut cache = SessionCache::new();
-        let key = PrCacheKey {
-            repo: "owner/repo".to_string(),
-            pr_number: 1,
-        };
-        let files: Vec<_> = (0..40)
-            .map(|i| changed_file(&format!("f{i}.rs"), Some(&format!("p{i}"))))
+    fn test_fill_missing_patches_uses_filename_and_keeps_existing() {
+        let mut files: Vec<_> = (0..40)
+            .map(|i| changed_file(&format!("f{i}.rs"), None))
             .collect();
-        let shared = SharedFiles::from(files);
-        let ptr = shared.as_ptr();
-        cache.put_pr_data(
-            key.clone(),
-            PrData {
-                pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: shared,
-                pr_updated_at: "2024-01-01".to_string(),
-            },
+        files[0].patch = Some("keep".to_string());
+        files.push(changed_file("a.rs", None));
+        files.push(changed_file("a.rs", None));
+
+        let filled = fill_missing_patches(
+            &mut files,
+            &[
+                ("f0.rs".to_string(), Some("nope".to_string())),
+                ("f39.rs".to_string(), Some("last".to_string())),
+                ("missing.rs".to_string(), Some("nope".to_string())),
+                ("a.rs".to_string(), Some("first-only".to_string())),
+                ("b.rs".to_string(), None),
+            ],
         );
 
-        cache.update_file_patch(&key, "f39.rs", Some("new-last".to_string()));
-        cache.update_file_patch(&key, "f0.rs", Some("new-first".to_string()));
-        cache.update_file_patch(&key, "missing.rs", Some("nope".to_string()));
-
-        let data = cache.get_pr_data(&key).unwrap();
-        assert_eq!(
-            data.files.as_ptr(),
-            ptr,
-            "a unique list is updated in place"
-        );
-        assert_eq!(data.files[0].patch.as_deref(), Some("new-first"));
-        assert_eq!(data.files[1].patch.as_deref(), Some("p1"));
-        assert_eq!(data.files[38].patch.as_deref(), Some("p38"));
-        assert_eq!(data.files[39].patch.as_deref(), Some("new-last"));
-        assert!(data
-            .files
+        assert_eq!(filled, vec![39, 40]);
+        assert_eq!(files[0].patch.as_deref(), Some("keep"));
+        assert_eq!(files[1].patch, None);
+        assert_eq!(files[39].patch.as_deref(), Some("last"));
+        assert_eq!(files[40].patch.as_deref(), Some("first-only"));
+        assert_eq!(files[41].filename, "a.rs");
+        assert_eq!(files[41].patch, None);
+        assert!(files
             .iter()
             .all(|file| file.patch.as_deref() != Some("nope")));
 
-        let duplicated = SharedFiles::from(vec![
-            changed_file("a.rs", Some("first")),
-            changed_file("a.rs", Some("second")),
-            changed_file("b.rs", Some("b")),
-        ]);
-        cache.set_files(&key, duplicated);
-        cache.update_file_patch(&key, "a.rs", Some("updated".to_string()));
-        let data = cache.get_pr_data(&key).unwrap();
-        assert_eq!(data.files[0].patch.as_deref(), Some("updated"));
-        assert_eq!(data.files[1].patch.as_deref(), Some("second"));
-        assert_eq!(data.files[2].patch.as_deref(), Some("b"));
-
-        let reordered = SharedFiles::from(vec![
-            changed_file("b.rs", Some("b")),
-            changed_file("a.rs", Some("first")),
-            changed_file("a.rs", Some("second")),
-        ]);
-        cache.set_files(&key, reordered);
-        cache.update_file_patch(&key, "b.rs", Some("b2".to_string()));
-        let data = cache.get_pr_data(&key).unwrap();
-        assert_eq!(data.files[0].filename, "b.rs");
-        assert_eq!(data.files[0].patch.as_deref(), Some("b2"));
-        assert_eq!(data.files[1].patch.as_deref(), Some("first"));
-        assert_eq!(data.files[2].patch.as_deref(), Some("second"));
-
-        let mixed = SharedFiles::from(vec![
-            changed_file("a.rs", Some("keep")),
-            changed_file("b.rs", None),
-        ]);
-        let mixed_ptr = mixed.as_ptr();
-        cache.set_files(&key, mixed);
-        let filled = cache.fill_missing_file_patches(
-            &key,
-            [
-                ("a.rs".to_string(), Some("nope".to_string())),
-                ("b.rs".to_string(), Some("filled".to_string())),
-                ("b.rs".to_string(), None),
-                ("missing.rs".to_string(), Some("x".to_string())),
-            ],
+        let again = fill_missing_patches(
+            &mut files,
+            &[("f39.rs".to_string(), Some("again".to_string()))],
         );
-        assert_eq!(filled, vec![1]);
-        let data = cache.get_pr_data(&key).unwrap();
-        assert_eq!(data.files.as_ptr(), mixed_ptr);
-        assert_eq!(data.files[0].patch.as_deref(), Some("keep"));
-        assert_eq!(data.files[1].patch.as_deref(), Some("filled"));
-        let again = cache
-            .fill_missing_file_patches(&key, [("b.rs".to_string(), Some("again".to_string()))]);
         assert!(again.is_empty());
-        assert_eq!(
-            cache.get_pr_data(&key).unwrap().files[1].patch.as_deref(),
-            Some("filled")
-        );
-
-        // A rename that bypasses the index must not write the patch onto the
-        // slot the stale index still points at.
-        cache.set_files(
-            &key,
-            SharedFiles::from(vec![
-                changed_file("a.rs", Some("A")),
-                changed_file("b.rs", Some("B")),
-            ]),
-        );
-        cache.with_files_mut(&key, |files| {
-            files.swap(0, 1);
-        });
-        cache.update_file_patch(&key, "a.rs", Some("A2".to_string()));
-        let data = cache.get_pr_data(&key).unwrap();
-        assert_eq!(data.files[0].filename, "b.rs");
-        assert_eq!(data.files[0].patch.as_deref(), Some("B"));
-        assert_eq!(data.files[1].filename, "a.rs");
-        assert_eq!(data.files[1].patch.as_deref(), Some("A2"));
-        cache.update_file_patch(&key, "a.rs", Some("A3".to_string()));
-        let data = cache.get_pr_data(&key).unwrap();
-        assert_eq!(data.files[1].patch.as_deref(), Some("A3"));
-        assert_eq!(data.files[0].patch.as_deref(), Some("B"));
+        assert_eq!(files[39].patch.as_deref(), Some("last"));
     }
 }

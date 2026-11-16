@@ -75,8 +75,6 @@ impl App {
                         self.diff_store.clear_current();
                         return;
                     };
-                    // A missing patch is a phase-1 local refresh. Fall through
-                    // and keep the cache reconcile already validated.
                     if let Some(ref patch) = file.patch {
                         let current_hash = hash_string(patch);
                         if cache.patch_hash == current_hash
@@ -94,14 +92,8 @@ impl App {
             return;
         };
         let Some(patch) = file.patch.clone() else {
-            // Local refresh publishes the file list before patches. Keep the
-            // highlight already checked against the previous patch; the batch
-            // or lazy load below either confirms it or rebuilds it.
-            if self.diff_store.current_key() == Some(&file_index)
-                && self.diff_store.current.is_some()
-            {
-                return;
-            }
+            // Phase 1 has no patch yet. A parked highlight stays in the store
+            // until the bytes arrive; showing it here would be the previous file.
             self.diff_store.clear_current();
             return;
         };
@@ -155,11 +147,11 @@ impl App {
     /// Keep highlighted diffs whose patch still matches the new file list.
     ///
     /// Store keys are file indices, so a reorder, insert, or delete re-keys
-    /// each surviving cache by filename. A cache is kept only when that
-    /// filename is unique in both lists and the patch hash (plus
-    /// `markdown_rich` for markdown) still matches. A missing patch keeps the
-    /// cache only when the structural signature is unchanged; the later patch
-    /// load drops it if the bytes differ.
+    /// each surviving cache by filename. A cache is shown only when that
+    /// filename is unique and the patch hash (plus `markdown_rich` for
+    /// markdown) matches. A phase-1 file has no patch yet: the previous
+    /// highlight is parked in the store and not drawn. The patch load installs
+    /// it when the hash matches, and drops it on a mismatch or a missing patch.
     pub(crate) fn reconcile_diff_caches(
         &mut self,
         old_files: &[ChangedFile],
@@ -217,20 +209,23 @@ impl App {
             let Some(&idx) = new_index.get(name.as_str()) else {
                 continue;
             };
-            let (patch, filename, valid) = {
+            let (patch, filename, confirmed, park) = {
                 let file = &new_files[idx];
-                let valid = cache_matches_refresh(
-                    &cache,
-                    file,
-                    old_by_name.get(name.as_str()).copied(),
-                    markdown_rich,
-                );
-                (file.patch.clone(), file.filename.clone(), valid)
+                let old = old_by_name.get(name.as_str()).copied();
+                let confirmed = cache_matches_refresh(&cache, file, markdown_rich);
+                let park = !confirmed && unconfirmed_cache_parkable(&cache, file, old);
+                (file.patch.clone(), file.filename.clone(), confirmed, park)
             };
-            if !valid {
+            if !confirmed && !park {
                 continue;
             }
             cache.file_index = idx;
+            if park {
+                // Not drawn. `ensure_diff_cache` installs it once the patch
+                // hash matches, with no plain-text flash.
+                self.diff_store.insert_kept(idx, cache);
+                continue;
+            }
             if viewed_name.as_deref() == Some(name.as_str()) {
                 let same_job =
                     previous_name.as_deref() == Some(name.as_str()) && previous_key == Some(idx);
@@ -379,31 +374,38 @@ fn name_counts(files: &[ChangedFile]) -> HashMap<&str, usize> {
     counts
 }
 
-fn cache_matches_refresh(
-    cache: &DiffCache,
-    new_file: &ChangedFile,
-    old_file: Option<&ChangedFile>,
-    markdown_rich: bool,
-) -> bool {
+fn cache_matches_refresh(cache: &DiffCache, new_file: &ChangedFile, markdown_rich: bool) -> bool {
+    let Some(patch) = new_file.patch.as_deref() else {
+        return false;
+    };
     let is_md = crate::language::is_markdown_ext_from_filename(&new_file.filename);
     if is_md && cache.markdown_rich != markdown_rich {
         return false;
     }
-    match &new_file.patch {
-        Some(patch) => cache.patch_hash == hash_string(patch),
-        None => {
-            let Some(old) = old_file else {
-                return false;
-            };
-            old.status == new_file.status
-                && old.additions == new_file.additions
-                && old.deletions == new_file.deletions
-                && old
-                    .patch
-                    .as_deref()
-                    .is_some_and(|patch| hash_string(patch) == cache.patch_hash)
-        }
+    cache.patch_hash == hash_string(patch)
+}
+
+/// Phase 1 may keep the previous highlight off-screen when the file's
+/// status and numstat are unchanged, so a later identical patch can be
+/// installed without rebuilding it. A known structural change is dropped.
+fn unconfirmed_cache_parkable(
+    cache: &DiffCache,
+    new_file: &ChangedFile,
+    old_file: Option<&ChangedFile>,
+) -> bool {
+    if new_file.patch.is_some() {
+        return false;
     }
+    let Some(old) = old_file else {
+        return false;
+    };
+    old.status == new_file.status
+        && old.additions == new_file.additions
+        && old.deletions == new_file.deletions
+        && old
+            .patch
+            .as_deref()
+            .is_some_and(|patch| hash_string(patch) == cache.patch_hash)
 }
 
 /// PR body を全行 context 行の疑似 patch に変換する

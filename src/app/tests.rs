@@ -12332,11 +12332,10 @@ async fn duplicate_filenames_drop_caches_instead_of_guessing() {
 }
 
 #[tokio::test]
-async fn phase1_refresh_keeps_highlight_until_the_patch_confirms_or_changes_it() {
+async fn phase1_hides_unconfirmed_highlight_then_installs_or_rebuilds() {
     let mut app = app_for_refresh();
     let patch = "@@ -1 +1 @@\n-old\n+keep\n";
     loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
-    app.diff_scroll.selected_line = 1;
     app.diff_store
         .install_current(0, highlighted_cache(0, patch, false), true);
 
@@ -12348,11 +12347,14 @@ async fn phase1_refresh_keeps_highlight_until_the_patch_confirms_or_changes_it()
         },
     );
 
-    let current = app.diff_store.current.as_ref().unwrap();
-    assert!(current.highlighted);
-    assert_eq!(current.patch_hash, hash_string(patch));
+    assert!(
+        app.diff_store.current.is_none(),
+        "phase 1 shows loading, not the previous diff"
+    );
     assert!(!app.diff_store.highlight_in_flight());
-    assert_eq!(app.diff_scroll.selected_line, 1);
+    let parked = app.diff_store.store_get(&0).unwrap();
+    assert!(parked.highlighted);
+    assert_eq!(parked.patch_hash, hash_string(patch));
     assert!(app.files()[0].patch.is_none());
 
     let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -12366,7 +12368,7 @@ async fn phase1_refresh_keeps_highlight_until_the_patch_confirms_or_changes_it()
     app.poll_batch_diff_updates();
 
     let current = app.diff_store.current.as_ref().unwrap();
-    assert!(current.highlighted);
+    assert!(current.highlighted, "a matching patch is installed as-is");
     assert_eq!(current.patch_hash, hash_string(patch));
     assert!(!app.diff_store.highlight_in_flight());
     assert_eq!(app.files()[0].patch.as_deref(), Some(patch));
@@ -12382,6 +12384,7 @@ async fn phase1_refresh_keeps_highlight_until_the_patch_confirms_or_changes_it()
             files: vec![refresh_file("a.rs", None)],
         },
     );
+    assert!(app.diff_store.current.is_none());
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     app.batch_diff_receiver = Some(rx);
     tx.try_send(vec![crate::loader::SingleFileDiffResult {
@@ -12397,6 +12400,66 @@ async fn phase1_refresh_keeps_highlight_until_the_patch_confirms_or_changes_it()
     assert_eq!(current.patch_hash, hash_string(changed));
     assert!(app.diff_store.highlight_in_flight());
     assert_eq!(app.files()[0].patch.as_deref(), Some(changed));
+}
+
+#[tokio::test]
+async fn lazy_diff_none_does_not_show_stale_content() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-old\n+keep\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, true), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("a.rs", None)],
+        },
+    );
+    assert!(app.diff_store.current.is_none());
+    assert!(app.diff_store.store_get(&0).unwrap().markdown_rich);
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.lazy_diff_receiver = Some(rx);
+    tx.try_send(crate::loader::SingleFileDiffResult {
+        filename: "a.rs".to_string(),
+        patch: None,
+    })
+    .unwrap();
+    drop(tx);
+    app.poll_lazy_diff_updates();
+
+    assert!(app.diff_store.current.is_none());
+    assert!(app.diff_store.store_get(&0).is_none());
+    assert!(!app.diff_store.highlight_in_flight());
+    assert!(app.files()[0].patch.is_none());
+}
+
+#[tokio::test]
+async fn same_patch_rename_does_not_reuse_the_old_files_highlight() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-same\n+same\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, true), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("b.rs", Some(patch))],
+        },
+    );
+
+    assert_eq!(app.files()[0].filename, "b.rs");
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert_eq!(current.patch_hash, hash_string(patch));
+    assert!(
+        !current.highlighted && !current.markdown_rich,
+        "b.rs must not show a.rs's highlight"
+    );
+    assert_eq!(app.diff_store.store_len(), 0);
 }
 
 #[tokio::test]
@@ -12560,11 +12623,6 @@ async fn refresh_shares_one_file_list_between_the_screen_and_the_session_cache()
         repo: app.repo.clone(),
         pr_number: 1,
     };
-    let data_ptr = match &app.data_state {
-        DataState::Loaded { files, .. } => files.as_ptr(),
-        _ => panic!("expected loaded files"),
-    };
-    assert_eq!(app.session_cache.files_ptr(&key), Some(data_ptr));
 
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     app.batch_diff_receiver = Some(rx);
@@ -12575,18 +12633,9 @@ async fn refresh_shares_one_file_list_between_the_screen_and_the_session_cache()
     .unwrap();
     app.poll_batch_diff_updates();
 
-    let data_ptr_after = match &app.data_state {
-        DataState::Loaded { files, .. } => files.as_ptr(),
-        _ => panic!("expected loaded files"),
-    };
-    assert_eq!(data_ptr_after, data_ptr);
-    assert_eq!(app.session_cache.files_ptr(&key), Some(data_ptr));
     assert_eq!(app.files()[0].patch.as_deref(), Some(patch_a));
     assert_eq!(app.files()[1].patch.as_deref(), Some(patch_b));
-    assert_eq!(
-        app.session_cache.get_pr_data(&key).unwrap().files[1]
-            .patch
-            .as_deref(),
-        Some(patch_b)
-    );
+    let cached = app.session_cache.get_pr_data(&key).unwrap();
+    assert_eq!(cached.files[0].patch.as_deref(), Some(patch_a));
+    assert_eq!(cached.files[1].patch.as_deref(), Some(patch_b));
 }

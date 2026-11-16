@@ -239,9 +239,14 @@ impl App {
 
                 let should_refresh = {
                     let mut ignore = ignore.lock().unwrap_or_else(|err| err.into_inner());
+                    // Startup skips `.octorus`. Toggling into local mode refreshed
+                    // those edits before ignore filtering, and still does.
                     crate::local_watch::should_refresh_local_change(
                         &event.paths,
                         &event.kind,
+                        event.need_rescan(),
+                        refresh_pending.load(Ordering::Acquire),
+                        false,
                         &mut ignore,
                     )
                 };

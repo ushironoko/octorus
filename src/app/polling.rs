@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -308,6 +308,11 @@ impl App {
                 .into_iter()
                 .map(|result| (result.filename, result.patch))
                 .collect();
+            for (name, patch) in &updates {
+                if patch.is_none() {
+                    self.drop_unconfirmed_cache(name);
+                }
+            }
             let filled = self.fill_shared_patches(&updates);
             if filled.contains(&self.selected_file) {
                 current_file_updated = true;
@@ -383,9 +388,13 @@ impl App {
         let Some(result) = received else {
             return;
         };
+        if result.patch.is_none() {
+            self.drop_unconfirmed_cache(&result.filename);
+            return;
+        }
 
         let selected = self.selected_file;
-        let filled = self.fill_shared_patches(&[(result.filename, result.patch)]);
+        let filled = self.fill_shared_patches(&[(result.filename.clone(), result.patch)]);
         for idx in &filled {
             if let Some(patch) = self.files().get(*idx).and_then(|file| file.patch.clone()) {
                 self.invalidate_cached_patch(*idx, &patch);
@@ -667,7 +676,7 @@ impl App {
         }
 
         let marked_set: HashSet<&str> = marked_paths.iter().map(|path| path.as_str()).collect();
-        self.with_shared_files_mut(|files| {
+        self.edit_shared_files(|files| {
             for file in files.iter_mut() {
                 if marked_set.contains(file.filename.as_str()) {
                     file.viewed = set_viewed;
@@ -686,120 +695,62 @@ impl App {
         })
     }
 
-    fn data_files_ptr(&self) -> Option<*const ChangedFile> {
-        match &self.data_state {
-            DataState::Loaded { files, .. } => Some(files.as_ptr()),
-            _ => None,
-        }
-    }
-
-    fn take_data_files(&mut self) -> Option<SharedFiles> {
-        match &mut self.data_state {
-            DataState::Loaded { files, .. } => Some(std::mem::replace(files, SharedFiles::empty())),
-            _ => None,
-        }
-    }
-
-    fn set_data_files(&mut self, shared: SharedFiles) {
-        if let DataState::Loaded { files, .. } = &mut self.data_state {
-            *files = shared;
-        }
-    }
-
-    fn clone_loaded_files(&self) -> Option<SharedFiles> {
-        match &self.data_state {
-            DataState::Loaded { files, .. } => Some(files.clone()),
-            _ => None,
-        }
-    }
-
-    /// Mutate the loaded file list in place.
+    /// Edit the on-screen file list and the session cache together.
     ///
-    /// When the session cache holds the same `Arc`, that clone is dropped for
-    /// the duration of the write so [`SharedFiles::make_mut`] does not deep-copy
-    /// the patches, then both sides point at the updated allocation again.
-    fn with_shared_files_mut<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
-        let Some(key) = self
-            .current_cache_key()
-            .filter(|key| self.session_cache.contains_pr(key))
-        else {
-            return self.with_data_files_only(f);
+    /// When both sides share one `Arc`, the cache clone is dropped for the
+    /// write so [`SharedFiles::make_mut`] does not copy the patches. Otherwise
+    /// the screen list is edited and the cache is pointed at that `Arc`.
+    fn edit_shared_files<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
+        let key = self.current_cache_key();
+        let data_state = &mut self.data_state;
+        let session_cache = &mut self.session_cache;
+        let DataState::Loaded { files, .. } = data_state else {
+            return None;
         };
-        let shared = self.session_cache.files_ptr(&key) == self.data_files_ptr();
-        if shared {
-            drop(self.take_data_files());
-            let result = self.session_cache.with_files_mut(&key, f)?;
-            if let Some(files) = self.session_cache.clone_files(&key) {
-                self.set_data_files(files);
-            }
-            return Some(result);
-        }
-        let result = self.with_data_files_only(f)?;
-        if let Some(files) = self.clone_loaded_files() {
-            self.session_cache.set_files(&key, files);
-        }
-        Some(result)
-    }
-
-    fn with_data_files_only<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
-        match &mut self.data_state {
-            DataState::Loaded { files, .. } => Some(f(files.make_mut())),
-            _ => None,
-        }
-    }
-
-    /// Fill still-missing patches by filename. One index lookup per result.
-    fn fill_shared_patches(&mut self, updates: &[(String, Option<String>)]) -> Vec<usize> {
-        let Some(key) = self
-            .current_cache_key()
-            .filter(|key| self.session_cache.contains_pr(key))
-        else {
-            return self.fill_data_files_indexed(updates);
-        };
-        let shared = self.session_cache.files_ptr(&key) == self.data_files_ptr();
-        if shared {
-            drop(self.take_data_files());
-            let filled = self
-                .session_cache
-                .fill_missing_file_patches(&key, updates.iter().cloned());
-            if let Some(files) = self.session_cache.clone_files(&key) {
-                self.set_data_files(files);
-            }
-            return filled;
-        }
-        let filled = self.fill_data_files_indexed(updates);
-        if let Some(files) = self.clone_loaded_files() {
-            self.session_cache.set_files(&key, files);
-        }
-        filled
-    }
-
-    fn fill_data_files_indexed(&mut self, updates: &[(String, Option<String>)]) -> Vec<usize> {
-        let mut index: HashMap<&str, usize> = HashMap::new();
-        for (idx, file) in self.files().iter().enumerate() {
-            index.entry(file.filename.as_str()).or_insert(idx);
-        }
-        let planned: Vec<(usize, String, Option<String>)> = updates
-            .iter()
-            .filter_map(|(name, patch)| {
-                let idx = *index.get(name.as_str())?;
-                Some((idx, name.clone(), patch.clone()))
-            })
-            .collect();
-        let mut filled = Vec::new();
-        self.with_data_files_only(|files| {
-            for (idx, name, patch) in planned {
-                let Some(file) = files.get_mut(idx) else {
-                    continue;
-                };
-                if file.filename != name || file.patch.is_some() || patch.is_none() {
-                    continue;
+        if let Some(key) = key.as_ref() {
+            if let Some(cached) = session_cache.files_mut(key) {
+                if files.ptr_eq(cached) {
+                    let parked = std::mem::replace(cached, SharedFiles::empty());
+                    drop(parked);
+                    let result = f(files.make_mut());
+                    *cached = files.clone();
+                    return Some(result);
                 }
-                file.patch = patch;
-                filled.push(idx);
+                let result = f(files.make_mut());
+                *cached = files.clone();
+                return Some(result);
             }
-        });
-        filled
+        }
+        Some(f(files.make_mut()))
+    }
+
+    /// Fill still-missing patches by filename.
+    fn fill_shared_patches(&mut self, updates: &[(String, Option<String>)]) -> Vec<usize> {
+        self.edit_shared_files(|files| crate::cache::fill_missing_patches(files, updates))
+            .unwrap_or_default()
+    }
+
+    /// Drop a highlight parked during phase 1 when git returns no patch.
+    fn drop_unconfirmed_cache(&mut self, filename: &str) {
+        let Some(idx) = self
+            .files()
+            .iter()
+            .position(|file| file.filename == filename)
+        else {
+            return;
+        };
+        if self
+            .files()
+            .get(idx)
+            .and_then(|file| file.patch.as_ref())
+            .is_some()
+        {
+            return;
+        }
+        if self.diff_store.current_key() == Some(&idx) {
+            self.diff_store.clear_current();
+        }
+        self.diff_store.remove_store(&idx);
     }
 
     pub(crate) fn sync_loaded_data_to_cache(&mut self) {

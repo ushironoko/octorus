@@ -4,11 +4,11 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
-use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::ffi::OsString;
 use std::io;
 use std::panic;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -600,7 +600,14 @@ fn setup_local_watch(
 
                 let should_refresh = {
                     let mut ignore = ignore.lock().unwrap_or_else(|err| err.into_inner());
-                    should_refresh_local_change(&event.paths, &event.kind, &mut ignore)
+                    octorus::local_watch::should_refresh_local_change(
+                        &event.paths,
+                        &event.kind,
+                        event.need_rescan(),
+                        refresh_pending.load(Ordering::Acquire),
+                        true,
+                        &mut ignore,
+                    )
                 };
 
                 if should_refresh && !refresh_pending.swap(true, Ordering::AcqRel) {
@@ -621,12 +628,13 @@ fn setup_local_watch(
     });
 }
 
+#[cfg(test)]
 fn should_refresh_local_change(
-    paths: &[PathBuf],
-    kind: &EventKind,
+    paths: &[std::path::PathBuf],
+    kind: &notify::EventKind,
     ignore: &mut octorus::local_watch::GitIgnoreCache,
 ) -> bool {
-    octorus::local_watch::should_refresh_local_change(paths, kind, ignore)
+    octorus::local_watch::should_refresh_local_change(paths, kind, false, false, true, ignore)
 }
 
 /// Run the app with a specific PR number (existing flow)
@@ -953,6 +961,7 @@ fn setup_working_dir(app: &mut app::App, args: &Args) {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, AccessMode, CreateKind};
+    use notify::EventKind;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -1321,5 +1330,175 @@ mod tests {
         assert!(refresh(&mut cache, &root.join("src/main.rs")));
         assert!(refresh(&mut cache, &root.join("tracked.log")));
         assert!(refresh(&mut cache, &root.join("notes.txt")));
+    }
+
+    fn decide(
+        cache: &mut octorus::local_watch::GitIgnoreCache,
+        paths: &[std::path::PathBuf],
+        rescan: bool,
+        pending: bool,
+    ) -> bool {
+        octorus::local_watch::should_refresh_local_change(
+            paths,
+            &EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Any,
+            )),
+            rescan,
+            pending,
+            true,
+            cache,
+        )
+    }
+
+    /// Path of `target` relative to the process cwd, without canonicalizing.
+    fn relative_to_cwd(target: &std::path::Path) -> PathBuf {
+        let cwd = std::env::current_dir().unwrap();
+        let target = target.canonicalize().unwrap();
+        let cwd_comps: Vec<_> = cwd.components().collect();
+        let target_comps: Vec<_> = target.components().collect();
+        let mut shared = 0;
+        while shared < cwd_comps.len()
+            && shared < target_comps.len()
+            && cwd_comps[shared] == target_comps[shared]
+        {
+            shared += 1;
+        }
+        let mut rel = PathBuf::new();
+        for _ in shared..cwd_comps.len() {
+            rel.push("..");
+        }
+        for component in &target_comps[shared..] {
+            rel.push(component);
+        }
+        if rel.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            rel
+        }
+    }
+
+    #[test]
+    fn symlinked_and_relative_working_dir_refreshes_tracked_file_under_target() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(repo.join("target/kept.rs"), "fn kept() {}\n").unwrap();
+        git(&repo, &["init"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["add", "-f", "target/kept.rs"]);
+        git(&repo, &["commit", "-m", "track file under target"]);
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        let mut via_link = octorus::local_watch::GitIgnoreCache::new(&link);
+        assert!(
+            refresh(&mut via_link, &link.join("target/kept.rs")),
+            "event path under the symlink must refresh the tracked file"
+        );
+        assert!(refresh(
+            &mut via_link,
+            &repo.canonicalize().unwrap().join("target/kept.rs")
+        ));
+        assert!(refresh(
+            &mut via_link,
+            std::path::Path::new("./target/kept.rs")
+        ));
+        assert!(
+            refresh(&mut via_link, std::path::Path::new("/unrelated/target/foo")),
+            "a path outside the work tree refreshes instead of the target/ fallback"
+        );
+
+        let rel = relative_to_cwd(&repo);
+        assert!(rel.is_relative());
+        let mut via_rel = octorus::local_watch::GitIgnoreCache::new(&rel);
+        assert!(refresh(&mut via_rel, &repo.join("target/kept.rs")));
+        assert!(refresh(&mut via_rel, &rel.join("target/kept.rs")));
+        assert!(refresh(
+            &mut via_rel,
+            std::path::Path::new("./target/kept.rs")
+        ));
+        assert!(!refresh(&mut via_rel, &repo.join("target/other.rs")));
+    }
+
+    #[test]
+    fn exclude_and_excludes_file_unignore_without_refreshing_the_rule_edit() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("secret.txt"), "secret\n").unwrap();
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        git(&root, &["init"]);
+        git(&root, &["add", "other.txt"]);
+        git(&root, &["commit", "-m", "init"]);
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "secret.txt\n").unwrap();
+
+        let mut cache = octorus::local_watch::GitIgnoreCache::new(&root);
+        assert!(!refresh(&mut cache, &root.join("secret.txt")));
+
+        std::fs::write(root.join(".git/info/exclude"), "").unwrap();
+        assert!(
+            !refresh(&mut cache, &root.join(".git/info/exclude")),
+            "editing exclude reloads rules and does not itself refresh"
+        );
+        assert!(refresh(&mut cache, &root.join("secret.txt")));
+
+        let excludes = dir.path().join("excludes");
+        std::fs::write(&excludes, "other.txt\n").unwrap();
+        git(
+            &root,
+            &["config", "core.excludesFile", &excludes.to_string_lossy()],
+        );
+        assert!(!refresh(&mut cache, &root.join(".git/config")));
+        // other.txt is tracked, so an excludes rule does not hide it.
+        assert!(refresh(&mut cache, &root.join("other.txt")));
+
+        std::fs::write(root.join("hidden.txt"), "hidden\n").unwrap();
+        std::fs::write(&excludes, "hidden.txt\n").unwrap();
+        assert!(!refresh(&mut cache, &root.join(".git/config")));
+        assert!(!refresh(&mut cache, &root.join("hidden.txt")));
+        std::fs::write(&excludes, "").unwrap();
+        assert!(!refresh(&mut cache, &root.join(".git/config")));
+        assert!(refresh(&mut cache, &root.join("hidden.txt")));
+    }
+
+    #[test]
+    fn event_burst_does_not_drop_the_next_refresh() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        git(&root, &["init"]);
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-m", "init"]);
+
+        let mut cache = octorus::local_watch::GitIgnoreCache::new(&root);
+        assert!(refresh(&mut cache, &root.join("src/main.rs")));
+
+        let mut burst = vec![root.join("src/main.rs")];
+        for i in 0..3_000 {
+            burst.push(root.join(format!("target/obj{i}.o")));
+        }
+        let started = std::time::Instant::now();
+        assert!(decide(&mut cache, &burst, false, false));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(800),
+            "the first refreshing path must not wait on the rest of the burst"
+        );
+
+        assert!(
+            !decide(&mut cache, &burst, false, true),
+            "a refresh already pending skips classification"
+        );
+        assert!(
+            refresh(&mut cache, &root.join("src/main.rs")),
+            "the next real change still refreshes"
+        );
+        assert!(
+            decide(&mut cache, &[], true, false),
+            "a rescan with no paths refreshes"
+        );
+        assert!(!decide(&mut cache, &[], false, false));
     }
 }
