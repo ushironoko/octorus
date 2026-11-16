@@ -1640,12 +1640,20 @@ impl App {
     pub(crate) fn comment_panel_content_lines(&self, panel_inner_width: usize) -> usize {
         let indices = self.get_comment_indices_at_current_line();
         if indices.is_empty() {
-            // Title plus hint, or title, reason, and the retry action.
-            let Some(message) = self.cmt.comment_error.as_deref() else {
-                return 2;
-            };
-            let reason = crate::github::GhFailure::from_message(message).reason();
-            return if reason.is_empty() { 2 } else { 3 };
+            // Title plus hint. The failure replaces that only when no line has
+            // a comment, in which case the pane is title, reason, and retry.
+            let no_rows = self
+                .cmt
+                .review_comments
+                .as_ref()
+                .is_none_or(|comments| comments.is_empty());
+            if no_rows {
+                if let Some(message) = self.cmt.comment_error.as_deref() {
+                    let reason = crate::github::GhFailure::from_message(message).reason();
+                    return if reason.is_empty() { 2 } else { 3 };
+                }
+            }
+            return 2;
         }
         let Some(ref comments) = self.cmt.review_comments else {
             return 0;

@@ -1806,7 +1806,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = if app.multiline_selection.is_some() {
         "j/k/↑↓: extend selection | c: comment | s: suggest | Esc: cancel".to_string()
     } else if app.cmt.comment_panel_open {
-        "r: reply | Esc: close".to_string()
+        let kb = &app.config.keybindings;
+        if super::state_view::comment_fetch_error_replaces_empty(app) {
+            format!("{}: retry | Esc: close", kb.retry.display_primary())
+        } else {
+            format!("{}: reply | Esc: close", kb.reply.display_primary())
+        }
     } else {
         super::footer::footer_hint_back(&app.config.keybindings)
     };

@@ -784,12 +784,16 @@ mod tests {
         assert!(text.contains("Check your network connection."), "{text}");
     }
 
-    #[test]
-    fn narrow_file_list_error_draws_without_a_too_small_gate() {
+    #[tokio::test]
+    async fn narrow_file_list_error_draws_without_a_too_small_gate() {
+        use crate::app::DataState;
         use crate::github::GhFailure;
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
 
-        let app = App::new_for_test();
+        let mut app = App::new_for_test();
         let failure = GhFailure::other("disk full");
+        app.data_state = DataState::Error(failure.clone());
         let backend = TestBackend::new(58, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -805,6 +809,20 @@ mod tests {
             .join("\n");
         assert!(text.contains("Couldn't load files"), "{text}");
         assert!(!text.contains("Terminal too small"), "{text}");
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
+        }
     }
 }
 

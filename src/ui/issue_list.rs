@@ -16,8 +16,16 @@ use super::common::fit_to_width;
 use super::state_view::{self, clear_filter_hint, retry_action, ViewState};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::{FailureSurface, IssueSummary};
+use crate::github::{FailureSurface, IssueStateFilter, IssueSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
+
+fn empty_issue_title(filter: IssueStateFilter) -> &'static str {
+    match filter {
+        IssueStateFilter::Open => "No open issues",
+        IssueStateFilter::Closed => "No closed issues",
+        IssueStateFilter::All => "No issues",
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let Some(ref state) = app.issue_state else {
@@ -60,10 +68,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     } else if let Some(issues) = state.issues.as_loaded() {
         if issues.is_empty() {
-            let empty = ViewState::Empty {
-                title: "No open issues",
-                hint: None,
-            };
+            let title = empty_issue_title(state.issue_list_state_filter);
+            let empty = ViewState::Empty { title, hint: None };
             state_view::render_in_block(
                 frame,
                 chunks[1],
@@ -617,8 +623,31 @@ mod tests {
     }
 
     #[test]
-    fn narrow_issue_list_draws_without_a_too_small_gate() {
+    fn empty_issue_list_follows_the_state_filter() {
+        use crate::github::IssueStateFilter;
+
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        for (filter, title) in [
+            (IssueStateFilter::Open, "○ No open issues"),
+            (IssueStateFilter::Closed, "○ No closed issues"),
+            (IssueStateFilter::All, "○ No issues"),
+        ] {
+            let mut issue_state = IssueState::new();
+            issue_state.issues = crate::app::LoadState::Loaded(vec![]);
+            issue_state.issue_list_state_filter = filter;
+            app.issue_state = Some(issue_state);
+            let text = render_full(&mut app);
+            assert!(text.contains(title), "{filter:?}\n{text}");
+            assert!(!text.contains("No matches"), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn narrow_issue_list_draws_without_a_too_small_gate() {
         use crate::github::GhFailure;
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
 
         let mut app = App::new_for_test();
         app.state = AppState::IssueList;
@@ -634,5 +663,19 @@ mod tests {
             .join("\n");
         assert!(text.contains("Couldn't load issues"), "{text}");
         assert!(!text.contains("Terminal too small"), "{text}");
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
+        }
     }
 }

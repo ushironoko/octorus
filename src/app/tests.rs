@@ -10461,6 +10461,108 @@ async fn test_poll_comment_error_leaves_missing_comments_none() {
 }
 
 #[tokio::test]
+async fn test_poll_comment_error_leaves_a_visible_toast_alone() {
+    use tokio::sync::mpsc;
+
+    for existing in [Toast::success("Submitted"), Toast::failure("Failed: save")] {
+        let message = existing.message().to_string();
+        let kind = existing.kind();
+        let mut app = App::new_for_test();
+        app.pr_number = Some(4);
+        app.cmt.comments_loading = true;
+        app.cmt.review_comments = Some(vec![sample_review_comment(9, "kept")]);
+        app.cmt.submission_result = Some(existing);
+
+        let (tx, rx) = mpsc::channel(1);
+        app.cmt.comment_receiver = Some((4, rx));
+        tx.send(Err("comments failed".to_string())).await.unwrap();
+        app.poll_comment_updates();
+
+        let toast = app.cmt.submission_result.expect("submit toast stays");
+        assert_eq!(toast.message(), message);
+        assert_eq!(toast.kind(), kind);
+        assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
+    }
+}
+
+#[tokio::test]
+async fn test_poll_comment_error_toasts_once_when_the_failure_starts() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.comments_loading = true;
+    app.cmt.review_comments = Some(vec![sample_review_comment(9, "kept")]);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Err("comments failed".to_string())).await.unwrap();
+    app.poll_comment_updates();
+    assert_eq!(
+        app.cmt.submission_result.as_ref().map(Toast::message),
+        Some("comments failed")
+    );
+
+    app.cmt.submission_result = None;
+    app.cmt.comments_loading = true;
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Err("comments failed again".to_string()))
+        .await
+        .unwrap();
+    app.poll_comment_updates();
+    assert!(
+        app.cmt.submission_result.is_none(),
+        "a refresh that is already failed does not toast again"
+    );
+    assert_eq!(
+        app.cmt.comment_error.as_deref(),
+        Some("comments failed again")
+    );
+}
+
+fn comment_line_app(line: Option<u32>, body: &str) -> App {
+    let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
+    app.state = AppState::DiffView;
+    app.diff_scroll.line_count = 4;
+    let mut comment = sample_review_comment(7, body);
+    comment.path = "test.rs".to_string();
+    comment.line = line;
+    app.cmt.review_comments = Some(vec![comment]);
+    app.update_file_comment_positions();
+    app.cmt.comment_panel_open = true;
+    app.cmt.comment_error = Some("comments failed".to_string());
+    app
+}
+
+#[tokio::test]
+async fn r_on_an_empty_comment_line_with_an_error_retries() {
+    let mut app = comment_line_app(Some(2), "Consider a guard here");
+    app.diff_scroll.selected_line = 1;
+    assert!(
+        app.get_comment_indices_at_current_line().is_empty(),
+        "the context line should have no comment"
+    );
+    press_key(&mut app, KeyCode::Char('r')).await;
+    assert!(app.cmt.comment_error.is_none(), "retry clears the error");
+    assert!(app.cmt.comments_loading || app.cmt.comment_receiver.is_some());
+    assert!(app.input_mode.is_none());
+}
+
+#[tokio::test]
+async fn r_on_a_line_with_comments_still_replies() {
+    let mut app = comment_line_app(Some(2), "Consider a guard here");
+    app.diff_scroll.selected_line = 2;
+    assert!(
+        !app.get_comment_indices_at_current_line().is_empty(),
+        "the added line should carry the comment"
+    );
+    press_key(&mut app, KeyCode::Char('r')).await;
+    assert!(matches!(app.input_mode, Some(InputMode::Reply { .. })));
+    assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
+}
+
+#[tokio::test]
 async fn test_poll_comment_success_clears_comment_error() {
     use tokio::sync::mpsc;
 

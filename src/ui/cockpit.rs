@@ -173,17 +173,22 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     lines.push(Line::raw(""));
 
     let mut count_spans = vec![Span::raw("  ")];
-    count_spans.extend(count_spans_for(
-        "Issues: ",
-        &cockpit.mentioned_issues_count,
-        app,
-    ));
-    count_spans.extend(count_spans_for(
-        "  Review PRs: ",
-        &cockpit.review_prs_count,
-        app,
-    ));
-    lines.push(Line::from(fit_spans(count_spans, inner_width)));
+    let mut first_failure = None;
+    for (label, state) in [
+        ("Issues: ", &cockpit.mentioned_issues_count),
+        ("  Review PRs: ", &cockpit.review_prs_count),
+    ] {
+        count_spans.extend(count_spans_for(label, state, app));
+        if first_failure.is_none() {
+            if let LoadState::Error(failure) = state {
+                first_failure = Some(failure);
+            }
+        }
+    }
+    if let Some(failure) = first_failure {
+        append_failure_suffix(&mut count_spans, failure, inner_width, app.theme);
+    }
+    lines.push(Line::from(count_spans));
 
     let header = Paragraph::new(lines)
         .alignment(Alignment::Center)
@@ -211,12 +216,8 @@ fn count_spans_for(
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )),
-        LoadState::Error(failure) => {
+        LoadState::Error(_) => {
             spans.push(Span::styled("—".to_string(), app.theme.muted.style()));
-            spans.push(Span::styled(
-                count_failure_suffix(failure),
-                failure_style(app.theme, failure.severity()),
-            ));
         }
         _ => spans.push(Span::styled(
             "-".to_string(),
@@ -236,26 +237,27 @@ fn count_failure_suffix(failure: &GhFailure) -> String {
     }
 }
 
-/// Cut `spans` to `max_width` columns before the header centers the line.
-/// Centering a line that is already wider than the pane clips both ends.
-fn fit_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
-    let mut used = 0usize;
-    let mut fitted = Vec::new();
-    for span in spans {
-        let width = span.content.width();
-        if used + width <= max_width {
-            used += width;
-            fitted.push(span);
-            continue;
-        }
-        let room = max_width.saturating_sub(used);
-        let text = truncate_with_width(&span.content, room);
-        if !text.is_empty() {
-            fitted.push(Span::styled(text.into_owned(), span.style));
-        }
-        break;
+/// One suffix after every count. Only the suffix is cut, and it is dropped
+/// when the counts already fill the line.
+fn append_failure_suffix(
+    spans: &mut Vec<Span<'static>>,
+    failure: &GhFailure,
+    inner_width: usize,
+    theme: crate::ui::theme::Theme,
+) {
+    let used: usize = spans.iter().map(|span| span.content.width()).sum();
+    let room = inner_width.saturating_sub(used);
+    if room == 0 {
+        return;
     }
-    fitted
+    let fitted = truncate_with_width(&count_failure_suffix(failure), room).into_owned();
+    if fitted.is_empty() {
+        return;
+    }
+    spans.push(Span::styled(
+        fitted,
+        failure_style(theme, failure.severity()),
+    ));
 }
 
 fn render_menu(
@@ -724,9 +726,86 @@ mod tests {
         assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
     }
 
+    fn count_row(text: &str) -> String {
+        text.lines()
+            .find(|line| line.contains("Review PRs:"))
+            .unwrap_or(text)
+            .to_string()
+    }
+
+    fn cockpit_with_counts(
+        issues: LoadState<u32, GhFailure>,
+        reviews: LoadState<u32, GhFailure>,
+    ) -> App {
+        let mut app = make_cockpit_app(true);
+        let cockpit = app.cockpit_state.as_mut().unwrap();
+        cockpit.mentioned_issues_count = issues;
+        cockpit.review_prs_count = reviews;
+        app
+    }
+
     #[test]
-    fn narrow_cockpit_still_draws() {
+    fn a_loaded_count_stays_when_the_other_count_fails() {
+        let long = format!(
+            "gh command failed: GraphQL: {}",
+            "the issues connection failed while resolving mentionable users ".repeat(3)
+        );
+        for width in [100u16, 60] {
+            let mut app = cockpit_with_counts(
+                LoadState::Error(GhFailure::other(long.clone())),
+                LoadState::Loaded(5),
+            );
+            let text = screen_text(&render_at(&mut app, width, 24));
+            let row = count_row(&text);
+            assert!(
+                row.contains("Review PRs: 5"),
+                "width {width} dropped the loaded count:\n{row}"
+            );
+            assert!(row.contains("Issues:"), "{row}");
+            assert_eq!(row.matches('✕').count(), 1, "{row}");
+        }
+
+        let mut app = cockpit_with_counts(
+            LoadState::Error(GhFailure::other("counts broke")),
+            LoadState::Loaded(5),
+        );
+        let text = screen_text(&render_at(&mut app, 60, 24));
+        let row = count_row(&text);
+        assert!(row.contains("Review PRs: 5"), "{row}");
+    }
+
+    #[test]
+    fn two_failed_counts_share_one_suffix_and_a_narrow_line_keeps_both() {
+        let mut app = cockpit_with_counts(
+            LoadState::Error(GhFailure::other("alpha broke")),
+            LoadState::Error(GhFailure::other("beta broke")),
+        );
+        let text = screen_text(&render_at(&mut app, 100, 24));
+        let row = count_row(&text);
+        assert!(row.contains("Issues:"), "{row}");
+        assert!(row.contains("Review PRs:"), "{row}");
+        assert_eq!(row.matches('✕').count(), 1, "{row}");
+        assert!(row.contains("alpha broke"), "{row}");
+        assert!(!row.contains("beta broke"), "{row}");
+
+        let mut app = cockpit_with_counts(
+            LoadState::Error(GhFailure::other(
+                "gh command failed: GraphQL: the issues connection failed",
+            )),
+            LoadState::Loaded(5),
+        );
+        let text = screen_text(&render_at(&mut app, 28, 24));
+        let row = count_row(&text);
+        assert!(row.contains("Issues:"), "{row}");
+        assert!(row.contains("Review PRs: 5"), "{row}");
+        assert!(!row.contains('✕'), "suffix took a count's room:\n{row}");
+    }
+
+    #[tokio::test]
+    async fn narrow_cockpit_still_draws() {
         use crate::github::GhFailure;
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
 
         let mut app = make_cockpit_app(true);
         app.cockpit_state.as_mut().unwrap().mentioned_issues_count =
@@ -738,5 +817,19 @@ mod tests {
             text.contains('—') || text.contains("OCTORUS") || text.contains('╔'),
             "{text}"
         );
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
+        }
     }
 }

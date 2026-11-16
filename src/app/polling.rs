@@ -15,8 +15,15 @@ use super::{App, DataState};
 
 /// A failed refresh that still has rows keeps the list and puts the reason in
 /// the footer toast. An empty list draws the error in the pane instead.
-fn note_comment_failure(slot: &mut Option<Toast>, had_rows: bool, error: &str) {
-    if !had_rows {
+fn note_comment_failure(
+    slot: &mut Option<Toast>,
+    already_failed: bool,
+    had_rows: bool,
+    error: &str,
+) {
+    // A submit notice that is still up stays up, and a refresh that is already
+    // in the error state does not toast again.
+    if !had_rows || already_failed || slot.is_some() {
         return;
     }
     let reason = GhFailure::from_message(error).reason();
@@ -160,12 +167,18 @@ impl App {
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Failed to fetch comments");
                 if self.pr_number == Some(origin_pr) {
+                    let already_failed = self.cmt.comment_error.is_some();
                     let had_rows = self
                         .cmt
                         .review_comments
                         .as_ref()
                         .is_some_and(|comments| !comments.is_empty());
-                    note_comment_failure(&mut self.cmt.submission_result, had_rows, &error);
+                    note_comment_failure(
+                        &mut self.cmt.submission_result,
+                        already_failed,
+                        had_rows,
+                        &error,
+                    );
                     self.cmt.comment_error = Some(error);
                     self.cmt.comments_loading = false;
                 }
@@ -492,12 +505,18 @@ impl App {
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Failed to fetch discussion comments");
                 if self.pr_number == Some(origin_pr) {
+                    let already_failed = self.cmt.discussion_error.is_some();
                     let had_rows = self
                         .cmt
                         .discussion_comments
                         .as_ref()
                         .is_some_and(|comments| !comments.is_empty());
-                    note_comment_failure(&mut self.cmt.submission_result, had_rows, &error);
+                    note_comment_failure(
+                        &mut self.cmt.submission_result,
+                        already_failed,
+                        had_rows,
+                        &error,
+                    );
                     self.cmt.discussion_error = Some(error);
                     self.cmt.discussion_comments_loading = false;
                 }

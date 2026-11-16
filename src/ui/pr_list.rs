@@ -16,8 +16,16 @@ use super::common::{fit_to_width, render_update_bar};
 use super::state_view::{self, clear_filter_hint, retry_action, ViewState};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::{CiStatus, FailureSurface, PullRequestSummary};
+use crate::github::{CiStatus, FailureSurface, PrStateFilter, PullRequestSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
+
+fn empty_pr_title(filter: PrStateFilter) -> &'static str {
+    match filter {
+        PrStateFilter::Open => "No open pull requests",
+        PrStateFilter::Closed => "No closed pull requests",
+        PrStateFilter::All => "No pull requests",
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_filter_bar = app
@@ -61,10 +69,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     } else if let Some(prs) = app.prs.pr_list.as_loaded() {
         if prs.is_empty() {
-            let state = ViewState::Empty {
-                title: "No open pull requests",
-                hint: None,
-            };
+            let title = empty_pr_title(app.prs.pr_list_state_filter);
+            let state = ViewState::Empty { title, hint: None };
             state_view::render_in_block(
                 frame,
                 chunks[1],
@@ -1002,6 +1008,17 @@ mod tests {
         let text = screen_text(&draw_pr_list(&mut app));
         assert!(text.contains("○ No open pull requests"), "{text}");
 
+        for (filter, title) in [
+            (PrStateFilter::Closed, "○ No closed pull requests"),
+            (PrStateFilter::All, "○ No pull requests"),
+        ] {
+            app.prs.pr_list_state_filter = filter;
+            let text = screen_text(&draw_pr_list(&mut app));
+            assert!(text.contains(title), "{text}");
+            assert!(!text.contains("No matches"), "{text}");
+        }
+        app.prs.pr_list_state_filter = PrStateFilter::Open;
+
         app.prs.pr_list = LoadState::Loaded(vec![sample_pr(1, "Fix login bug", "alice")]);
         app.prs.pr_list_filter = Some(crate::filter::ListFilter::new());
         let filter = app.prs.pr_list_filter.as_mut().unwrap();
@@ -1021,8 +1038,11 @@ mod tests {
         assert!(text.contains("⠋ Loading pull requests…"), "{text}");
     }
 
-    #[test]
-    fn narrow_pr_list_still_draws_and_keys_do_not_panic() {
+    #[tokio::test]
+    async fn narrow_pr_list_still_draws_and_keys_do_not_panic() {
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
+
         let mut app = failed_pr_list_app(GhFailure {
             kind: GhFailureKind::Unauthenticated,
             message: "gh auth login".to_string(),
@@ -1040,6 +1060,20 @@ mod tests {
                 !text.contains("Terminal too small"),
                 "{width}x{height}\n{text}"
             );
+        }
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
         }
     }
 

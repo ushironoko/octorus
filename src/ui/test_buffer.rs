@@ -171,3 +171,28 @@ pub(crate) fn app_with_comment_on_added_line(comment: ReviewComment) -> App {
     app.cmt.comment_panel_open = true;
     app
 }
+
+/// A key press, the same shape the event loop delivers.
+pub(crate) fn key_press(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent {
+        code,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    }
+}
+
+/// A terminal whose viewport is `width` by `height`, so a key handler that
+/// asks the frame for its size sees that size without a tty.
+pub(crate) fn terminal_at(
+    width: u16,
+    height: u16,
+) -> ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
+    ratatui::Terminal::with_options(
+        ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, width, height)),
+        },
+    )
+    .expect("terminal")
+}

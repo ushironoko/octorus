@@ -104,12 +104,26 @@ fn heading_style(theme: Theme, severity: FailureSeverity) -> Style {
     }
 }
 
-/// The comment panel when the current line has nothing to list. An error
-/// replaces the empty hint. Loading stays on the footer, which already shows it.
+/// True when the comment pane should draw the failure instead of the empty hint.
+/// That is only when the fetch failed and there are no comments on any line.
+pub(super) fn comment_fetch_error_replaces_empty(app: &App) -> bool {
+    app.cmt.comment_error.is_some()
+        && app
+            .cmt
+            .review_comments
+            .as_ref()
+            .is_none_or(|comments| comments.is_empty())
+}
+
+/// The comment panel when the current line has nothing to list. The failure
+/// replaces the empty hint only when no line has a comment. Loading stays on
+/// the footer, which already shows it.
 pub(super) fn render_comment_placeholder(frame: &mut Frame, area: Rect, app: &App) {
-    if let Some(message) = app.cmt.comment_error.as_deref() {
-        render_comment_error(frame, area, app, message);
-        return;
+    if comment_fetch_error_replaces_empty(app) {
+        if let Some(message) = app.cmt.comment_error.as_deref() {
+            render_comment_error(frame, area, app, message);
+            return;
+        }
     }
     let hint = comment_empty_hint(&app.config.keybindings);
     let state = ViewState::Empty {
@@ -374,7 +388,12 @@ mod tests {
     fn screen_sources_do_not_classify_http_status() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
         let mut pending = vec![root];
-        let markers = ["http 404", "http 403", "could not resolve to a repository"];
+        let markers = [
+            "http 404",
+            "http 403",
+            "forbidden",
+            "could not resolve to a repository",
+        ];
         while let Some(dir) = pending.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let entry = entry.unwrap();
@@ -479,6 +498,12 @@ mod tests {
         assert!(text.contains("r: retry"), "{text}");
         assert!(!text.contains("No comments"), "{text}");
         assert!(!text.contains("c: comment, s: suggestion"), "{text}");
+        let footer = text
+            .lines()
+            .find(|line| line.contains("Esc: close"))
+            .unwrap_or("");
+        assert!(footer.contains("r: retry"), "{footer}\n{text}");
+        assert!(!footer.contains("reply"), "{footer}\n{text}");
     }
 
     #[test]
@@ -500,10 +525,31 @@ mod tests {
         assert!(text.contains("Consider a guard here"), "{text}");
         assert!(!text.contains("○ No comments"), "{text}");
         assert!(!text.contains("Couldn't load comments"), "{text}");
+        let footer = text
+            .lines()
+            .find(|line| line.contains("Esc: close"))
+            .unwrap_or("");
+        assert!(footer.contains("r: reply"), "{footer}\n{text}");
     }
 
     #[test]
-    fn narrow_comment_error_draws_without_a_too_small_gate() {
+    fn an_empty_line_keeps_the_hint_when_another_line_has_comments() {
+        let mut app = comment_panel_app();
+        app.diff_scroll.selected_line = 1;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        app.cmt.submission_result = Some(crate::app::Toast::failure("comments failed"));
+        let text = screen_text(&draw_ui(&mut app, 100, 30));
+        assert!(text.contains("○ No comments"), "{text}");
+        assert!(text.contains("c: comment, s: suggestion"), "{text}");
+        assert!(!text.contains("Couldn't load comments"), "{text}");
+        assert!(text.contains("comments failed"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn narrow_comment_error_draws_without_a_too_small_gate() {
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
+
         let mut app = comment_panel_app();
         app.cmt.review_comments = Some(vec![]);
         app.cmt.file_comment_positions.clear();
@@ -514,6 +560,20 @@ mod tests {
             text.contains("Couldn't load comments") || text.contains('✕'),
             "{text}"
         );
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
+        }
     }
 
     #[test]
@@ -616,6 +676,34 @@ mod tests {
             "comments-error-empty",
             "Comment panel, empty line with a fetch error",
             &draw_ui(&mut comments, 100, 30),
+        );
+
+        let mut with_data = comment_panel_app();
+        with_data.cmt.comment_error = Some("comments failed".to_string());
+        with_data.cmt.submission_result = Some(crate::app::Toast::failure("comments failed"));
+        save_artifact(
+            &dir,
+            "comments-error-with-data",
+            "Comment panel, the list stays when the refresh failed",
+            &draw_ui(&mut with_data, 100, 30),
+        );
+
+        let long = format!(
+            "gh command failed: GraphQL: {}",
+            "the issues connection failed while resolving mentionable users ".repeat(3)
+        );
+        let mut long_counts =
+            crate::app::App::new_cockpit("owner/repo", crate::config::Config::default(), true);
+        {
+            let cockpit = long_counts.cockpit_state.as_mut().unwrap();
+            cockpit.mentioned_issues_count = crate::app::LoadState::Error(GhFailure::other(long));
+            cockpit.review_prs_count = crate::app::LoadState::Loaded(5);
+        }
+        save_artifact(
+            &dir,
+            "cockpit-counts-error-long-100",
+            "Cockpit counts, loaded Review PRs beside a long failure",
+            &draw_ui(&mut long_counts, 100, 30),
         );
 
         let mut narrow = crate::app::App::new_for_test();
