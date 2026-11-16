@@ -154,7 +154,7 @@ impl App {
         tokio::spawn(async move {
             let result = github::fetch_mentioned_issues_count(&repo_for_mention)
                 .await
-                .map_err(|e| e.to_string());
+                .map_err(|error| github::GhFailure::from_error(&error));
             let _ = mention_tx.send(result).await;
         });
 
@@ -164,7 +164,7 @@ impl App {
         tokio::spawn(async move {
             let result = github::fetch_review_requested_prs_count(&repo)
                 .await
-                .map_err(|e| e.to_string());
+                .map_err(|error| github::GhFailure::from_error(&error));
             let _ = review_tx.send(result).await;
         });
     }

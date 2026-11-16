@@ -56,7 +56,8 @@ pub use blame::{
 };
 pub(crate) use blame::{blame_file_at_revision_range, short_sha};
 pub use client::{
-    classify_gh_failure, detect_repo, gh_command, DetectRepoError, GhFailure, GhFailureKind,
+    classify_gh_failure, detect_repo, gh_command, DetectRepoError, FailureSeverity, FailureSurface,
+    GhFailure, GhFailureKind,
 };
 pub use comment::{create_multiline_review_comment, create_reply_comment, create_review_comment};
 pub use commit::{

@@ -227,6 +227,7 @@ impl App {
         let refresh_tx = retry_sender.clone();
 
         let thread = std::thread::spawn(move || {
+            let ignore = std::sync::Mutex::new(crate::local_watch::GitIgnoreCache::new(&watch_dir));
             let callback = move |result: notify::Result<notify::Event>| {
                 if !active_clone.load(Ordering::Acquire) {
                     return;
@@ -236,14 +237,21 @@ impl App {
                     return;
                 };
 
-                let dominated_by_git = event
-                    .paths
-                    .iter()
-                    .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
-                let is_access = matches!(event.kind, notify::EventKind::Access(_));
+                let should_refresh = {
+                    let mut ignore = ignore.lock().unwrap_or_else(|err| err.into_inner());
+                    // Startup skips `.octorus`. Toggling into local mode refreshed
+                    // those edits before ignore filtering, and still does.
+                    crate::local_watch::should_refresh_local_change(
+                        &event.paths,
+                        &event.kind,
+                        event.need_rescan(),
+                        refresh_pending.load(Ordering::Acquire),
+                        false,
+                        &mut ignore,
+                    )
+                };
 
-                if !is_access && !dominated_by_git && !refresh_pending.swap(true, Ordering::AcqRel)
-                {
+                if should_refresh && !refresh_pending.swap(true, Ordering::AcqRel) {
                     let _ = refresh_tx.try_send(RefreshRequest::LocalRefresh);
                 }
             };

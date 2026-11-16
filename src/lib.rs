@@ -18,6 +18,7 @@ pub mod headless;
 pub mod keybinding;
 pub mod language;
 pub mod loader;
+pub mod local_watch;
 pub mod module_graph;
 pub mod symbol;
 pub mod symbols;

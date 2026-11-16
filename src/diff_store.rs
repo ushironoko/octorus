@@ -469,6 +469,57 @@ impl<K: Hash + Eq + Clone + Send + 'static> DiffCacheStore<K> {
         self.store.retain(|k, v| !pred(k, v));
     }
 
+    /// Take every store entry. `current` and in-flight jobs are left alone.
+    pub fn drain_store(&mut self) -> HashMap<K, DiffCache> {
+        std::mem::take(&mut self.store)
+    }
+
+    pub fn store_get(&self, key: &K) -> Option<&DiffCache> {
+        self.store.get(key)
+    }
+
+    pub fn remove_store(&mut self, key: &K) -> Option<DiffCache> {
+        self.store.remove(key)
+    }
+
+    /// Insert a cache that survived a file-list refresh.
+    ///
+    /// Drops the entry when the store is already at its cap and the key is new,
+    /// matching [`Self::retire_current`].
+    pub fn insert_kept(&mut self, key: K, cache: DiffCache) {
+        if self.store.len() >= self.max_store_entries && !self.store.contains_key(&key) {
+            return;
+        }
+        self.store.insert(key, cache);
+    }
+
+    /// Remove `current` without cancelling an in-flight highlight.
+    pub fn take_current(&mut self) -> Option<(K, DiffCache)> {
+        let key = self.current_key.take()?;
+        let cache = self.current.take()?;
+        Some((key, cache))
+    }
+
+    /// Install `current`.
+    ///
+    /// `keep_highlight_job` leaves the in-flight highlight running. That is only
+    /// valid when `key` is the key the job was started with. Any other key
+    /// cancels the job so its result cannot land on a different file.
+    pub fn install_current(&mut self, key: K, cache: DiffCache, keep_highlight_job: bool) {
+        self.current = Some(cache);
+        self.current_key = Some(key);
+        if !keep_highlight_job {
+            self.cancel_highlight();
+            self.highlight_rx = None;
+        }
+    }
+
+    /// Stop the viewed-file highlight and drop a queued result.
+    pub fn cancel_highlight_job(&mut self) {
+        self.cancel_highlight();
+        self.highlight_rx = None;
+    }
+
     /// ストアのエントリ数を返す
     pub fn store_len(&self) -> usize {
         self.store.len()

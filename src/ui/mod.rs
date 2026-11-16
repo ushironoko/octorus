@@ -18,6 +18,7 @@ mod pr_description;
 mod pr_list;
 mod simulate_modal;
 mod split_view;
+mod state_view;
 pub mod text_area;
 pub mod theme;
 
@@ -142,8 +143,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             file_list::render_loading(frame, app);
             return;
         }
-        if let DataState::Error(ref msg) = app.data_state {
-            file_list::render_error(frame, app, msg);
+        if matches!(app.data_state, DataState::Error(_)) {
+            file_list::render_error(frame, app);
             return;
         }
     }
@@ -565,7 +566,8 @@ mod symbol_popup_tests {
                 deletions: 1,
                 patch: Some(patch.to_string()),
                 viewed: false,
-            }],
+            }]
+            .into(),
         };
         app.diff_store.current = Some(build_plain_diff_cache(patch, 4));
         app.symbol_popup = Some(SymbolPopupState {
