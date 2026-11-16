@@ -657,25 +657,13 @@ impl App {
         )));
 
         tokio::spawn(async move {
-            let mut marked_paths = Vec::with_capacity(total_targets);
-            let mut error = None;
-
-            for path in paths {
-                let result = github::set_file_viewed(&repo, &pr_node_id, &path, set_viewed).await;
-                match result {
-                    Ok(()) => marked_paths.push(path),
-                    Err(e) => {
-                        error = Some(format!("{}: {}", path, e));
-                        break;
-                    }
-                }
-            }
-
+            let update =
+                github::viewed::set_files_viewed(&repo, &pr_node_id, &paths, set_viewed).await;
             let _ = tx
                 .send(MarkViewedResult::Completed {
-                    marked_paths,
+                    marked_paths: update.marked_paths,
                     total_targets,
-                    error,
+                    error: update.error,
                     set_viewed,
                 })
                 .await;

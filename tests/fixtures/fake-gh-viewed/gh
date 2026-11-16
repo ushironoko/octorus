@@ -1,0 +1,136 @@
+#!/bin/sh
+# gh double for viewed-marking tests. It answers only FAKE_GH_VIEWED_PR so a
+# call for some other pull request cannot satisfy this test's assertions.
+# Every invocation is appended to FAKE_GH_LOG.
+#
+# FAKE_GH_VIEWED_FAIL_PATH     markFileAsViewed for that path fails
+# FAKE_GH_VIEWED_REJECT_BATCH  a multi-alias mutation is refused with no body
+# FAKE_GH_VIEWED_FAIL_REVERT   unmarkFileAsViewed aliases fail
+# FAKE_GH_VIEWED_OFFLINE       every call dies with a connection error
+set -f
+
+if [ -z "${FAKE_GH_LOG:-}" ] || [ -z "${FAKE_GH_VIEWED_PR:-}" ]; then
+    printf 'viewed fake gh is missing FAKE_GH_LOG or FAKE_GH_VIEWED_PR\n' >&2
+    exit 1
+fi
+
+printf 'CALL %s\n' "$*" >> "$FAKE_GH_LOG"
+
+scoped=0
+for arg in "$@"; do
+    case "$arg" in
+        pullRequestId="$FAKE_GH_VIEWED_PR") scoped=1 ;;
+    esac
+done
+if [ "$scoped" -ne 1 ]; then
+    printf '%s\n' '{"errors":[{"message":"fake gh ignored a different pull request"}]}'
+    exit 1
+fi
+
+if [ "${FAKE_GH_VIEWED_OFFLINE:-}" = 1 ]; then
+    printf '%s\n' 'dial tcp 127.0.0.1:443: connect: connection refused' >&2
+    exit 1
+fi
+
+op=mark
+for arg in "$@"; do
+    case "$arg" in
+        *unmarkFileAsViewed*) op=unmark ;;
+    esac
+done
+
+count=0
+list=""
+single=""
+for arg in "$@"; do
+    case "$arg" in
+        p[0-9]*=*)
+            count=$((count + 1))
+            list="${list}${arg}
+"
+            ;;
+        path=*) single=${arg#path=} ;;
+    esac
+done
+
+if [ "$count" -ge 2 ] && [ "${FAKE_GH_VIEWED_REJECT_BATCH:-}" = 1 ]; then
+    printf '%s\n' 'Query is too complex' >&2
+    exit 1
+fi
+
+if [ "$count" -gt 0 ]; then
+    data=""
+    errs=""
+    sep=""
+    esep=""
+    failed=0
+    oldifs=$IFS
+    IFS='
+'
+    for item in $list; do
+        IFS=$oldifs
+        [ -n "$item" ] || continue
+        name=${item%%=*}
+        value=${item#*=}
+        idx=${name#p}
+        alias=m$idx
+        fail_this=0
+        msg=""
+        if [ "$op" = unmark ] && [ "${FAKE_GH_VIEWED_FAIL_REVERT:-}" = 1 ]; then
+            fail_this=1
+            msg="Could not undo viewed mark"
+        elif [ "$op" = mark ] && [ -n "${FAKE_GH_VIEWED_FAIL_PATH:-}" ] && [ "$value" = "${FAKE_GH_VIEWED_FAIL_PATH}" ]; then
+            fail_this=1
+            msg="File not changed"
+        fi
+        if [ "$fail_this" -eq 1 ]; then
+            data="${data}${sep}\"${alias}\":null"
+            errs="${errs}${esep}{\"path\":[\"${alias}\"],\"message\":\"${msg}\"}"
+            esep=", "
+            failed=1
+        else
+            data="${data}${sep}\"${alias}\":{\"clientMutationId\":null}"
+        fi
+        sep=", "
+        IFS='
+'
+    done
+    IFS=$oldifs
+    if [ -n "$errs" ]; then
+        printf '{"data":{%s},"errors":[%s]}' "$data" "$errs"
+    else
+        printf '{"data":{%s}}' "$data"
+    fi
+    if [ "$failed" -eq 1 ]; then
+        exit 1
+    fi
+    exit 0
+fi
+
+if [ -z "$single" ]; then
+    printf '%s\n' 'viewed fake gh saw no path' >&2
+    exit 1
+fi
+
+field=markFileAsViewed
+msg=""
+fail_this=0
+if [ "$op" = unmark ]; then
+    field=unmarkFileAsViewed
+    if [ "${FAKE_GH_VIEWED_FAIL_REVERT:-}" = 1 ]; then
+        fail_this=1
+        msg="Could not undo viewed mark"
+    fi
+elif [ -n "${FAKE_GH_VIEWED_FAIL_PATH:-}" ] && [ "$single" = "${FAKE_GH_VIEWED_FAIL_PATH}" ]; then
+    fail_this=1
+    msg="File not changed"
+fi
+
+if [ "$fail_this" -eq 1 ]; then
+    printf '{"errors":[{"message":"%s"}]}' "$msg"
+    printf '%s\n' "$msg" >&2
+    exit 1
+fi
+
+printf '{"data":{"%s":{"clientMutationId":null}}}' "$field"
+exit 0
