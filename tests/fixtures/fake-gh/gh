@@ -7,6 +7,9 @@
 # FAKE_GH_* variables. FAKE_GH_DRAFTS answers the pending review's own comments
 # endpoint, and it is matched before the `--slurp` list that FAKE_GH_REVIEWS answers.
 # FAKE_GH_FAIL_FIRST, when set to N, exits 1 for the first N logged calls.
+# FAKE_GH_STDERR replaces the "forced failure" line on those calls.
+# FAKE_GH_PR_LIST answers a `pullRequests` query. FAKE_GH_PR_LIST_AFTER answers
+# the same query when it passes `after`.
 case " $* " in
     *" --input - "*)
         {
@@ -25,7 +28,7 @@ if [ -n "${FAKE_GH_FAIL_FIRST:-}" ]; then
     calls=$(grep -c '^CALL ' "$FAKE_GH_LOG" 2>/dev/null || true)
     calls=${calls:-0}
     if [ "$calls" -le "$FAKE_GH_FAIL_FIRST" ]; then
-        printf 'forced failure\n' >&2
+        printf '%s\n' "${FAKE_GH_STDERR:-forced failure}" >&2
         exit 1
     fi
 fi
@@ -35,6 +38,18 @@ case "$*" in
     *--slurp*) printf '%s' "$FAKE_GH_REVIEWS" ;;
     *viewerViewedState*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
     *baseRef*) printf '%s' "$FAKE_GH_PR_CHECK" ;;
+    *pullRequests*)
+        case " $* " in
+            *" after="*)
+                if [ -n "${FAKE_GH_PR_LIST_AFTER:-}" ]; then
+                    printf '%s' "$FAKE_GH_PR_LIST_AFTER"
+                else
+                    printf '%s' "$FAKE_GH_PR_LIST"
+                fi
+                ;;
+            *) printf '%s' "$FAKE_GH_PR_LIST" ;;
+        esac
+        ;;
     *graphql*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
     */events*) printf '%s' "$FAKE_GH_PUBLISH" ;;
     'pr review'*) printf '%s' "$FAKE_GH_PR_REVIEW" ;;

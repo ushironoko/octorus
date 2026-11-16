@@ -1417,6 +1417,8 @@ pub struct PrListState {
     pub selected_pr: usize,
     pub pr_list_scroll_offset: usize,
     pub pr_list_has_more: bool,
+    /// Cursor returned with the last page. The next scroll reads after it.
+    pub(crate) pr_list_end_cursor: Option<String>,
     pub pr_list_state_filter: crate::github::PrStateFilter,
     pub pr_list_filter: Option<crate::filter::ListFilter>,
     pub(crate) pr_list_receiver:
