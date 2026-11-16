@@ -207,7 +207,9 @@ pub(crate) fn parse_pr_snapshot(response: serde_json::Value) -> Result<PrSnapsho
             number: pull.number,
             node_id: pull.id.filter(|id| !id.is_empty()),
             title: pull.title,
-            body: pull.body,
+            // GraphQL returns "" where REST returns null. An empty body must
+            // stay None so the reviewer prompt still uses its placeholder.
+            body: pull.body.filter(|body| !body.is_empty()),
             state: rest_state(&pull.state),
             head: Branch {
                 ref_name: pull.head_ref_name,
@@ -652,6 +654,65 @@ mod tests {
         assert_eq!(snapshot.pr.base.ref_name, rest.base.ref_name);
         assert_eq!(snapshot.pr.base.sha, rest.base.sha);
         assert_eq!(snapshot.pr.updated_at, rest.updated_at);
+
+        let rest_without_body: PullRequest = serde_json::from_value(serde_json::json!({
+            "number": 7,
+            "node_id": "PR_node",
+            "title": "Title",
+            "body": null,
+            "state": "open",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main", "sha": "def"},
+            "user": {"login": "octocat"}
+        }))
+        .unwrap();
+        for graphql_body in [serde_json::json!(""), serde_json::Value::Null] {
+            let mut response = snapshot_pull(serde_json::json!({
+                "target": { "oid": "cafebabe" }
+            }));
+            response["data"]["repository"]["pullRequest"]["body"] = graphql_body;
+            let parsed = parse_pr_snapshot(response).unwrap();
+            assert_eq!(parsed.pr.body, rest_without_body.body);
+            assert!(parsed.pr.body.is_none());
+        }
+    }
+
+    #[test]
+    fn parse_pr_snapshot_empty_body_is_none() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["body"] = serde_json::json!("");
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.body, None);
+    }
+
+    #[test]
+    fn empty_body_snapshot_keeps_the_reviewer_placeholder() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["body"] = serde_json::json!("");
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        let context = crate::ai::Context {
+            repo: "owner/repo".to_string(),
+            pr_number: snapshot.pr.number,
+            pr_title: snapshot.pr.title.clone(),
+            pr_body: snapshot.pr.body.clone(),
+            diff: String::new(),
+            working_dir: None,
+            head_sha: snapshot.pr.head.sha.clone(),
+            base_branch: snapshot.pr.base.ref_name.clone(),
+            external_comments: Vec::new(),
+            local_mode: false,
+            file_patches: Vec::new(),
+        };
+        let prompt = crate::ai::PromptLoader::new(
+            &crate::config::AiConfig::default(),
+            std::path::Path::new("/tmp"),
+        )
+        .load_reviewer_prompt(&context, 1);
+        assert!(
+            prompt.contains("(No description provided)"),
+            "an empty body uses the placeholder, got {prompt}"
+        );
     }
 
     #[test]
