@@ -36,5 +36,12 @@ case "$*" in
     *graphql*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
     */events*) printf '%s' "$FAKE_GH_PUBLISH" ;;
     'pr review'*) printf '%s' "$FAKE_GH_PR_REVIEW" ;;
+    *'pr diff'*)
+        if [ "${FAKE_GH_DIFF_FAIL:-}" = 1 ]; then
+            printf 'diff failed\n' >&2
+            exit 1
+        fi
+        printf '%s' "${FAKE_GH_DIFF-}"
+        ;;
     *) printf '%s' "$FAKE_GH_CREATE" ;;
 esac

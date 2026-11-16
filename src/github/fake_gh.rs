@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const FAKE_GH_VARS: [&str; 8] = [
+const FAKE_GH_VARS: [&str; 10] = [
     "FAKE_GH_LOG",
     "FAKE_GH_REVIEWS",
     "FAKE_GH_CREATE",
@@ -18,6 +18,8 @@ const FAKE_GH_VARS: [&str; 8] = [
     "FAKE_GH_PR_REVIEW",
     "FAKE_GH_DRAFTS",
     "FAKE_GH_FAIL_FIRST",
+    "FAKE_GH_DIFF",
+    "FAKE_GH_DIFF_FAIL",
 ];
 
 /// Puts the test double first on PATH and sets its replies. Dropping it restores
@@ -47,7 +49,9 @@ impl FakeGh {
         std::env::set_var("FAKE_GH_PUBLISH", publish);
         std::env::set_var("FAKE_GH_PR_REVIEW", "");
         std::env::set_var("FAKE_GH_DRAFTS", "[[]]");
+        std::env::set_var("FAKE_GH_DIFF", "");
         std::env::remove_var("FAKE_GH_FAIL_FIRST");
+        std::env::remove_var("FAKE_GH_DIFF_FAIL");
         Self {
             _dir: dir,
             log,
@@ -65,6 +69,16 @@ impl FakeGh {
     /// fetch of the same endpoint succeeds.
     pub(crate) fn fail_first(&self, count: u32) {
         std::env::set_var("FAKE_GH_FAIL_FIRST", count.to_string());
+    }
+
+    /// Body of `gh pr diff`. An empty body is a diff that names no files.
+    pub(crate) fn set_diff(&self, diff: &str) {
+        std::env::set_var("FAKE_GH_DIFF", diff);
+    }
+
+    /// `gh pr diff` exits 1. The call is still logged.
+    pub(crate) fn fail_diff(&self) {
+        std::env::set_var("FAKE_GH_DIFF_FAIL", "1");
     }
 
     /// Every call made so far, as logged by the test double.

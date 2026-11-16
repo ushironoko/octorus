@@ -108,14 +108,20 @@ impl App {
                                 },
                             );
                         }
-                        DataLoadResult::Unchanged { pr_number, viewed } => {
-                            if let Some(viewed) = viewed {
-                                let cache_key = PrCacheKey {
-                                    repo: self.repo.clone(),
-                                    pr_number,
-                                };
-                                self.session_cache.update_viewed_flags(&cache_key, &viewed);
-                            }
+                        DataLoadResult::Unchanged {
+                            pr_number,
+                            viewed,
+                            pr,
+                        } => {
+                            let cache_key = PrCacheKey {
+                                repo: self.repo.clone(),
+                                pr_number,
+                            };
+                            self.session_cache.apply_unchanged_refresh(
+                                &cache_key,
+                                pr.as_deref(),
+                                viewed.as_ref(),
+                            );
                         }
                         DataLoadResult::Error(_) => {}
                     }
@@ -1086,14 +1092,32 @@ impl App {
                 // split view 側の「Loading diff...」が発生しないようにする
                 self.ensure_diff_cache();
             }
-            DataLoadResult::Unchanged { viewed, .. } => {
-                // Metadata, the file list, and patches stay as cached. Viewed
-                // flags are not part of `updated_at`, so apply a successful read.
-                // A failed read keeps the flags already on screen.
-                if let Some(viewed) = viewed {
-                    if let DataState::Loaded { files, .. } = &mut self.data_state {
-                        apply_viewed_flags(files, &viewed);
+            DataLoadResult::Unchanged { viewed, pr, .. } => {
+                // The file list and patches stay cached. The probe's pull request
+                // replaces title, body, state, and user, which the timestamp does
+                // not always cover. Viewed flags are applied only when that read
+                // succeeded.
+                let mut wrote = false;
+                let mut description_changed = false;
+                if let DataState::Loaded { pr: shown, files } = &mut self.data_state {
+                    if let Some(fresh) = pr {
+                        description_changed =
+                            shown.title != fresh.title || shown.body != fresh.body;
+                        *shown = fresh;
+                        wrote = true;
                     }
+                    if let Some(viewed) = viewed.as_ref() {
+                        apply_viewed_flags(files, viewed);
+                        wrote = true;
+                    }
+                }
+                if description_changed {
+                    self.pr_description_cache = None;
+                    if self.state == AppState::PrDescription {
+                        self.rebuild_pr_description_cache();
+                    }
+                }
+                if wrote {
                     self.sync_loaded_data_to_cache();
                 }
                 if self.needs_review_comment_load() {

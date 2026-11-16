@@ -491,9 +491,19 @@ impl SessionCache {
         self.evict_if_needed();
     }
 
-    /// Replace viewed flags on a cached file list. A path missing from a
-    /// successful query is unviewed, matching the full fetch. Patches stay.
-    pub fn update_viewed_flags(&mut self, key: &PrCacheKey, viewed: &HashMap<String, bool>) {
+    /// Apply a reopen that did not replace the file list. `pr` replaces the
+    /// cached pull request when the probe succeeded. `viewed` replaces flags
+    /// when that query succeeded; a path missing from a successful query is
+    /// unviewed, matching the full fetch. Patches stay either way.
+    pub fn apply_unchanged_refresh(
+        &mut self,
+        key: &PrCacheKey,
+        pr: Option<&PullRequest>,
+        viewed: Option<&HashMap<String, bool>>,
+    ) {
+        if pr.is_none() && viewed.is_none() {
+            return;
+        }
         if !self.pr_data.contains_key(key) {
             return;
         }
@@ -501,8 +511,14 @@ impl SessionCache {
         let Some(data) = self.pr_data.get_mut(key) else {
             return;
         };
-        for file in &mut data.files {
-            file.viewed = viewed.get(&file.filename).copied().unwrap_or(false);
+        if let Some(pr) = pr {
+            data.pr_updated_at = pr.updated_at.clone();
+            *data.pr = pr.clone();
+        }
+        if let Some(viewed) = viewed {
+            for file in &mut data.files {
+                file.viewed = viewed.get(&file.filename).copied().unwrap_or(false);
+            }
         }
     }
 

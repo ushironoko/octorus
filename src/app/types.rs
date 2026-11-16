@@ -537,17 +537,33 @@ impl CockpitState {
     }
 }
 
+/// Identity of a cached PR used to decide whether a reopen can skip the file list.
+///
+/// `updated_at` is the timestamp GitHub stores on the pull request. Head SHA and
+/// base ref/SHA are compared as well: a diff change that did not move the
+/// timestamp still has to refetch files. `missing_patches` is not stored here;
+/// a cache with a missing patch does not use this check and refetches in full.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedPrCheck {
+    pub updated_at: String,
+    pub head_sha: String,
+    pub base_ref: String,
+    pub base_sha: String,
+}
+
 /// Retry request variants dispatched through the unified retry loop.
 #[derive(Debug, Clone)]
 pub enum RefreshRequest {
-    /// Full PR refetch. Manual retry and a cache miss use this.
+    /// Full PR refetch. Manual retry, a cache miss, and a cache whose patch or
+    /// file list is incomplete use this.
     PrRefresh {
         pr_number: u32,
     },
-    /// Cache-hit reopen. Compare `cached_updated_at` before refetching.
+    /// Cache-hit reopen of a complete payload. Compare [`CachedPrCheck`] before
+    /// refetching files and patches.
     PrCheckUpdate {
         pr_number: u32,
-        cached_updated_at: String,
+        cached: CachedPrCheck,
     },
     LocalRefresh,
 }

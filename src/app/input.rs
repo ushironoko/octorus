@@ -277,10 +277,11 @@ impl App {
         }
     }
 
-    /// Cache-hit reopen. The background loop compares `cached_updated_at` and
-    /// refetches the heavy payload only when it changed or the check fails.
-    /// Manual retry stays on [`Self::retry_load`], which always refetches.
-    pub(crate) fn request_check_update(&mut self, pr_number: u32, cached_updated_at: String) {
+    /// Cache-hit reopen of a complete file list. The background loop compares
+    /// the cached timestamp and commits, and refetches files only when those
+    /// differ or the check fails. Manual retry stays on [`Self::retry_load`].
+    /// A cache with a missing patch does not call this; it refetches in full.
+    pub(crate) fn request_check_update(&mut self, pr_number: u32, cached: CachedPrCheck) {
         if self.local_mode {
             self.retry_load();
             return;
@@ -288,10 +289,7 @@ impl App {
         let Some(ref tx) = self.retry_sender else {
             return;
         };
-        let _ = tx.try_send(RefreshRequest::PrCheckUpdate {
-            pr_number,
-            cached_updated_at,
-        });
+        let _ = tx.try_send(RefreshRequest::PrCheckUpdate { pr_number, cached });
     }
     pub(crate) async fn handle_file_list_input(
         &mut self,
