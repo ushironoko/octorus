@@ -5,11 +5,12 @@
 //! file still uses that original mutation, so the `v` key talks to `gh` the
 //! same way it always has.
 //!
-//! When GitHub accepts some aliases and rejects others, every path before the
-//! first failure is kept. Aliases after that failure may already have been
-//! applied; they are undone so the server stops where the per-file loop
-//! stopped. An undo GitHub refuses stays in the result, because the file is
-//! viewed on the server and the screen has to show that.
+//! When GitHub accepts some aliases and rejects others, every accepted path is
+//! kept, including ones after the first error. A mark never clears a file:
+//! an alias for a path that was already viewed is a no-op on the server, and
+//! undoing it would unmark a file this process did not view. Later chunks are
+//! not sent after a failure. The error text is the same `gh` failure the
+//! per-file loop shows, so stderr and the response body stay on the toast.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -29,8 +30,9 @@ pub(crate) struct FilesViewedUpdate {
 
 /// Mark or unmark `paths` on one pull request.
 ///
-/// `marked_paths` is every path whose viewed state actually changed and was
-/// left that way. The error names the first path that failed.
+/// `marked_paths` is every path whose mutation succeeded, in request order.
+/// That includes aliases after the first error: they were requested and GitHub
+/// applied them. The error is that first failure, in the per-file `gh` text.
 pub(crate) async fn set_files_viewed(
     repo: &str,
     pr_node_id: &str,
@@ -77,11 +79,11 @@ pub(crate) async fn set_files_viewed(
                 failed_message,
                 applied_after,
             } => {
+                // Successes after the error were applied. Leave them, including
+                // a path that was already viewed: the mark did not change it,
+                // and a later unmark would.
                 marked_paths.extend(before);
-                if !applied_after.is_empty() {
-                    let still = undo_applied(repo, pr_node_id, &applied_after, set_viewed).await;
-                    marked_paths.extend(still);
-                }
+                marked_paths.extend(applied_after);
                 return FilesViewedUpdate {
                     marked_paths,
                     error: Some(format!("{failed_path}: {failed_message}")),
@@ -123,64 +125,6 @@ async fn mark_sequential(
     }
 }
 
-/// Undo aliases that landed after the first failure.
-///
-/// Paths that stay viewed (the undo was refused or never reached GitHub) are
-/// returned so the caller can show them. Paths the undo clears are not.
-async fn undo_applied(
-    repo: &str,
-    pr_node_id: &str,
-    paths: &[String],
-    originally_set_viewed: bool,
-) -> Vec<String> {
-    let undo_viewed = !originally_set_viewed;
-    let mut still = Vec::new();
-    let chunks: Vec<&[String]> = paths.chunks(VIEWED_MUTATION_BATCH).collect();
-    for (index, chunk) in chunks.iter().enumerate() {
-        match request_chunk(pr_node_id, chunk, undo_viewed).await {
-            ChunkReport::AppliedAll => {}
-            ChunkReport::FailedClosed { .. } => {
-                still.extend(chunk.iter().cloned());
-                for rest in chunks.iter().skip(index + 1) {
-                    still.extend(rest.iter().cloned());
-                }
-                break;
-            }
-            ChunkReport::RetryPerFile => {
-                still.extend(undo_per_file(repo, pr_node_id, chunk, undo_viewed).await);
-            }
-            ChunkReport::Partial {
-                before,
-                applied_after,
-                ..
-            } => {
-                let mut undone = before;
-                undone.extend(applied_after);
-                still.extend(chunk.iter().filter(|path| !undone.contains(*path)).cloned());
-            }
-        }
-    }
-    still
-}
-
-async fn undo_per_file(
-    repo: &str,
-    pr_node_id: &str,
-    paths: &[String],
-    undo_viewed: bool,
-) -> Vec<String> {
-    let mut still = Vec::new();
-    for path in paths {
-        if set_file_viewed(repo, pr_node_id, path, undo_viewed)
-            .await
-            .is_err()
-        {
-            still.push(path.clone());
-        }
-    }
-    still
-}
-
 enum ChunkReport {
     AppliedAll,
     /// The call never produced per-file results, and retrying cannot succeed.
@@ -216,7 +160,13 @@ async fn request_chunk(pr_node_id: &str, paths: &[String], set_viewed: bool) -> 
     let trimmed = run.stdout.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         if value.is_object() {
-            return close_terminal(interpret(&value, paths));
+            let mut report = close_terminal(interpret(&value, paths));
+            if let ChunkReport::Partial { failed_message, .. } = &mut report {
+                // The per-file loop surfaces stderr and the body through
+                // `gh command failed: …`. A shorter parsed message drops both.
+                *failed_message = gh_failure_text(run.stderr.trim(), trimmed);
+            }
+            return report;
         }
     }
 
@@ -526,17 +476,19 @@ pub(crate) mod fake {
 
     const SCRIPT: &str = include_str!("../../tests/fixtures/fake-gh-viewed/gh");
 
-    const TOGGLES: [&str; 4] = [
+    const TOGGLES: [&str; 3] = [
         "FAKE_GH_VIEWED_FAIL_PATH",
         "FAKE_GH_VIEWED_REJECT_BATCH",
-        "FAKE_GH_VIEWED_FAIL_REVERT",
         "FAKE_GH_VIEWED_OFFLINE",
     ];
 
-    /// `gh` on PATH that only answers `pr_node_id`. Dropping it restores PATH.
+    /// `gh` on PATH that only answers `pr_node_id`. It remembers which paths are
+    /// viewed, so a test can see a mark that was already set and must not be
+    /// cleared. Dropping it restores PATH.
     pub struct ViewedFakeGh {
         _dir: tempfile::TempDir,
         log: PathBuf,
+        state: PathBuf,
         old_path: Option<OsString>,
         pr_node_id: String,
     }
@@ -548,6 +500,8 @@ pub(crate) mod fake {
             fs::write(&script, SCRIPT).expect("write gh double");
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod gh");
             let log = dir.path().join("calls.log");
+            let state = dir.path().join("viewed.txt");
+            fs::write(&state, "").expect("viewed state");
             let old_path = std::env::var_os("PATH");
             let mut path = OsString::from(dir.path());
             path.push(":");
@@ -556,6 +510,7 @@ pub(crate) mod fake {
             }
             std::env::set_var("PATH", &path);
             std::env::set_var("FAKE_GH_LOG", &log);
+            std::env::set_var("FAKE_GH_VIEWED_STATE", &state);
             std::env::set_var("FAKE_GH_VIEWED_PR", pr_node_id);
             for name in TOGGLES {
                 std::env::remove_var(name);
@@ -563,9 +518,32 @@ pub(crate) mod fake {
             Self {
                 _dir: dir,
                 log,
+                state,
                 old_path,
                 pr_node_id: pr_node_id.to_string(),
             }
+        }
+
+        /// Paths already viewed on GitHub before this test's calls.
+        pub fn pre_viewed(&self, paths: &[&str]) {
+            let mut body = String::new();
+            for path in paths {
+                body.push_str(path);
+                body.push('\n');
+            }
+            fs::write(&self.state, body).expect("seed viewed state");
+        }
+
+        /// Paths viewed on the double after the calls, in sorted order.
+        pub fn viewed_paths(&self) -> Vec<String> {
+            let text = fs::read_to_string(&self.state).unwrap_or_default();
+            let mut paths: Vec<String> = text
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect();
+            paths.sort();
+            paths
         }
 
         pub fn fail_path(&self, path: &str) {
@@ -574,10 +552,6 @@ pub(crate) mod fake {
 
         pub fn reject_batch(&self) {
             std::env::set_var("FAKE_GH_VIEWED_REJECT_BATCH", "1");
-        }
-
-        pub fn fail_revert(&self) {
-            std::env::set_var("FAKE_GH_VIEWED_FAIL_REVERT", "1");
         }
 
         pub fn offline(&self) {
@@ -601,6 +575,7 @@ pub(crate) mod fake {
                 None => std::env::remove_var("PATH"),
             }
             std::env::remove_var("FAKE_GH_LOG");
+            std::env::remove_var("FAKE_GH_VIEWED_STATE");
             std::env::remove_var("FAKE_GH_VIEWED_PR");
             for name in TOGGLES {
                 std::env::remove_var(name);
@@ -739,54 +714,40 @@ mod gh_tests {
 
     #[tokio::test]
     #[serial]
-    async fn partial_failure_keeps_the_prefix_and_undoes_the_tail() {
+    async fn a_pre_viewed_file_after_a_failure_stays_viewed() {
         let pr = "PR_viewed_batch_partial_193";
         let gh = ViewedFakeGh::install(pr);
         gh.fail_path("src/b.rs");
+        // Already viewed on GitHub. The mark alias succeeds as a no-op. An undo
+        // would clear it; main never sends the call, so it stays viewed.
+        gh.pre_viewed(&["src/c.rs"]);
         let paths = names(&["src/a.rs", "src/b.rs", "src/c.rs"]);
 
         let update = set_files_viewed("o/r", pr, &paths, true).await;
 
-        assert_eq!(update.marked_paths, names(&["src/a.rs"]));
-        assert_eq!(update.error.as_deref(), Some("src/b.rs: File not changed"));
-        let calls = gh.scoped_calls();
-        // main marks src/a.rs, fails src/b.rs, and never sends src/c.rs: 2 calls.
-        // The alias batch is 1 call, plus 1 call that undoes src/c.rs.
-        assert_eq!(calls.len(), 2, "main=2; batch mark + undo: {calls:?}");
-        assert!(!calls[0].contains("unmarkFileAsViewed"), "{}", calls[0]);
-        assert!(calls[0].contains("p0=src/a.rs"), "{}", calls[0]);
-        assert!(calls[0].contains("p2=src/c.rs"), "{}", calls[0]);
-        assert!(calls[1].contains("unmarkFileAsViewed"), "{}", calls[1]);
-        assert!(calls[1].contains("src/c.rs"), "{}", calls[1]);
+        assert_eq!(update.marked_paths, names(&["src/a.rs", "src/c.rs"]));
+        let error = update.error.expect("failure");
         assert!(
-            !calls[1].contains("src/a.rs"),
-            "the mark main would keep must not be undone: {}",
-            calls[1]
+            error.starts_with("src/b.rs: gh command failed: gh: File not changed ("),
+            "{error}"
         );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn a_failed_undo_leaves_the_tail_marked() {
-        let pr = "PR_viewed_batch_undo_fail_193";
-        let gh = ViewedFakeGh::install(pr);
-        gh.fail_path("src/b.rs");
-        gh.fail_revert();
-        let paths = names(&["src/a.rs", "src/b.rs", "src/c.rs"]);
-
-        let update = set_files_viewed("o/r", pr, &paths, true).await;
-
-        assert_eq!(
-            update.marked_paths,
-            names(&["src/a.rs", "src/c.rs"]),
-            "src/c.rs stayed viewed on the server, so it stays in the result"
+        assert!(
+            error.contains("\"message\":\"File not changed\""),
+            "{error}"
         );
-        assert_eq!(update.error.as_deref(), Some("src/b.rs: File not changed"));
+        assert!(error.ends_with(')'), "{error}");
         let calls = gh.scoped_calls();
+        // main marks src/a.rs, then fails src/b.rs and stops: 2 calls. The batch
+        // is one call and does not unmark src/c.rs.
+        assert_eq!(calls.len(), 1, "main=2; one batch and no undo: {calls:?}");
+        assert!(
+            !calls.iter().any(|call| call.contains("unmarkFileAsViewed")),
+            "a mark must not clear a viewed file: {calls:?}"
+        );
         assert_eq!(
-            calls.len(),
-            2,
-            "one mark batch and one refused undo: {calls:?}"
+            gh.viewed_paths(),
+            names(&["src/a.rs", "src/c.rs"]),
+            "server keeps a (newly marked) and c (already viewed)"
         );
     }
 
@@ -864,6 +825,10 @@ mod gh_tests {
         let pr = "PR_viewed_batch_stop_chunk_193";
         let gh = ViewedFakeGh::install(pr);
         gh.fail_path("f0.rs");
+        // f10 is in the failing chunk and already viewed. f40 is the next
+        // chunk, also already viewed. Neither may be cleared.
+        let already_later = format!("f{VIEWED_MUTATION_BATCH}.rs");
+        gh.pre_viewed(&["f10.rs", &already_later]);
         let paths: Vec<String> = (0..VIEWED_MUTATION_BATCH + 1)
             .map(|index| format!("f{index}.rs"))
             .collect();
@@ -871,23 +836,33 @@ mod gh_tests {
 
         let update = set_files_viewed("o/r", pr, &paths, true).await;
 
-        assert!(update.marked_paths.is_empty(), "{update:?}");
-        assert_eq!(update.error.as_deref(), Some("f0.rs: File not changed"));
+        let error = update.error.expect("failure");
+        assert!(
+            error.starts_with("f0.rs: gh command failed: gh: File not changed ("),
+            "{error}"
+        );
         let calls = gh.scoped_calls();
+        // main fails the first file and stops: 1 call. The batch is that one
+        // call too, and it must not follow the failure with an unmark.
         assert_eq!(
             calls.len(),
-            2,
-            "mark the first chunk, undo the aliases after f0.rs, and do not start the next chunk: {calls:?}"
+            1,
+            "main=1; first-file failure is one batch and no undo: {calls:?}"
         );
-        assert!(calls[1].contains("unmarkFileAsViewed"), "{}", calls[1]);
+        assert!(
+            !calls.iter().any(|call| call.contains("unmarkFileAsViewed")),
+            "no file is unmarked: {calls:?}"
+        );
         assert!(
             !calls.iter().any(|call| call.contains(&last)),
             "{last} is past the failure and must not be sent: {calls:?}"
         );
-        assert!(
-            !calls[1].contains("f0.rs"),
-            "the failed file was not marked, so it is not undone: {}",
-            calls[1]
-        );
+        let expected: Vec<String> = (1..VIEWED_MUTATION_BATCH)
+            .map(|index| format!("f{index}.rs"))
+            .collect();
+        assert_eq!(update.marked_paths, expected);
+        assert!(gh.viewed_paths().contains(&"f10.rs".to_string()));
+        assert!(gh.viewed_paths().contains(&last));
+        assert!(!gh.viewed_paths().iter().any(|path| path == "f0.rs"));
     }
 }

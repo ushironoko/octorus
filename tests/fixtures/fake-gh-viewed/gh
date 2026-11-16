@@ -3,11 +3,31 @@
 # call for some other pull request cannot satisfy this test's assertions.
 # Every invocation is appended to FAKE_GH_LOG.
 #
+# FAKE_GH_VIEWED_STATE         one viewed path per line; the double updates it
 # FAKE_GH_VIEWED_FAIL_PATH     markFileAsViewed for that path fails
 # FAKE_GH_VIEWED_REJECT_BATCH  a multi-alias mutation is refused with no body
-# FAKE_GH_VIEWED_FAIL_REVERT   unmarkFileAsViewed aliases fail
 # FAKE_GH_VIEWED_OFFLINE       every call dies with a connection error
 set -f
+
+state_has() {
+    [ -n "${FAKE_GH_VIEWED_STATE:-}" ] || return 1
+    [ -f "$FAKE_GH_VIEWED_STATE" ] || return 1
+    grep -Fxq -- "$1" "$FAKE_GH_VIEWED_STATE" 2>/dev/null
+}
+
+state_add() {
+    [ -n "${FAKE_GH_VIEWED_STATE:-}" ] || return 0
+    if ! state_has "$1"; then
+        printf '%s\n' "$1" >> "$FAKE_GH_VIEWED_STATE"
+    fi
+}
+
+state_del() {
+    [ -n "${FAKE_GH_VIEWED_STATE:-}" ] || return 0
+    [ -f "$FAKE_GH_VIEWED_STATE" ] || return 0
+    grep -Fxv -- "$1" "$FAKE_GH_VIEWED_STATE" > "$FAKE_GH_VIEWED_STATE.tmp" || true
+    mv "$FAKE_GH_VIEWED_STATE.tmp" "$FAKE_GH_VIEWED_STATE"
+}
 
 if [ -z "${FAKE_GH_LOG:-}" ] || [ -z "${FAKE_GH_VIEWED_PR:-}" ]; then
     printf 'viewed fake gh is missing FAKE_GH_LOG or FAKE_GH_VIEWED_PR\n' >&2
@@ -58,9 +78,18 @@ if [ "$count" -ge 2 ] && [ "${FAKE_GH_VIEWED_REJECT_BATCH:-}" = 1 ]; then
     exit 1
 fi
 
+remember() {
+    if [ "$op" = unmark ]; then
+        state_del "$1"
+    else
+        state_add "$1"
+    fi
+}
+
 if [ "$count" -gt 0 ]; then
     data=""
     errs=""
+    stderr_lines=""
     sep=""
     esep=""
     failed=0
@@ -76,10 +105,7 @@ if [ "$count" -gt 0 ]; then
         alias=m$idx
         fail_this=0
         msg=""
-        if [ "$op" = unmark ] && [ "${FAKE_GH_VIEWED_FAIL_REVERT:-}" = 1 ]; then
-            fail_this=1
-            msg="Could not undo viewed mark"
-        elif [ "$op" = mark ] && [ -n "${FAKE_GH_VIEWED_FAIL_PATH:-}" ] && [ "$value" = "${FAKE_GH_VIEWED_FAIL_PATH}" ]; then
+        if [ "$op" = mark ] && [ -n "${FAKE_GH_VIEWED_FAIL_PATH:-}" ] && [ "$value" = "${FAKE_GH_VIEWED_FAIL_PATH}" ]; then
             fail_this=1
             msg="File not changed"
         fi
@@ -87,9 +113,12 @@ if [ "$count" -gt 0 ]; then
             data="${data}${sep}\"${alias}\":null"
             errs="${errs}${esep}{\"path\":[\"${alias}\"],\"message\":\"${msg}\"}"
             esep=", "
+            stderr_lines="${stderr_lines}gh: ${msg}
+"
             failed=1
         else
             data="${data}${sep}\"${alias}\":{\"clientMutationId\":null}"
+            remember "$value"
         fi
         sep=", "
         IFS='
@@ -98,12 +127,10 @@ if [ "$count" -gt 0 ]; then
     IFS=$oldifs
     if [ -n "$errs" ]; then
         printf '{"data":{%s},"errors":[%s]}' "$data" "$errs"
-    else
-        printf '{"data":{%s}}' "$data"
-    fi
-    if [ "$failed" -eq 1 ]; then
+        printf '%s' "$stderr_lines" >&2
         exit 1
     fi
+    printf '{"data":{%s}}' "$data"
     exit 0
 fi
 
@@ -117,10 +144,6 @@ msg=""
 fail_this=0
 if [ "$op" = unmark ]; then
     field=unmarkFileAsViewed
-    if [ "${FAKE_GH_VIEWED_FAIL_REVERT:-}" = 1 ]; then
-        fail_this=1
-        msg="Could not undo viewed mark"
-    fi
 elif [ -n "${FAKE_GH_VIEWED_FAIL_PATH:-}" ] && [ "$single" = "${FAKE_GH_VIEWED_FAIL_PATH}" ]; then
     fail_this=1
     msg="File not changed"
@@ -128,9 +151,10 @@ fi
 
 if [ "$fail_this" -eq 1 ]; then
     printf '{"errors":[{"message":"%s"}]}' "$msg"
-    printf '%s\n' "$msg" >&2
+    printf 'gh: %s\n' "$msg" >&2
     exit 1
 fi
 
+remember "$single"
 printf '{"data":{"%s":{"clientMutationId":null}}}' "$field"
 exit 0
