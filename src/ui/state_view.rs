@@ -567,8 +567,27 @@ mod tests {
         save_artifact(
             &dir,
             "comments-error-inferred-pr",
-            "Comment failure beside the inferred-PR notice",
+            "Comment failure beside the inferred-PR notice at 100 columns",
             &draw_ui(&mut inferred, 100, 30),
+        );
+        save_artifact(
+            &dir,
+            "comments-error-inferred-pr-60",
+            "Comment failure beside the inferred-PR notice at 60 columns",
+            &draw_ui(&mut inferred, 60, 30),
+        );
+
+        let mut long_prs = crate::app::App::new_for_test();
+        long_prs.state = crate::app::AppState::PullRequestList;
+        long_prs.prs.pr_list = crate::app::LoadState::Error(GhFailure::other(format!(
+            "gh command failed: {}",
+            "something unexpected ".repeat(8)
+        )));
+        save_artifact(
+            &dir,
+            "pr-list-long-reason-80",
+            "PR list, long reason at an 80-column terminal",
+            &draw_ui(&mut long_prs, 80, 24),
         );
 
         let mut with_data = comment_panel_app();

@@ -125,7 +125,7 @@ fn footer_status_line<'a>(
         let mut spans = vec![toast_span(toast, app.theme)];
         // A reload that follows a result is still running. Its progress is shown
         // beside the result, so the wait is visible while the message is up.
-        if app.cmt.comments_loading {
+        if comments_loading_visible(app) {
             spans.push(Span::raw("  "));
             spans.push(loading_comments_span(app));
         }
@@ -145,7 +145,7 @@ fn footer_status_line<'a>(
 
 fn activity_line<'a>(app: &App, first: Span<'a>) -> Line<'a> {
     let mut spans = vec![first];
-    if app.cmt.comments_loading {
+    if comments_loading_visible(app) {
         spans.push(Span::raw("  "));
         spans.push(loading_comments_span(app));
     }
@@ -243,7 +243,12 @@ fn comment_list_failure(app: &App) -> Option<ShownFailure> {
             }
             app.cmt.comment_error.as_deref()
         }
-        CommentTab::Discussion => app.cmt.discussion_error.as_deref(),
+        CommentTab::Discussion => {
+            if app.cmt.discussion_comments_loading {
+                return None;
+            }
+            app.cmt.discussion_error.as_deref()
+        }
     }?;
     let failure = GhFailure::from_message(message);
     Some(shown(app, &failure, FailureSurface::Comments, "retry", 0))
@@ -294,8 +299,9 @@ pub(super) fn comment_pane_title(app: &App) -> String {
 
 /// `notice  symbol title · reason  key: retry  hints`, then the loading and
 /// searching indicators. Their width is reserved before the hints or the
-/// reason are cut. At 80 columns and wider the reason is cut before the help
-/// hint, so `?` and the retry key stay.
+/// reason are cut. An 80-column terminal (78 columns inside the border) keeps
+/// the help hint and the retry key, and still leaves the reason a few
+/// characters when a notice is also showing.
 fn failure_status_line(
     app: &App,
     failure: &ShownFailure,
@@ -343,9 +349,13 @@ fn failure_status_line(
     Line::from(spans)
 }
 
+fn comments_loading_visible(app: &App) -> bool {
+    app.cmt.comments_loading || app.cmt.discussion_comments_loading
+}
+
 fn activity_tail_width(app: &App) -> usize {
     let mut width = 0;
-    if app.cmt.comments_loading {
+    if comments_loading_visible(app) {
         width += 2 + format!("{} Loading comments...", app.spinner_char()).width();
     }
     if app.symbol_search.is_searching() {
@@ -355,7 +365,7 @@ fn activity_tail_width(app: &App) -> usize {
 }
 
 fn push_activity_tail(app: &App, spans: &mut Vec<Span<'static>>) {
-    if app.cmt.comments_loading {
+    if comments_loading_visible(app) {
         spans.push(Span::raw("  "));
         spans.push(loading_comments_span(app));
     }
@@ -368,8 +378,12 @@ fn push_activity_tail(app: &App, spans: &mut Vec<Span<'static>>) {
     }
 }
 
-/// 80 columns is a normal footer. Below that, hints are cut before the reason.
-const NORMAL_FOOTER_WIDTH: usize = 80;
+/// Inner width of an 80-column terminal. The footer border takes the other two.
+/// At this width and wider the help hint and the retry key stay.
+const NORMAL_FOOTER_WIDTH: usize = 78;
+/// A long reason keeps at least this many columns (`abcd…`) once the title,
+/// the key, and a notice floor are reserved.
+const REASON_MIN_WIDTH: usize = 6;
 
 fn fit_failure_line(
     notice: &str,
@@ -397,27 +411,6 @@ fn fit_failure_line(
             String::new(),
         );
     }
-    if width >= NORMAL_FOOTER_WIDTH {
-        fit_failure_line_normal(notice, head, reason, action, hints, width)
-    } else {
-        let (head, reason, action, hints) = fit_failure(head, reason, action, hints, width);
-        let used = line_width("", &head, &reason, &action, &hints);
-        let room = width.saturating_sub(used);
-        let notice = clip_leading(notice, room);
-        (notice, head, reason, action, hints)
-    }
-}
-
-/// Keep the retry key and the help hint, then the title, then the notice.
-/// The reason takes what is left.
-fn fit_failure_line_normal(
-    notice: &str,
-    head: &str,
-    reason: &str,
-    action: &str,
-    hints: &str,
-    width: usize,
-) -> (String, String, String, String, String) {
     if line_width(notice, head, reason, action, hints) <= width {
         return (
             notice.to_string(),
@@ -427,35 +420,157 @@ fn fit_failure_line_normal(
             hints.to_string(),
         );
     }
-
-    let protected_hints = if hints.contains('?') {
-        question_prefix(hints)
+    if width >= NORMAL_FOOTER_WIDTH {
+        fit_failure_line_normal(notice, head, reason, action, hints, width)
+    } else if notice.is_empty() {
+        let (head, reason, action, hints) = fit_failure(head, reason, action, hints, width);
+        (String::new(), head, reason, action, hints)
     } else {
-        hints.to_string()
-    };
-    let hints = if line_width("", head, "", action, hints) <= width {
-        hints.to_string()
-    } else {
-        protected_hints
-    };
+        // The notice is older than this failure. Hints are cut so at least
+        // `PR #N inferred…` stays, and the failure is fitted into the rest.
+        fit_failure_line_notice_first(notice, head, reason, action, hints, width)
+    }
+}
 
+/// Keep the retry key and the whole help hint. The notice is kept ahead of the
+/// reason, and the reason still gets a few characters when the width allows.
+fn fit_failure_line_normal(
+    notice: &str,
+    head: &str,
+    reason: &str,
+    action: &str,
+    hints: &str,
+    width: usize,
+) -> (String, String, String, String, String) {
+    let hints = hints_for_normal(head, action, hints, width);
     let base = line_width("", head, "", action, &hints);
     if base > width {
-        let (head, _, action, hints) = fit_failure(head, "", action, &hints, width);
-        return (String::new(), head, String::new(), action, hints);
+        let (head, reason, action, hints) = fit_failure(head, "", action, &hints, width);
+        return (String::new(), head, reason, action, hints);
     }
-
-    let mut rest = width - base;
-    let notice = clip_leading(notice, rest);
-    rest = rest.saturating_sub(leading_cost(&notice));
-    let reason = clip_reason(reason, rest);
+    let (notice, reason) = share_notice_and_reason(notice, reason, width - base);
     (notice, head.to_string(), reason, action.to_string(), hints)
 }
 
-fn question_prefix(hints: &str) -> String {
-    match hints.find('?') {
-        Some(index) => hints[..=index].to_string(),
-        None => String::new(),
+/// Reserve the notice floor, then fit the failure into what remains.
+fn fit_failure_line_notice_first(
+    notice: &str,
+    head: &str,
+    reason: &str,
+    action: &str,
+    hints: &str,
+    width: usize,
+) -> (String, String, String, String, String) {
+    let floor_cost = leading_cost(&notice_floor(notice)).min(width);
+    let (head, reason, action, hints) =
+        fit_failure(head, reason, action, hints, width - floor_cost);
+    let used = line_width("", &head, &reason, &action, &hints);
+    let notice = clip_leading(notice, width.saturating_sub(used));
+    (notice, head, reason, action, hints)
+}
+
+/// Hints that fit beside the title and the key. A `?` hint is kept whole
+/// (`?: help`, `? Help`) or dropped. It is never cut down to `?` or `?: `.
+fn hints_for_normal(head: &str, action: &str, hints: &str, width: usize) -> String {
+    if line_width("", head, "", action, hints) <= width {
+        return hints.to_string();
+    }
+    if !hints.contains('?') {
+        return hints.to_string();
+    }
+    let through = prefix_through_question_segment(hints);
+    if line_width("", head, "", action, &through) <= width {
+        return through;
+    }
+    let before = prefix_before_question_segment(hints);
+    if !before.is_empty() && line_width("", head, "", action, &before) <= width {
+        return before;
+    }
+    String::new()
+}
+
+fn prefix_through_question_segment(hints: &str) -> String {
+    let Some(question) = hints.find('?') else {
+        return hints.to_string();
+    };
+    let end = hints[question..]
+        .find(" | ")
+        .or_else(|| hints[question..].find("  "))
+        .map(|index| question + index)
+        .unwrap_or(hints.len());
+    hints[..end].trim_end().to_string()
+}
+
+fn prefix_before_question_segment(hints: &str) -> String {
+    let Some(question) = hints.find('?') else {
+        return hints.to_string();
+    };
+    let cut = hints[..question]
+        .rfind(" | ")
+        .or_else(|| hints[..question].rfind("  "))
+        .unwrap_or(0);
+    hints[..cut].trim_end().to_string()
+}
+
+/// `PR #N inferred…`, the shortest form that still says the PR was inferred.
+fn notice_floor(notice: &str) -> String {
+    if notice.is_empty() {
+        return String::new();
+    }
+    const MARK: &str = "inferred";
+    if let Some(index) = notice.find(MARK) {
+        let end = index + MARK.len();
+        if end == notice.len() {
+            return notice.to_string();
+        }
+        return format!("{}…", &notice[..end]);
+    }
+    truncate_with_width(notice, 17).into_owned()
+}
+
+fn share_notice_and_reason(notice: &str, reason: &str, rest: usize) -> (String, String) {
+    let reason_min = reason_min_cost(reason);
+    let reason_full = if reason.is_empty() {
+        0
+    } else {
+        3 + reason.width()
+    };
+    let notice_floor_cost = leading_cost(&notice_floor(notice));
+    let notice_full = leading_cost(notice);
+
+    let (mut notice_budget, mut reason_budget, mut spare) =
+        if notice_floor_cost + reason_min <= rest {
+            (
+                notice_floor_cost,
+                reason_min,
+                rest - notice_floor_cost - reason_min,
+            )
+        } else if notice_floor_cost <= rest {
+            (notice_floor_cost, 0, rest - notice_floor_cost)
+        } else if reason_min <= rest {
+            (0, reason_min, rest - reason_min)
+        } else if notice.is_empty() {
+            (0, rest.min(reason_full), 0)
+        } else {
+            (rest, 0, 0)
+        };
+
+    let notice_extra = spare.min(notice_full.saturating_sub(notice_budget));
+    notice_budget += notice_extra;
+    spare -= notice_extra;
+    let reason_extra = spare.min(reason_full.saturating_sub(reason_budget));
+    reason_budget += reason_extra;
+    (
+        clip_leading(notice, notice_budget),
+        clip_reason(reason, reason_budget),
+    )
+}
+
+fn reason_min_cost(reason: &str) -> usize {
+    if reason.is_empty() {
+        0
+    } else {
+        3 + reason.width().min(REASON_MIN_WIDTH)
     }
 }
 
@@ -1342,7 +1457,7 @@ mod tests {
             "{reason_only}"
         );
 
-        let with_hints = line_of(&app, hints, reserved + 3 + 26 + 2 + 8);
+        let with_hints = line_of(&app, hints, reserved + 3 + 26 + 2 + 6);
         assert!(
             with_hints.contains("abcdefghijklmnopqrstuvwxyz"),
             "{with_hints}"
@@ -1390,6 +1505,15 @@ mod tests {
         app.state = AppState::CommentList;
         app.cmt.comment_tab = CommentTab::Review;
         app.cmt.comment_error = Some("comments failed".to_string());
+        let text = line_of(&app, HELP, 98);
+        assert!(text.contains("Loading comments..."), "{text}");
+        assert!(!text.contains("Couldn't load comments"), "{text}");
+
+        app.cmt.comments_loading = false;
+        app.cmt.comment_tab = CommentTab::Discussion;
+        app.cmt.comment_error = None;
+        app.cmt.discussion_error = Some("discussion failed".to_string());
+        app.cmt.discussion_comments_loading = true;
         let text = line_of(&app, HELP, 98);
         assert!(text.contains("Loading comments..."), "{text}");
         assert!(!text.contains("Couldn't load comments"), "{text}");
@@ -1442,6 +1566,37 @@ mod tests {
         assert!(fitted.contains("inferred"), "{fitted}");
         assert!(fitted.contains("Couldn't load comments"), "{fitted}");
         assert!(fitted.contains("r: retry"), "{fitted}");
+        assert!(
+            fitted.contains("comme…"),
+            "the reason keeps a few characters beside the notice: {fitted}"
+        );
+    }
+
+    #[test]
+    fn a_sixty_column_footer_keeps_the_inferred_pr_notice() {
+        use crate::app::PrOpenSource;
+
+        let mut app = App::new_for_test();
+        app.state = AppState::DiffView;
+        app.pr_number = Some(123);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        app.cmt.comment_panel_open = true;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        for width in [58usize, 60] {
+            let text = line_of(&app, "Esc: close", width);
+            assert!(
+                text.contains("PR #123 inferred"),
+                "{width}: the notice was dropped: {text}"
+            );
+            assert!(text.contains("Couldn't load comments"), "{width}: {text}");
+            assert!(text.contains("r: retry"), "{width}: {text}");
+            assert!(
+                !text.contains("Esc: close"),
+                "{width}: hints were kept ahead of the notice: {text}"
+            );
+        }
     }
 
     #[test]
@@ -1454,7 +1609,7 @@ mod tests {
         app.cockpit_state.as_mut().unwrap().mentioned_issues_count =
             LoadState::Error(GhFailure::other(long));
         let help = "q: quit  ?: help";
-        for width in [80usize, 98] {
+        for width in [78usize, 80, 98] {
             let text = line_of(&app, help, width);
             assert!(text.contains("Couldn't load counts"), "{width}: {text}");
             assert!(text.contains("r: retry"), "{width}: {text}");
@@ -1464,6 +1619,37 @@ mod tests {
                 !text.contains("mentionable"),
                 "the reason took the help hint's columns: {width}: {text}"
             );
+            assert!(
+                text.contains("?: help"),
+                "the help hint was cut to a bare ?: {width}: {text}"
+            );
         }
+    }
+
+    #[test]
+    fn an_eighty_column_terminal_keeps_the_help_hint() {
+        let long = format!("gh command failed: {}", "something unexpected ".repeat(8));
+        let app = pr_failure(GhFailureKind::Other, &long);
+        let hints = footer_hint_quit(&app.config.keybindings);
+        let text = line_of(&app, &hints, 78);
+        assert!(text.contains("Couldn't load pull requests"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains("? Help"), "{text}");
+        assert!(text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn a_question_hint_is_kept_whole_or_dropped() {
+        let app = pr_failure(GhFailureKind::Other, "boom");
+        let hints = "1234567890123456789012345678901234  ?: help";
+        let text = line_of(&app, hints, 78);
+        assert!(text.contains("Couldn't load pull requests"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(
+            text.contains("1234567890123456789012345678901234"),
+            "{text}"
+        );
+        assert!(!text.contains("?:"), "{text}");
+        assert!(!text.trim_end().ends_with('?'), "{text}");
     }
 }

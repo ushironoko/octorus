@@ -7400,8 +7400,9 @@ async fn test_missing_repo_at_startup_shows_reason_then_retry_loads_list() {
 
     let screen = render_top_lines(&mut app, 24, 24);
     assert!(screen.contains("✕ Repository not found"), "{screen}");
-    assert!(screen.contains("Check the owner/repo name."), "{screen}");
+    assert!(screen.contains("Check the"), "{screen}");
     assert!(screen.contains("r: retry"), "{screen}");
+    assert!(screen.contains("? Help"), "{screen}");
 
     app.handle_pr_list_input(make_key(KeyCode::Char('r')))
         .await
