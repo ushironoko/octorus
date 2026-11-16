@@ -276,6 +276,23 @@ impl App {
             let _ = tx.try_send(request);
         }
     }
+
+    /// Cache-hit reopen. The background loop compares `cached_updated_at` and
+    /// refetches the heavy payload only when it changed or the check fails.
+    /// Manual retry stays on [`Self::retry_load`], which always refetches.
+    pub(crate) fn request_check_update(&mut self, pr_number: u32, cached_updated_at: String) {
+        if self.local_mode {
+            self.retry_load();
+            return;
+        }
+        let Some(ref tx) = self.retry_sender else {
+            return;
+        };
+        let _ = tx.try_send(RefreshRequest::PrCheckUpdate {
+            pr_number,
+            cached_updated_at,
+        });
+    }
     pub(crate) async fn handle_file_list_input(
         &mut self,
         key: event::KeyEvent,

@@ -366,7 +366,9 @@ impl App {
             repo: self.repo.clone(),
             pr_number,
         };
+        let mut cached_updated_at = None;
         if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
+            cached_updated_at = Some(cached.pr.updated_at.clone());
             let diff_line_count = Self::calc_diff_line_count(&cached.files, 0);
             self.data_state = DataState::Loaded {
                 pr: cached.pr.clone(),
@@ -384,11 +386,17 @@ impl App {
 
         // Eagerly load review comments in the background so they're
         // available by the time the user opens the comment list or file list.
+        // This stays independent of the PR payload: review threads are not
+        // covered by `updated_at`, and a cache hit must not skip this load.
         if !self.local_mode {
             self.load_review_comments();
         }
 
-        self.retry_load();
+        if let Some(updated_at) = cached_updated_at {
+            self.request_check_update(pr_number, updated_at);
+        } else {
+            self.retry_load();
+        }
     }
     /// Clear transient state accumulated in PR detail screens.
     /// data_receiver / retry_sender are long-lived and kept intact.

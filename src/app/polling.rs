@@ -13,6 +13,13 @@ use crate::loader::{CommentSubmitResult, DataLoadResult, ReviewSubmitResult};
 use super::types::*;
 use super::{App, DataState};
 
+fn apply_viewed_flags(files: &mut [ChangedFile], viewed: &HashMap<String, bool>) {
+    // A path missing from a successful query is unviewed, matching the full fetch.
+    for file in files {
+        file.viewed = viewed.get(&file.filename).copied().unwrap_or(false);
+    }
+}
+
 impl App {
     pub(crate) fn poll_pr_list_updates(&mut self) {
         let Some(ref mut rx) = self.prs.pr_list_receiver else {
@@ -75,6 +82,7 @@ impl App {
                 // メッセージ自体から発信元PR番号を取得（mutable な origin_pr に依存しない）
                 let source_pr = match &result {
                     DataLoadResult::Success { pr, .. } => Some(pr.number),
+                    DataLoadResult::Unchanged { pr_number, .. } => Some(*pr_number),
                     DataLoadResult::Error(_) => None,
                 };
 
@@ -82,21 +90,35 @@ impl App {
                     // 現在のPR/モードに一致 → UI状態に反映
                     let pr_number = self.pr_number.unwrap_or(0);
                     self.handle_data_result(pr_number, result);
-                } else if let DataLoadResult::Success { pr, files } = result {
-                    // 異なるPRのデータ: セッションキャッシュにのみ格納
-                    // receiver は破棄しない（永続チャンネルを維持）
-                    let cache_key = PrCacheKey {
-                        repo: self.repo.clone(),
-                        pr_number: pr.number,
-                    };
-                    self.session_cache.put_pr_data(
-                        cache_key,
-                        PrData {
-                            pr_updated_at: pr.updated_at.clone(),
-                            pr,
-                            files,
-                        },
-                    );
+                } else {
+                    match result {
+                        DataLoadResult::Success { pr, files } => {
+                            // 異なるPRのデータ: セッションキャッシュにのみ格納
+                            // receiver は破棄しない（永続チャンネルを維持）
+                            let cache_key = PrCacheKey {
+                                repo: self.repo.clone(),
+                                pr_number: pr.number,
+                            };
+                            self.session_cache.put_pr_data(
+                                cache_key,
+                                PrData {
+                                    pr_updated_at: pr.updated_at.clone(),
+                                    pr,
+                                    files,
+                                },
+                            );
+                        }
+                        DataLoadResult::Unchanged { pr_number, viewed } => {
+                            if let Some(viewed) = viewed {
+                                let cache_key = PrCacheKey {
+                                    repo: self.repo.clone(),
+                                    pr_number,
+                                };
+                                self.session_cache.update_viewed_flags(&cache_key, &viewed);
+                            }
+                        }
+                        DataLoadResult::Error(_) => {}
+                    }
                 }
                 // Note: stale な結果でも receiver は維持する（永続リトライループ対応）
             }
@@ -1043,41 +1065,7 @@ impl App {
                 if self.needs_review_comment_load() {
                     self.load_review_comments();
                 }
-                // CLI 直接指定時: ci_status をバックグラウンドで取得
-                if !self.local_mode
-                    && self.chk.ci_status.is_none()
-                    && self.chk.ci_status_receiver.is_none()
-                {
-                    let (tx, rx) = mpsc::channel(1);
-                    self.chk.ci_status_receiver = Some(rx);
-                    let repo = self.repo.clone();
-                    tokio::spawn(async move {
-                        let status = match crate::github::fetch_pr_checks(&repo, origin_pr).await {
-                            Ok(checks) => {
-                                use crate::github::CiStatus;
-                                if checks.is_empty() {
-                                    CiStatus::None
-                                } else {
-                                    let has_pending = checks
-                                        .iter()
-                                        .any(|c| c.bucket.as_deref() == Some("pending"));
-                                    let has_fail = checks.iter().any(|c| {
-                                        matches!(c.bucket.as_deref(), Some("fail") | Some("cancel"))
-                                    });
-                                    if has_fail {
-                                        CiStatus::Failure
-                                    } else if has_pending {
-                                        CiStatus::Pending
-                                    } else {
-                                        CiStatus::Success
-                                    }
-                                }
-                            }
-                            Err(_) => CiStatus::None,
-                        };
-                        let _ = tx.send(status).await;
-                    });
-                }
+                self.start_ci_status_fetch_if_missing(origin_pr);
                 if should_start_rally {
                     self.start_ai_rally_on_load = false; // Clear the flag
                     self.start_ai_rally();
@@ -1098,6 +1086,21 @@ impl App {
                 // split view 側の「Loading diff...」が発生しないようにする
                 self.ensure_diff_cache();
             }
+            DataLoadResult::Unchanged { viewed, .. } => {
+                // Metadata, the file list, and patches stay as cached. Viewed
+                // flags are not part of `updated_at`, so apply a successful read.
+                // A failed read keeps the flags already on screen.
+                if let Some(viewed) = viewed {
+                    if let DataState::Loaded { files, .. } = &mut self.data_state {
+                        apply_viewed_flags(files, &viewed);
+                    }
+                    self.sync_loaded_data_to_cache();
+                }
+                if self.needs_review_comment_load() {
+                    self.load_review_comments();
+                }
+                self.start_ci_status_fetch_if_missing(origin_pr);
+            }
             DataLoadResult::Error(msg) => {
                 // Loading状態の場合のみエラー表示（既にデータがある場合は無視）
                 if matches!(self.data_state, DataState::Loading) {
@@ -1105,6 +1108,45 @@ impl App {
                 }
             }
         }
+    }
+
+    /// CI status is not part of the PR `updated_at` timestamp. A full load starts
+    /// this fetch when the PR list did not already supply a rollup; an unchanged
+    /// reopen must do the same.
+    fn start_ci_status_fetch_if_missing(&mut self, origin_pr: u32) {
+        if self.local_mode || self.chk.ci_status.is_some() || self.chk.ci_status_receiver.is_some()
+        {
+            return;
+        }
+        let (tx, rx) = mpsc::channel(1);
+        self.chk.ci_status_receiver = Some(rx);
+        let repo = self.repo.clone();
+        tokio::spawn(async move {
+            let status = match crate::github::fetch_pr_checks(&repo, origin_pr).await {
+                Ok(checks) => {
+                    use crate::github::CiStatus;
+                    if checks.is_empty() {
+                        CiStatus::None
+                    } else {
+                        let has_pending = checks
+                            .iter()
+                            .any(|c| c.bucket.as_deref() == Some("pending"));
+                        let has_fail = checks
+                            .iter()
+                            .any(|c| matches!(c.bucket.as_deref(), Some("fail") | Some("cancel")));
+                        if has_fail {
+                            CiStatus::Failure
+                        } else if has_pending {
+                            CiStatus::Pending
+                        } else {
+                            CiStatus::Success
+                        }
+                    }
+                }
+                Err(_) => CiStatus::None,
+            };
+            let _ = tx.send(status).await;
+        });
     }
 
     /// base シグネチャ（patch 除外）: Phase 1 での構造変更検出用

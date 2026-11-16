@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const FAKE_GH_VARS: [&str; 7] = [
+const FAKE_GH_VARS: [&str; 8] = [
     "FAKE_GH_LOG",
     "FAKE_GH_REVIEWS",
     "FAKE_GH_CREATE",
@@ -17,6 +17,7 @@ const FAKE_GH_VARS: [&str; 7] = [
     "FAKE_GH_PUBLISH",
     "FAKE_GH_PR_REVIEW",
     "FAKE_GH_DRAFTS",
+    "FAKE_GH_FAIL_FIRST",
 ];
 
 /// Puts the test double first on PATH and sets its replies. Dropping it restores
@@ -46,6 +47,7 @@ impl FakeGh {
         std::env::set_var("FAKE_GH_PUBLISH", publish);
         std::env::set_var("FAKE_GH_PR_REVIEW", "");
         std::env::set_var("FAKE_GH_DRAFTS", "[[]]");
+        std::env::remove_var("FAKE_GH_FAIL_FIRST");
         Self {
             _dir: dir,
             log,
@@ -56,6 +58,13 @@ impl FakeGh {
     /// Sets the pending review's comments, as a paginated `--slurp` reply.
     pub(crate) fn set_drafts(&self, json: &str) {
         std::env::set_var("FAKE_GH_DRAFTS", json);
+    }
+
+    /// The next `count` `gh` calls exit 1 after they are logged. Later calls
+    /// succeed. Used to make an `updated_at` probe fail while the fallback
+    /// fetch of the same endpoint succeeds.
+    pub(crate) fn fail_first(&self, count: u32) {
+        std::env::set_var("FAKE_GH_FAIL_FIRST", count.to_string());
     }
 
     /// Every call made so far, as logged by the test double.

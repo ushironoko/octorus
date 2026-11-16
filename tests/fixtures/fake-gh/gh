@@ -6,6 +6,7 @@
 # process's stdin, which may never reach end-of-file. The reply comes from the
 # FAKE_GH_* variables. FAKE_GH_DRAFTS answers the pending review's own comments
 # endpoint, and it is matched before the `--slurp` list that FAKE_GH_REVIEWS answers.
+# FAKE_GH_FAIL_FIRST, when set to N, exits 1 for the first N logged calls.
 case " $* " in
     *" --input - "*)
         {
@@ -18,6 +19,16 @@ case " $* " in
         printf 'CALL %s\n' "$*" >> "$FAKE_GH_LOG"
         ;;
 esac
+
+# Count this call, which was just appended, and fail the first N when asked.
+if [ -n "${FAKE_GH_FAIL_FIRST:-}" ]; then
+    calls=$(grep -c '^CALL ' "$FAKE_GH_LOG" 2>/dev/null || true)
+    calls=${calls:-0}
+    if [ "$calls" -le "$FAKE_GH_FAIL_FIRST" ]; then
+        printf 'forced failure\n' >&2
+        exit 1
+    fi
+fi
 
 case "$*" in
     */reviews/*/comments*) printf '%s' "$FAKE_GH_DRAFTS" ;;

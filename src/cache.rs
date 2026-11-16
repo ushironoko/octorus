@@ -491,6 +491,21 @@ impl SessionCache {
         self.evict_if_needed();
     }
 
+    /// Replace viewed flags on a cached file list. A path missing from a
+    /// successful query is unviewed, matching the full fetch. Patches stay.
+    pub fn update_viewed_flags(&mut self, key: &PrCacheKey, viewed: &HashMap<String, bool>) {
+        if !self.pr_data.contains_key(key) {
+            return;
+        }
+        self.touch(key);
+        let Some(data) = self.pr_data.get_mut(key) else {
+            return;
+        };
+        for file in &mut data.files {
+            file.viewed = viewed.get(&file.filename).copied().unwrap_or(false);
+        }
+    }
+
     pub fn get_review_comments(&self, key: &PrCacheKey) -> Option<&[ReviewComment]> {
         self.review_comments.get(key).map(|v| v.as_slice())
     }

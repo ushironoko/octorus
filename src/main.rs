@@ -512,15 +512,16 @@ async fn run_with_local_diff(
             _ = async {
                 while let Some(request) = retry_rx.recv().await {
                     match local_startup_refresh_route(request) {
-                        LocalStartupRefreshRoute::PullRequest(pr_number) => {
+                        LocalStartupRefreshRoute::PullRequest {
+                            pr_number,
+                            cached_updated_at,
+                        } => {
                             let tx_retry = tx.clone();
-                            loader::fetch_pr_data(
-                                repo.clone(),
-                                pr_number,
-                                loader::FetchMode::Fresh,
-                                tx_retry,
-                            )
-                            .await;
+                            let mode = match cached_updated_at {
+                                Some(updated_at) => loader::FetchMode::CheckUpdate(updated_at),
+                                None => loader::FetchMode::Fresh,
+                            };
+                            loader::fetch_pr_data(repo.clone(), pr_number, mode, tx_retry).await;
                         }
                         LocalStartupRefreshRoute::WatchedLocal => {
                             refresh_pending.store(false, Ordering::Release);
@@ -560,19 +561,36 @@ async fn run_with_local_diff(
     std::process::exit(exit_code);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum LocalStartupRefreshRoute {
     WatchedLocal,
     LocalSentinel,
-    PullRequest(u32),
+    PullRequest {
+        pr_number: u32,
+        /// `Some` compares this cached timestamp. `None` is a full refetch.
+        cached_updated_at: Option<String>,
+    },
 }
 
 fn local_startup_refresh_route(request: RefreshRequest) -> LocalStartupRefreshRoute {
     match request {
         RefreshRequest::PrRefresh { pr_number } if pr_number > 0 => {
-            LocalStartupRefreshRoute::PullRequest(pr_number)
+            LocalStartupRefreshRoute::PullRequest {
+                pr_number,
+                cached_updated_at: None,
+            }
         }
-        RefreshRequest::PrRefresh { .. } => LocalStartupRefreshRoute::LocalSentinel,
+        RefreshRequest::PrCheckUpdate {
+            pr_number,
+            cached_updated_at,
+        } if pr_number > 0 => LocalStartupRefreshRoute::PullRequest {
+            pr_number,
+            cached_updated_at: Some(cached_updated_at),
+        },
+        // PR zero is the local-mode sentinel, never a GitHub PR number.
+        RefreshRequest::PrRefresh { .. } | RefreshRequest::PrCheckUpdate { .. } => {
+            LocalStartupRefreshRoute::LocalSentinel
+        }
         RefreshRequest::LocalRefresh => LocalStartupRefreshRoute::WatchedLocal,
     }
 }
@@ -685,6 +703,19 @@ async fn run_with_pr(
                             loader::fetch_pr_data(repo_clone.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
                                 .await;
                         }
+                        RefreshRequest::PrCheckUpdate {
+                            pr_number,
+                            cached_updated_at,
+                        } => {
+                            let tx_retry = tx.clone();
+                            loader::fetch_pr_data(
+                                repo_clone.clone(),
+                                pr_number,
+                                loader::FetchMode::CheckUpdate(cached_updated_at),
+                                tx_retry,
+                            )
+                            .await;
+                        }
                         RefreshRequest::LocalRefresh => {
                             refresh_pending.store(false, Ordering::Release);
                             loop {
@@ -794,6 +825,19 @@ async fn run_with_pr_list(
                             loader::fetch_pr_data(repo_for_retry.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
                                 .await;
                         }
+                        RefreshRequest::PrCheckUpdate {
+                            pr_number,
+                            cached_updated_at,
+                        } => {
+                            let tx_retry = data_tx.clone();
+                            loader::fetch_pr_data(
+                                repo_for_retry.clone(),
+                                pr_number,
+                                loader::FetchMode::CheckUpdate(cached_updated_at),
+                                tx_retry,
+                            )
+                            .await;
+                        }
                         RefreshRequest::LocalRefresh => {
                             refresh_pending.store(false, Ordering::Release);
                             loop {
@@ -862,6 +906,19 @@ async fn run_with_cockpit(
                             let tx_retry = data_tx.clone();
                             loader::fetch_pr_data(repo_for_retry.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
                                 .await;
+                        }
+                        app::RefreshRequest::PrCheckUpdate {
+                            pr_number,
+                            cached_updated_at,
+                        } => {
+                            let tx_retry = data_tx.clone();
+                            loader::fetch_pr_data(
+                                repo_for_retry.clone(),
+                                pr_number,
+                                loader::FetchMode::CheckUpdate(cached_updated_at),
+                                tx_retry,
+                            )
+                            .await;
                         }
                         app::RefreshRequest::LocalRefresh => {
                             refresh_pending.store(false, Ordering::Release);
@@ -1113,10 +1170,30 @@ mod tests {
     fn test_local_startup_refresh_route_distinguishes_every_dispatch_target() {
         assert_eq!(
             local_startup_refresh_route(RefreshRequest::PrRefresh { pr_number: 42 }),
-            LocalStartupRefreshRoute::PullRequest(42)
+            LocalStartupRefreshRoute::PullRequest {
+                pr_number: 42,
+                cached_updated_at: None,
+            }
+        );
+        assert_eq!(
+            local_startup_refresh_route(RefreshRequest::PrCheckUpdate {
+                pr_number: 42,
+                cached_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
+            LocalStartupRefreshRoute::PullRequest {
+                pr_number: 42,
+                cached_updated_at: Some("2024-01-01T00:00:00Z".to_string()),
+            }
         );
         assert_eq!(
             local_startup_refresh_route(RefreshRequest::PrRefresh { pr_number: 0 }),
+            LocalStartupRefreshRoute::LocalSentinel
+        );
+        assert_eq!(
+            local_startup_refresh_route(RefreshRequest::PrCheckUpdate {
+                pr_number: 0,
+                cached_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
             LocalStartupRefreshRoute::LocalSentinel
         );
         assert_eq!(

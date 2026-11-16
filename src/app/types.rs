@@ -540,7 +540,15 @@ impl CockpitState {
 /// Retry request variants dispatched through the unified retry loop.
 #[derive(Debug, Clone)]
 pub enum RefreshRequest {
-    PrRefresh { pr_number: u32 },
+    /// Full PR refetch. Manual retry and a cache miss use this.
+    PrRefresh {
+        pr_number: u32,
+    },
+    /// Cache-hit reopen. Compare `cached_updated_at` before refetching.
+    PrCheckUpdate {
+        pr_number: u32,
+        cached_updated_at: String,
+    },
     LocalRefresh,
 }
 
