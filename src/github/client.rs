@@ -67,7 +67,7 @@ pub async fn detect_repo() -> std::result::Result<String, DetectRepoError> {
     }
 }
 
-fn format_gh_error(stderr: &str, stdout: &str) -> String {
+pub(crate) fn format_gh_error(stderr: &str, stdout: &str) -> String {
     tracing::debug!(stderr = %stderr, stdout = %stdout, "gh command failed");
     if stdout.is_empty() {
         format!("gh command failed: {}", stderr)
@@ -94,33 +94,55 @@ fn spawnable_command(program: &str) -> tokio::process::Command {
     cmd
 }
 
-/// Execute gh CLI command and return stdout
-pub async fn gh_command(args: &[&str]) -> Result<String> {
+async fn run_gh(args: &[&str]) -> Result<std::process::Output> {
     let mut command = spawnable_command("gh");
-    let output = command
+    command
         .args(args)
         .output()
         .await
-        .context("Failed to execute gh CLI - is it installed?")?;
+        .context("Failed to execute gh CLI - is it installed?")
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!("{}", format_gh_error(stderr.trim(), stdout.trim()));
+/// Stdout and stderr from one `gh` invocation. A failed command still returns
+/// both streams so the caller can read a GraphQL `errors` body.
+pub(crate) struct GhCommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+}
+
+pub(crate) async fn gh_command_output(args: &[&str]) -> Result<GhCommandOutput> {
+    let output = run_gh(args).await?;
+    let success = output.status.success();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = if success {
+        String::from_utf8(output.stdout).context("gh output contains invalid UTF-8")?
+    } else {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    Ok(GhCommandOutput {
+        stdout,
+        stderr,
+        success,
+    })
+}
+
+/// Execute gh CLI command and return stdout
+pub async fn gh_command(args: &[&str]) -> Result<String> {
+    let output = gh_command_output(args).await?;
+    if !output.success {
+        anyhow::bail!(
+            "{}",
+            format_gh_error(output.stderr.trim(), output.stdout.trim())
+        );
     }
-
-    String::from_utf8(output.stdout).context("gh output contains invalid UTF-8")
+    Ok(output.stdout)
 }
 
 /// Execute gh CLI command, treating specified exit codes as success.
 /// For example, `gh pr checks` returns exit code 8 when checks are pending.
 pub async fn gh_command_allow_exit_codes(args: &[&str], allowed_codes: &[i32]) -> Result<String> {
-    let mut command = spawnable_command("gh");
-    let output = command
-        .args(args)
-        .output()
-        .await
-        .context("Failed to execute gh CLI - is it installed?")?;
+    let output = run_gh(args).await?;
 
     let code = output.status.code().unwrap_or(-1);
     if output.status.success() || allowed_codes.contains(&code) {

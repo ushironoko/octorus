@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::client::{
-    check_graphql_errors, gh_api, gh_api_graphql, gh_api_paginate, gh_command,
-    gh_command_allow_exit_codes, FieldValue,
+    check_graphql_errors, format_gh_error, gh_api, gh_api_graphql, gh_api_paginate, gh_command,
+    gh_command_allow_exit_codes, gh_command_output, FieldValue,
 };
 use crate::app::ReviewAction;
 
@@ -487,53 +487,414 @@ pub async fn set_file_viewed(
     Ok(())
 }
 
-/// ページネーション結果
+/// One page of the pull request list.
+#[derive(Debug)]
 pub struct PrListPage {
     pub items: Vec<PullRequestSummary>,
     pub has_more: bool,
+    /// Cursor for the next page. `None` when [`Self::has_more`] is false.
+    pub end_cursor: Option<String>,
 }
+
+/// GitHub rejects a connection `first` above this. A larger `limit` is several
+/// queries of at most this many rows, not a shorter list.
+const PR_LIST_GRAPHQL_PAGE_MAX: u32 = 100;
+
+/// Same order and state set as `gh pr list`: `CREATED_AT` descending, and
+/// `closed` includes merged. The screen reads the title, draft flag, author,
+/// label names, and the CI mark. Checks and labels stop at 100, which is the
+/// window `gh pr list --json` already used.
+const PR_LIST_QUERY: &str = "query($owner:String!,$name:String!,$limit:Int!,$states:[PullRequestState!],$after:String){repository(owner:$owner,name:$name){pullRequests(states:$states,first:$limit,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number title state isDraft updatedAt author{__typename login} labels(first:100){nodes{name}} commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ...on CheckRun{status conclusion} ...on StatusContext{state}}}}}}}} pageInfo{hasNextPage endCursor}}}}";
 
 pub async fn fetch_pr_list(repo: &str, state: PrStateFilter, limit: u32) -> Result<PrListPage> {
-    fetch_pr_list_with_offset(repo, state, 0, limit).await
+    fetch_pr_list_after(repo, state, None, limit).await
 }
 
-/// PR一覧取得（オフセット付き、追加ロード用）
-pub async fn fetch_pr_list_with_offset(
+/// One page, starting after `after`. `None` reads the first page.
+///
+/// Each query asks for `limit` rows (at most 100, which is GraphQL's maximum
+/// for `first`) and uses `pageInfo.hasNextPage` instead of fetching the next
+/// row and dropping it. A `limit` above 100 continues from the cursor until
+/// that many rows are collected or the list ends.
+pub async fn fetch_pr_list_after(
     repo: &str,
     state: PrStateFilter,
-    offset: u32,
+    after: Option<&str>,
     limit: u32,
 ) -> Result<PrListPage> {
-    // gh pr list doesn't support offset directly, so we fetch offset+limit+1 and skip
-    let fetch_count = offset + limit + 1;
-    let output = gh_command(&[
-        "pr",
-        "list",
-        "-R",
-        repo,
-        "-s",
-        state.as_gh_arg(),
-        "--json",
-        "number,title,state,author,isDraft,labels,updatedAt,statusCheckRollup",
-        "--limit",
-        &fetch_count.to_string(),
-    ])
-    .await?;
+    let mut cursor = after
+        .filter(|cursor| !cursor.is_empty())
+        .map(str::to_string);
+    if limit == 0 {
+        return Ok(PrListPage {
+            items: Vec::new(),
+            has_more: false,
+            end_cursor: cursor,
+        });
+    }
 
-    let all_items: Vec<PullRequestSummary> =
-        serde_json::from_str(&output).context("Failed to parse PR list response")?;
+    let mut items = Vec::new();
+    let mut remaining = limit;
+    let mut has_more = false;
+    let mut end_cursor = cursor.clone();
 
-    // Check if there are more items beyond what we're returning
-    let has_more = all_items.len() > (offset + limit) as usize;
+    while remaining > 0 {
+        let page_size = remaining.min(PR_LIST_GRAPHQL_PAGE_MAX);
+        let page = request_pr_list_page(repo, state, cursor.as_deref(), page_size).await?;
+        let got = u32::try_from(page.items.len()).unwrap_or(page_size);
+        has_more = page.has_more;
+        end_cursor.clone_from(&page.end_cursor);
+        items.extend(page.items);
+        if !has_more || got < page_size {
+            break;
+        }
+        remaining = remaining.saturating_sub(got);
+        if remaining == 0 {
+            break;
+        }
+        if page.end_cursor.as_deref().is_none_or(str::is_empty) {
+            anyhow::bail!("GitHub GraphQL pageInfo missing endCursor");
+        }
+        cursor = page.end_cursor;
+    }
 
-    // Skip the offset items and take limit items
-    let items: Vec<PullRequestSummary> = all_items
+    if has_more && end_cursor.as_deref().is_none_or(str::is_empty) {
+        anyhow::bail!("GitHub GraphQL pageInfo missing endCursor");
+    }
+
+    Ok(PrListPage {
+        items,
+        has_more,
+        end_cursor,
+    })
+}
+
+async fn request_pr_list_page(
+    repo: &str,
+    state: PrStateFilter,
+    after: Option<&str>,
+    limit: u32,
+) -> Result<PrListPage> {
+    let args = pr_list_command_args(repo, state, after, limit)?;
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = gh_command_output(&arg_refs).await?;
+    // `gh api graphql` exits 1 and prints `gh: <message>` plus the JSON body.
+    // `gh pr list` prints `GraphQL: <message> (<path>)` and no body. The footer
+    // reads that wording, so surface the errors array the same way.
+    if let Some(message) = graphql_failure_message(output.stdout.trim()) {
+        anyhow::bail!("gh command failed: {message}");
+    }
+    if !output.success {
+        anyhow::bail!(
+            "{}",
+            format_gh_error(output.stderr.trim(), output.stdout.trim())
+        );
+    }
+    let body: serde_json::Value =
+        serde_json::from_str(&output.stdout).context("Failed to parse PR list response")?;
+    check_graphql_errors(&body)?;
+    parse_pr_list_payload(body, repo)
+}
+
+/// `gh pr list`'s GraphQL error line: `GraphQL: <message> (<path>)`, with
+/// further errors joined by `, `. `None` when stdout is not that error body,
+/// so a network or HTTP failure keeps the stderr `gh` already printed.
+fn graphql_failure_message(stdout: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    let errors = body.get("errors")?.as_array()?;
+    if errors.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for error in errors {
+        let Some(message) = error.get("message").and_then(|message| message.as_str()) else {
+            continue;
+        };
+        let message = message.trim();
+        if message.is_empty() {
+            continue;
+        }
+        let path = error
+            .get("path")
+            .and_then(|path| path.as_array())
+            .map(|segments| {
+                segments
+                    .iter()
+                    .filter_map(|segment| match segment {
+                        serde_json::Value::String(text) => Some(text.clone()),
+                        serde_json::Value::Number(number) => Some(number.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+            .filter(|path| !path.is_empty());
+        match path {
+            Some(path) => parts.push(format!("{message} ({path})")),
+            None => parts.push(message.to_string()),
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("GraphQL: {}", parts.join(", ")))
+    }
+}
+
+fn pr_list_state_values(state: PrStateFilter) -> &'static [&'static str] {
+    match state {
+        // `gh pr list -s closed` asks for CLOSED and MERGED. `all` adds OPEN.
+        PrStateFilter::Open => &["OPEN"],
+        PrStateFilter::Closed => &["CLOSED", "MERGED"],
+        PrStateFilter::All => &["OPEN", "CLOSED", "MERGED"],
+    }
+}
+
+struct RepoName<'a> {
+    host: Option<&'a str>,
+    owner: &'a str,
+    name: &'a str,
+}
+
+/// `owner/repo`, or `host/owner/repo` as `gh pr list -R` accepts it.
+/// A two-part name keeps gh's default host, including `GH_HOST`.
+fn split_repo_name(repo: &str) -> Result<RepoName<'_>> {
+    let mut parts = repo.split('/');
+    let first = parts.next().unwrap_or("");
+    let second = parts.next().unwrap_or("");
+    let third = parts.next();
+    let fourth = parts.next();
+    match (first, second, third, fourth) {
+        (owner, name, None, None) if !owner.is_empty() && !name.is_empty() => Ok(RepoName {
+            host: None,
+            owner,
+            name,
+        }),
+        (host, owner, Some(name), None)
+            if !host.is_empty() && !owner.is_empty() && !name.is_empty() =>
+        {
+            Ok(RepoName {
+                host: Some(host),
+                owner,
+                name,
+            })
+        }
+        _ => anyhow::bail!("Invalid repo format: expected 'owner/repo', got '{repo}'"),
+    }
+}
+
+fn pr_list_command_args(
+    repo: &str,
+    state: PrStateFilter,
+    after: Option<&str>,
+    limit: u32,
+) -> Result<Vec<String>> {
+    let repo = split_repo_name(repo)?;
+    let mut args = vec!["api".to_string()];
+    if let Some(host) = repo.host {
+        args.push("--hostname".to_string());
+        args.push(host.to_string());
+    }
+    args.push("graphql".to_string());
+    args.push("-f".to_string());
+    args.push(format!("query={PR_LIST_QUERY}"));
+    args.push("-f".to_string());
+    args.push(format!("owner={}", repo.owner));
+    args.push("-f".to_string());
+    args.push(format!("name={}", repo.name));
+    args.push("-F".to_string());
+    args.push(format!("limit={limit}"));
+    for value in pr_list_state_values(state) {
+        args.push("-F".to_string());
+        args.push(format!("states[]={value}"));
+    }
+    if let Some(cursor) = after.filter(|cursor| !cursor.is_empty()) {
+        args.push("-f".to_string());
+        args.push(format!("after={cursor}"));
+    }
+    Ok(args)
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlNamed {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlActor {
+    #[serde(default, rename = "__typename")]
+    type_name: Option<String>,
+    login: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlCheckNode {
+    #[serde(rename = "__typename")]
+    type_name: String,
+    status: Option<String>,
+    conclusion: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+struct GqlNodes<T> {
+    #[serde(default)]
+    nodes: Vec<Option<T>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlRollup {
+    contexts: Option<GqlNodes<GqlCheckNode>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlCommit {
+    #[serde(rename = "statusCheckRollup")]
+    status_check_rollup: Option<GqlRollup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlCommitNode {
+    commit: Option<GqlCommit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrNode {
+    number: u32,
+    title: String,
+    state: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    author: Option<GqlActor>,
+    labels: Option<GqlNodes<GqlNamed>>,
+    commits: Option<GqlNodes<GqlCommitNode>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrConnection {
+    #[serde(default)]
+    nodes: Vec<Option<GqlPrNode>>,
+    #[serde(rename = "pageInfo")]
+    page_info: GqlPageInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrListRepository {
+    #[serde(rename = "pullRequests")]
+    pull_requests: GqlPrConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrListData {
+    repository: Option<GqlPrListRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrListPayload {
+    data: Option<GqlPrListData>,
+}
+
+fn parse_pr_list_payload(body: serde_json::Value, repo: &str) -> Result<PrListPage> {
+    let parsed: GqlPrListPayload =
+        serde_json::from_value(body).context("Failed to parse PR list response")?;
+    let Some(data) = parsed.data else {
+        anyhow::bail!("GitHub GraphQL response missing data");
+    };
+    let Some(repository) = data.repository else {
+        anyhow::bail!("Could not resolve to a Repository with the name '{repo}'");
+    };
+    let connection = repository.pull_requests;
+    let items = connection
+        .nodes
         .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
+        .flatten()
+        .map(summary_from_node)
         .collect();
+    let end_cursor = connection
+        .page_info
+        .end_cursor
+        .filter(|cursor| !cursor.is_empty());
+    Ok(PrListPage {
+        items,
+        has_more: connection.page_info.has_next_page,
+        end_cursor,
+    })
+}
 
-    Ok(PrListPage { items, has_more })
+fn summary_from_node(node: GqlPrNode) -> PullRequestSummary {
+    let login = list_author_login(node.author);
+    let labels = node
+        .labels
+        .map(|labels| {
+            labels
+                .nodes
+                .into_iter()
+                .flatten()
+                .map(|label| Label { name: label.name })
+                .collect()
+        })
+        .unwrap_or_default();
+    PullRequestSummary {
+        number: node.number,
+        title: node.title,
+        state: node.state,
+        author: User { login },
+        is_draft: node.is_draft,
+        labels,
+        updated_at: node.updated_at,
+        status_check_rollup: rollup_from_commits(node.commits),
+    }
+}
+
+/// `gh pr list --json author` is `Author.MarshalJSON` (`api/queries_issue.go`).
+/// The list field is `author{login,...on User{id,name}}` (`api/query_builder.go`),
+/// so `id` is set only for a User. An empty id is written as `app/` plus the
+/// login: every other actor, and a null author (`app/` + ""). A User keeps
+/// `login`. The same object sets `is_bot`; the list stores `login` only, which
+/// is what the row and the text filter read.
+fn list_author_login(author: Option<GqlActor>) -> String {
+    match author {
+        Some(author) if author.type_name.as_deref() == Some("User") => {
+            author.login.unwrap_or_default()
+        }
+        Some(author) => format!("app/{}", author.login.unwrap_or_default()),
+        None => "app/".to_string(),
+    }
+}
+
+fn rollup_from_commits(commits: Option<GqlNodes<GqlCommitNode>>) -> Vec<StatusCheckRollupItem> {
+    let Some(commits) = commits else {
+        return Vec::new();
+    };
+    commits
+        .nodes
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.commit)
+        .filter_map(|commit| commit.status_check_rollup)
+        .filter_map(|rollup| rollup.contexts)
+        .flat_map(|contexts| contexts.nodes)
+        .flatten()
+        .map(|check| StatusCheckRollupItem {
+            type_name: check.type_name,
+            name: None,
+            status: check.status,
+            conclusion: check.conclusion,
+            context: None,
+            state: check.state,
+        })
+        .collect()
 }
 
 pub async fn fetch_pr_checks(repo: &str, pr_number: u32) -> Result<Vec<CheckItem>> {
@@ -556,6 +917,8 @@ pub async fn fetch_pr_checks(repo: &str, pr_number: u32) -> Result<Vec<CheckItem
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use serial_test::serial;
 
     fn snapshot_pull(base_ref: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
@@ -962,5 +1325,384 @@ mod tests {
         assert_eq!(item.type_name, "CheckRun");
         assert_eq!(item.name.as_deref(), Some("build"));
         assert_eq!(item.conclusion.as_deref(), Some("SUCCESS"));
+    }
+
+    fn arg_is(args: &[String], expected: &str) -> bool {
+        args.iter().any(|arg| arg == expected)
+    }
+
+    #[test]
+    fn pr_list_query_matches_gh_pr_list_order_states_and_fields() {
+        let open =
+            super::pr_list_command_args("owner/repo", PrStateFilter::Open, None, 30).unwrap();
+        assert!(arg_is(&open, "limit=30"));
+        assert!(arg_is(&open, "owner=owner"));
+        assert!(arg_is(&open, "name=repo"));
+        assert!(arg_is(&open, "states[]=OPEN"));
+        assert!(!arg_is(&open, "states[]=CLOSED"));
+        assert!(!arg_is(&open, "--hostname"));
+        assert!(!open.iter().any(|arg| arg.starts_with("after=")));
+        let query = open.iter().find(|arg| arg.starts_with("query=")).unwrap();
+        assert!(query.contains("orderBy:{field:CREATED_AT,direction:DESC}"));
+        assert!(query.contains("labels(first:100)"));
+        assert!(query.contains("contexts(first:100)"));
+        assert!(query.contains("isDraft"));
+        assert!(query.contains("author{__typename login}"));
+        assert!(query.contains("...on CheckRun{status conclusion}"));
+        assert!(query.contains("...on StatusContext{state}"));
+        assert!(!query.contains("workflowName"));
+        assert!(!query.contains("detailsUrl"));
+        assert!(!query.contains("description"));
+        assert!(!query.contains("color"));
+
+        let closed =
+            super::pr_list_command_args("owner/repo", PrStateFilter::Closed, None, 30).unwrap();
+        assert!(arg_is(&closed, "states[]=CLOSED"));
+        assert!(arg_is(&closed, "states[]=MERGED"));
+        assert!(!arg_is(&closed, "states[]=OPEN"));
+
+        let all = super::pr_list_command_args("owner/repo", PrStateFilter::All, None, 30).unwrap();
+        assert!(arg_is(&all, "states[]=OPEN"));
+        assert!(arg_is(&all, "states[]=CLOSED"));
+        assert!(arg_is(&all, "states[]=MERGED"));
+
+        let paged = super::pr_list_command_args(
+            "gh.example.test/acme/widgets",
+            PrStateFilter::Open,
+            Some("Y3Vyc29y="),
+            30,
+        )
+        .unwrap();
+        assert!(paged
+            .windows(2)
+            .any(|pair| { pair[0] == "--hostname" && pair[1] == "gh.example.test" }));
+        assert!(arg_is(&paged, "owner=acme"));
+        assert!(arg_is(&paged, "name=widgets"));
+        assert!(arg_is(&paged, "after=Y3Vyc29y="));
+        assert!(!arg_is(&paged, "owner=gh.example.test"));
+
+        assert!(super::pr_list_command_args("noslash", PrStateFilter::Open, None, 30).is_err());
+    }
+
+    /// Rows `gh pr list --limit` requested on main. Page `page` (0-based) used
+    /// `offset + limit + 1` because `gh pr list` has no offset, and gh split a
+    /// request above 100 into one GraphQL query per 100 rows inside that process.
+    fn main_pr_list_page_cost(page: u32, page_size: u32) -> (u32, u32) {
+        let rows = page * page_size + page_size + 1;
+        (rows, rows.div_ceil(100))
+    }
+
+    #[test]
+    fn main_pr_list_paging_transfers_every_earlier_row() {
+        let page_size = 30;
+        assert_eq!(main_pr_list_page_cost(0, page_size), (31, 1));
+        assert_eq!(main_pr_list_page_cost(1, page_size), (61, 1));
+        assert_eq!(main_pr_list_page_cost(3, page_size), (121, 2));
+        assert_eq!(main_pr_list_page_cost(9, page_size), (301, 4));
+        let (rows, queries) = (0..10).fold((0, 0), |(rows, queries), page| {
+            let (page_rows, page_queries) = main_pr_list_page_cost(page, page_size);
+            (rows + page_rows, queries + page_queries)
+        });
+        assert_eq!(rows, 1660);
+        assert_eq!(queries, 22);
+    }
+
+    fn list_page(
+        nodes: Vec<serde_json::Value>,
+        has_next: bool,
+        cursor: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "nodes": nodes,
+                        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor}
+                    }
+                }
+            }
+        })
+    }
+
+    fn list_node(
+        number: u32,
+        draft: bool,
+        author: Option<&str>,
+        labels: &[&str],
+        checks: serde_json::Value,
+    ) -> serde_json::Value {
+        let author = author.map(|login| serde_json::json!({"__typename": "User", "login": login}));
+        serde_json::json!({
+            "number": number,
+            "title": format!("PR {number}"),
+            "state": "OPEN",
+            "isDraft": draft,
+            "updatedAt": "2025-01-01T00:00:00Z",
+            "author": author,
+            "labels": {"nodes": labels.iter().map(|name| serde_json::json!({"name": name})).collect::<Vec<_>>()},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": checks}}}}]}
+        })
+    }
+
+    fn check_run(conclusion: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "__typename": "CheckRun",
+            "status": if conclusion.is_some() { "COMPLETED" } else { "IN_PROGRESS" },
+            "conclusion": conclusion,
+        })
+    }
+
+    #[test]
+    fn pr_list_payload_keeps_draft_author_labels_and_ci_mark() {
+        let body = list_page(
+            vec![list_node(
+                42,
+                true,
+                Some("alice"),
+                &["bug", "ui", "perf"],
+                serde_json::json!([
+                    check_run(Some("FAILURE")),
+                    {"__typename": "StatusContext", "state": "PENDING"}
+                ]),
+            )],
+            true,
+            Some("cursor-1"),
+        );
+        let page = super::parse_pr_list_payload(body, "owner/repo").unwrap();
+        assert!(page.has_more);
+        assert_eq!(page.end_cursor.as_deref(), Some("cursor-1"));
+        let pr = &page.items[0];
+        assert!(pr.is_draft);
+        assert_eq!(pr.state, "OPEN");
+        assert_eq!(pr.author.login, "alice");
+        assert_eq!(
+            pr.labels
+                .iter()
+                .map(|label| label.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bug", "ui", "perf"]
+        );
+        assert_eq!(
+            CiStatus::from_rollup(&pr.status_check_rollup),
+            CiStatus::Failure
+        );
+    }
+
+    #[test]
+    fn pr_list_payload_ci_matches_the_existing_rollup_rules() {
+        let cases = [
+            (serde_json::json!([]), CiStatus::None),
+            (
+                serde_json::json!([check_run(Some("SUCCESS"))]),
+                CiStatus::Success,
+            ),
+            (
+                serde_json::json!([check_run(Some("NEUTRAL")), check_run(Some("SKIPPED"))]),
+                CiStatus::Success,
+            ),
+            (serde_json::json!([check_run(None)]), CiStatus::Pending),
+            (
+                serde_json::json!([check_run(Some("STALE"))]),
+                CiStatus::Failure,
+            ),
+            (
+                serde_json::json!([check_run(Some("STARTUP_FAILURE"))]),
+                CiStatus::Failure,
+            ),
+            (
+                serde_json::json!([check_run(Some("CANCELLED"))]),
+                CiStatus::Failure,
+            ),
+            (
+                serde_json::json!([{"__typename": "StatusContext", "state": "SUCCESS"}]),
+                CiStatus::Success,
+            ),
+            (
+                serde_json::json!([{"__typename": "StatusContext", "state": "PENDING"}]),
+                CiStatus::Pending,
+            ),
+            (
+                serde_json::json!([{"__typename": "StatusContext", "state": "EXPECTED"}]),
+                CiStatus::Pending,
+            ),
+            (
+                serde_json::json!([{"__typename": "StatusContext", "state": "ERROR"}]),
+                CiStatus::Failure,
+            ),
+        ];
+        for (checks, expected) in cases {
+            let body = list_page(
+                vec![list_node(1, false, Some("a"), &[], checks)],
+                false,
+                None,
+            );
+            let page = super::parse_pr_list_payload(body, "owner/repo").unwrap();
+            assert_eq!(
+                CiStatus::from_rollup(&page.items[0].status_check_rollup),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn pr_list_author_login_matches_gh_pr_list() {
+        let mut bot = list_node(1, false, Some("dependabot"), &[], serde_json::json!([]));
+        bot["author"]["__typename"] = serde_json::json!("Bot");
+        let mut mannequin = list_node(2, false, Some("aatmmr"), &[], serde_json::json!([]));
+        mannequin["author"]["__typename"] = serde_json::json!("Mannequin");
+        let mut org = list_node(3, false, Some("acme"), &[], serde_json::json!([]));
+        org["author"]["__typename"] = serde_json::json!("Organization");
+        let mut enterprise = list_node(4, false, Some("ent"), &[], serde_json::json!([]));
+        enterprise["author"]["__typename"] = serde_json::json!("EnterpriseUserAccount");
+        let user = list_node(5, false, Some("alice"), &[], serde_json::json!([]));
+        let deleted = list_node(6, false, None, &[], serde_json::json!([]));
+        let page = super::parse_pr_list_payload(
+            list_page(
+                vec![bot, mannequin, org, enterprise, user, deleted],
+                false,
+                None,
+            ),
+            "owner/repo",
+        )
+        .unwrap();
+        let logins: Vec<&str> = page
+            .items
+            .iter()
+            .map(|pr| pr.author.login.as_str())
+            .collect();
+        assert_eq!(
+            logins,
+            vec![
+                "app/dependabot",
+                "app/aatmmr",
+                "app/acme",
+                "app/ent",
+                "alice",
+                "app/",
+            ]
+        );
+    }
+
+    #[test]
+    fn pr_list_graphql_error_uses_the_gh_pr_list_wording() {
+        let stdout = r#"{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"locations":[{"line":1,"column":9}],"message":"Could not resolve to a Repository with the name 'owner/missing'."}]}"#;
+        assert_eq!(
+            super::graphql_failure_message(stdout).as_deref(),
+            Some(
+                "GraphQL: Could not resolve to a Repository with the name 'owner/missing'. (repository)"
+            )
+        );
+        assert!(super::graphql_failure_message("not json").is_none());
+        assert!(super::graphql_failure_message(r#"{"data":{"repository":null}}"#).is_none());
+    }
+
+    #[test]
+    fn pr_list_payload_keeps_a_pull_request_whose_author_was_deleted() {
+        let body = list_page(
+            vec![list_node(7, false, None, &[], serde_json::json!([]))],
+            false,
+            None,
+        );
+        let page = super::parse_pr_list_payload(body, "owner/repo").unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].number, 7);
+        assert_eq!(page.items[0].author.login, "app/");
+        assert!(!page.has_more);
+        assert!(page.end_cursor.is_none());
+    }
+
+    #[test]
+    fn missing_repository_payload_uses_the_not_found_phrase() {
+        let body = serde_json::json!({"data": {"repository": null}});
+        let error = super::parse_pr_list_payload(body, "owner/missing").unwrap_err();
+        let failure = crate::github::GhFailure::from_error(&error);
+        assert_eq!(
+            failure.title(crate::github::FailureSurface::PrList),
+            "Repository not found"
+        );
+        assert_eq!(failure.reason(), "Check the owner/repo name.");
+    }
+
+    #[test]
+    fn graphql_error_body_keeps_the_repository_phrase() {
+        let body = serde_json::json!({
+            "errors": [{
+                "message": "Could not resolve to a Repository with the name 'owner/missing'."
+            }]
+        });
+        let error = super::check_graphql_errors(&body).unwrap_err();
+        let failure = crate::github::GhFailure::from_error(&error);
+        assert_eq!(
+            failure.title(crate::github::FailureSurface::PrList),
+            "Repository not found"
+        );
+    }
+
+    fn list_calls(log: &str) -> Vec<String> {
+        log.lines()
+            .filter(|line| line.contains("pullRequests"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn passes_after(call: &str) -> bool {
+        call.split_whitespace().any(|arg| arg.starts_with("after="))
+    }
+
+    #[cfg(unix)]
+    fn numbered_nodes(start: u32, count: u32) -> Vec<serde_json::Value> {
+        (0..count)
+            .map(|offset| list_node(start + offset, false, Some("a"), &[], serde_json::json!([])))
+            .collect()
+    }
+
+    /// A limit above GraphQL's 100-row maximum is still returned in full.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn pr_list_limit_above_one_graphql_page_is_not_capped() {
+        use crate::github::fake_gh::FakeGh;
+
+        let gh = FakeGh::install("", "", "", "");
+        gh.set_pr_list(&list_page(numbered_nodes(1, 100), true, Some("page-1")).to_string());
+        gh.set_pr_list_after(&list_page(numbered_nodes(101, 30), true, Some("page-2")).to_string());
+
+        let page = fetch_pr_list_after("owner/repo", PrStateFilter::Open, None, 130)
+            .await
+            .unwrap();
+        let calls = list_calls(&gh.calls());
+        assert_eq!(calls.len(), 2, "{}", gh.calls());
+        assert!(
+            calls[0].split_whitespace().any(|arg| arg == "limit=100"),
+            "{}",
+            calls[0]
+        );
+        assert!(!passes_after(&calls[0]), "{}", calls[0]);
+        assert!(
+            calls[1].split_whitespace().any(|arg| arg == "limit=30"),
+            "{}",
+            calls[1]
+        );
+        assert!(
+            calls[1].split_whitespace().any(|arg| arg == "after=page-1"),
+            "{}",
+            calls[1]
+        );
+        assert_eq!(page.items.len(), 130);
+        assert_eq!(page.items.first().map(|pr| pr.number), Some(1));
+        assert_eq!(page.items.last().map(|pr| pr.number), Some(130));
+        assert!(page.has_more);
+        assert_eq!(page.end_cursor.as_deref(), Some("page-2"));
+        assert!(!gh.calls().contains("--limit"), "{}", gh.calls());
+    }
+
+    #[tokio::test]
+    async fn limit_zero_does_not_ask_github() {
+        let page = fetch_pr_list_after("owner/repo", PrStateFilter::Open, Some("keep"), 0)
+            .await
+            .unwrap();
+        assert!(page.items.is_empty());
+        assert!(!page.has_more);
+        assert_eq!(page.end_cursor.as_deref(), Some("keep"));
     }
 }

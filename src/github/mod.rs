@@ -81,9 +81,9 @@ pub use issue::{
 
 pub use pr::{
     fetch_changed_files, fetch_files_viewed_state, fetch_pr, fetch_pr_checks, fetch_pr_diff,
-    fetch_pr_list, fetch_pr_list_with_offset, fetch_pr_snapshot, set_file_viewed, submit_review,
-    Branch, ChangedFile, CheckItem, CiStatus, Label, PrListPage, PrSnapshot, PrStateFilter,
-    PullRequest, PullRequestSummary, StatusCheckRollupItem, User,
+    fetch_pr_list, fetch_pr_list_after, fetch_pr_snapshot, set_file_viewed, submit_review, Branch,
+    ChangedFile, CheckItem, CiStatus, Label, PrListPage, PrSnapshot, PrStateFilter, PullRequest,
+    PullRequestSummary, StatusCheckRollupItem, User,
 };
 
 pub(crate) fn format_relative_time_from_epoch(epoch_seconds: i64) -> String {

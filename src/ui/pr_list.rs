@@ -410,6 +410,30 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {needle}"))
     }
 
+    #[test]
+    fn pr_list_row_shows_draft_author_labels_and_the_ci_mark() {
+        let mut pr = sample_pr(42, "Ship it", "alice");
+        pr.is_draft = true;
+        pr.labels = vec![
+            crate::github::Label {
+                name: "bug".to_string(),
+            },
+            crate::github::Label {
+                name: "ui".to_string(),
+            },
+            crate::github::Label {
+                name: "perf".to_string(),
+            },
+        ];
+        pr.status_check_rollup = rollup(Some("FAILURE"));
+        let buf = render_rows(&[pr], 40);
+        let text = row_text(&buf, 0);
+        assert!(text.contains("[DRAFT]"), "{text}");
+        assert!(text.contains("by @alice"), "{text}");
+        assert!(text.contains("[bug, ui+1]"), "{text}");
+        assert!(text.contains('✕'), "{text}");
+    }
+
     /// The CI dots take the same tokens as the header CI note. Pending already did.
     #[test]
     fn pr_list_ci_dots_take_theme_colors() {

@@ -7903,6 +7903,7 @@ async fn test_reload_pr_list_resets_state() {
     let mut app = App::new_for_test();
     app.prs.selected_pr = 5;
     app.prs.pr_list_scroll_offset = 10;
+    app.prs.pr_list_end_cursor = Some("stale".to_string());
     let filter = crate::filter::ListFilter::new();
     app.prs.pr_list_filter = Some(filter);
 
@@ -7912,12 +7913,92 @@ async fn test_reload_pr_list_resets_state() {
     assert_eq!(app.prs.pr_list_scroll_offset, 0);
     assert!(app.prs.pr_list.is_loading());
     assert!(!app.prs.pr_list_has_more);
+    assert!(app.prs.pr_list_end_cursor.is_none());
     assert!(app.prs.pr_list_filter.is_none());
 }
 
-/// One PR, number 7, as the `gh pr list` double replies.
+/// One PR, number 7, as the list query replies.
 #[cfg(unix)]
-const RECOVERED_PR_LIST: &str = r#"[{"number":7,"title":"Recovered PR","state":"open","author":{"login":"alice"},"isDraft":false,"labels":[],"updatedAt":"2025-01-01T00:00:00Z","statusCheckRollup":[]}]"#;
+fn recovered_pr_list_page() -> String {
+    pr_list_page(
+        &[pr_list_node(7, "Recovered PR", false, "alice", &[], None)],
+        false,
+        None,
+    )
+}
+
+#[cfg(unix)]
+fn pr_list_node(
+    number: u32,
+    title: &str,
+    draft: bool,
+    login: &str,
+    labels: &[&str],
+    conclusion: Option<&str>,
+) -> serde_json::Value {
+    let checks: Vec<serde_json::Value> = match conclusion {
+        Some(conclusion) => vec![serde_json::json!({
+            "__typename": "CheckRun",
+            "status": "COMPLETED",
+            "conclusion": conclusion,
+        })],
+        None => Vec::new(),
+    };
+    serde_json::json!({
+        "number": number,
+        "title": title,
+        "state": "OPEN",
+        "isDraft": draft,
+        "updatedAt": "2025-01-01T00:00:00Z",
+        "author": {"__typename": "User", "login": login},
+        "labels": {
+            "nodes": labels
+                .iter()
+                .map(|name| serde_json::json!({"name": name}))
+                .collect::<Vec<_>>()
+        },
+        "commits": {
+            "nodes": [{
+                "commit": {
+                    "statusCheckRollup": {"contexts": {"nodes": checks}}
+                }
+            }]
+        }
+    })
+}
+
+#[cfg(unix)]
+fn pr_list_page(nodes: &[serde_json::Value], has_next: bool, cursor: Option<&str>) -> String {
+    serde_json::json!({
+        "data": {
+            "repository": {
+                "pullRequests": {
+                    "nodes": nodes,
+                    "pageInfo": {"hasNextPage": has_next, "endCursor": cursor}
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+#[cfg(unix)]
+fn pr_list_calls(log: &str) -> Vec<String> {
+    log.lines()
+        .filter(|line| line.contains("pullRequests"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(unix)]
+fn call_has_arg(call: &str, expected: &str) -> bool {
+    call.split_whitespace().any(|arg| arg == expected)
+}
+
+#[cfg(unix)]
+fn call_passes_after(call: &str) -> bool {
+    call.split_whitespace().any(|arg| arg.starts_with("after="))
+}
 
 /// Polls the PR list fetch until it settles, as the event loop does.
 #[cfg(unix)]
@@ -7941,7 +8022,8 @@ async fn test_retry_key_reloads_pr_list_after_a_failed_load() {
     use crate::github::fake_gh::FakeGh;
     use crate::github::GhFailure;
 
-    let gh = FakeGh::install("[]", RECOVERED_PR_LIST, "", "");
+    let gh = FakeGh::install("[]", "", "", "");
+    gh.set_pr_list(&recovered_pr_list_page());
     let mut app = App::new_for_test();
     app.state = AppState::PullRequestList;
     app.prs.pr_list = LoadState::Error(GhFailure::other(
@@ -7963,7 +8045,7 @@ async fn test_retry_key_reloads_pr_list_after_a_failed_load() {
         .map(|pr| pr.number)
         .collect();
     assert_eq!(numbers, vec![7]);
-    assert!(gh.calls().contains("pr list"), "{}", gh.calls());
+    assert!(gh.calls().contains("pullRequests"), "{}", gh.calls());
 }
 
 /// `or -r owner/no-such-repo -p`: the first fetch reports the missing repository.
@@ -7976,7 +8058,8 @@ async fn test_missing_repo_at_startup_shows_reason_then_retry_loads_list() {
     use crate::github::GhFailure;
     use tokio::sync::mpsc;
 
-    let _gh = FakeGh::install("[]", RECOVERED_PR_LIST, "", "");
+    let gh = FakeGh::install("[]", "", "", "");
+    gh.set_pr_list(&recovered_pr_list_page());
     let mut app = App::new_pr_list(
         "owner/no-such-repo",
         Config::default(),
@@ -8004,6 +8087,269 @@ async fn test_missing_repo_at_startup_shows_reason_then_retry_loads_list() {
     assert_eq!(app.prs.pr_list.as_loaded().map(|prs| prs.len()), Some(1));
 }
 
+fn pr_numbers(app: &App) -> Vec<u32> {
+    app.prs
+        .pr_list
+        .as_loaded()
+        .unwrap()
+        .iter()
+        .map(|pr| pr.number)
+        .collect()
+}
+
+/// Opening, scrolling, and refreshing each ask for one page of 30.
+/// Scrolling keeps the rows already on screen. Refresh reads the first page
+/// again, so a PR opened or closed since then shows up, and does not send the
+/// cursor or the rows from later pages.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn pr_list_open_scroll_and_refresh_each_query_one_page() {
+    use crate::github::fake_gh::FakeGh;
+
+    let gh = FakeGh::install("", "", "", "");
+    gh.set_pr_list(&pr_list_page(
+        &[
+            pr_list_node(
+                42,
+                "Ship it",
+                true,
+                "alice",
+                &["bug", "ui", "perf"],
+                Some("FAILURE"),
+            ),
+            pr_list_node(41, "Older", false, "bob", &[], Some("SUCCESS")),
+        ],
+        true,
+        Some("Y3Vyc29y="),
+    ));
+    gh.set_pr_list_after(&pr_list_page(
+        &[
+            pr_list_node(40, "Page two", false, "cara", &[], None),
+            pr_list_node(39, "Also two", false, "cara", &[], None),
+        ],
+        true,
+        Some("c2"),
+    ));
+
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.reload_pr_list();
+    settle_pr_list(&mut app).await;
+
+    let calls = pr_list_calls(&gh.calls());
+    assert_eq!(calls.len(), 1, "{}", gh.calls());
+    assert!(call_has_arg(&calls[0], "limit=30"), "{}", calls[0]);
+    assert!(call_has_arg(&calls[0], "states[]=OPEN"), "{}", calls[0]);
+    assert!(!call_passes_after(&calls[0]), "{}", calls[0]);
+    assert_eq!(pr_numbers(&app), vec![42, 41]);
+    assert!(app.prs.pr_list_has_more);
+    assert_eq!(app.prs.pr_list_end_cursor.as_deref(), Some("Y3Vyc29y="));
+    let loaded = app.prs.pr_list.as_loaded().unwrap();
+    assert!(loaded[0].is_draft);
+    assert_eq!(loaded[0].author.login, "alice");
+    assert_eq!(
+        loaded[0]
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["bug", "ui", "perf"]
+    );
+    assert_eq!(
+        crate::github::CiStatus::from_rollup(&loaded[0].status_check_rollup),
+        crate::github::CiStatus::Failure
+    );
+    assert_eq!(
+        crate::github::CiStatus::from_rollup(&loaded[1].status_check_rollup),
+        crate::github::CiStatus::Success
+    );
+
+    let screen = render_pr_list_columns(&mut app, 80, 16);
+    assert!(screen.contains("PR List: test/repo (open)"), "{screen}");
+    assert!(screen.contains("by @alice"), "{screen}");
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('j')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    let calls = pr_list_calls(&gh.calls());
+    assert_eq!(calls.len(), 2, "{}", gh.calls());
+    assert!(call_has_arg(&calls[1], "limit=30"), "{}", calls[1]);
+    assert!(call_has_arg(&calls[1], "after=Y3Vyc29y="), "{}", calls[1]);
+    assert!(!calls[1].contains("limit=61"), "{}", calls[1]);
+    assert_eq!(pr_numbers(&app), vec![42, 41, 40, 39]);
+
+    gh.set_pr_list_after(&pr_list_page(
+        &[pr_list_node(38, "Last", false, "cara", &[], None)],
+        false,
+        None,
+    ));
+    app.handle_pr_list_input(make_key(KeyCode::Char('j')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    let calls = pr_list_calls(&gh.calls());
+    assert_eq!(calls.len(), 3, "{}", gh.calls());
+    assert!(call_has_arg(&calls[2], "limit=30"), "{}", calls[2]);
+    assert!(call_has_arg(&calls[2], "after=c2"), "{}", calls[2]);
+    assert!(!calls[2].contains("limit=91"), "{}", calls[2]);
+    assert_eq!(pr_numbers(&app), vec![42, 41, 40, 39, 38]);
+    assert!(!app.prs.pr_list_has_more);
+    assert!(!gh.calls().contains("--limit"), "{}", gh.calls());
+    assert!(!gh.calls().contains(" pr list"), "{}", gh.calls());
+
+    gh.set_pr_list(&pr_list_page(
+        &[pr_list_node(100, "Just opened", false, "alice", &[], None)],
+        false,
+        None,
+    ));
+    app.handle_pr_list_input(make_key(KeyCode::Char('R')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    let calls = pr_list_calls(&gh.calls());
+    assert_eq!(calls.len(), 4, "{}", gh.calls());
+    assert!(call_has_arg(&calls[3], "limit=30"), "{}", calls[3]);
+    assert!(!call_passes_after(&calls[3]), "{}", calls[3]);
+    assert_eq!(pr_numbers(&app), vec![100]);
+    assert!(!app.prs.pr_list_has_more);
+
+    gh.set_pr_list(&pr_list_page(
+        &[pr_list_node(3, "Merged work", false, "alice", &[], None)],
+        false,
+        None,
+    ));
+    app.handle_pr_list_input(make_key(KeyCode::Char('c')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    let calls = pr_list_calls(&gh.calls());
+    assert_eq!(calls.len(), 5, "{}", gh.calls());
+    assert!(call_has_arg(&calls[4], "states[]=CLOSED"), "{}", calls[4]);
+    assert!(call_has_arg(&calls[4], "states[]=MERGED"), "{}", calls[4]);
+    assert!(!call_passes_after(&calls[4]), "{}", calls[4]);
+    assert_eq!(pr_numbers(&app), vec![3]);
+    let screen = render_pr_list_columns(&mut app, 80, 12);
+    assert!(screen.contains("PR List: test/repo (closed)"), "{screen}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn empty_pr_list_still_says_there_are_none() {
+    use crate::github::fake_gh::FakeGh;
+
+    let gh = FakeGh::install("", "", "", "");
+    gh.set_pr_list(&pr_list_page(&[], false, None));
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.reload_pr_list();
+    settle_pr_list(&mut app).await;
+    assert_eq!(pr_list_calls(&gh.calls()).len(), 1, "{}", gh.calls());
+    assert!(!app.prs.pr_list_has_more);
+    let screen = render_pr_list_columns(&mut app, 80, 16);
+    assert!(screen.contains("No open pull requests"), "{screen}");
+}
+
+/// A failed next page leaves the rows and the cursor, so the same scroll asks
+/// for that page again.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn failed_pr_list_page_keeps_loaded_rows_and_retries_the_same_cursor() {
+    use crate::github::fake_gh::FakeGh;
+
+    let gh = FakeGh::install("", "", "", "");
+    gh.set_pr_list(&pr_list_page(
+        &[
+            pr_list_node(2, "Second", false, "alice", &[], None),
+            pr_list_node(1, "First", false, "alice", &[], None),
+        ],
+        true,
+        Some("page-1"),
+    ));
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.reload_pr_list();
+    settle_pr_list(&mut app).await;
+
+    let already = u32::try_from(pr_list_calls(&gh.calls()).len()).unwrap();
+    gh.fail_with(already + 1, "HTTP 401: Bad credentials");
+    app.handle_pr_list_input(make_key(KeyCode::Char('j')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    assert!(app.prs.pr_list.is_loaded());
+    assert_eq!(pr_numbers(&app), vec![2, 1]);
+    assert_eq!(app.prs.pr_list_end_cursor.as_deref(), Some("page-1"));
+    let screen = render_pr_list_columns(&mut app, 100, 16);
+    assert!(!screen.contains("gh is not authenticated"), "{screen}");
+
+    gh.set_pr_list_after(&pr_list_page(
+        &[pr_list_node(0, "Older", false, "bob", &[], None)],
+        false,
+        None,
+    ));
+    app.handle_pr_list_input(make_key(KeyCode::Char('j')))
+        .await
+        .unwrap();
+    settle_pr_list(&mut app).await;
+    let calls = pr_list_calls(&gh.calls());
+    assert_eq!(calls.len(), 3, "{}", gh.calls());
+    assert!(call_has_arg(&calls[2], "after=page-1"), "{}", calls[2]);
+    assert_eq!(pr_numbers(&app), vec![2, 1, 0]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn pr_list_failures_keep_the_footer_text() {
+    use crate::github::fake_gh::FakeGh;
+
+    let cases = [
+        (
+            "error connecting to api.github.com: dial tcp 127.0.0.1:443: connection refused",
+            &["⚠ Can't reach GitHub", "Check your network connection."][..],
+        ),
+        (
+            "HTTP 401: Bad credentials",
+            &["✕ gh is not authenticated", "run: gh auth login"][..],
+        ),
+        (
+            "gh: Could not resolve to a Repository with the name 'test/repo'. (repository)",
+            &["✕ Repository not found", "Check the owner/repo name."][..],
+        ),
+        (
+            "gh: Not Found (HTTP 404)",
+            &["✕ Repository not found", "Check the owner/repo name."][..],
+        ),
+        (
+            "HTTP 403: Forbidden",
+            &["✕ No access to this repository", "Check your permissions."][..],
+        ),
+    ];
+    for (stderr, expected) in cases {
+        let gh = FakeGh::install("", "", "", "");
+        gh.fail_with(1, stderr);
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.reload_pr_list();
+        settle_pr_list(&mut app).await;
+        assert_eq!(
+            pr_list_calls(&gh.calls()).len(),
+            1,
+            "{stderr}\n{}",
+            gh.calls()
+        );
+        let screen = render_pr_list_columns(&mut app, 100, 16);
+        for text in expected {
+            assert!(screen.contains(text), "{stderr}\n{screen}");
+        }
+        drop(gh);
+    }
+}
+
 #[test]
 fn test_load_more_prs_skips_when_loading() {
     let mut app = App::new_for_test();
@@ -8014,6 +8360,20 @@ fn test_load_more_prs_skips_when_loading() {
 
     // Should not create a new receiver
     assert_eq!(app.prs.pr_list_receiver.is_some(), prev_receiver);
+}
+
+#[test]
+fn load_more_without_a_cursor_does_not_refetch_the_first_page() {
+    let mut app = App::new_for_test();
+    app.prs.pr_list = LoadState::Loaded(vec![sample_pr(1)]);
+    app.prs.pr_list_has_more = true;
+    app.prs.pr_list_end_cursor = None;
+
+    app.load_more_prs();
+
+    assert!(app.prs.pr_list.is_loaded());
+    assert!(app.prs.pr_list_receiver.is_none());
+    assert_eq!(pr_numbers(&app), vec![1]);
 }
 
 #[tokio::test]
@@ -10511,6 +10871,31 @@ fn test_toggle_file_tree_with_empty_files() {
 // ========== Zen Mode Tests ==========
 
 /// レンダリングバッファから先頭 N 行を抽出してスナップショット用文字列にする
+fn render_pr_list_columns(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            crate::ui::render(frame, app);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    (0..height as usize)
+        .map(|y| {
+            let mut line = String::new();
+            for x in 0..width {
+                let cell = &buf[(x, y as u16)];
+                line.push_str(cell.symbol());
+            }
+            line.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_top_lines(app: &mut App, height: u16, n: usize) -> String {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

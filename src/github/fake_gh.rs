@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const FAKE_GH_VARS: [&str; 11] = [
+const FAKE_GH_VARS: [&str; 14] = [
     "FAKE_GH_LOG",
     "FAKE_GH_REVIEWS",
     "FAKE_GH_CREATE",
@@ -21,6 +21,9 @@ const FAKE_GH_VARS: [&str; 11] = [
     "FAKE_GH_DIFF",
     "FAKE_GH_DIFF_FAIL",
     "FAKE_GH_PR_CHECK",
+    "FAKE_GH_PR_LIST",
+    "FAKE_GH_PR_LIST_AFTER",
+    "FAKE_GH_STDERR",
 ];
 
 /// Puts the test double first on PATH and sets its replies. Dropping it restores
@@ -52,8 +55,11 @@ impl FakeGh {
         std::env::set_var("FAKE_GH_DRAFTS", "[[]]");
         std::env::set_var("FAKE_GH_DIFF", "");
         std::env::set_var("FAKE_GH_PR_CHECK", "");
+        std::env::set_var("FAKE_GH_PR_LIST", "");
+        std::env::set_var("FAKE_GH_PR_LIST_AFTER", "");
         std::env::remove_var("FAKE_GH_FAIL_FIRST");
         std::env::remove_var("FAKE_GH_DIFF_FAIL");
+        std::env::remove_var("FAKE_GH_STDERR");
         Self {
             _dir: dir,
             log,
@@ -86,6 +92,22 @@ impl FakeGh {
     /// `gh pr diff` exits 1. The call is still logged.
     pub(crate) fn fail_diff(&self) {
         std::env::set_var("FAKE_GH_DIFF_FAIL", "1");
+    }
+
+    /// Body of a pull-request list query that does not pass `after`.
+    pub(crate) fn set_pr_list(&self, json: &str) {
+        std::env::set_var("FAKE_GH_PR_LIST", json);
+    }
+
+    /// Body of a pull-request list query that passes `after`.
+    pub(crate) fn set_pr_list_after(&self, json: &str) {
+        std::env::set_var("FAKE_GH_PR_LIST_AFTER", json);
+    }
+
+    /// The next `count` `gh` calls exit 1 with `stderr` after they are logged.
+    pub(crate) fn fail_with(&self, count: u32, stderr: &str) {
+        std::env::set_var("FAKE_GH_FAIL_FIRST", count.to_string());
+        std::env::set_var("FAKE_GH_STDERR", stderr);
     }
 
     /// Every call made so far, as logged by the test double.

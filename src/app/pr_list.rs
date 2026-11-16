@@ -275,6 +275,7 @@ impl App {
         self.prs.pr_list_scroll_offset = 0;
         self.prs.pr_list = LoadState::Loading;
         self.prs.pr_list_has_more = false;
+        self.prs.pr_list_end_cursor = None;
         self.prs.pr_list_filter = None;
 
         let (tx, rx) = mpsc::channel(2);
@@ -296,8 +297,16 @@ impl App {
         if self.prs.pr_list.is_loading() {
             return;
         }
+        // Restarting without a cursor would append the first page again.
+        let Some(cursor) = self
+            .prs
+            .pr_list_end_cursor
+            .clone()
+            .filter(|cursor| !cursor.is_empty())
+        else {
+            return;
+        };
 
-        let offset = self.prs.pr_list.as_loaded().map(|l| l.len()).unwrap_or(0) as u32;
         let existing = std::mem::take(&mut self.prs.pr_list)
             .into_loaded()
             .unwrap_or_default();
@@ -310,7 +319,7 @@ impl App {
         let state = self.prs.pr_list_state_filter;
 
         tokio::spawn(async move {
-            let result = github::fetch_pr_list_with_offset(&repo, state, offset, 30).await;
+            let result = github::fetch_pr_list_after(&repo, state, Some(&cursor), 30).await;
             let _ = tx
                 .send(result.map_err(|error| github::GhFailure::from_error(&error)))
                 .await;

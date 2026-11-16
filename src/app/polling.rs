@@ -28,6 +28,8 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(page)) => {
+                self.prs.pr_list_has_more = page.has_more;
+                self.prs.pr_list_end_cursor = page.end_cursor;
                 if self.prs.pr_list_scroll_offset == 0 && self.prs.selected_pr == 0 {
                     self.prs.pr_list = LoadState::Loaded(page.items);
                 } else if let Some(existing) = self.prs.pr_list.as_loaded_mut() {
@@ -38,7 +40,6 @@ impl App {
                 } else {
                     self.prs.pr_list = LoadState::Loaded(page.items);
                 }
-                self.prs.pr_list_has_more = page.has_more;
                 self.prs.pr_list_receiver = None;
 
                 if self
