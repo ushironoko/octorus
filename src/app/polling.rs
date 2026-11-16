@@ -394,6 +394,11 @@ impl App {
 
         // untracked 判定: status == "added" && additions == 0 && deletions == 0
         let is_untracked = file.status == "added" && file.additions == 0 && file.deletions == 0;
+        if is_untracked {
+            // Before either spawned task runs, so the batch cannot fill this
+            // path from the cache and cancel the fresh read.
+            crate::untracked_diff::require_fresh(self.working_dir.as_deref(), &filename);
+        }
 
         let (tx, rx) = mpsc::channel(1);
         self.lazy_diff_receiver = Some(rx);

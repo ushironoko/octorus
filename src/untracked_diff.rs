@@ -3,10 +3,13 @@
 //!
 //! A refresh used to run that command again for every file. The text is reused
 //! when the file's stat and the git config that can change a diff are unchanged.
-//! Several files that miss are read by one `git diff --no-index` of a hardlink
-//! tree when that output rewrites to the per-file text. Attributes, custom diff
-//! prefixes, directories, and a rewrite that does not line up stay on the
-//! per-file command, which is also what the file on screen runs.
+//! A stat whose mtime or ctime falls within two seconds of the read is not
+//! stored: on a coarse filesystem a same-size rewrite in that tick would not
+//! move the timestamp, and the old text would stay cached. The file on screen
+//! is never served from the cache. Several files that miss are read by one
+//! `git diff --no-index` of a hardlink tree when that output rewrites to the
+//! per-file text. Attributes, custom diff prefixes, directories, and a rewrite
+//! that does not line up stay on the per-file command.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -17,28 +20,22 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 /// One untracked path. Empty stdout becomes `None`, matching the old loader.
+///
+/// This is the file on screen. It always runs git, including when a batch
+/// already cached the same path. Call [`require_fresh`] before the batch so
+/// that batch does not fill the screen from the cache first.
 pub(crate) async fn patch(workdir: Option<&str>, rel: &str) -> Option<String> {
-    let owned = rel.to_string();
-    let work = work_path(workdir);
-    if std::fs::canonicalize(&work)
-        .ok()
-        .is_some_and(|root| cache_contains(&root, rel))
-    {
-        if let Some(ctx) = prepare(workdir, std::slice::from_ref(&owned)).await {
-            return diff_with_ctx(&ctx, rel).await;
-        }
-    }
-
-    // Nothing cached: start the file diff at once and read config beside it.
-    // A refresh takes the branch above and does not open the file.
-    let (ctx, diffed) = tokio::join!(
-        prepare(workdir, std::slice::from_ref(&owned)),
-        diff_inflight_for(workdir, rel),
-    );
-    if let Some(ctx) = ctx.as_ref() {
-        remember(ctx, rel, &diffed);
-    }
+    let diffed = diff_inflight_for(workdir, rel).await;
     nonempty(diffed.patch)
+}
+
+/// The next [`patches`] call for this work tree re-diffs `rel` instead of
+/// reusing a cached patch. The screen asks for this before either git runs.
+pub(crate) fn require_fresh(workdir: Option<&str>, rel: &str) {
+    let Ok(root) = std::fs::canonicalize(work_path(workdir)) else {
+        return;
+    };
+    lock(fresh_paths()).insert((root, rel.to_string()));
 }
 
 /// Patches aligned with `rels`. An empty list does not spawn git.
@@ -54,10 +51,13 @@ pub(crate) async fn patches(workdir: Option<&str>, rels: &[String]) -> Vec<Optio
         return out;
     };
 
+    let fresh = take_fresh(&ctx.root);
     let mut out = vec![None; rels.len()];
     let mut pending = Vec::new();
     for (index, rel) in rels.iter().enumerate() {
-        if let Some(hit) = cached_hit(&ctx, rel) {
+        if fresh.contains(rel.as_str()) {
+            pending.push(index);
+        } else if let Some(hit) = cached_hit(&ctx, rel) {
             out[index] = Some(hit);
         } else {
             pending.push(index);
@@ -82,6 +82,7 @@ pub(crate) async fn patches(workdir: Option<&str>, rels: &[String]) -> Vec<Optio
 
     if overlay.len() >= 2 {
         let names: Vec<String> = overlay.iter().map(|&index| rels[index].clone()).collect();
+        let started = std::time::SystemTime::now();
         let before: Vec<Option<StatKey>> = overlay
             .iter()
             .map(|&index| stat_rel(&ctx.work, &rels[index]))
@@ -97,7 +98,10 @@ pub(crate) async fn patches(workdir: Option<&str>, rels: &[String]) -> Vec<Optio
                         if let (Some(before), Some(after)) =
                             (before[slot], stat_rel(&ctx.work, &rels[index]))
                         {
-                            if before.same_body(after) {
+                            // `before` is the stat from before the hardlink. The
+                            // link updates ctime, so the racy-tick check uses
+                            // that earlier stat and the stored key keeps `after`.
+                            if before.same_body(after) && !racy(before, started) {
                                 store(&ctx.root, &ctx.fp, &rels[index], after, patch.clone());
                             }
                         }
@@ -173,6 +177,8 @@ struct WorkdirCache {
 struct DiffOut {
     patch: Option<String>,
     stable: Option<StatKey>,
+    /// `SystemTime::now()` from before the pre-diff stat.
+    started: std::time::SystemTime,
 }
 
 impl DiffOut {
@@ -180,8 +186,29 @@ impl DiffOut {
         Self {
             patch: None,
             stable: None,
+            started: std::time::UNIX_EPOCH,
         }
     }
+}
+
+/// Coarse filesystems (ext2, HFS+, SMB, NFS, FAT) do not move mtime or ctime
+/// for a same-size rewrite inside the current tick. Two seconds covers FAT.
+const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn racy(stat: StatKey, started: std::time::SystemTime) -> bool {
+    near(stat.mtime, stat.mtime_nsec, started) || near(stat.ctime, stat.ctime_nsec, started)
+}
+
+fn near(secs: u64, nsec: u32, started: std::time::SystemTime) -> bool {
+    let nanos = nsec.min(999_999_999);
+    let Some(stamp) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(secs, nanos))
+    else {
+        return true;
+    };
+    let gap = stamp
+        .duration_since(started)
+        .unwrap_or_else(|err| err.duration());
+    gap <= RACY_WINDOW
 }
 
 impl StatKey {
@@ -210,16 +237,35 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, WorkdirCache>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-type ConfigBody = Option<Vec<u8>>;
-type ConfigTx = watch::Sender<Option<ConfigBody>>;
-type ConfigFlights = Mutex<HashMap<PathBuf, ConfigTx>>;
+type ProbeBody = Option<ProbeRaw>;
+type ProbeTx = watch::Sender<Option<ProbeBody>>;
+type ProbeFlights = Mutex<HashMap<PathBuf, ProbeTx>>;
 type DiffKey = (PathBuf, String);
 type DiffTx = watch::Sender<Option<DiffOut>>;
 type DiffFlights = Mutex<HashMap<DiffKey, DiffTx>>;
+type FreshPaths = Mutex<HashSet<(PathBuf, String)>>;
 
-fn config_flights() -> &'static ConfigFlights {
-    static FLIGHTS: OnceLock<ConfigFlights> = OnceLock::new();
+fn probe_flights() -> &'static ProbeFlights {
+    static FLIGHTS: OnceLock<ProbeFlights> = OnceLock::new();
     FLIGHTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn fresh_paths() -> &'static FreshPaths {
+    static FRESH: OnceLock<FreshPaths> = OnceLock::new();
+    FRESH.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn take_fresh(root: &Path) -> HashSet<String> {
+    let mut guard = lock(fresh_paths());
+    let names: Vec<String> = guard
+        .iter()
+        .filter(|(dir, _)| dir == root)
+        .map(|(_, name)| name.clone())
+        .collect();
+    for name in &names {
+        guard.remove(&(root.to_path_buf(), name.clone()));
+    }
+    names.into_iter().collect()
 }
 
 fn diff_flights() -> &'static DiffFlights {
@@ -245,11 +291,12 @@ fn nonempty(patch: Option<String>) -> Option<String> {
 async fn prepare(workdir: Option<&str>, rels: &[String]) -> Option<Context> {
     let work = work_path(workdir);
     let root = std::fs::canonicalize(&work).ok()?;
-    let config = config_list(&work).await?;
-    let hash = hash_bytes(&config);
-    let probe = parse_probe(&config);
-    let (attrs, attr_unresolved) = attribute_stats(&work, rels, probe.attributes_file.as_deref());
-    let unresolved = probe.unresolved || attr_unresolved;
+    let raw = git_probe(&work).await?;
+    let hash = hash_bytes(&raw.config);
+    let probe = parse_probe(&raw.config);
+    let (attrs, attr_unresolved) =
+        attribute_stats(&work, rels, probe.attributes_file.as_deref(), &raw);
+    let unresolved = probe.unresolved || attr_unresolved || !raw.paths_ok;
     let fp = Fingerprint {
         config: hash,
         attrs,
@@ -292,17 +339,10 @@ fn remember(ctx: &Context, rel: &str, diffed: &DiffOut) {
     let (Some(stat), Some(patch)) = (diffed.stable, diffed.patch.clone()) else {
         return;
     };
-    if patch.is_empty() {
+    if patch.is_empty() || racy(stat, diffed.started) {
         return;
     }
     store(&ctx.root, &ctx.fp, rel, stat, patch);
-}
-
-fn cache_contains(root: &Path, rel: &str) -> bool {
-    let guard = lock(cache());
-    guard
-        .get(root)
-        .is_some_and(|entry| entry.entries.contains_key(rel))
 }
 
 fn begin(root: &Path, fp: &Fingerprint) {
@@ -346,6 +386,17 @@ fn store(root: &Path, fp: &Fingerprint, rel: &str, stat: StatKey, patch: String)
         return;
     }
     entry.entries.insert(rel.to_string(), (stat, patch));
+}
+
+#[cfg(test)]
+fn cached_count(work: &Path) -> usize {
+    let Ok(root) = std::fs::canonicalize(work) else {
+        return 0;
+    };
+    lock(cache())
+        .get(&root)
+        .map(|entry| entry.entries.len())
+        .unwrap_or(0)
 }
 
 fn stat_rel(work: &Path, rel: &str) -> Option<StatKey> {
@@ -398,20 +449,131 @@ fn existing_file_stat(path: &Path) -> Option<StatKey> {
     }
 }
 
-async fn config_list(work: &Path) -> Option<Vec<u8>> {
+#[derive(Clone)]
+struct ProbeRaw {
+    config: Vec<u8>,
+    system_attr: PathBuf,
+    global_attr: Option<PathBuf>,
+    info_attrs: Vec<PathBuf>,
+    bases: Vec<PathBuf>,
+    paths_ok: bool,
+}
+
+async fn git_probe(work: &Path) -> Option<ProbeRaw> {
     let key = std::fs::canonicalize(work).unwrap_or_else(|_| work.to_path_buf());
-    match enlist(config_flights(), key.clone()) {
+    match enlist(probe_flights(), key.clone()) {
         Role::Follower(rx) => wait(rx).await.flatten(),
         Role::Leader(tx) => {
             let mut flight = FlightGuard {
-                map: config_flights(),
+                map: probe_flights(),
                 key: Some(key),
                 tx: Some(tx),
                 value: None,
             };
-            flight.value = config_list_raw(work).await;
+            flight.value = git_probe_raw(work).await;
             flight.value.clone()
         }
+    }
+}
+
+async fn git_probe_raw(work: &Path) -> Option<ProbeRaw> {
+    let (config, paths, vars) =
+        tokio::join!(config_list_raw(work), attr_paths(work), attr_vars(work));
+    let config = config?;
+    let (info_attrs, bases, paths_ok) = paths;
+    let (system_attr, global_attr) = vars;
+    Some(ProbeRaw {
+        config,
+        system_attr,
+        global_attr,
+        info_attrs,
+        bases,
+        paths_ok,
+    })
+}
+
+/// `git rev-parse --git-path info/attributes` and `--git-common-dir`.
+/// Relative attribute paths are opened from the work tree and from that
+/// common directory. A linked worktree's `.git` is a file, so `work/.git`
+/// is not where git reads `info/attributes`.
+async fn attr_paths(work: &Path) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
+    let work_base = vec![work.to_path_buf()];
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/attributes",
+            "--git-common-dir",
+        ])
+        .current_dir(work)
+        .output()
+        .await
+        .ok();
+    let Some(output) = output else {
+        return (Vec::new(), work_base, false);
+    };
+    if !output.status.success() {
+        return (Vec::new(), work_base, false);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let (Some(info), Some(common)) = (lines.next(), lines.next()) else {
+        return (Vec::new(), work_base, false);
+    };
+    let info_path = PathBuf::from(info);
+    let common_path = PathBuf::from(common);
+    let mut info_attrs = vec![info_path.clone()];
+    let common_info = common_path.join("info").join("attributes");
+    if common_info != info_path {
+        info_attrs.push(common_info);
+    }
+    let mut bases = vec![work.to_path_buf(), common_path];
+    if let Some(git_dir) = info_path.parent().and_then(Path::parent) {
+        bases.push(git_dir.to_path_buf());
+    }
+    bases.sort();
+    bases.dedup();
+    (info_attrs, bases, true)
+}
+
+/// System and global attribute files. `git var` knows the install prefix
+/// (`GIT_ATTR_SYSTEM` on git 2.42+). The rest of this output is dropped: it
+/// repeats config, including credentials, and a timestamp that must not be
+/// part of the fingerprint.
+async fn attr_vars(work: &Path) -> (PathBuf, Option<PathBuf>) {
+    let fallback = PathBuf::from("/etc/gitattributes");
+    let output = Command::new("git")
+        .args(["var", "-l"])
+        .current_dir(work)
+        .output()
+        .await
+        .ok();
+    let Some(output) = output.filter(|output| output.status.success()) else {
+        return (fallback, None);
+    };
+    let mut system = None;
+    let mut global = None;
+    for line in output.stdout.split(|byte| *byte == b'\n') {
+        if let Some(rest) = line.strip_prefix(b"GIT_ATTR_SYSTEM=") {
+            if let Some(path) = attr_var_path(rest) {
+                system = Some(path);
+            }
+        } else if let Some(rest) = line.strip_prefix(b"GIT_ATTR_GLOBAL=") {
+            if let Some(path) = attr_var_path(rest) {
+                global = Some(path);
+            }
+        }
+    }
+    (system.unwrap_or(fallback), global)
+}
+
+fn attr_var_path(bytes: &[u8]) -> Option<PathBuf> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(text))
     }
 }
 
@@ -501,10 +663,14 @@ fn attribute_stats(
     work: &Path,
     rels: &[String],
     configured: Option<&str>,
+    raw: &ProbeRaw,
 ) -> (Vec<(PathBuf, StatKey)>, bool) {
     let mut unresolved = false;
     let mut paths = Vec::new();
-    paths.push(PathBuf::from("/etc/gitattributes"));
+    paths.push(raw.system_attr.clone());
+    if let Some(global) = &raw.global_attr {
+        paths.push(global.clone());
+    }
     match std::env::var_os("XDG_CONFIG_HOME") {
         Some(xdg) if !xdg.is_empty() => paths.push(PathBuf::from(xdg).join("git/attributes")),
         _ => {
@@ -513,13 +679,17 @@ fn attribute_stats(
             }
         }
     }
-    paths.push(work.join(".git/info/attributes"));
-    if let Some(raw) = configured {
-        let expanded = expand_attr(work, raw);
-        if expanded.is_empty() {
-            unresolved = true;
+    paths.extend(raw.info_attrs.iter().cloned());
+    if raw.paths_ok {
+        // A normal repository still has `work/.git/info/attributes`. Keep it
+        // so a fingerprint does not depend on rev-parse spelling alone.
+        paths.push(work.join(".git").join("info").join("attributes"));
+    }
+    if let Some(value) = configured {
+        match expand_attr(&raw.bases, value) {
+            Some(expanded) => paths.extend(expanded),
+            None => unresolved = true,
         }
-        paths.extend(expanded);
     }
     for rel in rels {
         if !relative_safe(rel) {
@@ -545,19 +715,23 @@ fn attribute_stats(
     (stats, unresolved)
 }
 
-fn expand_attr(work: &Path, raw: &str) -> Vec<PathBuf> {
+/// `None` means the path could not be resolved (`~user` without a home, or
+/// `~/` with no home). Git opens a relative `core.attributesFile` from the
+/// work tree; a linked worktree also needs the common git dir, because
+/// `work/.git` is a file there.
+fn expand_attr(bases: &[PathBuf], raw: &str) -> Option<Vec<PathBuf>> {
     if let Some(rest) = raw.strip_prefix("~/") {
-        return match std::env::var_os("HOME") {
-            Some(home) => vec![PathBuf::from(home).join(rest)],
-            None => Vec::new(),
-        };
+        let home = std::env::var_os("HOME")?;
+        return Some(vec![PathBuf::from(home).join(rest)]);
     }
     let path = PathBuf::from(raw);
     if path.is_absolute() {
-        vec![path]
-    } else {
-        vec![work.join(".git").join(&path), work.join(path)]
+        return Some(vec![path]);
     }
+    if bases.is_empty() {
+        return None;
+    }
+    Some(bases.iter().map(|base| base.join(&path)).collect())
 }
 
 fn hash_bytes(bytes: &[u8]) -> u128 {
@@ -670,6 +844,7 @@ async fn diff_inflight_for(workdir: Option<&str>, rel: &str) -> DiffOut {
         Err(_) => DiffOut {
             patch: diff_no_index(Some(&work), rel).await,
             stable: None,
+            started: std::time::SystemTime::now(),
         },
     }
 }
@@ -689,7 +864,9 @@ async fn diff_inflight(work: &Path, root: &Path, rel: &str) -> DiffOut {
                 tx: Some(tx),
                 value: DiffOut::empty(),
             };
+            let started = std::time::SystemTime::now();
             let before = stat_rel(work, rel);
+            flight.value.started = started;
             flight.value.patch = diff_no_index(Some(work), rel).await;
             flight.value.stable = match (before, stat_rel(work, rel)) {
                 (Some(before), Some(after)) if before.same_body(after) => Some(after),
@@ -750,8 +927,50 @@ async fn try_overlay(work: &Path, rels: &[String]) -> Option<HashMap<String, Str
 }
 
 #[cfg(unix)]
+const OVERLAY_PREFIX: &str = "octorus-untracked-";
+
+fn sweep_overlay_temps() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(dir) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        let Some(cutoff) =
+            std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(60))
+        else {
+            return;
+        };
+        for entry in dir.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if !name.starts_with(OVERLAY_PREFIX) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            // A live overlay is seconds old. Crash leftovers are older.
+            if meta
+                .modified()
+                .ok()
+                .is_some_and(|modified| modified < cutoff)
+            {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
+}
+
 async fn try_overlay_unix(work: &Path, rels: &[String]) -> Option<HashMap<String, String>> {
-    let tmp = tempfile::TempDir::new().ok()?;
+    sweep_overlay_temps();
+    let tmp = tempfile::Builder::new()
+        .prefix(OVERLAY_PREFIX)
+        .tempdir()
+        .ok()?;
     let empty = tmp.path().join("empty");
     let ovl = tmp.path().join("ovl");
     std::fs::create_dir(&empty).ok()?;
@@ -1293,6 +1512,162 @@ Binary files /dev/null and b/bin.dat differ
         assert!(got.is_empty());
     }
 
+    #[test]
+    fn stat_matching_the_store_clock_is_racy() {
+        let started = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let at = |mtime: u64, ctime: u64| StatKey {
+            len: 3,
+            mtime,
+            mtime_nsec: 0,
+            ctime,
+            ctime_nsec: 0,
+            mode: 0o100644,
+            ino: 1,
+            dev: 1,
+        };
+        assert!(racy(at(1_700_000_000, 1_700_000_000), started));
+        assert!(racy(at(1_700_000_000 - 2, 1_700_000_000 - 30), started));
+        assert!(racy(at(1_700_000_000 - 30, 1_700_000_000), started));
+        assert!(!racy(at(1_700_000_000 - 3, 1_700_000_000 - 3), started));
+    }
+
+    #[tokio::test]
+    async fn same_size_rewrite_while_mtime_matches_the_store_clock_is_reread() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        init_repo(dir);
+        write(&dir.join("a.txt"), "v1\n");
+        write(&dir.join("b.txt"), "stay\n");
+        let rels = vec!["a.txt".to_string(), "b.txt".to_string()];
+        let now = std::time::SystemTime::now();
+        set_mtime(&dir.join("a.txt"), now);
+        set_mtime(&dir.join("b.txt"), now);
+        let first = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(first[0], oracle(dir, "a.txt"));
+        assert_eq!(
+            cached_count(dir),
+            0,
+            "a stat inside the store tick must not be cached"
+        );
+        write(&dir.join("a.txt"), "v2\n");
+        set_mtime(&dir.join("a.txt"), now);
+        let second = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(second[0], oracle(dir, "a.txt"));
+        assert!(second[0].as_ref().unwrap().contains("+v2"));
+        assert_ne!(first[0], second[0]);
+
+        settle_timestamps().await;
+        let warmed = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(warmed[0], second[0]);
+        assert!(cached_count(dir) >= 2, "stable files are cached");
+        let again = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(again, warmed);
+    }
+
+    #[tokio::test]
+    async fn worktree_and_submodule_info_attributes_bust_a_warm_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = temp.path().join("main");
+        let wt = temp.path().join("wt");
+        std::fs::create_dir(&main).unwrap();
+        init_repo(&main);
+        git_setup(
+            &main,
+            &["worktree", "add", "--detach", &wt.to_string_lossy()],
+        );
+        write(&wt.join("a.txt"), "alpha\n");
+        write(&wt.join("b.txt"), "beta\n");
+
+        let parent = temp.path().join("parent");
+        let origin = temp.path().join("origin");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&origin).unwrap();
+        init_repo(&parent);
+        init_repo(&origin);
+        git_setup(
+            &parent,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &origin.to_string_lossy(),
+                "sub",
+            ],
+        );
+        let sub = parent.join("sub");
+        write(&sub.join("a.txt"), "alpha\n");
+        write(&sub.join("b.txt"), "beta\n");
+
+        settle_timestamps().await;
+        let rels = vec!["a.txt".to_string(), "b.txt".to_string()];
+        let mut warm = Vec::new();
+        for dir in [&wt, &sub] {
+            let first = patches(workdir(dir).as_deref(), &rels).await;
+            assert_eq!(first[0], oracle(dir, "a.txt"), "{}", dir.display());
+            assert!(
+                first[0].as_ref().unwrap().contains("+alpha"),
+                "{}",
+                dir.display()
+            );
+            assert!(cached_count(dir) >= 2, "{}", dir.display());
+            warm.push(first);
+        }
+
+        for (dir, first) in [&wt, &sub].into_iter().zip(warm) {
+            let info = git_stdout(
+                dir,
+                &[
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-path",
+                    "info/attributes",
+                ],
+            );
+            let info = PathBuf::from(info.trim());
+            if let Some(parent) = info.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&info, "*.txt -diff\n").unwrap();
+            let second = patches(workdir(dir).as_deref(), &rels).await;
+            let expected = oracle(dir, "a.txt");
+            assert!(
+                expected
+                    .as_ref()
+                    .is_some_and(|text| text.contains("Binary files")),
+                "{} via {} stayed text: {expected:?}",
+                dir.display(),
+                info.display()
+            );
+            assert_eq!(second[0], expected, "{}", dir.display());
+            assert_ne!(second[0], first[0], "{}", dir.display());
+        }
+    }
+
+    fn set_mtime(path: &Path, time: std::time::SystemTime) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(time).unwrap();
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    async fn settle_timestamps() {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct Counts {
         config: usize,
@@ -1349,7 +1724,11 @@ Binary files /dev/null and b/bin.dat differ
                     } else {
                         counts.overlay += 1;
                     }
-                } else if has("config") {
+                } else if has("config")
+                    || has("var")
+                    || has("--git-path")
+                    || has("--git-common-dir")
+                {
                     counts.config += 1;
                 } else if has("--name-status") {
                     counts.name_status += 1;
@@ -1475,6 +1854,7 @@ Binary files /dev/null and b/bin.dat differ
             );
         }
         let rels: Vec<String> = (0..8).map(|index| format!("f{index}.txt")).collect();
+        settle_timestamps().await;
         let expected: Vec<_> = rels.iter().map(|rel| oracle(dir, rel)).collect();
         log.clear();
         let got = patches(workdir(dir).as_deref(), &rels).await;
@@ -1498,7 +1878,7 @@ Binary files /dev/null and b/bin.dat differ
                 },
             );
         }
-        assert_eq!(cold.config, 1, "git log:\n{}", log.repo_log(dir));
+        assert_eq!(cold.config, 3, "git log:\n{}", log.repo_log(dir));
 
         log.clear();
         let again = patches(workdir(dir).as_deref(), &rels).await;
@@ -1507,7 +1887,7 @@ Binary files /dev/null and b/bin.dat differ
             &log,
             dir,
             Counts {
-                config: 1,
+                config: 3,
                 per_file: 0,
                 overlay: 0,
                 name_status: 0,
@@ -1526,7 +1906,7 @@ Binary files /dev/null and b/bin.dat differ
         assert_eq!(
             edited_counts,
             Counts {
-                config: 1,
+                config: 3,
                 per_file: 1,
                 overlay: 0,
                 name_status: 0,
@@ -1553,14 +1933,23 @@ Binary files /dev/null and b/bin.dat differ
             assert_eq!(two.overlay, 1, "git log:\n{}", log.repo_log(dir));
         }
 
+        // The two edits are inside the racy tick, so let them age before the
+        // no-change refresh. Otherwise those files are re-diffed on purpose.
+        settle_timestamps().await;
+        let warmed = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(warmed, both);
         log.clear();
         let _ = load_names(dir).await;
-        let refreshed = patches(workdir(dir).as_deref(), &rels).await;
-        let selected = patch(workdir(dir).as_deref(), &rels[0]).await;
+        require_fresh(workdir(dir).as_deref(), &rels[0]);
+        let dir_wd = workdir(dir);
+        let (refreshed, selected) = tokio::join!(
+            patches(dir_wd.as_deref(), &rels),
+            patch(dir_wd.as_deref(), &rels[0]),
+        );
         assert_eq!(refreshed, both);
         assert_eq!(selected, both[0]);
         let refresh = log.counts(dir);
-        assert_eq!(refresh.per_file, 0, "git log:\n{}", log.repo_log(dir));
+        assert_eq!(refresh.per_file, 1, "git log:\n{}", log.repo_log(dir));
         assert_eq!(refresh.overlay, 0, "git log:\n{}", log.repo_log(dir));
         assert_eq!(refresh.name_status, 1, "git log:\n{}", log.repo_log(dir));
         assert_eq!(refresh.numstat, 1, "git log:\n{}", log.repo_log(dir));
@@ -1637,6 +2026,11 @@ Binary files /dev/null and b/bin.dat differ
             );
         }
         let rels: Vec<String> = (0..n).map(|index| format!("u{index}.txt")).collect();
+        if n > 0 {
+            // Steady state: the files are older than the racy tick, which is
+            // what a later watcher refresh sees.
+            settle_timestamps().await;
+        }
         let wd = workdir(dir);
         log.clear();
         let started = std::time::Instant::now();
@@ -1654,9 +2048,14 @@ Binary files /dev/null and b/bin.dat differ
         log.clear();
         let started = std::time::Instant::now();
         let _ = load_names(dir).await;
-        let _ = patches(wd.as_deref(), &rels).await;
         if n > 0 {
-            let _ = patch(wd.as_deref(), &rels[0]).await;
+            require_fresh(wd.as_deref(), &rels[0]);
+            let _ = tokio::join!(
+                patches(wd.as_deref(), &rels),
+                patch(wd.as_deref(), &rels[0]),
+            );
+        } else {
+            let _ = patches(wd.as_deref(), &rels).await;
         }
         let refresh_ms = started.elapsed().as_millis();
         let refresh = log.counts(dir);
