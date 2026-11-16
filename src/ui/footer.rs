@@ -475,7 +475,8 @@ fn fit_failure_line(
 }
 
 /// Keep the retry key. With a notice, the order is the notice's short form,
-/// the retry key, the failure title, the notice grown to its full text, the
+/// the retry key, the failure title (at least `✕ C…`, or the symbol alone),
+/// the notice grown to its full text only after the whole title fits, the
 /// reason, the `?` hint, then the other hints. The reason stays empty while
 /// the notice is cut. With no notice, hints are cut before the reason.
 fn fit_failure_line_normal(
@@ -554,8 +555,9 @@ fn fit_failure_line_normal(
 }
 
 /// A notice that does not fit beside the full failure. The short form and the
-/// retry key are kept whole, the title takes what remains, and only then does
-/// the notice grow. The reason is absent until the notice is whole.
+/// retry key are kept whole. The title keeps at least four columns, or just
+/// its symbol. The notice stays on that short form until the whole title fits,
+/// and the reason stays empty until the notice is whole.
 fn fit_cut_notice(
     notice: &str,
     head: &str,
@@ -576,9 +578,13 @@ fn fit_cut_notice(
     }
     let mut left = width - floor.width();
     let action_text = take_joined(action, &mut left);
-    let head_text = take_joined(head, &mut left);
+    let head_text = take_head(head, &mut left);
     let base = line_width("", &head_text, "", &action_text, "");
-    let (notice_text, reason_text) = share_notice_and_reason(notice, reason, width - base, false);
+    let (notice_text, reason_text) = if head_text == head {
+        share_notice_and_reason(notice, reason, width - base, false)
+    } else {
+        (floor.clone(), String::new())
+    };
     let hints_text = if notice_text == notice && reason_text == reason {
         let used = line_width(&notice_text, &head_text, &reason_text, &action_text, "");
         take_hints(hints, width.saturating_sub(used))
@@ -606,6 +612,21 @@ fn take_joined(text: &str, left: &mut usize) -> String {
     }
     *left -= used;
     shown.into_owned()
+}
+
+/// The failure title after a two-column gap. A cut title keeps at least four
+/// columns (`✕ C…`). A narrower gap keeps the symbol alone, and anything
+/// smaller is left for the notice.
+fn take_head(head: &str, left: &mut usize) -> String {
+    let symbol: String = head.chars().take(1).collect();
+    if *left >= 2 + head.width() || *left >= 2 + 4 {
+        return take_joined(head, left);
+    }
+    if !symbol.is_empty() && *left >= 2 + symbol.width() {
+        *left -= 2 + symbol.width();
+        return symbol;
+    }
+    String::new()
 }
 
 /// Hints in `left` columns, including the gap in front of them. The `?` hint
@@ -2047,6 +2068,7 @@ mod tests {
                 "Esc: close",
                 "r: reply",
                 "Esc",
+                "✕ Couldn't load comments",
                 reason,
             );
             assert_no_hint_beside_a_cut_notice(
@@ -2055,6 +2077,7 @@ mod tests {
                 &closed_hints,
                 "r: retry",
                 "?",
+                "✕ Couldn't load comments",
                 reason,
             );
             assert_no_hint_beside_a_cut_notice(
@@ -2063,6 +2086,7 @@ mod tests {
                 "q: quit",
                 "r: retry",
                 "q",
+                "✕ Couldn't load files",
                 reason,
             );
             assert_no_hint_beside_a_cut_notice(
@@ -2071,6 +2095,7 @@ mod tests {
                 split_hints,
                 "r: reply",
                 "j/k",
+                "✕ Couldn't load comments",
                 reason,
             );
         }
@@ -2082,17 +2107,20 @@ mod tests {
         hints: &str,
         key: &str,
         marker: &str,
+        title: &str,
         reason: &str,
     ) {
         use unicode_width::UnicodeWidthStr;
 
         const FULL: &str = "PR #1 inferred from commit subject; GitHub did not confirm it";
         const FLOOR: &str = "PR #1 inferred";
+        const FLOOR_TEXT: &str = "PR #1 inferred…";
         let reason_marker = if reason.starts_with("gh ") {
             "gh "
         } else {
             "failed"
         };
+        let floor_width = FLOOR_TEXT.width();
         let mut previous = 0usize;
         let mut below_floor = Vec::new();
         for width in 40..=260 {
@@ -2110,6 +2138,18 @@ mod tests {
                 "{name} reason {} width {width} dropped {key}: {text}",
                 reason.len()
             );
+            assert!(
+                !bare_ellipsis_title(&text),
+                "{name} reason {} width {width} drew a bare ellipsis title: {text}",
+                reason.len()
+            );
+            if notice_width > floor_width {
+                assert!(
+                    text.contains(title),
+                    "{name} reason {} width {width} grew the notice past its floor without the full title: {text}",
+                    reason.len()
+                );
+            }
             let failure_text = text.contains("Couldn't") || text.contains(key);
             if failure_text && !notice.contains(FLOOR) {
                 below_floor.push(width);
@@ -2132,6 +2172,11 @@ mod tests {
             "{name} reason {} lost the notice floor where the floor and the key fit: {below_floor:?}",
             reason.len()
         );
+    }
+
+    fn bare_ellipsis_title(text: &str) -> bool {
+        text.split("  ")
+            .any(|part| part.split(" · ").next().unwrap_or(part).trim().eq("…"))
     }
 
     fn notice_prefix(text: &str) -> String {
