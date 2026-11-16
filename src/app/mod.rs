@@ -70,6 +70,8 @@ mod tests;
 mod toast;
 #[cfg(test)]
 mod toast_tests;
+#[cfg(all(test, unix))]
+mod viewed_batch;
 
 pub(crate) use toast::{Toast, ToastKind};
 

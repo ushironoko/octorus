@@ -48,6 +48,7 @@ pub(crate) mod fake_gh;
 mod issue;
 mod pending_review;
 mod pr;
+pub(crate) mod viewed;
 
 pub use blame::{
     blame_argv, blame_file, parse_porcelain, BlameError, BlameFile, BlameRef, BLAME_LINE_BYTES,
