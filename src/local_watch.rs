@@ -66,7 +66,7 @@ impl GitIgnoreCache {
 
     /// Remember the watch root. Git is not queried until the first event.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        let raw_root = drop_curdir(&root.into());
+        let raw_root = lexical_clean(&root.into());
         let given_root = logical_absolute(raw_root.clone());
         let canonical_root =
             std::fs::canonicalize(&given_root).unwrap_or_else(|_| given_root.clone());
@@ -163,14 +163,26 @@ impl GitIgnoreCache {
     }
 
     fn relativize(&self, path: &Path) -> Option<PathBuf> {
-        let path = drop_curdir(path);
-        for root in [&self.given_root, &self.canonical_root, &self.raw_root] {
-            if let Some(rel) = strip_root(&path, root) {
-                return Some(rel);
-            }
+        let path = lexical_clean(path);
+        if let Some(rel) = self.strip_known(&path) {
+            return Some(rel);
         }
         if path.is_relative() {
             return Some(path);
+        }
+        // macOS reports the same directory as `/var/...` and `/private/var/...`.
+        // Try the other spelling before treating the path as outside the tree.
+        let Ok(canon) = std::fs::canonicalize(&path) else {
+            return None;
+        };
+        self.strip_known(&lexical_clean(&canon))
+    }
+
+    fn strip_known(&self, path: &Path) -> Option<PathBuf> {
+        for root in [&self.given_root, &self.canonical_root, &self.raw_root] {
+            if let Some(rel) = strip_root(path, root) {
+                return Some(rel);
+            }
         }
         None
     }
@@ -336,7 +348,7 @@ fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
     if root.as_os_str().is_empty() {
         return None;
     }
-    let rel = drop_curdir(path.strip_prefix(root).ok()?);
+    let rel = lexical_clean(path.strip_prefix(root).ok()?);
     if rel.as_os_str().is_empty() {
         None
     } else {
@@ -352,16 +364,25 @@ fn logical_absolute(path: PathBuf) -> PathBuf {
             .map(|cwd| cwd.join(&path))
             .unwrap_or(path)
     };
-    drop_curdir(&abs)
+    lexical_clean(&abs)
 }
 
-fn drop_curdir(path: &Path) -> PathBuf {
+/// Drop `.` and collapse `..` without resolving symlinks.
+fn lexical_clean(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
-        if matches!(component, Component::CurDir) {
-            continue;
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::ParentDir) | None => out.push(".."),
+                Some(Component::RootDir) | Some(Component::Prefix(_)) | Some(Component::CurDir) => {
+                }
+            },
+            other => out.push(other),
         }
-        out.push(component);
     }
     out
 }
@@ -402,7 +423,7 @@ fn load_tracked(root: &Path) -> HashSet<PathBuf> {
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .filter_map(|path| std::str::from_utf8(path).ok())
-        .map(|path| drop_curdir(Path::new(path)))
+        .map(|path| lexical_clean(Path::new(path)))
         .collect()
 }
 
@@ -447,7 +468,7 @@ fn git_check_ignore_batch(root: &Path, rels: &[PathBuf]) -> Option<HashSet<PathB
                 .split(|byte| *byte == 0)
                 .filter(|path| !path.is_empty())
                 .filter_map(|path| std::str::from_utf8(path).ok())
-                .map(|path| drop_curdir(Path::new(path)))
+                .map(|path| lexical_clean(Path::new(path)))
                 .collect(),
         ),
         _ => None,

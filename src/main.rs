@@ -1350,10 +1350,9 @@ mod tests {
         )
     }
 
-    /// Path of `target` relative to the process cwd, without canonicalizing.
+    /// Path of `target` relative to the process cwd, without resolving symlinks.
     fn relative_to_cwd(target: &std::path::Path) -> PathBuf {
         let cwd = std::env::current_dir().unwrap();
-        let target = target.canonicalize().unwrap();
         let cwd_comps: Vec<_> = cwd.components().collect();
         let target_comps: Vec<_> = target.components().collect();
         let mut shared = 0;
@@ -1419,6 +1418,10 @@ mod tests {
             std::path::Path::new("./target/kept.rs")
         ));
         assert!(!refresh(&mut via_rel, &repo.join("target/other.rs")));
+        assert!(!refresh(
+            &mut via_rel,
+            &repo.canonicalize().unwrap().join("target/other.rs")
+        ));
     }
 
     #[test]
