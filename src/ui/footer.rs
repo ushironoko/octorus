@@ -474,11 +474,10 @@ fn fit_failure_line(
     }
 }
 
-/// Keep the retry key. The full notice outranks the reason, and the reason
-/// outranks every hint. Hints, including the `?` hint, are drawn only once the
-/// full notice, the reason, and the key fit. Until then the freed columns grow
-/// the notice toward its full text before the reason grows past its minimum.
-/// With no notice, hints are cut before the reason.
+/// Keep the retry key. With a notice, the order is the notice's short form,
+/// the retry key, the failure title, the notice grown to its full text, the
+/// reason, the `?` hint, then the other hints. The reason stays empty while
+/// the notice is cut. With no notice, hints are cut before the reason.
 fn fit_failure_line_normal(
     notice: &str,
     head: &str,
@@ -487,6 +486,9 @@ fn fit_failure_line_normal(
     hints: &str,
     width: usize,
 ) -> (String, String, String, String, String) {
+    if !notice.is_empty() && line_width(notice, head, reason, action, "") > width {
+        return fit_cut_notice(notice, head, reason, action, hints, width);
+    }
     let notice_locked = !notice.is_empty() && line_width(notice, head, reason, action, "") <= width;
     let notice_reserve = if notice_locked {
         notice.to_string()
@@ -549,6 +551,101 @@ fn fit_failure_line_normal(
     }
     let (notice, reason) = share_notice_and_reason(notice, reason, width - base, reason_locked);
     (notice, head.to_string(), reason, action.to_string(), hints)
+}
+
+/// A notice that does not fit beside the full failure. The short form and the
+/// retry key are kept whole, the title takes what remains, and only then does
+/// the notice grow. The reason is absent until the notice is whole.
+fn fit_cut_notice(
+    notice: &str,
+    head: &str,
+    reason: &str,
+    action: &str,
+    hints: &str,
+    width: usize,
+) -> (String, String, String, String, String) {
+    let floor = notice_floor(notice);
+    if floor.width() > width {
+        return (
+            truncate_with_width(notice, width).into_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+    }
+    let mut left = width - floor.width();
+    let action_text = take_joined(action, &mut left);
+    let head_text = take_joined(head, &mut left);
+    let base = line_width("", &head_text, "", &action_text, "");
+    let (notice_text, reason_text) = share_notice_and_reason(notice, reason, width - base, false);
+    let hints_text = if notice_text == notice && reason_text == reason {
+        let used = line_width(&notice_text, &head_text, &reason_text, &action_text, "");
+        take_hints(hints, width.saturating_sub(used))
+    } else {
+        String::new()
+    };
+    (notice_text, head_text, reason_text, action_text, hints_text)
+}
+
+/// `text`, after a two-column gap, when `left` can hold it. A short `left`
+/// keeps a prefix. Nothing is taken when the gap itself does not fit, so the
+/// caller can spend those columns on a higher-priority piece.
+fn take_joined(text: &str, left: &mut usize) -> String {
+    if text.is_empty() || *left <= 2 {
+        return String::new();
+    }
+    if 2 + text.width() <= *left {
+        *left -= 2 + text.width();
+        return text.to_string();
+    }
+    let shown = truncate_with_width(text, *left - 2);
+    let used = 2 + shown.width();
+    if shown.is_empty() || used > *left {
+        return String::new();
+    }
+    *left -= used;
+    shown.into_owned()
+}
+
+/// Hints in `left` columns, including the gap in front of them. The `?` hint
+/// is kept whole and wins over the hints before it.
+fn take_hints(hints: &str, left: usize) -> String {
+    if hints.is_empty() || left <= 2 {
+        return String::new();
+    }
+    let budget = left - 2;
+    let Some(segment) = question_segment(hints) else {
+        return clip_to(hints, budget);
+    };
+    if segment.width() > budget {
+        return String::new();
+    }
+    let sep = if hints.contains(" | ") { 3 } else { 2 };
+    let room = budget - segment.width();
+    let others = if room <= sep {
+        String::new()
+    } else {
+        clip_to(&hints_without_question(hints), room - sep)
+    };
+    let combined = combine_hints(hints, &segment, &others);
+    if 2 + combined.width() <= left {
+        combined
+    } else {
+        segment
+    }
+}
+
+fn clip_to(text: &str, max: usize) -> String {
+    if text.is_empty() || max == 0 {
+        String::new()
+    } else if text.width() <= max {
+        text.to_string()
+    } else if max <= 1 {
+        String::new()
+    } else {
+        truncate_with_width(text, max).into_owned()
+    }
 }
 
 /// The `?` hint, kept whole, when it fits after the full notice, the reason,
@@ -719,7 +816,11 @@ fn share_notice_and_reason(
     let notice_full = leading_cost(notice);
 
     let (mut notice_budget, mut reason_budget, mut spare) =
-        if notice_floor_cost + reason_min <= rest {
+        if !notice.is_empty() && notice_floor_cost <= rest {
+            // The notice is still short of its full text, so the reason stays
+            // empty. Spare grows the notice before a reason column is spent.
+            (notice_floor_cost, 0, rest - notice_floor_cost)
+        } else if notice_floor_cost + reason_min <= rest {
             (
                 notice_floor_cost,
                 reason_min,
@@ -727,7 +828,7 @@ fn share_notice_and_reason(
             )
         } else if notice_floor_cost <= rest {
             (notice_floor_cost, 0, rest - notice_floor_cost)
-        } else if reason_min <= rest {
+        } else if notice.is_empty() && reason_min <= rest {
             (0, reason_min, rest - reason_min)
         } else if notice.is_empty() {
             (0, rest.min(reason_full), 0)
@@ -1743,12 +1844,12 @@ mod tests {
         );
 
         let fitted = line_of(&app, "Esc: close", 98);
-        assert!(fitted.contains("from commit"), "{fitted}");
+        assert!(fitted.contains("GitHub"), "{fitted}");
         assert!(fitted.contains("Couldn't load comments"), "{fitted}");
         assert!(fitted.contains("r: retry"), "{fitted}");
         assert!(
-            fitted.contains("comme"),
-            "the reason keeps its minimum beside the notice: {fitted}"
+            !fitted.contains("failed"),
+            "the reason was drawn while the notice was still cut: {fitted}"
         );
         assert!(
             !fitted.contains("Esc: close"),
@@ -1983,22 +2084,63 @@ mod tests {
         marker: &str,
         reason: &str,
     ) {
+        use unicode_width::UnicodeWidthStr;
+
         const FULL: &str = "PR #1 inferred from commit subject; GitHub did not confirm it";
+        const FLOOR: &str = "PR #1 inferred";
+        let reason_marker = if reason.starts_with("gh ") {
+            "gh "
+        } else {
+            "failed"
+        };
+        let mut previous = 0usize;
+        let mut below_floor = Vec::new();
         for width in 40..=260 {
             let text = line_of(app, hints, width);
+            let notice = notice_prefix(&text);
+            let notice_width = notice.width();
+            assert!(
+                notice_width >= previous,
+                "{name} reason {} notice shrank from {previous} to {notice_width} at {width}: {text}",
+                reason.len()
+            );
+            previous = notice_width;
             assert!(
                 text.contains(key),
                 "{name} reason {} width {width} dropped {key}: {text}",
                 reason.len()
             );
+            let failure_text = text.contains("Couldn't") || text.contains(key);
+            if failure_text && !notice.contains(FLOOR) {
+                below_floor.push(width);
+            }
             if !text.contains(FULL) {
                 assert!(
                     !text.contains(marker),
                     "{name} reason {} width {width} kept a hint beside a cut notice: {text}",
                     reason.len()
                 );
+                assert!(
+                    !text.contains(reason_marker),
+                    "{name} reason {} width {width} showed the reason while the notice was cut: {text}",
+                    reason.len()
+                );
             }
         }
+        assert!(
+            below_floor.is_empty(),
+            "{name} reason {} lost the notice floor where the floor and the key fit: {below_floor:?}",
+            reason.len()
+        );
+    }
+
+    fn notice_prefix(text: &str) -> String {
+        let end = ["  ✕", "  ⚠", "  r:"]
+            .iter()
+            .filter_map(|marker| text.find(marker))
+            .min()
+            .unwrap_or(text.len());
+        text[..end].trim().to_string()
     }
 
     fn comment_app(panel_open: bool) -> App {
