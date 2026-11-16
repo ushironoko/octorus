@@ -141,6 +141,161 @@ pub async fn fetch_pr(repo: &str, pr_number: u32) -> Result<PullRequest> {
     serde_json::from_value(json).context("Failed to parse PR response")
 }
 
+/// Pull request metadata plus the live tip of its base branch.
+///
+/// `pr.base.sha` is the base SHA GitHub stored on the pull request. It does not
+/// follow the base branch, so the file list can go stale while that SHA, the
+/// head SHA, and `updated_at` stay put. `base_tip_sha` is `baseRef.target.oid`
+/// from the same request. `None` means the ref is gone or the field was absent.
+pub struct PrSnapshot {
+    pub pr: PullRequest,
+    pub base_tip_sha: Option<String>,
+}
+
+const PR_SNAPSHOT_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id number title body state updatedAt headRefName headRefOid baseRefName baseRefOid author{login} baseRef{target{oid}}}}}";
+
+/// One metadata read: the pull request, and the current tip of its base branch.
+pub async fn fetch_pr_snapshot(repo: &str, pr_number: u32) -> Result<PrSnapshot> {
+    let Some((owner, name)) = repo.split_once('/') else {
+        anyhow::bail!("repository {repo} is not owner/name");
+    };
+    if owner.is_empty() || name.is_empty() {
+        anyhow::bail!("repository {repo} is not owner/name");
+    }
+    let number = pr_number.to_string();
+    let response = gh_api_graphql(
+        PR_SNAPSHOT_QUERY,
+        &[
+            ("owner", FieldValue::String(owner)),
+            ("name", FieldValue::String(name)),
+            ("number", FieldValue::Raw(&number)),
+        ],
+    )
+    .await?;
+    parse_pr_snapshot(response)
+}
+
+pub(crate) fn parse_pr_snapshot(response: serde_json::Value) -> Result<PrSnapshot> {
+    // A `baseRef` resolution error still carries the pull request. The tip is
+    // then missing, and the caller refetches the file list. Any other error
+    // fails the read.
+    let tip_unreadable = base_ref_errors_only(&response);
+    if !tip_unreadable {
+        check_graphql_errors(&response)?;
+    }
+    let parsed: GqlPrSnapshot =
+        serde_json::from_value(response).context("Failed to parse pull request metadata")?;
+    let pull = parsed
+        .data
+        .and_then(|data| data.repository)
+        .and_then(|repo| repo.pull_request)
+        .context("Pull request metadata was not in the response")?;
+    let base_tip_sha = if tip_unreadable {
+        None
+    } else {
+        pull.base_ref.and_then(|base_ref| {
+            let oid = base_ref.target?.oid;
+            if oid.is_empty() {
+                None
+            } else {
+                Some(oid)
+            }
+        })
+    };
+    Ok(PrSnapshot {
+        pr: PullRequest {
+            number: pull.number,
+            node_id: pull.id.filter(|id| !id.is_empty()),
+            title: pull.title,
+            body: pull.body,
+            state: pull.state.to_ascii_lowercase(),
+            head: Branch {
+                ref_name: pull.head_ref_name,
+                sha: pull.head_ref_oid,
+            },
+            base: Branch {
+                ref_name: pull.base_ref_name,
+                sha: pull.base_ref_oid,
+            },
+            user: User {
+                login: pull.author.map(|author| author.login).unwrap_or_default(),
+            },
+            updated_at: pull.updated_at,
+        },
+        base_tip_sha,
+    })
+}
+
+fn base_ref_errors_only(response: &serde_json::Value) -> bool {
+    let Some(errors) = response.get("errors").and_then(|errors| errors.as_array()) else {
+        return false;
+    };
+    !errors.is_empty()
+        && errors.iter().all(|error| {
+            error
+                .get("path")
+                .and_then(|path| path.as_array())
+                .is_some_and(|path| {
+                    path.iter()
+                        .any(|segment| segment.as_str() == Some("baseRef"))
+                })
+        })
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshot {
+    data: Option<GqlPrSnapshotData>,
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshotData {
+    repository: Option<GqlPrSnapshotRepo>,
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshotRepo {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<GqlPrSnapshotPull>,
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshotPull {
+    #[serde(default)]
+    id: Option<String>,
+    number: u32,
+    title: String,
+    body: Option<String>,
+    state: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "headRefOid")]
+    head_ref_oid: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
+    #[serde(rename = "baseRefOid")]
+    base_ref_oid: String,
+    author: Option<GqlAuthor>,
+    #[serde(default, rename = "baseRef")]
+    base_ref: Option<GqlBaseRef>,
+}
+
+#[derive(Deserialize)]
+struct GqlAuthor {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct GqlBaseRef {
+    target: Option<GqlOid>,
+}
+
+#[derive(Deserialize)]
+struct GqlOid {
+    oid: String,
+}
+
 pub async fn fetch_changed_files(repo: &str, pr_number: u32) -> Result<Vec<ChangedFile>> {
     let endpoint = format!("repos/{}/pulls/{}/files?per_page=100", repo, pr_number);
     let json = gh_api_paginate(&endpoint).await?;
@@ -220,24 +375,8 @@ pub async fn fetch_files_viewed_state(
     _repo: &str,
     pr_node_id: &str,
 ) -> Result<HashMap<String, bool>> {
-    let query = r#"
-query($pullRequestId: ID!, $after: String) {
-  node(id: $pullRequestId) {
-    ... on PullRequest {
-      files(first: 100, after: $after) {
-        nodes {
-          path
-          viewerViewedState
-        }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-      }
-    }
-  }
-}
-"#;
+    // One line so the test double logs the node id on the same CALL line as the query.
+    let query = "query($pullRequestId:ID!,$after:String){node(id:$pullRequestId){... on PullRequest{files(first:100,after:$after){nodes{path viewerViewedState}pageInfo{hasNextPage endCursor}}}}}";
 
     let mut viewed_state = HashMap::new();
     let mut after: Option<String> = None;
@@ -392,6 +531,87 @@ pub async fn fetch_pr_checks(repo: &str, pr_number: u32) -> Result<Vec<CheckItem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot_pull(base_ref: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_node",
+                        "number": 7,
+                        "title": "Title",
+                        "body": "body",
+                        "state": "OPEN",
+                        "updatedAt": "2024-01-01T00:00:00Z",
+                        "headRefName": "feature",
+                        "headRefOid": "abc",
+                        "baseRefName": "main",
+                        "baseRefOid": "def",
+                        "author": { "login": "octocat" },
+                        "baseRef": base_ref,
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn parse_pr_snapshot_reads_the_base_branch_tip() {
+        let snapshot = parse_pr_snapshot(snapshot_pull(serde_json::json!({
+            "target": { "oid": "cafebabe" }
+        })))
+        .unwrap();
+        assert_eq!(snapshot.base_tip_sha.as_deref(), Some("cafebabe"));
+        assert_eq!(snapshot.pr.state, "open");
+        assert_eq!(snapshot.pr.base.sha, "def");
+        assert_eq!(snapshot.pr.head.sha, "abc");
+        assert_eq!(snapshot.pr.node_id.as_deref(), Some("PR_node"));
+        assert_eq!(snapshot.pr.user.login, "octocat");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_missing_base_ref_has_no_tip() {
+        let snapshot = parse_pr_snapshot(snapshot_pull(serde_json::Value::Null)).unwrap();
+        assert!(snapshot.base_tip_sha.is_none());
+        assert_eq!(snapshot.pr.updated_at, "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_null_target_has_no_tip() {
+        let snapshot =
+            parse_pr_snapshot(snapshot_pull(serde_json::json!({ "target": null }))).unwrap();
+        assert!(snapshot.base_tip_sha.is_none());
+    }
+
+    #[test]
+    fn parse_pr_snapshot_base_ref_error_keeps_the_pull_request_without_a_tip() {
+        let mut body = snapshot_pull(serde_json::Value::Null);
+        body["errors"] = serde_json::json!([{
+            "message": "Could not resolve baseRef",
+            "path": ["repository", "pullRequest", "baseRef"]
+        }]);
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert!(snapshot.base_tip_sha.is_none());
+        assert_eq!(snapshot.pr.title, "Title");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_other_graphql_error_fails() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["errors"] = serde_json::json!([{
+            "message": "nope",
+            "path": ["repository", "pullRequest", "title"]
+        }]);
+        assert!(parse_pr_snapshot(body).is_err());
+    }
+
+    #[test]
+    fn parse_pr_snapshot_graphql_error_fails() {
+        let error = parse_pr_snapshot(serde_json::json!({
+            "errors": [{ "message": "base ref failed" }]
+        }));
+        assert!(error.is_err());
+    }
 
     #[test]
     fn test_pr_state_filter_as_gh_arg() {

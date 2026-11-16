@@ -417,6 +417,9 @@ pub struct PrData {
     pub pr: Box<PullRequest>,
     pub files: Vec<ChangedFile>,
     pub pr_updated_at: String,
+    /// Tip of the base branch when this payload was fetched. `None` means the
+    /// next reopen cannot prove the three-dot diff is still current.
+    pub base_tip_sha: Option<String>,
 }
 
 /// インメモリセッションキャッシュ（LRU eviction 付き）。
@@ -1400,6 +1403,7 @@ mod tests {
                 pr: Box::new(pr),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
 
@@ -1429,6 +1433,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1449,6 +1454,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(complete_key.clone(), vec![make_review_comment(1)]);
@@ -1504,6 +1510,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_discussion_comments(key.clone(), vec![]);
@@ -1525,6 +1532,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1548,6 +1556,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_discussion_comments(key.clone(), vec![]);
@@ -1571,6 +1580,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1637,6 +1647,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 1", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_pr_data(
@@ -1645,6 +1656,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 2", "2024-01-02")),
                 files: vec![],
                 pr_updated_at: "2024-01-02".to_string(),
+                base_tip_sha: None,
             },
         );
 
@@ -1668,6 +1680,7 @@ mod tests {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
                     files: vec![],
                     pr_updated_at: "2024-01-01".to_string(),
+                    base_tip_sha: None,
                 },
             );
             cache.put_review_comments(key, vec![]);
@@ -1709,6 +1722,7 @@ mod tests {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
                     files: vec![],
                     pr_updated_at: "2024-01-01".to_string(),
+                    base_tip_sha: None,
                 },
             );
         }
@@ -1731,6 +1745,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
 
@@ -1767,6 +1782,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1791,6 +1807,7 @@ mod tests {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
                     files: vec![],
                     pr_updated_at: "2024-01-01".to_string(),
+                    base_tip_sha: None,
                 },
             );
         }
@@ -1806,6 +1823,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
                 files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
 

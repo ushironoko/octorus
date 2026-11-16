@@ -33,6 +33,8 @@ fi
 case "$*" in
     */reviews/*/comments*) printf '%s' "$FAKE_GH_DRAFTS" ;;
     *--slurp*) printf '%s' "$FAKE_GH_REVIEWS" ;;
+    *viewerViewedState*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
+    *baseRef*) printf '%s' "$FAKE_GH_PR_CHECK" ;;
     *graphql*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
     */events*) printf '%s' "$FAKE_GH_PUBLISH" ;;
     'pr review'*) printf '%s' "$FAKE_GH_PR_REVIEW" ;;

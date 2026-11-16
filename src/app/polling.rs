@@ -92,7 +92,11 @@ impl App {
                     self.handle_data_result(pr_number, result);
                 } else {
                     match result {
-                        DataLoadResult::Success { pr, files } => {
+                        DataLoadResult::Success {
+                            pr,
+                            files,
+                            base_tip_sha,
+                        } => {
                             // 異なるPRのデータ: セッションキャッシュにのみ格納
                             // receiver は破棄しない（永続チャンネルを維持）
                             let cache_key = PrCacheKey {
@@ -105,6 +109,7 @@ impl App {
                                     pr_updated_at: pr.updated_at.clone(),
                                     pr,
                                     files,
+                                    base_tip_sha,
                                 },
                             );
                         }
@@ -755,12 +760,19 @@ impl App {
             repo: self.repo.clone(),
             pr_number,
         };
+        // A title or viewed-state write must not drop the base tip. The light
+        // path only runs when that tip still matches, so the stored one is current.
+        let base_tip_sha = self
+            .session_cache
+            .get_pr_data(&cache_key)
+            .and_then(|cached| cached.base_tip_sha.clone());
         self.session_cache.put_pr_data(
             cache_key,
             PrData {
                 pr: pr.clone(),
                 files: files.clone(),
                 pr_updated_at: pr.updated_at.clone(),
+                base_tip_sha,
             },
         );
     }
@@ -957,7 +969,11 @@ impl App {
         self.lazy_diff_pending_file = None;
 
         match result {
-            DataLoadResult::Success { pr, files } => {
+            DataLoadResult::Success {
+                pr,
+                files,
+                base_tip_sha,
+            } => {
                 let changed_file_index = if self.local_mode && self.local_auto_focus {
                     self.find_changed_local_file_index(&files, self.selected_file)
                 } else {
@@ -1036,6 +1052,7 @@ impl App {
                         pr: pr.clone(),
                         files: files.clone(),
                         pr_updated_at: pr.updated_at.clone(),
+                        base_tip_sha,
                     },
                 );
                 self.data_state = DataState::Loaded { pr, files };

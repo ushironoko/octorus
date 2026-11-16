@@ -1160,6 +1160,7 @@ mod tests {
             head_sha: "abc".to_string(),
             base_ref: "main".to_string(),
             base_sha: "def".to_string(),
+            base_tip_sha: Some("cafebabe".to_string()),
         };
         assert_eq!(
             local_startup_refresh_route(RefreshRequest::PrRefresh { pr_number: 42 }),

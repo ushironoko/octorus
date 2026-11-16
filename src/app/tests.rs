@@ -445,6 +445,7 @@ async fn test_pr_list_local_toggle_round_trip() {
             pr: Box::new(local_pr),
             files: local_files,
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -503,6 +504,7 @@ async fn test_poll_data_updates_discards_stale_pr_data() {
     tx.send(DataLoadResult::Success {
         pr: Box::new(pr),
         files: vec![],
+        base_tip_sha: None,
     })
     .await
     .unwrap();
@@ -615,6 +617,7 @@ async fn test_handle_data_result_clamps_selected_file_when_files_shrink() {
         DataLoadResult::Success {
             pr,
             files: fewer_files,
+            base_tip_sha: None,
         },
     );
 
@@ -692,6 +695,7 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
         DataLoadResult::Success {
             pr,
             files: fewer_files,
+            base_tip_sha: None,
         },
     );
 
@@ -794,6 +798,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
         DataLoadResult::Success {
             pr,
             files: fewer_files,
+            base_tip_sha: None,
         },
     );
 
@@ -889,6 +894,7 @@ async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchang
         DataLoadResult::Success {
             pr,
             files: same_files,
+            base_tip_sha: None,
         },
     );
 
@@ -959,6 +965,7 @@ async fn test_handle_data_result_keeps_selected_file_by_filename() {
         DataLoadResult::Success {
             pr,
             files: vec![make_file("file_b.rs"), make_file("file_c.rs")],
+            base_tip_sha: None,
         },
     );
 
@@ -1029,6 +1036,7 @@ async fn test_handle_data_result_auto_focus_selects_next_changed_file() {
                 make_file("file_c.rs", 1), // unchanged
                 make_file("file_d.rs", 2), // changed (additions: 1→2)
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -1101,6 +1109,7 @@ async fn test_handle_data_result_auto_focus_prefers_nearest_changed_file() {
                 make_file("file_d.rs", 1), // unchanged
                 make_file("file_e.rs", 2), // changed after (additions: 1→2)
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -1173,6 +1182,7 @@ async fn test_handle_data_result_auto_focus_prefers_next_when_distances_are_tie(
                 make_file("file_d.rs", 2), // changed (index 3, additions: 1→2)
                 make_file("file_e.rs", 1), // unchanged (index 4)
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -1225,6 +1235,7 @@ async fn test_handle_data_result_auto_focus_transitions_to_split_view_diff() {
         DataLoadResult::Success {
             pr: pr.clone(),
             files: vec![make_file("initial.rs", "@@ -1,1 +1,1 @@\n-old\n+new")],
+            base_tip_sha: None,
         },
     );
 
@@ -1570,6 +1581,7 @@ fn cached_check(updated_at: &str) -> crate::app::CachedPrCheck {
         head_sha: "abc".to_string(),
         base_ref: "main".to_string(),
         base_sha: "def".to_string(),
+        base_tip_sha: Some("cafebabe".to_string()),
     }
 }
 
@@ -1629,6 +1641,7 @@ fn cache_pr(app: &mut App, number: u32, title: &str, updated_at: &str, patch: &s
             pr: Box::new(stored_pull_request(number, title, updated_at)),
             files: vec![sample_file(patch, viewed)],
             pr_updated_at: updated_at.to_string(),
+            base_tip_sha: Some("cafebabe".to_string()),
         },
     );
 }
@@ -1725,6 +1738,7 @@ async fn test_select_pr_with_a_missing_patch_still_requests_a_full_refetch() {
                 },
             ],
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -1789,6 +1803,7 @@ async fn test_unchanged_reopen_applies_a_fresh_title_and_body_without_replacing_
         .unwrap();
     assert_eq!(cached.pr.title, "Renamed");
     assert_eq!(cached.files[0].patch.as_deref(), Some("@@ cached patch"));
+    assert_eq!(cached.base_tip_sha.as_deref(), Some("cafebabe"));
 }
 
 #[tokio::test]
@@ -1941,6 +1956,7 @@ async fn test_changed_fetch_replaces_the_cached_pr() {
     tx.send(DataLoadResult::Success {
         pr: Box::new(stored_pull_request(7, "New title", "2024-06-01T00:00:00Z")),
         files: vec![sample_file("@@ new patch", true)],
+        base_tip_sha: None,
     })
     .await
     .unwrap();
@@ -2379,7 +2395,14 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
         viewed: false,
     }];
 
-    app.handle_data_result(0, DataLoadResult::Success { pr, files });
+    app.handle_data_result(
+        0,
+        DataLoadResult::Success {
+            pr,
+            files,
+            base_tip_sha: None,
+        },
+    );
 
     // State should NOT transition to SplitViewDiff during BG rally
     assert_eq!(app.state, AppState::FileList);
@@ -3737,6 +3760,7 @@ async fn test_restore_data_from_cache_hit() {
                 viewed: false,
             }],
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -4435,6 +4459,7 @@ fn test_refresh_all_invalidates_session_cache() {
             pr: Box::new(make_local_pr()),
             files: vec![],
             pr_updated_at: "x".to_string(),
+            base_tip_sha: None,
         },
     );
     assert!(app.session_cache.get_pr_data(&cache_key).is_some());
@@ -5875,6 +5900,7 @@ fn test_submit_local_comment_persists_and_loads() {
             pr: Box::new(make_local_pr()),
             files: app.files().to_vec(),
             pr_updated_at: "".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -10491,6 +10517,7 @@ fn make_loaded_app() -> App {
                 ),
                 viewed: false,
             }],
+            base_tip_sha: None,
         },
     );
     app
@@ -10686,6 +10713,7 @@ async fn test_zen_mode_auto_focus_transitions_to_diff_view() {
                 patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
                 viewed: false,
             }],
+            base_tip_sha: None,
         },
     );
 
@@ -12292,6 +12320,7 @@ async fn a_comment_read_without_the_drafts_is_not_cached() {
             pr: Box::new(make_local_pr()),
             files: vec![],
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
     app.session_cache
@@ -12325,6 +12354,7 @@ async fn a_comment_read_with_the_drafts_is_cached_and_sets_the_count() {
             pr: Box::new(make_local_pr()),
             files: vec![],
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
     let (tx, rx) = mpsc::channel(1);
@@ -12362,6 +12392,7 @@ fn a_cached_comment_list_restores_the_draft_count() {
             pr: Box::new(make_local_pr()),
             files: vec![],
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
     app.session_cache.put_review_comments(

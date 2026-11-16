@@ -378,6 +378,7 @@ impl App {
                     head_sha: cached.pr.head.sha.clone(),
                     base_ref: cached.pr.base.ref_name.clone(),
                     base_sha: cached.pr.base.sha.clone(),
+                    base_tip_sha: cached.base_tip_sha.clone(),
                 });
             }
             let diff_line_count = Self::calc_diff_line_count(&cached.files, 0);

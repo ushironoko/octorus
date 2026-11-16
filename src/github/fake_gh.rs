@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const FAKE_GH_VARS: [&str; 10] = [
+const FAKE_GH_VARS: [&str; 11] = [
     "FAKE_GH_LOG",
     "FAKE_GH_REVIEWS",
     "FAKE_GH_CREATE",
@@ -20,6 +20,7 @@ const FAKE_GH_VARS: [&str; 10] = [
     "FAKE_GH_FAIL_FIRST",
     "FAKE_GH_DIFF",
     "FAKE_GH_DIFF_FAIL",
+    "FAKE_GH_PR_CHECK",
 ];
 
 /// Puts the test double first on PATH and sets its replies. Dropping it restores
@@ -50,6 +51,7 @@ impl FakeGh {
         std::env::set_var("FAKE_GH_PR_REVIEW", "");
         std::env::set_var("FAKE_GH_DRAFTS", "[[]]");
         std::env::set_var("FAKE_GH_DIFF", "");
+        std::env::set_var("FAKE_GH_PR_CHECK", "");
         std::env::remove_var("FAKE_GH_FAIL_FIRST");
         std::env::remove_var("FAKE_GH_DIFF_FAIL");
         Self {
@@ -69,6 +71,11 @@ impl FakeGh {
     /// fetch of the same endpoint succeeds.
     pub(crate) fn fail_first(&self, count: u32) {
         std::env::set_var("FAKE_GH_FAIL_FIRST", count.to_string());
+    }
+
+    /// GraphQL body for the pull-request metadata read (`baseRef`).
+    pub(crate) fn set_pr_check(&self, json: &str) {
+        std::env::set_var("FAKE_GH_PR_CHECK", json);
     }
 
     /// Body of `gh pr diff`. An empty body is a diff that names no files.

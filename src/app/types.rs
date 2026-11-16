@@ -541,14 +541,18 @@ impl CockpitState {
 ///
 /// `updated_at` is the timestamp GitHub stores on the pull request. Head SHA and
 /// base ref/SHA are compared as well: a diff change that did not move the
-/// timestamp still has to refetch files. `missing_patches` is not stored here;
-/// a cache with a missing patch does not use this check and refetches in full.
+/// timestamp still has to refetch files. `base_tip_sha` is the base branch tip
+/// from that same metadata read. GitHub's stored base SHA does not follow the
+/// branch, so a moved or missing tip refetches the file list. `missing_patches`
+/// is not stored here; a cache with a missing patch does not use this check and
+/// refetches in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedPrCheck {
     pub updated_at: String,
     pub head_sha: String,
     pub base_ref: String,
     pub base_sha: String,
+    pub base_tip_sha: Option<String>,
 }
 
 /// Retry request variants dispatched through the unified retry loop.
