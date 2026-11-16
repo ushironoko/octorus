@@ -2268,6 +2268,8 @@ mod tests {
     use super::*;
     use crate::config::ThemeColors;
     use crate::ui::test_buffer::{no_color_theme, theme_with, CUSTOM_WARNING};
+    use ratatui::buffer::{Buffer, CellWidth};
+    use ratatui::widgets::Widget;
 
     #[test]
     fn test_extract_diff_filename_simple() {
@@ -3437,6 +3439,97 @@ mod tests {
             Theme::test_default(),
         );
         assert!(result.is_empty(), "Empty cache should return empty Vec");
+    }
+
+    /// Halfwidth kana with dakuten (U+FF9E) and handakuten (U+FF9F) stay two cells
+    /// wide on a diff line.
+    ///
+    /// `render_cached_lines` builds the [`Line`] the diff view draws, and
+    /// [`Paragraph`] with `Wrap { trim: false }` measures and paints it the same
+    /// way `render_diff_content` does. unicode-width 0.2.2 reports the sound marks
+    /// as width 0, and ratatui-core 0.1.2 adds one cell for each, so `ｶﾞ` is 2
+    /// cells. unicode-width 0.2.3 already counts them as width 1, and that extra
+    /// cell makes `ｶﾞ` 3 cells and this line wider than [`MAIN_LINE_WIDTH`].
+    /// [`MAIN_LINE_WIDTH`] is the width main renders with unicode-width 0.2.2.
+    #[test]
+    fn test_halfwidth_kana_sound_marks_keep_main_cell_width() {
+        const CONTENT: &str = "ﾊﾞﾝﾄﾞ ﾊﾟﾊﾟ ｶﾞｷﾞ";
+        /// `+` plus [`CONTENT`]: six sound-mark pairs at 2 cells, three other
+        /// halfwidth kana, two spaces.
+        const MAIN_LINE_WIDTH: u16 = 16;
+        const SOUND_MARKS: u16 = 6;
+
+        assert!(
+            CONTENT.contains('\u{FF9E}') && CONTENT.contains('\u{FF9F}'),
+            "the fixture must use halfwidth dakuten and handakuten"
+        );
+
+        let patch = format!("@@ -1 +1 @@\n+{CONTENT}");
+        let cache = build_plain_diff_cache(&patch, 4);
+        let lines = render_cached_lines(
+            &cache,
+            0..cache.lines.len(),
+            usize::MAX,
+            &HashSet::new(),
+            false,
+            None,
+            0,
+            Theme::test_default(),
+        );
+        let line = lines
+            .into_iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains('ｶ')))
+            .expect("added line with halfwidth kana");
+
+        let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
+        assert_eq!(
+            paragraph.line_count(MAIN_LINE_WIDTH),
+            1,
+            "the diff line wraps inside the width main gives it"
+        );
+
+        // Wider than the double-counted line, so a 0.2.3 failure is the width
+        // assertion rather than the grapheme being clipped onto the next row.
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        paragraph.render(area, &mut buf);
+
+        let mut x = 0u16;
+        let mut end = 0u16;
+        let mut sound_marks = 0u16;
+        let mut ga_at = None;
+        while x < area.width {
+            let symbol = buf[(x, 0)].symbol();
+            if symbol == " " {
+                x += 1;
+                continue;
+            }
+            let width = buf[(x, 0)].cell_width();
+            if symbol
+                .chars()
+                .any(|ch| matches!(ch, '\u{FF9E}' | '\u{FF9F}'))
+            {
+                assert_eq!(width, 2, "{symbol} at column {x} occupies {width} cells");
+                assert_eq!(
+                    buf[(x + 1, 0)].symbol(),
+                    " ",
+                    "the cell after {symbol} is not its continuation cell"
+                );
+                sound_marks += 1;
+                if symbol == "ｶﾞ" {
+                    ga_at = Some(x);
+                }
+            }
+            end = x + width;
+            x += width.max(1);
+        }
+
+        let ga_at = ga_at.expect("ｶﾞ is drawn as one grapheme");
+        assert_eq!(buf[(ga_at, 0)].cell_width(), 2, "ｶﾞ occupies 2 cells");
+        assert_eq!(buf[(ga_at + 2, 0)].symbol(), "ｷﾞ");
+        assert_eq!(buf[(ga_at + 2, 0)].cell_width(), 2, "ｷﾞ occupies 2 cells");
+        assert_eq!(sound_marks, SOUND_MARKS);
+        assert_eq!(end, MAIN_LINE_WIDTH);
     }
 }
 
