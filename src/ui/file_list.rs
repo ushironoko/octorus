@@ -813,7 +813,7 @@ mod tests {
 #[cfg(test)]
 mod pending_header_tests {
     use super::*;
-    use crate::app::{App, AppState, DataState, PendingDrafts};
+    use crate::app::{App, AppState, PendingDrafts};
     use crate::config::ThemeColors;
     use crate::github::{Branch, ChangedFile, CiStatus, PullRequest, User};
     use crate::ui::test_buffer::{
@@ -825,8 +825,8 @@ mod pending_header_tests {
     fn loaded_app(drafts: PendingDrafts) -> App {
         let mut app = App::new_for_test();
         app.state = AppState::FileList;
-        app.data_state = DataState::Loaded {
-            pr: Box::new(PullRequest {
+        app.install_loaded(
+            Box::new(PullRequest {
                 number: 244,
                 node_id: None,
                 title: "Inline comments".to_string(),
@@ -845,7 +845,7 @@ mod pending_header_tests {
                 },
                 updated_at: "2026-11-10T00:00:00Z".to_string(),
             }),
-            files: vec![ChangedFile {
+            vec![ChangedFile {
                 filename: "src/app.rs".to_string(),
                 status: "modified".to_string(),
                 additions: 1,
@@ -854,7 +854,7 @@ mod pending_header_tests {
                 viewed: false,
             }]
             .into(),
-        };
+        );
         app.cmt.pending_drafts = drafts;
         app
     }

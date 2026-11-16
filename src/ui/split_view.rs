@@ -657,8 +657,8 @@ mod tests {
 
     fn loaded_app_with(files: Vec<ChangedFile>) -> App {
         let mut app = App::new_for_test();
-        app.data_state = DataState::Loaded {
-            pr: Box::new(PullRequest {
+        app.install_loaded(
+            Box::new(PullRequest {
                 number: 1,
                 node_id: None,
                 title: "Title".to_string(),
@@ -677,8 +677,8 @@ mod tests {
                 },
                 updated_at: "2025-01-01T00:00:00Z".to_string(),
             }),
-            files: files.into(),
-        };
+            files.into(),
+        );
         app.toggle_file_tree();
         app
     }

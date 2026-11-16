@@ -522,7 +522,7 @@ mod terminal_tests {
 #[cfg(test)]
 mod symbol_popup_tests {
     use super::*;
-    use crate::app::{App, AppState, DataState, SymbolPopupState};
+    use crate::app::{App, AppState, SymbolPopupState};
     use crate::config::ThemeConfig;
     use crate::github::{Branch, ChangedFile, PullRequest, User};
     use crate::ui::diff_view::build_plain_diff_cache;
@@ -539,8 +539,8 @@ mod symbol_popup_tests {
     fn popup_over_diff(names: &[&str], patch: &str) -> App {
         let mut app = App::new_for_test();
         app.state = AppState::DiffView;
-        app.data_state = DataState::Loaded {
-            pr: Box::new(PullRequest {
+        app.install_loaded(
+            Box::new(PullRequest {
                 number: 1,
                 node_id: None,
                 title: "Title".to_string(),
@@ -559,7 +559,7 @@ mod symbol_popup_tests {
                 },
                 updated_at: "2025-01-01T00:00:00Z".to_string(),
             }),
-            files: vec![ChangedFile {
+            vec![ChangedFile {
                 filename: "src/a.rs".to_string(),
                 status: "modified".to_string(),
                 additions: 1,
@@ -568,7 +568,7 @@ mod symbol_popup_tests {
                 viewed: false,
             }]
             .into(),
-        };
+        );
         app.diff_store.current = Some(build_plain_diff_cache(patch, 4));
         app.symbol_popup = Some(SymbolPopupState {
             symbols: names

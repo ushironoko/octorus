@@ -436,15 +436,6 @@ impl SharedFiles {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
-
-    /// Address of this file-list allocation. Compared, never dereferenced.
-    ///
-    /// `make_mut` keeps the address when this is the only owner and moves it
-    /// when the list is copied. A patch lookup uses it so a recycled patch
-    /// buffer cannot pass a pointer check against a different list.
-    pub(crate) fn allocation_id(&self) -> usize {
-        Arc::as_ptr(&self.inner) as *const () as usize
-    }
 }
 
 impl From<Vec<ChangedFile>> for SharedFiles {

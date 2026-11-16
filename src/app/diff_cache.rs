@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
+use crate::cache::SharedFiles;
 use crate::diff::{get_line_info, PatchLookup};
 use crate::github::{ChangedFile, PullRequest};
 use crate::syntax::ParserPool;
@@ -11,13 +12,15 @@ use super::{App, DataState};
 
 /// The patch index last built for one file.
 ///
-/// `files_id`, `patch_ptr`, and `patch_len` name allocations. They are
-/// compared, never dereferenced. `generation` moves when the file list is
-/// edited in place, so a recycled patch buffer cannot pass the pointer check.
+/// `files` is a clone of the file-list `Arc` the index was built from. Holding
+/// it keeps that allocation alive, so a later list cannot reuse the patch
+/// buffer's address and still pass the pointer check. `patch_ptr` and
+/// `patch_len` are compared, never dereferenced. `generation` moves when the
+/// list is replaced or edited in place.
 pub(crate) struct CachedPatchLookup {
     file_index: usize,
     filename: String,
-    files_id: usize,
+    files: SharedFiles,
     patch_hash: u64,
     patch_ptr: usize,
     patch_len: usize,
@@ -27,13 +30,13 @@ pub(crate) struct CachedPatchLookup {
 
 enum LookupDecision {
     Retarget {
-        files_id: usize,
+        files: SharedFiles,
         ptr: usize,
         len: usize,
     },
     Rebuild {
         filename: String,
-        files_id: usize,
+        files: SharedFiles,
         hash: u64,
         ptr: usize,
         len: usize,
@@ -102,21 +105,37 @@ impl App {
         self.files_generation = self.files_generation.wrapping_add(1);
     }
 
+    /// Install a loaded pull request. Every `DataState::Loaded` assignment
+    /// goes through here so the line index cannot keep a generation from the
+    /// previous file list.
+    pub(crate) fn install_loaded(&mut self, pr: Box<PullRequest>, files: SharedFiles) {
+        self.bump_files_generation();
+        self.data_state = DataState::Loaded { pr, files };
+    }
+
+    /// Drop the file-list `Arc` held by the index so [`SharedFiles::make_mut`]
+    /// can edit the on-screen list in place. The generation bump that precedes
+    /// the edit makes this index miss; the text is hashed before reuse.
+    pub(crate) fn release_cached_files(&mut self) {
+        if let Some(cached) = self.cached_patch_lookup.as_mut() {
+            drop(std::mem::replace(&mut cached.files, SharedFiles::empty()));
+        }
+    }
+
     /// Build the patch index for the selected file, or reuse it.
     ///
     /// The plain diff is drawn without this. Callers are line lookup and
     /// comment placement, so the first paint of a file does not wait on it.
-    /// A hit compares the file-list allocation and the patch buffer and does
-    /// not hash or scan. The same text in a new buffer (highlight keep,
-    /// shared-file `make_mut`, a watcher refresh of an unchanged file)
-    /// retargets the existing index. Different text rebuilds it.
+    /// A hit requires the same file-list `Arc` the index is holding, plus the
+    /// same patch buffer. The same text in a new list (highlight keep, a
+    /// watcher refresh of an unchanged file) retargets the existing index.
+    /// Different text rebuilds it.
     pub(crate) fn ensure_patch_lookup(&mut self) -> bool {
         let decision = {
             let DataState::Loaded { files, .. } = &self.data_state else {
                 self.cached_patch_lookup = None;
                 return false;
             };
-            let files_id = files.allocation_id();
             let Some(file) = files.get(self.selected_file) else {
                 self.cached_patch_lookup = None;
                 return false;
@@ -130,7 +149,7 @@ impl App {
             let generation = self.files_generation;
             let hit = self.cached_patch_lookup.as_ref().is_some_and(|cached| {
                 cached.generation == generation
-                    && cached.files_id == files_id
+                    && cached.files.ptr_eq(files)
                     && cached.file_index == file_index
                     && cached.filename == file.filename
                     && cached.patch_ptr == ptr
@@ -139,18 +158,23 @@ impl App {
             if hit {
                 return true;
             }
+            let held = files.clone();
             let hash = hash_string(patch);
             if self.cached_patch_lookup.as_ref().is_some_and(|cached| {
                 cached.filename == file.filename
                     && cached.patch_hash == hash
                     && !cached.lookup.is_fallback()
             }) {
-                LookupDecision::Retarget { files_id, ptr, len }
+                LookupDecision::Retarget {
+                    files: held,
+                    ptr,
+                    len,
+                }
             } else {
                 let lookup = Box::new(PatchLookup::build(patch));
                 LookupDecision::Rebuild {
                     filename: file.filename.clone(),
-                    files_id,
+                    files: held,
                     hash,
                     ptr,
                     len,
@@ -159,10 +183,10 @@ impl App {
             }
         };
         match decision {
-            LookupDecision::Retarget { files_id, ptr, len } => {
+            LookupDecision::Retarget { files, ptr, len } => {
                 if let Some(cached) = self.cached_patch_lookup.as_mut() {
                     cached.file_index = self.selected_file;
-                    cached.files_id = files_id;
+                    cached.files = files;
                     cached.patch_ptr = ptr;
                     cached.patch_len = len;
                     cached.generation = self.files_generation;
@@ -171,7 +195,7 @@ impl App {
             }
             LookupDecision::Rebuild {
                 filename,
-                files_id,
+                files,
                 hash,
                 ptr,
                 len,
@@ -182,7 +206,7 @@ impl App {
                 self.cached_patch_lookup = Some(CachedPatchLookup {
                     file_index: self.selected_file,
                     filename,
-                    files_id,
+                    files,
                     patch_hash: hash,
                     patch_ptr: ptr,
                     patch_len: len,
@@ -702,5 +726,110 @@ mod patch_tests {
     fn test_empty_lines_in_body() {
         let patch = build_pr_description_patch("Hello\n\nWorld");
         assert_eq!(patch, "@@ -1,3 +1,3 @@\n Hello\n \n World\n");
+    }
+}
+
+#[cfg(test)]
+mod address_reuse_tests {
+    use super::*;
+    use crate::diff::DiffSide;
+    use crate::github::{Branch, ChangedFile, PullRequest, User};
+
+    fn pull_request() -> Box<PullRequest> {
+        Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Test".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc".to_string(),
+            },
+            base: Branch {
+                ref_name: "main".to_string(),
+                sha: "def".to_string(),
+            },
+            user: User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        })
+    }
+
+    fn files_with(patch: &str) -> Vec<ChangedFile> {
+        vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        }]
+    }
+
+    /// A refresh can free patch A and later place patch C, of the same length,
+    /// at A's address. The index must answer for C. The cache key is forged to
+    /// the recycled address so the test does not depend on the allocator.
+    #[test]
+    fn a_recycled_patch_address_cannot_serve_the_previous_index() {
+        let patch_a = "@@ -12,6 +12,7 @@\n context\n+added\n";
+        let patch_b = "@@ -1,1 +1,1 @@\n-only\n";
+        let patch_c = "@@ -13,6 +13,7 @@\n context\n+added\n";
+        assert_eq!(patch_a.len(), patch_c.len());
+        assert_ne!(patch_a, patch_c);
+
+        let mut app = App::new_for_test();
+        app.install_loaded(pull_request(), files_with(patch_a).into());
+        let indexed = app.cached_line_info(1).expect("context row of A");
+        assert_eq!(indexed.new_line_number, Some(12));
+        assert_eq!(indexed.review_comment_line(), Some((DiffSide::Right, 12)));
+        assert_eq!(app.patch_lookup_builds(), 1);
+
+        let held_a = app
+            .cached_patch_lookup
+            .as_ref()
+            .expect("index holds the file list")
+            .files
+            .clone();
+
+        app.install_loaded(pull_request(), files_with(patch_b).into());
+        app.install_loaded(pull_request(), files_with(patch_c).into());
+
+        // B and C replaced the on-screen list without a lookup. A is still
+        // allocated because the index holds that Arc.
+        assert_eq!(held_a[0].patch.as_deref(), Some(patch_a));
+        let current = match &app.data_state {
+            DataState::Loaded { files, .. } => files.clone(),
+            DataState::Loading | DataState::Error(_) => panic!("C is loaded"),
+        };
+        assert!(!held_a.ptr_eq(&current));
+        assert_eq!(current[0].patch.as_deref(), Some(patch_c));
+
+        let patch = current[0].patch.as_ref().expect("C has a patch");
+        let forged_ptr = patch.as_ptr() as usize;
+        let forged_len = patch.len();
+        let generation = app.files_generation;
+        let file_index = app.selected_file;
+        let filename = current[0].filename.clone();
+        let cached = app.cached_patch_lookup.as_mut().expect("index remains");
+        cached.patch_ptr = forged_ptr;
+        cached.patch_len = forged_len;
+        cached.generation = generation;
+        cached.file_index = file_index;
+        cached.filename = filename;
+        assert!(!cached.files.ptr_eq(&current));
+
+        let info = app.cached_line_info(1).expect("context row of C");
+        let expected = get_line_info(patch_c, 1).expect("linear scan of C");
+        assert_eq!(info.new_line_number, expected.new_line_number);
+        assert_eq!(info.old_line_number, expected.old_line_number);
+        assert_eq!(info.line_content, expected.line_content);
+        assert_eq!(info.diff_position, expected.diff_position);
+        assert_eq!(info.line_type, expected.line_type);
+        assert_eq!(info.new_line_number, Some(13));
+        assert_eq!(info.old_line_number, Some(13));
+        assert_eq!(info.review_comment_line(), Some((DiffSide::Right, 13)));
+        assert_eq!(app.patch_lookup_builds(), 2);
     }
 }

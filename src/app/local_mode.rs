@@ -91,13 +91,16 @@ impl App {
                 repo: self.repo.clone(),
                 pr_number: 0,
             };
-            if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
-                self.data_state = DataState::Loaded {
-                    pr: cached.pr.clone(),
-                    files: cached.files.clone(),
-                };
-                self.diff_scroll
-                    .set_line_count(Self::calc_diff_line_count(&cached.files, 0));
+            let restored = self.session_cache.get_pr_data(&cache_key).map(|cached| {
+                (
+                    Self::calc_diff_line_count(&cached.files, 0),
+                    cached.pr.clone(),
+                    cached.files.clone(),
+                )
+            });
+            if let Some((line_count, pr, files)) = restored {
+                self.install_loaded(pr, files);
+                self.diff_scroll.set_line_count(line_count);
                 self.start_prefetch_all_files();
             } else {
                 self.data_state = DataState::Loading;
@@ -149,13 +152,17 @@ impl App {
             repo: self.repo.clone(),
             pr_number,
         };
-        if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
-            self.data_state = DataState::Loaded {
-                pr: cached.pr.clone(),
-                files: cached.files.clone(),
-            };
-            self.diff_scroll.line_count =
-                Self::calc_diff_line_count(&cached.files, self.selected_file);
+        let selected = self.selected_file;
+        let restored = self.session_cache.get_pr_data(&cache_key).map(|cached| {
+            (
+                Self::calc_diff_line_count(&cached.files, selected),
+                cached.pr.clone(),
+                cached.files.clone(),
+            )
+        });
+        if let Some((line_count, pr, files)) = restored {
+            self.install_loaded(pr, files);
+            self.diff_scroll.line_count = line_count;
             self.start_prefetch_all_files();
         } else {
             self.data_state = DataState::Loading;

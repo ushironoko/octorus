@@ -601,10 +601,7 @@ async fn test_handle_data_result_clamps_selected_file_when_files_shrink() {
     });
 
     // Set initial loaded state with 5 files
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.into());
     app.selected_file = 4; // Last file selected
 
     // Now simulate refresh with only 2 files (file count shrank)
@@ -667,10 +664,7 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
     });
 
     // Set initial loaded state with 5 files
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.into());
     app.selected_file = 4;
     app.diff_scroll.selected_line = 10;
     app.diff_scroll.scroll_offset = 5;
@@ -758,10 +752,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
     });
 
     // Set initial loaded state with 5 files, selected_file = 4
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.into());
     app.selected_file = 4;
 
     // Set up review comments for file_4.rs (the old selected file)
@@ -866,10 +857,7 @@ async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchang
     });
 
     // Set initial loaded state
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.into());
     app.selected_file = 1;
     app.diff_scroll.selected_line = 2;
     app.diff_scroll.scroll_offset = 1;
@@ -953,10 +941,7 @@ async fn test_handle_data_result_keeps_selected_file_by_filename() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
 
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.clone().into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.clone().into());
     app.selected_file = 1; // file_b.rs
     app.remember_local_file_signatures(&initial_files);
 
@@ -1020,10 +1005,7 @@ async fn test_handle_data_result_auto_focus_selects_next_changed_file() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
 
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.clone().into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.clone().into());
     app.remember_local_file_signatures(&initial_files);
 
     app.handle_data_result(
@@ -1092,10 +1074,7 @@ async fn test_handle_data_result_auto_focus_prefers_nearest_changed_file() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
 
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.clone().into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.clone().into());
     app.remember_local_file_signatures(&initial_files);
 
     app.handle_data_result(
@@ -1165,10 +1144,7 @@ async fn test_handle_data_result_auto_focus_prefers_next_when_distances_are_tie(
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
 
-    app.data_state = DataState::Loaded {
-        pr: pr.clone(),
-        files: initial_files.clone().into(),
-    };
+    app.install_loaded(pr.clone(), initial_files.clone().into());
     app.remember_local_file_signatures(&initial_files);
 
     app.handle_data_result(
@@ -1774,10 +1750,10 @@ async fn test_unchanged_reopen_applies_a_fresh_title_and_body_without_replacing_
     );
     app.cmt.review_comments = Some(vec![]);
     app.chk.ci_status = Some(crate::github::CiStatus::Success);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
-    };
+    app.install_loaded(
+        Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
+    );
     let mut fresh = stored_pull_request(7, "Renamed", "2024-01-01T00:00:00Z");
     fresh.body = Some("new body".to_string());
 
@@ -1880,14 +1856,14 @@ async fn test_unchanged_reopen_refreshes_viewed_state_without_replacing_the_patc
         "@@ cached patch",
         false,
     );
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ cached patch", true), {
+    app.install_loaded(
+        Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ cached patch", true), {
             let mut other = sample_file("@@ other", true);
             other.filename = "src/lib.rs".to_string();
             other
         }]),
-    };
+    );
     app.cmt.review_comments = Some(vec![]);
     app.chk.ci_status = Some(crate::github::CiStatus::Success);
     let plain = crate::ui::diff_view::build_plain_diff_cache("@@ cached patch", 4);
@@ -1946,10 +1922,10 @@ async fn test_changed_fetch_replaces_the_cached_pr() {
     );
     app.cmt.review_comments = Some(vec![]);
     app.chk.ci_status = Some(crate::github::CiStatus::Success);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(7, "Old title", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ old patch", false)]),
-    };
+    app.install_loaded(
+        Box::new(stored_pull_request(7, "Old title", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ old patch", false)]),
+    );
 
     let (tx, rx) = mpsc::channel(1);
     app.data_receiver = Some((7, rx));
@@ -1994,10 +1970,10 @@ async fn test_unchanged_viewed_state_for_another_pr_updates_only_that_cache() {
     );
     app.cmt.review_comments = Some(vec![]);
     app.chk.ci_status = Some(crate::github::CiStatus::Success);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(8, "Current", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ current", false)]),
-    };
+    app.install_loaded(
+        Box::new(stored_pull_request(8, "Current", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ current", false)]),
+    );
 
     let (tx, rx) = mpsc::channel(1);
     app.data_receiver = Some((8, rx));
@@ -2035,10 +2011,10 @@ async fn test_failed_viewed_state_read_keeps_cached_flags() {
     app.pr_number = Some(7);
     app.cmt.review_comments = Some(vec![]);
     app.chk.ci_status = Some(crate::github::CiStatus::Success);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ cached patch", true)]),
-    };
+    app.install_loaded(
+        Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ cached patch", true)]),
+    );
     let (tx, rx) = mpsc::channel(1);
     app.data_receiver = Some((7, rx));
     tx.send(unchanged_result(7, None, None)).await.unwrap();
@@ -2063,10 +2039,10 @@ async fn test_unchanged_reopen_still_fetches_checks_when_the_list_has_no_rollup(
     app.pr_number = Some(7);
     app.chk.ci_status = None;
     app.cmt.review_comments = Some(vec![]);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
-    };
+    app.install_loaded(
+        Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
+    );
     let (tx, rx) = mpsc::channel(1);
     app.data_receiver = Some((7, rx));
     tx.send(unchanged_result(7, None, None)).await.unwrap();
@@ -2103,10 +2079,10 @@ async fn test_unchanged_reopen_does_not_refetch_checks_the_list_already_has() {
     app.pr_number = Some(7);
     app.chk.ci_status = Some(CiStatus::Success);
     app.cmt.review_comments = Some(vec![]);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
-        files: SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
-    };
+    app.install_loaded(
+        Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
+    );
     let (tx, rx) = mpsc::channel(1);
     app.data_receiver = Some((7, rx));
     tx.send(unchanged_result(7, None, None)).await.unwrap();
@@ -2233,8 +2209,8 @@ fn test_collect_unviewed_directory_paths_root_prefix_matches_only_root_files() {
 async fn test_poll_mark_viewed_applies_unmark() {
     let mut app = App::new_for_test();
     app.pr_number = Some(1);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: Some("PR_node1".to_string()),
             title: "Test PR".to_string(),
@@ -2253,7 +2229,7 @@ async fn test_poll_mark_viewed_applies_unmark() {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: vec![
+        vec![
             ChangedFile {
                 filename: "src/main.rs".to_string(),
                 status: "modified".to_string(),
@@ -2272,7 +2248,7 @@ async fn test_poll_mark_viewed_applies_unmark() {
             },
         ]
         .into(),
-    };
+    );
 
     let (tx, rx) = mpsc::channel(1);
     app.mark_viewed_receiver = Some((1, rx));
@@ -2304,8 +2280,8 @@ async fn test_poll_mark_viewed_applies_unmark() {
 async fn test_poll_mark_viewed_skips_apply_on_pr_mismatch() {
     let mut app = App::new_for_test();
     app.pr_number = Some(2);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 2,
             node_id: Some("PR_node2".to_string()),
             title: "Test PR".to_string(),
@@ -2324,7 +2300,7 @@ async fn test_poll_mark_viewed_skips_apply_on_pr_mismatch() {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: vec![ChangedFile {
+        vec![ChangedFile {
             filename: "src/main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -2333,7 +2309,7 @@ async fn test_poll_mark_viewed_skips_apply_on_pr_mismatch() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     let (tx, rx) = mpsc::channel(1);
     // origin_pr=1 but current pr_number=2
@@ -2438,9 +2414,9 @@ fn make_local_pr() -> PullRequest {
 fn test_toggle_markdown_rich() {
     let mut app = App::new_for_test();
     // Set up loaded state with a markdown file
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "README.md".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -2449,7 +2425,7 @@ fn test_toggle_markdown_rich() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     assert!(!app.is_markdown_rich());
 
@@ -2468,9 +2444,9 @@ fn test_toggle_markdown_rich() {
 fn test_toggle_markdown_rich_clears_receivers() {
     let mut app = App::new_for_test();
     // Set up loaded state with a markdown file
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "README.md".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -2479,7 +2455,7 @@ fn test_toggle_markdown_rich_clears_receivers() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     // Simulate having active receivers
     let (_tx, rx) = tokio::sync::mpsc::channel::<(usize, DiffCache)>(1);
@@ -2503,9 +2479,9 @@ fn test_toggle_markdown_rich_clears_receivers() {
 fn test_toggle_markdown_rich_clears_only_md_cache() {
     let mut app = App::new_for_test();
     // Set up loaded state with both md and non-md files
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "README.md".to_string(),
                 status: "modified".to_string(),
@@ -2524,7 +2500,7 @@ fn test_toggle_markdown_rich_clears_only_md_cache() {
             },
         ]
         .into(),
-    };
+    );
 
     // Add cache entries for both files
     // md_cache: markdown_rich=false (built with plain)
@@ -2558,9 +2534,9 @@ fn test_toggle_markdown_rich_clears_only_md_cache() {
 fn test_toggle_markdown_rich_preserves_non_md_diff_cache() {
     let mut app = App::new_for_test();
     // Current file is non-markdown
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -2569,7 +2545,7 @@ fn test_toggle_markdown_rich_preserves_non_md_diff_cache() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     let rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
     app.diff_store.current = Some(rs_cache);
@@ -2607,9 +2583,9 @@ fn make_app_with_patch(patch: &str) -> App {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
+    app.install_loaded(
         pr,
-        files: vec![ChangedFile {
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -2618,7 +2594,7 @@ fn make_app_with_patch(patch: &str) -> App {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
     app
 }
@@ -3507,8 +3483,8 @@ async fn test_patch_signature_detects_same_numstat_different_patch() {
         make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
         make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-foo\n+bar"),
     ];
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: None,
             title: "Test PR".to_string(),
@@ -3527,8 +3503,8 @@ async fn test_patch_signature_detects_same_numstat_different_patch() {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: initial_files.into(),
-    };
+        initial_files.into(),
+    );
 
     // 初回バッチ完了: patch シグネチャを保存（オートフォーカスはスキップ）
     app.update_patch_signatures_and_auto_focus();
@@ -3540,8 +3516,8 @@ async fn test_patch_signature_detects_same_numstat_different_patch() {
         make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged
         make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-foo\n+baz"), // content changed!
     ];
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: None,
             title: "Test PR".to_string(),
@@ -3560,8 +3536,8 @@ async fn test_patch_signature_detects_same_numstat_different_patch() {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: updated_files.into(),
-    };
+        updated_files.into(),
+    );
 
     // 2回目バッチ完了: file_b.rs の patch が変わった → オートフォーカス
     app.update_patch_signatures_and_auto_focus();
@@ -3705,9 +3681,9 @@ fn test_files_returns_empty_when_loading() {
 #[test]
 fn test_files_returns_files_when_loaded() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "a.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -3716,7 +3692,7 @@ fn test_files_returns_files_when_loaded() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     assert_eq!(app.files().len(), 1);
     assert_eq!(app.files()[0].filename, "a.rs");
 }
@@ -3731,10 +3707,7 @@ fn test_pr_returns_none_when_loading() {
 #[test]
 fn test_pr_returns_some_when_loaded() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![].into(),
-    };
+    app.install_loaded(Box::new(make_local_pr()), vec![].into());
     assert!(app.pr().is_some());
     assert_eq!(app.pr().unwrap().number, 0);
 }
@@ -4068,9 +4041,9 @@ fn test_key_could_match_sequence_no_match() {
 #[test]
 fn test_handle_filter_input_char_updates_query() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -4079,7 +4052,7 @@ fn test_handle_filter_input_char_updates_query() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     let mut filter = crate::filter::ListFilter::new();
     filter.apply(app.files(), |_, _| true);
     filter.sync_selection();
@@ -4093,9 +4066,9 @@ fn test_handle_filter_input_char_updates_query() {
 #[test]
 fn test_handle_filter_input_backspace() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -4104,7 +4077,7 @@ fn test_handle_filter_input_backspace() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     let mut filter = crate::filter::ListFilter::new();
     filter.insert_char('a');
     filter.insert_char('b');
@@ -4120,9 +4093,9 @@ fn test_handle_filter_input_backspace() {
 #[test]
 fn test_handle_filter_input_enter_deactivates() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -4131,7 +4104,7 @@ fn test_handle_filter_input_enter_deactivates() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     let mut filter = crate::filter::ListFilter::new();
     filter.insert_char('t');
     filter.apply(app.files(), |_, _| true);
@@ -4209,9 +4182,9 @@ fn test_reapply_filter_pr_list() {
 #[test]
 fn test_reapply_filter_file_list() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "src/main.rs".to_string(),
                 status: "modified".to_string(),
@@ -4230,7 +4203,7 @@ fn test_reapply_filter_file_list() {
             },
         ]
         .into(),
-    };
+    );
     let mut filter = crate::filter::ListFilter::new();
     filter.insert_char('l');
     filter.insert_char('i');
@@ -4246,9 +4219,9 @@ fn test_reapply_filter_file_list() {
 #[test]
 fn test_handle_filter_navigation_down() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -4267,7 +4240,7 @@ fn test_handle_filter_navigation_down() {
             },
         ]
         .into(),
-    };
+    );
     let mut filter = crate::filter::ListFilter::new();
     filter.apply(app.files(), |_, _| true);
     filter.sync_selection();
@@ -4282,9 +4255,9 @@ fn test_handle_filter_navigation_down() {
 #[test]
 fn test_handle_filter_navigation_up() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -4303,7 +4276,7 @@ fn test_handle_filter_navigation_up() {
             },
         ]
         .into(),
-    };
+    );
     let mut filter = crate::filter::ListFilter::new();
     filter.apply(app.files(), |_, _| true);
     filter.sync_selection();
@@ -4488,8 +4461,8 @@ fn test_refresh_all_invalidates_session_cache() {
 async fn test_handle_mark_viewed_key_v_returns_true() {
     let mut app = App::new_for_test();
     app.pr_number = Some(1);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: Some("PR_node".to_string()),
             title: "Test".to_string(),
@@ -4508,7 +4481,7 @@ async fn test_handle_mark_viewed_key_v_returns_true() {
             },
             updated_at: "".to_string(),
         }),
-        files: vec![ChangedFile {
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -4517,7 +4490,7 @@ async fn test_handle_mark_viewed_key_v_returns_true() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     let key = make_key(KeyCode::Char('v'));
     assert!(app.handle_mark_viewed_key(key));
 }
@@ -5037,9 +5010,9 @@ fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
     app.pr_number = Some(0);
     app.working_dir = Some(workdir.to_string_lossy().to_string());
     app.config.local_overrides.insert("ai.reviewer".to_string());
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "src/main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -5048,7 +5021,7 @@ fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     app.start_ai_rally();
 
@@ -5646,9 +5619,9 @@ fn test_push_jump_location_preserves_fields() {
 #[tokio::test]
 async fn test_jump_back_restores_position() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -5672,7 +5645,7 @@ async fn test_jump_back_restores_position() {
             },
         ]
         .into(),
-    };
+    );
 
     // Push current position (line 5 is valid: a.rs has 7 diff lines, indices 0-6)
     app.selected_file = 0;
@@ -5756,9 +5729,9 @@ fn test_comment_after_plusplus_uses_real_new_line() {
 #[test]
 fn test_enter_comment_input_no_patch() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 0,
@@ -5767,7 +5740,7 @@ fn test_enter_comment_input_no_patch() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     // Should not panic
     app.enter_comment_input();
@@ -5793,9 +5766,9 @@ fn test_enter_comment_input_works_in_local_mode() {
     let mut app = make_app_with_patch(patch);
     app.local_mode = true;
     app.pr_number = Some(0);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -5804,7 +5777,7 @@ fn test_enter_comment_input_works_in_local_mode() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.diff_scroll.selected_line = 2;
     app.state = AppState::DiffView;
 
@@ -5822,8 +5795,8 @@ async fn test_open_comment_list_transitions_state() {
     app.state = AppState::FileList;
 
     // Need loaded PR data for comment list
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: None,
             title: "Test".to_string(),
@@ -5842,8 +5815,8 @@ async fn test_open_comment_list_transitions_state() {
             },
             updated_at: "".to_string(),
         }),
-        files: vec![].into(),
-    };
+        vec![].into(),
+    );
     app.previous_state = AppState::FileList;
     app.open_comment_list();
     assert_eq!(app.state, AppState::CommentList);
@@ -5852,10 +5825,7 @@ async fn test_open_comment_list_transitions_state() {
 #[tokio::test]
 async fn test_open_comment_list_sets_previous_state() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![].into(),
-    };
+    app.install_loaded(Box::new(make_local_pr()), vec![].into());
     app.state = AppState::FileList;
     app.previous_state = AppState::FileList;
     app.open_comment_list();
@@ -5868,10 +5838,7 @@ fn test_open_comment_list_transitions_state_in_local_mode() {
     let mut app = App::new_for_test();
     app.local_mode = true;
     app.pr_number = Some(0);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![].into(),
-    };
+    app.install_loaded(Box::new(make_local_pr()), vec![].into());
     app.state = AppState::FileList;
     app.previous_state = AppState::FileList;
 
@@ -5896,9 +5863,9 @@ fn test_submit_local_comment_persists_and_loads() {
     app.local_mode = true;
     app.pr_number = Some(0);
     app.working_dir = Some(workdir.to_string_lossy().to_string());
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "src/test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -5907,7 +5874,7 @@ fn test_submit_local_comment_persists_and_loads() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.diff_scroll.selected_line = 2;
     app.state = AppState::DiffView;
 
@@ -5950,9 +5917,9 @@ fn test_submit_local_comment_persists_and_loads() {
     reloaded.local_mode = true;
     reloaded.pr_number = Some(0);
     reloaded.working_dir = Some(workdir.to_string_lossy().to_string());
-    reloaded.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    reloaded.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "src/test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -5961,7 +5928,7 @@ fn test_submit_local_comment_persists_and_loads() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     reloaded.load_review_comments();
 
     let stored = reloaded.cmt.review_comments.unwrap();
@@ -7747,8 +7714,8 @@ fn test_handle_discussion_detail_scroll_k() {
 #[tokio::test]
 async fn test_jump_to_comment_sets_file_and_line() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: None,
             title: "Test".to_string(),
@@ -7767,7 +7734,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
             },
             updated_at: "".to_string(),
         }),
-        files: vec![
+        vec![
             ChangedFile {
                 filename: "first.rs".to_string(),
                 status: "modified".to_string(),
@@ -7786,7 +7753,7 @@ async fn test_jump_to_comment_sets_file_and_line() {
             },
         ]
         .into(),
-    };
+    );
     app.cmt.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 1,
         path: "second.rs".to_string(),
@@ -8475,9 +8442,9 @@ async fn test_select_pr_cache_miss_sets_loading() {
 #[tokio::test]
 async fn test_poll_diff_cache_accepts_valid() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -8486,7 +8453,7 @@ async fn test_poll_diff_cache_accepts_valid() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
     app.diff_scroll.line_count = 2;
 
@@ -8512,9 +8479,9 @@ async fn test_poll_diff_cache_accepts_valid() {
 #[tokio::test]
 async fn test_poll_diff_cache_rejects_stale_file() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -8533,7 +8500,7 @@ async fn test_poll_diff_cache_rejects_stale_file() {
             },
         ]
         .into(),
-    };
+    );
     app.selected_file = 1; // We're now looking at file 1
 
     // Set current to file 1 (the selected file)
@@ -8561,9 +8528,9 @@ async fn test_poll_diff_cache_rejects_stale_file() {
 #[tokio::test]
 async fn test_poll_prefetch_stores_cache() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -8582,7 +8549,7 @@ async fn test_poll_prefetch_stores_cache() {
             },
         ]
         .into(),
-    };
+    );
     app.selected_file = 0;
 
     let (tx, rx) = mpsc::channel(2);
@@ -8601,9 +8568,9 @@ async fn test_poll_prefetch_stores_cache() {
 #[tokio::test]
 async fn test_poll_prefetch_skips_current_file() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "a.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -8612,7 +8579,7 @@ async fn test_poll_prefetch_skips_current_file() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
 
     // Set up an existing highlighted diff_cache for current file
@@ -9199,9 +9166,9 @@ async fn test_review_submit_timeout_reports_unknown_and_drops_the_submit() {
 async fn test_poll_mark_viewed_success() {
     let mut app = App::new_for_test();
     app.pr_number = Some(1);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9210,7 +9177,7 @@ async fn test_poll_mark_viewed_success() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     let (tx, rx) = mpsc::channel(1);
     app.mark_viewed_receiver = Some((1, rx));
@@ -9237,9 +9204,9 @@ async fn test_poll_mark_viewed_success() {
 async fn test_poll_mark_viewed_error() {
     let mut app = App::new_for_test();
     app.pr_number = Some(1);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "test.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9248,7 +9215,7 @@ async fn test_poll_mark_viewed_error() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     let (tx, rx) = mpsc::channel(1);
     app.mark_viewed_receiver = Some((1, rx));
@@ -9443,10 +9410,7 @@ fn test_open_pr_description_state_transition() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
     app.state = AppState::FileList;
 
     app.open_pr_description();
@@ -9481,10 +9445,7 @@ fn test_open_pr_description_from_split_view() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
     app.state = AppState::SplitViewFileList;
 
     app.open_pr_description();
@@ -9517,10 +9478,7 @@ fn test_open_pr_description_body_none() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
 
     app.open_pr_description();
 
@@ -9552,10 +9510,7 @@ fn test_open_pr_description_body_empty() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
 
     app.open_pr_description();
 
@@ -9587,10 +9542,7 @@ fn test_toggle_markdown_rich_clears_pr_description_cache() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
 
     // Build cache
     app.open_pr_description();
@@ -9625,10 +9577,7 @@ fn test_pr_description_cache_reuse() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
 
     // First open
     app.open_pr_description();
@@ -9655,9 +9604,9 @@ fn test_pr_description_cache_reuse() {
 #[tokio::test]
 async fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9666,7 +9615,7 @@ async fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
     app.markdown_rich = false;
 
@@ -9692,9 +9641,9 @@ async fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
 #[test]
 fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9703,7 +9652,7 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
     app.markdown_rich = false;
     app.diff_store.current = None;
@@ -9734,9 +9683,9 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
 async fn prefetch_plain_cache_still_starts_a_full_highlight() {
     let patch = "@@ -1 +1 @@\n+fn main() { let value = 1; }\n";
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9745,7 +9694,7 @@ async fn prefetch_plain_cache_still_starts_a_full_highlight() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
 
     let mut plain = crate::ui::diff_view::build_plain_diff_cache(patch, 4);
@@ -9788,9 +9737,9 @@ async fn prefetch_plain_cache_still_starts_a_full_highlight() {
 #[tokio::test]
 async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![ChangedFile {
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![ChangedFile {
             filename: "README.md".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9799,7 +9748,7 @@ async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
     app.markdown_rich = true;
 
@@ -9850,9 +9799,9 @@ async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
+    app.install_loaded(
         pr,
-        files: vec![ChangedFile {
+        vec![ChangedFile {
             filename: "main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -9861,7 +9810,7 @@ async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
             viewed: false,
         }]
         .into(),
-    };
+    );
 
     // プリフェッチ済みキャッシュをストアに配置
     let mut rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
@@ -9925,10 +9874,7 @@ fn test_rebuild_pr_description_cache_preserves_scroll() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded {
-        pr,
-        files: vec![].into(),
-    };
+    app.install_loaded(pr, vec![].into());
 
     app.open_pr_description();
     assert_eq!(app.pr_description_scroll_offset, 0);
@@ -9952,9 +9898,9 @@ fn test_rebuild_pr_description_cache_preserves_scroll() {
 #[test]
 fn test_symbol_search_stale_result_discarded_when_file_changed() {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -9973,7 +9919,7 @@ fn test_symbol_search_stale_result_discarded_when_file_changed() {
             },
         ]
         .into(),
-    };
+    );
 
     // Simulate an async search started from file 0
     let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -10121,9 +10067,9 @@ async fn test_poll_git_ops_starts_prefetch_after_status_update() {
     app.set_local_mode(true);
 
     // DataState::Loaded を設定（start_git_ops_prefetch が files() を参照）
-    app.data_state = DataState::Loaded {
-        pr: Box::new(make_local_pr()),
-        files: vec![
+    app.install_loaded(
+        Box::new(make_local_pr()),
+        vec![
             ChangedFile {
                 filename: "a.rs".to_string(),
                 status: "modified".to_string(),
@@ -10142,7 +10088,7 @@ async fn test_poll_git_ops_starts_prefetch_after_status_update() {
             },
         ]
         .into(),
-    };
+    );
 
     // GitOpsState をセットアップ（status_receiver に結果を送信済み）
     let entries = vec![
@@ -10471,10 +10417,7 @@ pub(crate) fn make_app_with_files(filenames: &[&str]) -> App {
     let (mut app, _tx) =
         App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
     let files: Vec<ChangedFile> = filenames.iter().map(|n| make_changed_file(n)).collect();
-    app.data_state = DataState::Loaded {
-        pr: make_test_pr(),
-        files: files.into(),
-    };
+    app.install_loaded(make_test_pr(), files.into());
     app.state = AppState::FileList;
     app
 }
@@ -10750,10 +10693,7 @@ fn test_rebuild_on_data_reload() {
         make_changed_file("src/lib.rs"),
         make_changed_file("README.md"),
     ];
-    app.data_state = DataState::Loaded {
-        pr: make_test_pr(),
-        files: files.into(),
-    };
+    app.install_loaded(make_test_pr(), files.into());
 
     app.rebuild_file_tree_if_active();
 
@@ -13310,10 +13250,7 @@ fn app_for_refresh() -> App {
 }
 
 fn loaded(app: &mut App, files: Vec<ChangedFile>) {
-    app.data_state = DataState::Loaded {
-        pr: Box::new(refresh_pr()),
-        files: files.into(),
-    };
+    app.install_loaded(Box::new(refresh_pr()), files.into());
 }
 
 #[tokio::test]

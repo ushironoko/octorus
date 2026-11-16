@@ -177,7 +177,6 @@ mod tests {
     }
 
     fn app_with_pr_body(body: &str) -> App {
-        use crate::app::DataState;
         use crate::github::{Branch, PullRequest, User};
 
         let (mut app, _) = App::new_loading(
@@ -205,10 +204,7 @@ mod tests {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         });
-        app.data_state = DataState::Loaded {
-            pr,
-            files: vec![].into(),
-        };
+        app.install_loaded(pr, vec![].into());
         app.open_pr_description();
         app
     }

@@ -275,12 +275,12 @@ pub struct App {
     pub theme: Theme,
     /// Line and position index for the patch currently being queried.
     ///
-    /// Keyed by the patch allocation and its hash. A highlight swap keeps the
-    /// same patch text, so the index stays. A refresh, a watcher update, or a
-    /// newly filled untracked patch misses the key and is rebuilt or dropped.
+    /// It holds the file-list `Arc` it indexed, so that allocation cannot be
+    /// freed and reused under the same address. The same patch text in a new
+    /// list retargets it. A different patch rebuilds it.
     cached_patch_lookup: Option<diff_cache::CachedPatchLookup>,
-    /// Bumped when the file list is replaced or edited, so a recycled patch
-    /// allocation cannot keep serving the previous index.
+    /// Bumped by [`diff_cache`] whenever a loaded file list is installed or
+    /// edited, so an in-place patch write cannot keep the previous index.
     files_generation: u64,
     /// How many times the index was built. Tests use this to show a refresh
     /// reuses the index when the patch text is unchanged.
