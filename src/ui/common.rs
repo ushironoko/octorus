@@ -246,7 +246,7 @@ mod tests {
                 },
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
             }),
-            files: vec![],
+            files: vec![].into(),
         };
         assert_eq!(build_pr_info(&app), "PR #42: Add feature X by @alice");
     }

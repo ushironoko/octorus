@@ -29,7 +29,7 @@ pub enum DataLoadResult {
         pr: Option<Box<PullRequest>>,
     },
     /// エラー
-    Error(String),
+    Error(github::GhFailure),
 }
 
 /// 単一ファイルの diff 結果（バッチ/オンデマンド共通）
@@ -108,7 +108,9 @@ pub async fn fetch_local_diff(
     let name_status_output = match run_git_name_status(current_workdir).await {
         Ok(output) => output,
         Err(e) => {
-            let _ = tx.send(DataLoadResult::Error(e.to_string())).await;
+            let _ = tx
+                .send(DataLoadResult::Error(github::GhFailure::from_error(&e)))
+                .await;
             return;
         }
     };
@@ -284,7 +286,9 @@ async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadRes
                 .await;
         }
         Err(e) => {
-            let _ = tx.send(DataLoadResult::Error(e.to_string())).await;
+            let _ = tx
+                .send(DataLoadResult::Error(github::GhFailure::from_error(&e)))
+                .await;
         }
     }
 }

@@ -939,6 +939,40 @@ impl App {
             && self.cmt.comment_receiver.is_none()
     }
 
+    /// Fetch review comments again. The error leaves the pane immediately, and a
+    /// cached list is dropped so the retry actually reads GitHub.
+    pub(crate) fn retry_review_comments(&mut self) {
+        self.cmt.comment_error = None;
+        if !self.local_mode {
+            let cache_key = PrCacheKey {
+                repo: self.repo.clone(),
+                pr_number: self.pr_number(),
+            };
+            self.session_cache.remove_review_comments(&cache_key);
+        }
+        self.load_review_comments();
+    }
+
+    /// Fetch discussion comments again. Same rules as [`Self::retry_review_comments`].
+    pub(crate) fn retry_discussion_comments(&mut self) {
+        self.cmt.discussion_error = None;
+        let cache_key = PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number: self.pr_number(),
+        };
+        self.session_cache.remove_discussion_comments(&cache_key);
+        self.load_discussion_comments();
+    }
+
+    /// The visible comment tab has a fetch failure. `r` retries it, including
+    /// when rows from an earlier fetch are still on screen.
+    fn active_tab_fetch_error(&self) -> bool {
+        match self.cmt.comment_tab {
+            CommentTab::Review => self.cmt.comment_error.is_some(),
+            CommentTab::Discussion => self.cmt.discussion_error.is_some(),
+        }
+    }
+
     pub(crate) fn load_review_comments(&mut self) {
         let cache_key = PrCacheKey {
             repo: self.repo.clone(),
@@ -1051,6 +1085,14 @@ impl App {
 
         if self.matches_single_key(&key, &kb.help) {
             self.open_help(AppState::CommentList);
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &kb.retry) && self.active_tab_fetch_error() {
+            match self.cmt.comment_tab {
+                CommentTab::Review => self.retry_review_comments(),
+                CommentTab::Discussion => self.retry_discussion_comments(),
+            }
             return Ok(());
         }
 
@@ -1584,7 +1626,12 @@ impl App {
     pub(crate) fn comment_panel_content_lines(&self, panel_inner_width: usize) -> usize {
         let indices = self.get_comment_indices_at_current_line();
         if indices.is_empty() {
-            return 1; // "No comments..." message
+            // A failed fetch leaves the body empty. A successful empty line is
+            // the title plus the hint.
+            if self.cmt.comment_error.is_some() {
+                return 0;
+            }
+            return 2;
         }
         let Some(ref comments) = self.cmt.review_comments else {
             return 0;

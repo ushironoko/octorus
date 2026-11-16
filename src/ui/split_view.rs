@@ -376,8 +376,12 @@ fn render_diff_footer(
     attention: Attention,
     theme: Theme,
 ) {
-    let footer_line =
-        super::footer::build_footer_line_with_focus(app, help_text, attention.has_keys());
+    let footer_line = super::footer::build_footer_line_with_focus_fitted(
+        app,
+        help_text,
+        attention.has_keys(),
+        area.width.saturating_sub(2) as usize,
+    );
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         attention.border_style(theme),
@@ -407,90 +411,102 @@ fn render_diff_pane_with_comments(
     render_diff_body(frame, app, chunks[1], panes.diff, theme);
 
     let indices = app.get_comment_indices_at_current_line();
-    let mut lines: Vec<Line> = vec![];
-
-    if indices.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No comments. c: comment, s: suggestion",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else if let Some(ref comments) = app.cmt.review_comments {
-        for (i, &idx) in indices.iter().enumerate() {
-            let Some(comment) = comments.get(idx) else {
-                continue;
-            };
-
-            if i > 0 {
-                lines.push(Line::from(Span::styled(
-                    "───────────────────────────────────────",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("@{}", comment.user.login),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    format!(" (line {})", comment.line_label()),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                pending_comment_tag(comment, theme),
-            ]));
-
-            for line in comment.body.lines() {
-                lines.push(Line::from(line.to_string()));
-            }
-            lines.push(Line::from(""));
-        }
-    }
-
-    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
-
+    let title = super::footer::comment_pane_title(app);
     let block = pane_block(
         theme,
         PaneTitle::Labeled {
             label: "",
-            detail: title,
+            detail: title.as_str(),
         },
         panes.comments,
     );
     let inner_area = block.inner(chunks[2]);
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: true })
-        .scroll((app.cmt.comment_panel_scroll, 0));
-    // The scroll counts wrapped rows, so the scrollbar measures those too.
-    let total_rows = paragraph.line_count(inner_area.width);
-    frame.render_widget(paragraph, chunks[2]);
-    app.hit_map.push(
-        inner_area,
-        crate::ui::hit::HitTarget::Pane {
-            pane: crate::ui::hit::PaneKind::CommentPanel,
-        },
-    );
 
-    if total_rows > inner_area.height as usize {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("▲"))
-            .end_symbol(Some("▼"));
-
-        let max_scroll = total_rows.saturating_sub(1);
-        let mut scrollbar_state =
-            ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
-
-        frame.render_stateful_widget(
-            scrollbar,
-            chunks[2].inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
+    if indices.is_empty() {
+        frame.render_widget(block, chunks[2]);
+        super::state_view::render_comment_placeholder(frame, inner_area, app);
+        app.hit_map.push(
+            inner_area,
+            crate::ui::hit::HitTarget::Pane {
+                pane: crate::ui::hit::PaneKind::CommentPanel,
+            },
         );
+    } else {
+        let mut lines: Vec<Line> = vec![];
+
+        if let Some(ref comments) = app.cmt.review_comments {
+            for (i, &idx) in indices.iter().enumerate() {
+                let Some(comment) = comments.get(idx) else {
+                    continue;
+                };
+
+                if i > 0 {
+                    lines.push(Line::from(Span::styled(
+                        "───────────────────────────────────────",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("@{}", comment.user.login),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        format!(" (line {})", comment.line_label()),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    pending_comment_tag(comment, theme),
+                ]));
+
+                for line in comment.body.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+                lines.push(Line::from(""));
+            }
+        }
+
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: true })
+            .scroll((app.cmt.comment_panel_scroll, 0));
+        // The scroll counts wrapped rows, so the scrollbar measures those too.
+        let total_rows = paragraph.line_count(inner_area.width);
+        frame.render_widget(paragraph, chunks[2]);
+        app.hit_map.push(
+            inner_area,
+            crate::ui::hit::HitTarget::Pane {
+                pane: crate::ui::hit::PaneKind::CommentPanel,
+            },
+        );
+
+        if total_rows > inner_area.height as usize {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let max_scroll = total_rows.saturating_sub(1);
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
+
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[2].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
     }
 
-    let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
+    // The failure status names `r`. The hints keep the other keys.
+    // A reload hides that status, so `r: reply` comes back with the spinner.
+    let footer_text = if super::footer::comment_failure_is_in_the_footer(app) {
+        "j/k/↑↓: scroll | n/N: jump | Tab: switch | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close"
+    } else {
+        "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close"
+    };
     render_diff_footer(frame, app, chunks[3], footer_text, panes.comments, theme);
 }
 
@@ -661,7 +677,7 @@ mod tests {
                 },
                 updated_at: "2025-01-01T00:00:00Z".to_string(),
             }),
-            files,
+            files: files.into(),
         };
         app.toggle_file_tree();
         app
@@ -903,7 +919,7 @@ mod tests {
         let marker = "\\ No newline at end of file";
         let mut app = loaded_app();
         if let DataState::Loaded { files, .. } = &mut app.data_state {
-            files[0].patch = Some(NO_NEWLINE_PATCH.to_string());
+            files.make_mut()[0].patch = Some(NO_NEWLINE_PATCH.to_string());
         }
         app.diff_store.current = Some(diff_view::build_plain_diff_cache(NO_NEWLINE_PATCH, 4));
         app.state = AppState::SplitViewDiff;
@@ -997,6 +1013,79 @@ mod pending_comment_panel_tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         screen_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn split_view_at_160_columns_keeps_the_comment_failure_reason() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = screen_text(terminal.backend().buffer());
+        assert!(text.contains("Couldn't load comments"), "{text}");
+        assert!(
+            text.contains("comments failed"),
+            "the split footer dropped the reason: {text}"
+        );
+        assert!(text.contains("r: reply"), "{text}");
+    }
+
+    #[test]
+    fn a_reload_over_a_comment_failure_keeps_reply_in_the_hints() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        app.cmt.comments_loading = true;
+        let mut terminal = Terminal::new(TestBackend::new(240, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = screen_text(terminal.backend().buffer());
+        let footer = text
+            .lines()
+            .find(|line| line.contains("Loading comments..."))
+            .unwrap_or("");
+        assert!(
+            footer.contains("r: reply"),
+            "the reload hid both the failure and the reply hint: {footer}\n{text}"
+        );
+        assert!(!footer.contains("Couldn't load comments"), "{footer}");
+    }
+
+    #[test]
+    fn split_view_at_220_columns_keeps_the_full_inferred_notice() {
+        use crate::app::PrOpenSource;
+
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.pr_number = Some(1);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        app.cmt.comment_error = Some("gh command failed: unexpected".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(220, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = screen_text(terminal.backend().buffer());
+        let footer = text
+            .lines()
+            .find(|line| line.contains("inferred"))
+            .unwrap_or("");
+        assert!(
+            footer.contains("PR #1 inferred from commit subject; GitHub did not confirm it"),
+            "the notice was cut so the hints could stay whole: {footer}"
+        );
+        assert!(footer.contains("Couldn't load comments"), "{footer}");
+        assert!(footer.contains("r: reply"), "{footer}");
+        assert!(
+            footer.contains("gh command failed: unexpected"),
+            "the reason was cut ahead of the hints: {footer}"
+        );
+        assert!(
+            !footer.contains("n/N: jump"),
+            "ordinary hints stayed whole ahead of the notice: {footer}"
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
@@ -407,15 +409,58 @@ pub struct PrCacheKey {
     pub pr_number: u32,
 }
 
+/// File list shared by `DataState` and [`SessionCache`].
+///
+/// Cloning clones the `Arc`, not the files. Patch and viewed-state updates
+/// mutate the allocation in place when this is the only owner; callers that
+/// hold two clones must drop one before calling [`SharedFiles::make_mut`].
+#[derive(Clone, Debug)]
+pub struct SharedFiles {
+    inner: Arc<[ChangedFile]>,
+}
+
+impl SharedFiles {
+    pub fn empty() -> Self {
+        Self::from(Vec::new())
+    }
+
+    pub fn as_slice(&self) -> &[ChangedFile] {
+        &self.inner
+    }
+
+    /// Unique access to the file list. Clones the slice when other `Arc`s exist.
+    pub fn make_mut(&mut self) -> &mut [ChangedFile] {
+        Arc::make_mut(&mut self.inner)
+    }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl From<Vec<ChangedFile>> for SharedFiles {
+    fn from(files: Vec<ChangedFile>) -> Self {
+        Self {
+            inner: Arc::from(files),
+        }
+    }
+}
+
+impl Deref for SharedFiles {
+    type Target = [ChangedFile];
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 /// PRデータのキャッシュエントリ。
 ///
-/// `Arc` ではなく `Box`/`Vec` + `clone()` を使用する設計。
-/// `SessionCache` はメインスレッドのイベントループからのみアクセスされるため、
-/// スレッド間共有のための `Arc` は不要。`DataState` との間でデータを分配する際は
-/// `clone()` で複製する（PR更新時のみ発生するため頻度は低い）。
+/// `files` は [`SharedFiles`]（`Arc<[ChangedFile]>`）。`DataState` と同じ
+/// 実体を指すので、リロード時にファイル一覧をディープコピーしない。
 pub struct PrData {
     pub pr: Box<PullRequest>,
-    pub files: Vec<ChangedFile>,
+    pub files: SharedFiles,
     pub pr_updated_at: String,
     /// Tip of the base branch when this payload was fetched. `None` means the
     /// next reopen cannot prove the three-dot diff is still current.
@@ -519,10 +564,18 @@ impl SessionCache {
             *data.pr = pr.clone();
         }
         if let Some(viewed) = viewed {
-            for file in &mut data.files {
+            for file in data.files.make_mut() {
                 file.viewed = viewed.get(&file.filename).copied().unwrap_or(false);
             }
         }
+    }
+
+    pub fn contains_pr(&self, key: &PrCacheKey) -> bool {
+        self.pr_data.contains_key(key)
+    }
+
+    pub(crate) fn files_mut(&mut self, key: &PrCacheKey) -> Option<&mut SharedFiles> {
+        self.pr_data.get_mut(key).map(|data| &mut data.files)
     }
 
     pub fn get_review_comments(&self, key: &PrCacheKey) -> Option<&[ReviewComment]> {
@@ -594,15 +647,6 @@ impl SessionCache {
         self.commit_pr_resolutions.insert(sha, resolution);
     }
 
-    /// 特定ファイルの patch を更新（lazy diff ロード結果の反映用）
-    pub fn update_file_patch(&mut self, key: &PrCacheKey, filename: &str, patch: Option<String>) {
-        if let Some(pr_data) = self.pr_data.get_mut(key) {
-            if let Some(file) = pr_data.files.iter_mut().find(|f| f.filename == filename) {
-                file.patch = patch;
-            }
-        }
-    }
-
     pub fn invalidate_all(&mut self) {
         self.pr_data.clear();
         self.access_order.clear();
@@ -627,6 +671,37 @@ impl SessionCache {
     fn browser_review_comment_entry_count(&self) -> usize {
         self.browser_review_comments.len()
     }
+}
+
+/// Fill patches that are still missing. The first filename wins.
+/// Returns the indices that gained a patch.
+pub fn fill_missing_patches(
+    files: &mut [ChangedFile],
+    updates: &[(String, Option<String>)],
+) -> Vec<usize> {
+    let mut index: HashMap<&str, usize> = HashMap::with_capacity(files.len());
+    for (idx, file) in files.iter().enumerate() {
+        index.entry(file.filename.as_str()).or_insert(idx);
+    }
+    let planned: Vec<(usize, String)> = updates
+        .iter()
+        .filter_map(|(name, patch)| {
+            let patch = patch.clone()?;
+            Some((*index.get(name.as_str())?, patch))
+        })
+        .collect();
+    let mut filled = Vec::new();
+    for (idx, patch) in planned {
+        let Some(file) = files.get_mut(idx) else {
+            continue;
+        };
+        if file.patch.is_some() {
+            continue;
+        }
+        file.patch = Some(patch);
+        filled.push(idx);
+    }
+    filled
 }
 
 #[cfg(test)]
@@ -1401,7 +1476,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(pr),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1431,7 +1506,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1452,7 +1527,7 @@ mod tests {
             complete_key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1508,7 +1583,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1530,7 +1605,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1554,7 +1629,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1578,7 +1653,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1645,7 +1720,7 @@ mod tests {
             key1.clone(),
             PrData {
                 pr: Box::new(make_test_pr("PR 1", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1654,7 +1729,7 @@ mod tests {
             key2.clone(),
             PrData {
                 pr: Box::new(make_test_pr("PR 2", "2024-01-02")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-02".to_string(),
                 base_tip_sha: None,
             },
@@ -1678,7 +1753,7 @@ mod tests {
                 key.clone(),
                 PrData {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
-                    files: vec![],
+                    files: vec![].into(),
                     pr_updated_at: "2024-01-01".to_string(),
                     base_tip_sha: None,
                 },
@@ -1720,7 +1795,7 @@ mod tests {
                 key,
                 PrData {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
-                    files: vec![],
+                    files: vec![].into(),
                     pr_updated_at: "2024-01-01".to_string(),
                     base_tip_sha: None,
                 },
@@ -1743,7 +1818,7 @@ mod tests {
             new_key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1780,7 +1855,7 @@ mod tests {
             key.clone(),
             PrData {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1805,7 +1880,7 @@ mod tests {
                 key,
                 PrData {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
-                    files: vec![],
+                    files: vec![].into(),
                     pr_updated_at: "2024-01-01".to_string(),
                     base_tip_sha: None,
                 },
@@ -1821,7 +1896,7 @@ mod tests {
             new_key,
             PrData {
                 pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
-                files: vec![],
+                files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
                 base_tip_sha: None,
             },
@@ -1837,5 +1912,55 @@ mod tests {
         cache.put_discussion_comments(evicted_key.clone(), vec![]);
         assert!(cache.get_review_comments(&evicted_key).is_none());
         assert!(cache.get_discussion_comments(&evicted_key).is_none());
+    }
+
+    fn changed_file(name: &str, patch: Option<&str>) -> ChangedFile {
+        ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: patch.map(str::to_string),
+            viewed: false,
+        }
+    }
+
+    #[test]
+    fn test_fill_missing_patches_uses_filename_and_keeps_existing() {
+        let mut files: Vec<_> = (0..40)
+            .map(|i| changed_file(&format!("f{i}.rs"), None))
+            .collect();
+        files[0].patch = Some("keep".to_string());
+        files.push(changed_file("a.rs", None));
+        files.push(changed_file("a.rs", None));
+
+        let filled = fill_missing_patches(
+            &mut files,
+            &[
+                ("f0.rs".to_string(), Some("nope".to_string())),
+                ("f39.rs".to_string(), Some("last".to_string())),
+                ("missing.rs".to_string(), Some("nope".to_string())),
+                ("a.rs".to_string(), Some("first-only".to_string())),
+                ("b.rs".to_string(), None),
+            ],
+        );
+
+        assert_eq!(filled, vec![39, 40]);
+        assert_eq!(files[0].patch.as_deref(), Some("keep"));
+        assert_eq!(files[1].patch, None);
+        assert_eq!(files[39].patch.as_deref(), Some("last"));
+        assert_eq!(files[40].patch.as_deref(), Some("first-only"));
+        assert_eq!(files[41].filename, "a.rs");
+        assert_eq!(files[41].patch, None);
+        assert!(files
+            .iter()
+            .all(|file| file.patch.as_deref() != Some("nope")));
+
+        let again = fill_missing_patches(
+            &mut files,
+            &[("f39.rs".to_string(), Some("again".to_string()))],
+        );
+        assert!(again.is_empty());
+        assert_eq!(files[39].patch.as_deref(), Some("last"));
     }
 }

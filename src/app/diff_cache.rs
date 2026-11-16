@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tokio::sync::mpsc;
 
 use crate::github::{ChangedFile, PullRequest};
@@ -73,15 +75,13 @@ impl App {
                         self.diff_store.clear_current();
                         return;
                     };
-                    let Some(ref patch) = file.patch else {
-                        self.diff_store.clear_current();
-                        return;
-                    };
-                    let current_hash = hash_string(patch);
-                    if cache.patch_hash == current_hash
-                        && (cache.highlighted || self.diff_store.highlight_in_flight())
-                    {
-                        return; // ハイライト済み、または構築中
+                    if let Some(ref patch) = file.patch {
+                        let current_hash = hash_string(patch);
+                        if cache.patch_hash == current_hash
+                            && (cache.highlighted || self.diff_store.highlight_in_flight())
+                        {
+                            return; // ハイライト済み、または構築中
+                        }
                     }
                 }
             }
@@ -92,6 +92,8 @@ impl App {
             return;
         };
         let Some(patch) = file.patch.clone() else {
+            // Phase 1 has no patch yet. A parked highlight stays in the store
+            // until the bytes arrive; showing it here would be the previous file.
             self.diff_store.clear_current();
             return;
         };
@@ -140,6 +142,144 @@ impl App {
         plain_cache.markdown_rich = markdown_rich;
         self.diff_store.set_current(file_index, plain_cache);
         self.spawn_current_file_highlight(file_index, patch, filename, markdown_rich, tab_width);
+    }
+
+    /// Keep highlighted diffs whose patch still matches the new file list.
+    ///
+    /// Store keys are file indices, so a reorder, insert, or delete re-keys
+    /// each surviving cache by filename. A cache is shown only when that
+    /// filename is unique and the patch hash (plus `markdown_rich` for
+    /// markdown) matches. A phase-1 file has no patch yet: the previous
+    /// highlight is parked in the store and not drawn. The patch load installs
+    /// it when the hash matches, and drops it on a mismatch or a missing patch.
+    pub(crate) fn reconcile_diff_caches(
+        &mut self,
+        old_files: &[ChangedFile],
+        new_files: &[ChangedFile],
+    ) {
+        self.diff_store.drop_prefetch_rx();
+        let markdown_rich = self.markdown_rich;
+        let tab_width = self.config.diff.tab_width;
+
+        let old_counts = name_counts(old_files);
+        let new_counts = name_counts(new_files);
+        let mut old_by_name: HashMap<&str, &ChangedFile> = HashMap::new();
+        for file in old_files {
+            if old_counts.get(file.filename.as_str()).copied() == Some(1) {
+                old_by_name.insert(file.filename.as_str(), file);
+            }
+        }
+        let mut new_index: HashMap<&str, usize> = HashMap::new();
+        for (idx, file) in new_files.iter().enumerate() {
+            if new_counts.get(file.filename.as_str()).copied() == Some(1) {
+                new_index.insert(file.filename.as_str(), idx);
+            }
+        }
+
+        let name_for = |idx: usize| -> Option<&str> {
+            let name = old_files.get(idx)?.filename.as_str();
+            let old_unique = old_counts.get(name).copied() == Some(1);
+            let new_ok = new_counts.get(name).copied().unwrap_or(0) <= 1;
+            (old_unique && new_ok).then_some(name)
+        };
+
+        let previous_key = self.diff_store.current_key().copied();
+        let previous_name = previous_key.and_then(name_for).map(str::to_string);
+
+        let mut by_name: HashMap<String, DiffCache> = HashMap::new();
+        for (key, cache) in self.diff_store.drain_store() {
+            if let Some(name) = name_for(key) {
+                by_name.entry(name.to_string()).or_insert(cache);
+            }
+        }
+        if let Some((key, cache)) = self.diff_store.take_current() {
+            if let Some(name) = name_for(key) {
+                by_name.insert(name.to_string(), cache);
+            }
+        }
+
+        let viewed_name = new_files
+            .get(self.selected_file)
+            .map(|file| file.filename.as_str())
+            .filter(|name| new_counts.get(*name).copied() == Some(1))
+            .map(str::to_string);
+
+        let mut placed_current = false;
+        for (name, mut cache) in by_name {
+            let Some(&idx) = new_index.get(name.as_str()) else {
+                continue;
+            };
+            let (patch, filename, confirmed, park) = {
+                let file = &new_files[idx];
+                let old = old_by_name.get(name.as_str()).copied();
+                let confirmed = cache_matches_refresh(&cache, file, markdown_rich);
+                let park = !confirmed && unconfirmed_cache_parkable(&cache, file, old);
+                (file.patch.clone(), file.filename.clone(), confirmed, park)
+            };
+            if !confirmed && !park {
+                continue;
+            }
+            cache.file_index = idx;
+            if park {
+                // Not drawn. `ensure_diff_cache` installs it once the patch
+                // hash matches, with no plain-text flash.
+                self.diff_store.insert_kept(idx, cache);
+                continue;
+            }
+            if viewed_name.as_deref() == Some(name.as_str()) {
+                let same_job =
+                    previous_name.as_deref() == Some(name.as_str()) && previous_key == Some(idx);
+                let needs_respawn = !same_job && !cache.highlighted && patch.is_some();
+                self.diff_store.install_current(idx, cache, same_job);
+                placed_current = true;
+                if needs_respawn {
+                    if let Some(patch) = patch {
+                        self.spawn_current_file_highlight(
+                            idx,
+                            patch,
+                            filename,
+                            markdown_rich,
+                            tab_width,
+                        );
+                    }
+                }
+            } else {
+                self.diff_store.insert_kept(idx, cache);
+            }
+        }
+        if !placed_current {
+            // The viewed file changed, or its patch no longer matches. Drop any
+            // highlight started for the previous file (#270).
+            self.diff_store.cancel_highlight_job();
+        }
+    }
+
+    /// Drop a cache that does not match `patch` for `file_index`.
+    pub(crate) fn invalidate_cached_patch(&mut self, file_index: usize, patch: &str) {
+        let Some(filename) = self
+            .files()
+            .get(file_index)
+            .map(|file| file.filename.clone())
+        else {
+            return;
+        };
+        let markdown_rich = self.markdown_rich;
+        let hash = hash_string(patch);
+        let matches = |cache: &DiffCache| {
+            let is_md = crate::language::is_markdown_ext_from_filename(&filename);
+            cache.patch_hash == hash && (!is_md || cache.markdown_rich == markdown_rich)
+        };
+        if self.diff_store.current_key() == Some(&file_index) {
+            if !self.diff_store.current.as_ref().is_some_and(matches) {
+                self.diff_store.clear_current();
+            }
+        } else if self
+            .diff_store
+            .store_get(&file_index)
+            .is_some_and(|cache| !matches(cache))
+        {
+            self.diff_store.remove_store(&file_index);
+        }
     }
 
     /// Highlight the file on screen. No size cap and no prefetch time budget.
@@ -224,6 +364,48 @@ impl App {
         cache.patch_hash = body_hash;
         self.pr_description_cache = Some(cache);
     }
+}
+
+fn name_counts(files: &[ChangedFile]) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for file in files {
+        *counts.entry(file.filename.as_str()).or_default() += 1;
+    }
+    counts
+}
+
+fn cache_matches_refresh(cache: &DiffCache, new_file: &ChangedFile, markdown_rich: bool) -> bool {
+    let Some(patch) = new_file.patch.as_deref() else {
+        return false;
+    };
+    let is_md = crate::language::is_markdown_ext_from_filename(&new_file.filename);
+    if is_md && cache.markdown_rich != markdown_rich {
+        return false;
+    }
+    cache.patch_hash == hash_string(patch)
+}
+
+/// Phase 1 may keep the previous highlight off-screen when the file's
+/// status and numstat are unchanged, so a later identical patch can be
+/// installed without rebuilding it. A known structural change is dropped.
+fn unconfirmed_cache_parkable(
+    cache: &DiffCache,
+    new_file: &ChangedFile,
+    old_file: Option<&ChangedFile>,
+) -> bool {
+    if new_file.patch.is_some() {
+        return false;
+    }
+    let Some(old) = old_file else {
+        return false;
+    };
+    old.status == new_file.status
+        && old.additions == new_file.additions
+        && old.deletions == new_file.deletions
+        && old
+            .patch
+            .as_deref()
+            .is_some_and(|patch| hash_string(patch) == cache.patch_hash)
 }
 
 /// PR body を全行 context 行の疑似 patch に変換する

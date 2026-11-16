@@ -9,11 +9,12 @@ use tokio::sync::mpsc;
 
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
+use crate::cache::SharedFiles;
 use crate::diff::{DiffSide, LineType};
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
-    ChangedFile, CommitListPage, GhFailure, IssueComment, IssueDetail, IssueListPage,
-    IssueStateFilter, IssueSummary, LinkedPr, PrCommit, PullRequest,
+    CommitListPage, GhFailure, IssueComment, IssueDetail, IssueListPage, IssueStateFilter,
+    IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
 use crate::loader::SingleFileDiffResult;
 
@@ -490,10 +491,10 @@ impl CockpitMenuItem {
 
 pub struct CockpitState {
     pub selected_item: CockpitMenuItem,
-    pub mentioned_issues_count: LoadState<u32>,
-    pub review_prs_count: LoadState<u32>,
-    pub(crate) mentioned_receiver: Option<mpsc::Receiver<Result<u32, String>>>,
-    pub(crate) review_receiver: Option<mpsc::Receiver<Result<u32, String>>>,
+    pub mentioned_issues_count: LoadState<u32, GhFailure>,
+    pub review_prs_count: LoadState<u32, GhFailure>,
+    pub(crate) mentioned_receiver: Option<mpsc::Receiver<Result<u32, GhFailure>>>,
+    pub(crate) review_receiver: Option<mpsc::Receiver<Result<u32, GhFailure>>>,
     pub repo_available: bool,
 }
 
@@ -594,16 +595,16 @@ pub struct WatcherHandle {
 
 /// PR data loading state.
 ///
-/// Fields use `Box`/`Vec` instead of `Arc` because the app is single-threaded;
-/// data is shared with `SessionCache` via `clone()` (only on PR refresh).
+/// `files` is a [`SharedFiles`] arc also held by `SessionCache`, so a refresh
+/// does not deep-clone the file list.
 #[derive(Debug, Clone)]
 pub enum DataState {
     Loading,
     Loaded {
         pr: Box<PullRequest>,
-        files: Vec<ChangedFile>,
+        files: SharedFiles,
     },
-    Error(String),
+    Error(GhFailure),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1235,7 +1236,7 @@ pub enum IssueDetailFocus {
 /// set to `None` on screen close to discard everything.
 pub struct IssueState {
     // List
-    pub issues: LoadState<Vec<IssueSummary>>,
+    pub issues: LoadState<Vec<IssueSummary>, GhFailure>,
     pub selected_issue: usize,
     pub issue_list_scroll_offset: usize,
     pub issue_list_has_more: bool,
@@ -1259,7 +1260,7 @@ pub struct IssueState {
     // Linked PRs (managed separately from IssueDetail)
     pub linked_prs: LoadState<Vec<LinkedPr>>,
     // Receivers (track origin issue_number to prevent stale updates)
-    pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, String>>>,
+    pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, GhFailure>>>,
     pub(crate) issue_detail_receiver: IssueReceiver<IssueDetail>,
     pub(crate) linked_prs_receiver: IssueReceiver<Vec<LinkedPr>>,
 }

@@ -258,8 +258,13 @@ fn render_tree_pane(
             "Tab/h: focus tree"
         }
     };
-    let footer_line =
-        super::footer::build_footer_line_with_op_toast(app, op_toast, help_text, is_focused);
+    let footer_line = super::footer::build_footer_line_with_op_toast(
+        app,
+        op_toast,
+        help_text,
+        is_focused,
+        chunks[2].width.saturating_sub(2) as usize,
+    );
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         attention.border_style(theme),
