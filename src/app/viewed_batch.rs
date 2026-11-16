@@ -42,7 +42,7 @@ fn loaded(pr_node_id: &str, files: Vec<ChangedFile>) -> App {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files,
+        files: files.into(),
     };
     app
 }
@@ -51,7 +51,7 @@ fn viewed_flags(app: &App) -> Vec<bool> {
     match &app.data_state {
         DataState::Loaded { files, .. } => files.iter().map(|file| file.viewed).collect(),
         DataState::Loading => panic!("expected loaded files"),
-        DataState::Error(message) => panic!("expected loaded files, got error {message}"),
+        DataState::Error(failure) => panic!("expected loaded files, got error {failure}"),
     }
 }
 
