@@ -213,6 +213,13 @@ fn cockpit_failure(app: &App) -> Option<ShownFailure> {
     ))
 }
 
+/// The footer is showing the comment failure, which already names `r`.
+/// The hint line omits that key only in this case, so a reload that hides
+/// the failure puts `r: reply` back.
+pub(super) fn comment_failure_is_in_the_footer(app: &App) -> bool {
+    comment_panel_failure(app).is_some()
+}
+
 fn comment_panel_failure(app: &App) -> Option<ShownFailure> {
     // A reload leaves the old error in place. While that reload is running the
     // spinner is the status, and the failure returns when the reload settles.
@@ -310,10 +317,22 @@ fn failure_status_line(
 ) -> Line<'static> {
     let notice = app.pr_open_notice().unwrap_or_default();
     let tail_width = activity_tail_width(app);
+    // The spinner is cut before the retry key. Reserve only the tail columns
+    // that remain after the title and that key.
+    let action_keep = if failure.action.is_empty() {
+        0
+    } else {
+        line_width("", &failure.head, "", &failure.action, "")
+    };
+    let tail_budget = if width == usize::MAX {
+        tail_width
+    } else {
+        tail_width.min(width.saturating_sub(action_keep))
+    };
     let fitted_width = if width == usize::MAX {
         usize::MAX
     } else {
-        width.saturating_sub(tail_width)
+        width.saturating_sub(tail_budget)
     };
     let (notice, head, reason, action, hints) = fit_failure_line(
         &notice,
@@ -345,7 +364,7 @@ fn failure_status_line(
     if !hints.is_empty() {
         spans.push(Span::raw(format!("  {hints}")));
     }
-    push_activity_tail(app, &mut spans);
+    push_activity_tail_within(app, &mut spans, tail_budget);
     Line::from(spans)
 }
 
@@ -364,18 +383,43 @@ fn activity_tail_width(app: &App) -> usize {
     width
 }
 
-fn push_activity_tail(app: &App, spans: &mut Vec<Span<'static>>) {
+fn push_activity_tail_within(app: &App, spans: &mut Vec<Span<'static>>, budget: usize) {
+    let mut remaining = budget;
     if comments_loading_visible(app) {
-        spans.push(Span::raw("  "));
-        spans.push(loading_comments_span(app));
+        remaining = push_tail_piece(
+            spans,
+            &format!("{} Loading comments...", app.spinner_char()),
+            app.theme.warning.style(),
+            remaining,
+        );
     }
     if app.symbol_search.is_searching() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("{} Searching...", app.spinner_char()),
+        push_tail_piece(
+            spans,
+            &format!("{} Searching...", app.spinner_char()),
             app.theme.warning.style(),
-        ));
+            remaining,
+        );
     }
+}
+
+fn push_tail_piece(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Style,
+    remaining: usize,
+) -> usize {
+    if remaining <= 2 {
+        return remaining;
+    }
+    let shown = truncate_with_width(text, remaining - 2);
+    if shown.is_empty() {
+        return remaining;
+    }
+    let used = 2 + shown.width();
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(shown.into_owned(), style));
+    remaining.saturating_sub(used)
 }
 
 /// Inner width of an 80-column terminal. The footer border takes the other two.
@@ -1819,6 +1863,20 @@ mod tests {
                 !text.contains(segment),
                 "hint `{segment}` is still whole while the reason is cut: {text}"
             );
+        }
+    }
+
+    #[test]
+    fn a_narrow_pr_list_keeps_retry_ahead_of_the_loading_spinner() {
+        let mut app = pr_failure(GhFailureKind::Other, "boom");
+        app.cmt.comments_loading = true;
+        for width in [56usize, 58, 60] {
+            let text = line_of(&app, HELP, width);
+            assert!(
+                text.contains("r: retry"),
+                "{width}: the spinner took the retry key: {text}"
+            );
+            assert!(!text.contains("r…"), "{width}: {text}");
         }
     }
 

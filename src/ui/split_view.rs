@@ -501,7 +501,8 @@ fn render_diff_pane_with_comments(
     }
 
     // The failure status names `r`. The hints keep the other keys.
-    let footer_text = if app.cmt.comment_error.is_some() {
+    // A reload hides that status, so `r: reply` comes back with the spinner.
+    let footer_text = if super::footer::comment_failure_is_in_the_footer(app) {
         "j/k/↑↓: scroll | n/N: jump | Tab: switch | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close"
     } else {
         "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close"
@@ -1029,6 +1030,27 @@ mod pending_comment_panel_tests {
             "the split footer dropped the reason: {text}"
         );
         assert!(text.contains("r: reply"), "{text}");
+    }
+
+    #[test]
+    fn a_reload_over_a_comment_failure_keeps_reply_in_the_hints() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        app.cmt.comments_loading = true;
+        let mut terminal = Terminal::new(TestBackend::new(240, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = screen_text(terminal.backend().buffer());
+        let footer = text
+            .lines()
+            .find(|line| line.contains("Loading comments..."))
+            .unwrap_or("");
+        assert!(
+            footer.contains("r: reply"),
+            "the reload hid both the failure and the reply hint: {footer}\n{text}"
+        );
+        assert!(!footer.contains("Couldn't load comments"), "{footer}");
     }
 
     #[test]

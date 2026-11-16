@@ -1809,7 +1809,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let kb = &app.config.keybindings;
         // The failure status names `r` as retry or reply, whichever it does.
         // The hints keep the close key and do not label `r` a second time.
-        if app.cmt.comment_error.is_some() {
+        // A reload hides that status, so `r: reply` comes back with the spinner.
+        if super::footer::comment_failure_is_in_the_footer(app) {
             "Esc: close".to_string()
         } else {
             format!("{}: reply | Esc: close", kb.reply.display_primary())
@@ -4755,5 +4756,25 @@ mod pending_comment_panel_tests {
             "{}",
             screen_text(&buf)
         );
+    }
+
+    #[test]
+    fn a_reload_over_a_comment_failure_keeps_reply_in_the_hints() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::DiffView;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        app.cmt.comments_loading = true;
+
+        let text = screen_text(&draw(&mut app));
+        let footer = text
+            .lines()
+            .find(|line| line.contains("Loading comments..."))
+            .unwrap_or("");
+        assert!(
+            footer.contains("r: reply"),
+            "the reload hid both the failure and the reply hint: {footer}\n{text}"
+        );
+        assert!(!footer.contains("Couldn't load comments"), "{footer}");
     }
 }
