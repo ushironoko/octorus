@@ -491,10 +491,10 @@ impl CockpitMenuItem {
 
 pub struct CockpitState {
     pub selected_item: CockpitMenuItem,
-    pub mentioned_issues_count: LoadState<u32>,
-    pub review_prs_count: LoadState<u32>,
-    pub(crate) mentioned_receiver: Option<mpsc::Receiver<Result<u32, String>>>,
-    pub(crate) review_receiver: Option<mpsc::Receiver<Result<u32, String>>>,
+    pub mentioned_issues_count: LoadState<u32, GhFailure>,
+    pub review_prs_count: LoadState<u32, GhFailure>,
+    pub(crate) mentioned_receiver: Option<mpsc::Receiver<Result<u32, GhFailure>>>,
+    pub(crate) review_receiver: Option<mpsc::Receiver<Result<u32, GhFailure>>>,
     pub repo_available: bool,
 }
 
@@ -576,7 +576,7 @@ pub enum DataState {
         pr: Box<PullRequest>,
         files: SharedFiles,
     },
-    Error(String),
+    Error(GhFailure),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1208,7 +1208,7 @@ pub enum IssueDetailFocus {
 /// set to `None` on screen close to discard everything.
 pub struct IssueState {
     // List
-    pub issues: LoadState<Vec<IssueSummary>>,
+    pub issues: LoadState<Vec<IssueSummary>, GhFailure>,
     pub selected_issue: usize,
     pub issue_list_scroll_offset: usize,
     pub issue_list_has_more: bool,
@@ -1232,7 +1232,7 @@ pub struct IssueState {
     // Linked PRs (managed separately from IssueDetail)
     pub linked_prs: LoadState<Vec<LinkedPr>>,
     // Receivers (track origin issue_number to prevent stale updates)
-    pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, String>>>,
+    pub(crate) issue_list_receiver: Option<mpsc::Receiver<Result<IssueListPage, GhFailure>>>,
     pub(crate) issue_detail_receiver: IssueReceiver<IssueDetail>,
     pub(crate) linked_prs_receiver: IssueReceiver<Vec<LinkedPr>>,
 }

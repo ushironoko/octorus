@@ -111,8 +111,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let help_text = super::footer::footer_hint_back(&app.config.keybindings);
-    let footer = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, chunks[footer_chunk_idx]);
+    let footer_area = chunks[footer_chunk_idx];
+    let width = footer_area.width.saturating_sub(2) as usize;
+    let footer_line = super::footer::build_footer_line_fitted(app, &help_text, width);
+    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, footer_area);
 }
 
 fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
@@ -166,9 +169,11 @@ fn render_local_comment_list(frame: &mut Frame, app: &mut App) {
 
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let help_text = super::footer::footer_hint_back(&app.config.keybindings);
-    let footer_line = super::footer::build_footer_line(app, &help_text);
+    let footer_area = chunks[footer_chunk_idx];
+    let width = footer_area.width.saturating_sub(2) as usize;
+    let footer_line = super::footer::build_footer_line_fitted(app, &help_text, width);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
-    frame.render_widget(footer, chunks[footer_chunk_idx]);
+    frame.render_widget(footer, footer_area);
 }
 
 /// Generic comment list renderer.
@@ -397,6 +402,12 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     }
 
     if threads.is_empty() {
+        if app.cmt.comment_error.is_some() {
+            let block = Block::default().borders(Borders::ALL);
+            frame.render_widget(block, area);
+            register_comment_list_hits(&mut app.hit_map, area, &[], 0);
+            return;
+        }
         let empty = Paragraph::new("No review comments found")
             .style(app.theme.muted.style())
             .block(Block::default().borders(Borders::ALL));
@@ -773,6 +784,18 @@ fn render_review_thread_data_with_hits(
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     use crate::github::comment::DiscussionComment;
 
+    let empty = app
+        .cmt
+        .discussion_comments
+        .as_ref()
+        .map(|comments| comments.is_empty())
+        .unwrap_or(true);
+    if empty && !app.cmt.discussion_comments_loading && app.cmt.discussion_error.is_some() {
+        let block = Block::default().borders(Borders::ALL);
+        frame.render_widget(block, area);
+        return;
+    }
+
     let theme = app.theme;
     let attention = app.sole_attention();
     render_comment_list_generic(
@@ -980,6 +1003,21 @@ mod tests {
         │? Help | ! Shell | q/Esc Back                                                                     │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    #[test]
+    fn a_failed_comment_fetch_leaves_the_pane_blank() {
+        let mut app = App::new_for_test();
+        app.state = crate::app::AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.review_comments = Some(vec![]);
+        app.cmt.comment_error = Some("comments failed".to_string());
+        let text = render_full(&mut app);
+        assert!(!text.contains("No review comments found"), "{text}");
+        assert!(text.contains("✕ Couldn't load comments"), "{text}");
+        assert!(text.contains("comments failed"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains("Back"), "{text}");
     }
 
     #[test]

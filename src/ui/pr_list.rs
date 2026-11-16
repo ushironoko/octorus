@@ -4,7 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        ScrollbarState,
     },
     Frame,
 };
@@ -13,10 +13,19 @@ use unicode_width::UnicodeWidthStr;
 
 use super::chrome::{pane_block, PaneTitle};
 use super::common::{fit_to_width, render_update_bar};
+use super::state_view::{self, clear_filter_hint, ViewState};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::{CiStatus, GhFailure, GhFailureKind, PullRequestSummary};
+use crate::github::{CiStatus, PrStateFilter, PullRequestSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
+
+fn empty_pr_title(filter: PrStateFilter) -> &'static str {
+    match filter {
+        PrStateFilter::Open => "No open pull requests",
+        PrStateFilter::Closed => "No closed pull requests",
+        PrStateFilter::All => "No pull requests",
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let has_filter_bar = app
@@ -47,33 +56,47 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(header, chunks[0]);
 
     if matches!(app.prs.pr_list, crate::app::LoadState::Loading) {
-        let loading = Paragraph::new(format!("{} Loading PRs...", app.spinner_char())).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Pull Requests"),
+        let state = ViewState::Loading {
+            what: "Loading pull requests…",
+        };
+        state_view::render_in_block(
+            frame,
+            chunks[1],
+            &app.theme,
+            Some("Pull Requests"),
+            &state,
+            app.spinner_char(),
         );
-        frame.render_widget(loading, chunks[1]);
     } else if let Some(prs) = app.prs.pr_list.as_loaded() {
         if prs.is_empty() {
-            let empty = Paragraph::new("No pull requests found").block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Pull Requests"),
+            let title = empty_pr_title(app.prs.pr_list_state_filter);
+            let state = ViewState::Empty { title, hint: None };
+            state_view::render_in_block(
+                frame,
+                chunks[1],
+                &app.theme,
+                Some("Pull Requests"),
+                &state,
+                app.spinner_char(),
             );
-            frame.render_widget(empty, chunks[1]);
         } else {
             let (display_prs, display_selected, total_display) =
                 if let Some(ref filter) = app.prs.pr_list_filter {
                     if filter.matched_indices.is_empty() {
-                        let empty_msg = format!("No matches for '{}'", filter.query);
-                        let empty = Paragraph::new(empty_msg)
-                            .style(Style::default().fg(Color::DarkGray))
-                            .block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                                    .title(format!("Pull Requests (0/{})", prs.len())),
-                            );
-                        frame.render_widget(empty, chunks[1]);
+                        let title = format!("No matches for '{}'", filter.query);
+                        let hint = clear_filter_hint(&app.config.keybindings);
+                        let state = ViewState::Empty {
+                            title: &title,
+                            hint: Some(&hint),
+                        };
+                        state_view::render_in_block(
+                            frame,
+                            chunks[1],
+                            &app.theme,
+                            Some(&format!("Pull Requests (0/{})", prs.len())),
+                            &state,
+                            app.spinner_char(),
+                        );
 
                         let mut next_chunk = 2;
                         if has_filter_bar {
@@ -186,16 +209,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
-    } else if let crate::app::LoadState::Error(failure) = &app.prs.pr_list {
-        let reason = Paragraph::new(failure_reason(failure))
-            .style(app.theme.danger.style())
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Pull Requests"),
-            );
-        frame.render_widget(reason, chunks[1]);
+    } else if matches!(app.prs.pr_list, crate::app::LoadState::Error(_)) {
+        // Nothing loaded. The pane stays blank so it does not say the list is
+        // empty, and the footer carries the failure.
+        state_view::render_blank_pane(frame, chunks[1], Some("Pull Requests"));
     } else {
         let empty = Paragraph::new("Failed to load pull requests").block(
             Block::default()
@@ -222,46 +239,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let kb = &app.config.keybindings;
-    let help_text = if matches!(app.prs.pr_list, crate::app::LoadState::Error(_)) {
-        super::footer::footer_hint_retry_quit(kb)
-    } else {
-        super::footer::footer_hint_quit(kb)
-    };
-    let line = super::footer::build_footer_line(app, &help_text);
+    let help_text = super::footer::footer_hint_quit(&app.config.keybindings);
+    let width = area.width.saturating_sub(2) as usize;
+    let line = super::footer::build_footer_line_fitted(app, &help_text, width);
     let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
-}
-
-/// Why the PR list failed to load, in words the user can act on. Every failure
-/// that reaches the pane is mapped here.
-fn failure_reason(failure: &GhFailure) -> String {
-    match failure.kind {
-        GhFailureKind::CliMissing => "GitHub CLI (gh) not found. Install it and retry.".to_string(),
-        GhFailureKind::Unauthenticated => {
-            "Not authenticated. Run `gh auth login`, then retry.".to_string()
-        }
-        GhFailureKind::Offline => "Network error. Check your connection and retry.".to_string(),
-        GhFailureKind::RateLimited => "GitHub rate limit exceeded. Wait and retry.".to_string(),
-        GhFailureKind::Other => {
-            // A missing repository shows as HTTP 404, or as GraphQL's unresolved
-            // repository. Both stay `Other`, so the text is what tells them apart.
-            let message = failure.message.trim();
-            let lowered = message.to_ascii_lowercase();
-            if lowered.contains("http 404")
-                || lowered.contains("not found")
-                || lowered.contains("could not resolve to a repository")
-            {
-                "Repository not found. Check the owner/repo name.".to_string()
-            } else if lowered.contains("http 403") || lowered.contains("forbidden") {
-                "No access to this repository. Check your permissions, then retry.".to_string()
-            } else if message.is_empty() {
-                "Failed to load pull requests.".to_string()
-            } else {
-                format!("Failed to load pull requests: {message}")
-            }
-        }
-    }
 }
 
 fn build_pr_list_items_ref(
@@ -340,10 +322,15 @@ mod tests {
     use super::super::theme::Attention;
     use super::*;
     use crate::app::{App, AppState, LoadState};
-    use crate::github::{PullRequestSummary, User};
+    use crate::github::{GhFailure, GhFailureKind, PullRequestSummary, User};
+    use crate::keybinding::{KeyBinding, KeySequence};
+    use crate::ui::test_buffer::{
+        cells_of, no_color_theme, theme_with, CUSTOM_DANGER, CUSTOM_WARNING,
+    };
     use insta::assert_snapshot;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::style::{Color, Modifier};
     use ratatui::Terminal;
 
     fn sample_pr(number: u32, title: &str, author: &str) -> PullRequestSummary {
@@ -844,131 +831,239 @@ mod tests {
     }
 
     #[test]
-    fn missing_repo_screen_says_why_and_offers_retry() {
-        let mut app = failed_pr_list_app(GhFailure::other(
-            "gh command failed: gh: Not Found (HTTP 404)",
-        ));
-        let buf = draw_pr_list(&mut app);
-        assert_snapshot!(screen_text(&buf), @"
-        ┌octorus───────────────────────────────────────────────────────────────────────────────────────────┐
-        │PR List: test/repo (open)                                                                         │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌Pull Requests─────────────────────────────────────────────────────────────────────────────────────┐
-        │Repository not found. Check the owner/repo name.                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-        │r Retry | ? Help | ! Shell | q/Esc Quit                                                           │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-        ");
-    }
-
-    #[test]
-    fn failed_load_reason_takes_the_theme_danger_color() {
-        let mut app = failed_pr_list_app(GhFailure::other(
-            "gh command failed: gh: Not Found (HTTP 404)",
-        ));
-        let buf = draw_pr_list(&mut app);
-        let cells = row_cells(&buf, "Repository not found");
-        let letter = cells
-            .iter()
-            .find(|cell| cell.symbol() == "R")
-            .expect("reason text missing");
-        assert_eq!(
-            letter.fg,
-            app.theme.danger.style().fg.expect("danger has a color")
-        );
-    }
-
-    #[test]
-    fn unauthenticated_screen_says_how_to_log_in_and_offers_retry() {
+    fn unauthenticated_pr_list_names_the_login_command_in_danger() {
         let mut app = failed_pr_list_app(GhFailure {
             kind: GhFailureKind::Unauthenticated,
-            message:
-                "gh command failed: To get started with GitHub CLI, please run:  gh auth login"
-                    .to_string(),
+            message: "gh command failed: please run: gh auth login".to_string(),
         });
-        let text = screen_text(&draw_pr_list(&mut app));
-        assert!(
-            text.contains("Not authenticated. Run `gh auth login`, then retry."),
-            "{text}"
-        );
-        assert!(text.contains("r Retry"), "{text}");
+        app.theme = theme_with(crate::config::ThemeColors {
+            danger: Some(CUSTOM_DANGER),
+            ..crate::config::ThemeColors::default()
+        });
+        let buf = draw_pr_list(&mut app);
+        let text = screen_text(&buf);
+        assert!(text.contains("✕ gh is not authenticated"), "{text}");
+        assert!(text.contains("run: gh auth login"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(!text.contains("No open pull requests"), "{text}");
+        assert!(!text.contains("No pull requests"), "{text}");
+        let mark = cells_of(&buf, "✕").expect("danger mark");
+        assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
     }
 
     #[test]
-    fn every_other_failure_kind_gets_a_reason_and_the_retry_footer() {
+    fn offline_and_rate_limit_use_the_warning_mark() {
         let cases = [
             (
-                GhFailureKind::CliMissing,
-                "gh command failed: Failed to execute gh CLI - is it installed?",
-                "GitHub CLI (gh) not found. Install it and retry.",
-            ),
-            (
                 GhFailureKind::Offline,
-                "gh command failed: dial tcp: lookup api.github.com: no such host",
-                "Network error. Check your connection and retry.",
+                "dial tcp: lookup api.github.com",
+                "Can't reach GitHub",
+                "Check your network connection.",
             ),
             (
                 GhFailureKind::RateLimited,
-                "gh command failed: API rate limit exceeded",
-                "GitHub rate limit exceeded. Wait and retry.",
-            ),
-            (
-                GhFailureKind::Other,
-                "gh command failed: HTTP 403: Forbidden",
-                "No access to this repository. Check your permissions, then retry.",
-            ),
-            (
-                GhFailureKind::Other,
-                "gh command failed: something unexpected",
-                "Failed to load pull requests: gh command failed: something unexpected",
+                "API rate limit exceeded",
+                "GitHub API rate limit exceeded",
+                "Try again later.",
             ),
         ];
-        for (kind, message, reason) in cases {
+        for (kind, message, title, reason) in cases {
             let mut app = failed_pr_list_app(GhFailure {
                 kind,
                 message: message.to_string(),
             });
-            let text = screen_text(&draw_pr_list(&mut app));
+            app.theme = theme_with(crate::config::ThemeColors {
+                warning: Some(CUSTOM_WARNING),
+                ..crate::config::ThemeColors::default()
+            });
+            let buf = draw_pr_list(&mut app);
+            let text = screen_text(&buf);
+            assert!(text.contains(&format!("⚠ {title}")), "{kind:?}\n{text}");
+            assert!(text.contains(reason), "{kind:?}\n{text}");
             assert!(
-                text.contains(reason),
-                "{kind:?}: missing {reason:?}\n{text}"
+                !text.to_ascii_lowercase().contains("minute"),
+                "{kind:?}\n{text}"
             );
-            assert!(text.contains("r Retry"), "{kind:?}: no retry hint\n{text}");
+            let mark = cells_of(&buf, "⚠").expect("warning mark");
+            assert!(
+                mark.iter().all(|cell| cell.fg == CUSTOM_WARNING),
+                "{kind:?}"
+            );
         }
     }
 
     #[test]
-    fn long_multi_line_and_empty_github_errors_stay_readable() {
-        let long = format!("gh command failed: {}END", "word ".repeat(40));
-        let mut app = failed_pr_list_app(GhFailure::other(long));
-        let text = screen_text(&draw_pr_list(&mut app));
-        assert!(text.contains("END"), "wrapped error lost its end:\n{text}");
+    fn repository_404_and_forbidden_use_the_refined_titles() {
+        let cases = [
+            (
+                "gh command failed: gh: Not Found (HTTP 404)",
+                "✕ Repository not found",
+                "Check the owner/repo name.",
+            ),
+            (
+                "Could not resolve to a repository",
+                "✕ Repository not found",
+                "Check the owner/repo name.",
+            ),
+            (
+                "HTTP 403: Forbidden",
+                "✕ No access to this repository",
+                "Check your permissions.",
+            ),
+        ];
+        for (message, title, reason) in cases {
+            let mut app = failed_pr_list_app(GhFailure::other(message));
+            let text = screen_text(&draw_pr_list(&mut app));
+            assert!(text.contains(title), "{message}\n{text}");
+            assert!(text.contains(reason), "{message}\n{text}");
+            assert!(app.prs.pr_list.as_loaded().is_none());
+        }
+    }
 
-        let lines = "gh command failed: first line\nsecond line";
-        let mut app = failed_pr_list_app(GhFailure::other(lines));
+    #[test]
+    fn other_failures_show_the_collapsed_message() {
+        let mut app = failed_pr_list_app(GhFailure::other(
+            "gh command failed: something unexpected\nsecond line",
+        ));
+        let wide = screen_text(&draw_sized(&mut app, 160, 24));
+        assert!(wide.contains("✕ Couldn't load pull requests"), "{wide}");
+        assert!(
+            wide.contains("gh command failed: something unexpected second line"),
+            "{wide}"
+        );
         let text = screen_text(&draw_pr_list(&mut app));
-        assert!(text.contains("first line"), "{text}");
-        assert!(text.contains("second line"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains('?'), "{text}");
+
+        let mut app = failed_pr_list_app(GhFailure {
+            kind: GhFailureKind::CliMissing,
+            message: "Failed to execute gh CLI".to_string(),
+        });
+        let wide = screen_text(&draw_sized(&mut app, 160, 24));
+        assert!(wide.contains("✕ gh is not installed"), "{wide}");
+        assert!(
+            wide.contains("Install GitHub CLI (https://cli.github.com), then retry."),
+            "{wide}"
+        );
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("Install GitHub CLI"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains("? Help"), "{text}");
 
         let mut app = failed_pr_list_app(GhFailure::other("  "));
         let text = screen_text(&draw_pr_list(&mut app));
-        assert!(text.contains("Failed to load pull requests."), "{text}");
+        assert!(text.contains("✕ Couldn't load pull requests"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+    }
+
+    #[test]
+    fn no_color_pr_list_still_draws_the_failure_symbols() {
+        let mut app = failed_pr_list_app(GhFailure {
+            kind: GhFailureKind::Offline,
+            message: "dial tcp".to_string(),
+        });
+        app.theme = no_color_theme();
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains('⚠'), "{text}");
+
+        let mut app = failed_pr_list_app(GhFailure {
+            kind: GhFailureKind::Unauthenticated,
+            message: "gh auth login".to_string(),
+        });
+        app.theme = no_color_theme();
+        let buf = draw_pr_list(&mut app);
+        let text = screen_text(&buf);
+        assert!(text.contains('✕'), "{text}");
+        let mark = cells_of(&buf, "✕").expect("cross");
+        assert!(mark
+            .iter()
+            .all(|cell| cell.modifier.contains(Modifier::BOLD) && cell.fg == Color::Reset));
+    }
+
+    #[test]
+    fn retry_label_follows_the_binding() {
+        let mut app = failed_pr_list_app(GhFailure::other("boom"));
+        app.config.keybindings.retry = KeySequence::single(KeyBinding::char('z'));
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("z: retry"), "{text}");
+        assert!(!text.contains("No open pull requests"), "{text}");
+    }
+
+    #[test]
+    fn empty_and_filtered_pr_lists_use_the_shared_empty_state() {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Loaded(vec![]);
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("○ No open pull requests"), "{text}");
+
+        for (filter, title) in [
+            (PrStateFilter::Closed, "○ No closed pull requests"),
+            (PrStateFilter::All, "○ No pull requests"),
+        ] {
+            app.prs.pr_list_state_filter = filter;
+            let text = screen_text(&draw_pr_list(&mut app));
+            assert!(text.contains(title), "{text}");
+            assert!(!text.contains("No matches"), "{text}");
+        }
+        app.prs.pr_list_state_filter = PrStateFilter::Open;
+
+        app.prs.pr_list = LoadState::Loaded(vec![sample_pr(1, "Fix login bug", "alice")]);
+        app.prs.pr_list_filter = Some(crate::filter::ListFilter::new());
+        let filter = app.prs.pr_list_filter.as_mut().unwrap();
+        filter.query = "zzz".to_string();
+        filter.matched_indices.clear();
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("○ No matches for 'zzz'"), "{text}");
+        assert!(text.contains("q/Esc: clear filter"), "{text}");
+    }
+
+    #[test]
+    fn loading_pr_list_is_the_spinner_and_the_new_wording() {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Loading;
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("⠋ Loading pull requests…"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn narrow_pr_list_still_draws_and_keys_do_not_panic() {
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
+
+        let mut app = failed_pr_list_app(GhFailure {
+            kind: GhFailureKind::Unauthenticated,
+            message: "gh auth login".to_string(),
+        });
+        for (width, height) in [(58, 30), (100, 14), (58, 14)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let text = screen_text(terminal.backend().buffer());
+            assert!(
+                text.contains("gh is not authenticated"),
+                "{width}x{height}\n{text}"
+            );
+            assert!(
+                !text.contains("Terminal too small"),
+                "{width}x{height}\n{text}"
+            );
+        }
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
+        }
     }
 
     /// A list whose rows all fit the pane shows no scrollbar: a thumb there

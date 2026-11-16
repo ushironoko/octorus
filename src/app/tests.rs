@@ -6988,11 +6988,10 @@ fn test_max_comment_panel_scroll() {
     app.cmt.file_comment_positions = vec![];
     app.cmt.review_comments = Some(vec![]);
 
-    // No comments at current line -> content = 1 ("No comments..." message)
+    // No comments at the current line: title plus hint is two rows, still inside
+    // the panel, so the scroll bound stays zero.
     let max = app.max_comment_panel_scroll(40, 80);
-    // Content lines (1) - panel inner height
     // Panel inner height ≈ (40-8)*40/100 = 12
-    // saturating_sub means 0
     assert_eq!(max, 0);
 }
 
@@ -7425,11 +7424,10 @@ async fn test_missing_repo_at_startup_shows_reason_then_retry_loads_list() {
     assert!(matches!(app.prs.pr_list, LoadState::Error(_)));
 
     let screen = render_top_lines(&mut app, 24, 24);
-    assert!(
-        screen.contains("Repository not found. Check the owner/repo name."),
-        "{screen}"
-    );
-    assert!(screen.contains("r Retry | "), "{screen}");
+    assert!(screen.contains("✕ Repository not found"), "{screen}");
+    assert!(screen.contains("Check the"), "{screen}");
+    assert!(screen.contains("r: retry"), "{screen}");
+    assert!(screen.contains("? Help"), "{screen}");
 
     app.handle_pr_list_input(make_key(KeyCode::Char('r')))
         .await
@@ -10491,6 +10489,10 @@ async fn test_poll_comment_error_keeps_existing_comments() {
     assert_eq!(comments[0].id, 9);
     assert_eq!(comments[0].body, "kept");
     assert!(!app.cmt.comments_loading);
+    assert!(
+        app.cmt.submission_result.is_none(),
+        "a fetch failure is the footer status, not a second toast"
+    );
 }
 
 #[tokio::test]
@@ -10510,6 +10512,108 @@ async fn test_poll_comment_error_leaves_missing_comments_none() {
     assert!(app.cmt.review_comments.is_none());
     assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
     assert!(!app.cmt.comments_loading);
+    assert!(
+        app.cmt.submission_result.is_none(),
+        "a fetch failure is the footer status, not a toast"
+    );
+}
+
+#[tokio::test]
+async fn test_poll_comment_error_leaves_a_visible_toast_alone() {
+    use tokio::sync::mpsc;
+
+    for existing in [Toast::success("Submitted"), Toast::failure("Failed: save")] {
+        let message = existing.message().to_string();
+        let kind = existing.kind();
+        let mut app = App::new_for_test();
+        app.pr_number = Some(4);
+        app.cmt.comments_loading = true;
+        app.cmt.review_comments = Some(vec![sample_review_comment(9, "kept")]);
+        app.cmt.submission_result = Some(existing);
+
+        let (tx, rx) = mpsc::channel(1);
+        app.cmt.comment_receiver = Some((4, rx));
+        tx.send(Err("comments failed".to_string())).await.unwrap();
+        app.poll_comment_updates();
+
+        let toast = app.cmt.submission_result.expect("submit toast stays");
+        assert_eq!(toast.message(), message);
+        assert_eq!(toast.kind(), kind);
+        assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
+    }
+}
+
+#[tokio::test]
+async fn test_poll_comment_error_does_not_toast() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    app.pr_number = Some(4);
+    app.cmt.comments_loading = true;
+    app.cmt.review_comments = Some(vec![sample_review_comment(9, "kept")]);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Err("comments failed".to_string())).await.unwrap();
+    app.poll_comment_updates();
+    assert!(app.cmt.submission_result.is_none());
+
+    app.cmt.comments_loading = true;
+    let (tx, rx) = mpsc::channel(1);
+    app.cmt.comment_receiver = Some((4, rx));
+    tx.send(Err("comments failed again".to_string()))
+        .await
+        .unwrap();
+    app.poll_comment_updates();
+    assert!(
+        app.cmt.submission_result.is_none(),
+        "a later refresh still does not toast the fetch failure"
+    );
+    assert_eq!(
+        app.cmt.comment_error.as_deref(),
+        Some("comments failed again")
+    );
+}
+
+fn comment_line_app(line: Option<u32>, body: &str) -> App {
+    let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
+    app.state = AppState::DiffView;
+    app.diff_scroll.line_count = 4;
+    let mut comment = sample_review_comment(7, body);
+    comment.path = "test.rs".to_string();
+    comment.line = line;
+    app.cmt.review_comments = Some(vec![comment]);
+    app.update_file_comment_positions();
+    app.cmt.comment_panel_open = true;
+    app.cmt.comment_error = Some("comments failed".to_string());
+    app
+}
+
+#[tokio::test]
+async fn r_on_an_empty_comment_line_with_an_error_retries() {
+    let mut app = comment_line_app(Some(2), "Consider a guard here");
+    app.diff_scroll.selected_line = 1;
+    assert!(
+        app.get_comment_indices_at_current_line().is_empty(),
+        "the context line should have no comment"
+    );
+    press_key(&mut app, KeyCode::Char('r')).await;
+    assert!(app.cmt.comment_error.is_none(), "retry clears the error");
+    assert!(app.cmt.comments_loading || app.cmt.comment_receiver.is_some());
+    assert!(app.input_mode.is_none());
+}
+
+#[tokio::test]
+async fn r_on_a_line_with_comments_still_replies() {
+    let mut app = comment_line_app(Some(2), "Consider a guard here");
+    app.diff_scroll.selected_line = 2;
+    assert!(
+        !app.get_comment_indices_at_current_line().is_empty(),
+        "the added line should carry the comment"
+    );
+    press_key(&mut app, KeyCode::Char('r')).await;
+    assert!(matches!(app.input_mode, Some(InputMode::Reply { .. })));
+    assert_eq!(app.cmt.comment_error.as_deref(), Some("comments failed"));
 }
 
 #[tokio::test]
@@ -10647,7 +10751,9 @@ async fn test_poll_issue_list_error_recovers_from_loading_more() {
     let (tx, rx) = mpsc::channel(1);
     state.issue_list_receiver = Some(rx);
     app.issue_state = Some(state);
-    tx.send(Err("network error".to_string())).await.unwrap();
+    tx.send(Err(crate::github::GhFailure::other("network error")))
+        .await
+        .unwrap();
 
     app.poll_issue_list_updates();
 
@@ -10690,6 +10796,69 @@ async fn test_poll_issue_list_disconnect_recovers_from_loading_more() {
     let items = issue_state.issues.as_loaded().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].number, 20);
+}
+
+#[tokio::test]
+async fn test_poll_issue_list_error_from_loading_is_an_error() {
+    use tokio::sync::mpsc;
+
+    let mut app = App::new_for_test();
+    let mut state = super::types::IssueState::new();
+    state.issues = LoadState::Loading;
+    let (tx, rx) = mpsc::channel(1);
+    state.issue_list_receiver = Some(rx);
+    app.issue_state = Some(state);
+    tx.send(Err(crate::github::GhFailure::other("boom")))
+        .await
+        .unwrap();
+
+    app.poll_issue_list_updates();
+
+    match &app.issue_state.as_ref().unwrap().issues {
+        LoadState::Error(failure) => assert_eq!(failure.message, "boom"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_issue_list_retry_reloads_a_failed_fetch() {
+    let mut app = App::new_for_test();
+    app.state = AppState::IssueList;
+    let mut state = super::types::IssueState::new();
+    state.issues = LoadState::Error(crate::github::GhFailure::other("boom"));
+    app.issue_state = Some(state);
+
+    app.handle_issue_list_input(make_key(KeyCode::Char('r')))
+        .await
+        .unwrap();
+
+    assert!(app.issue_state.as_ref().unwrap().issues.is_loading());
+}
+
+#[tokio::test]
+async fn test_issue_list_retry_ignores_a_list_that_was_never_loaded() {
+    let mut app = App::new_for_test();
+    app.state = AppState::IssueList;
+    app.issue_state = Some(super::types::IssueState::new());
+
+    app.handle_issue_list_input(make_key(KeyCode::Char('r')))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        app.issue_state.as_ref().unwrap().issues,
+        LoadState::NotLoaded
+    ));
+}
+
+#[test]
+fn test_file_list_retry_on_a_narrow_error_switches_to_loading() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Error(crate::github::GhFailure::other("disk full"));
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    app.set_retry_sender(tx);
+    app.retry_load();
+    assert!(matches!(app.data_state, DataState::Loading));
 }
 
 #[test]

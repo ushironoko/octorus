@@ -209,6 +209,45 @@ pub struct GhFailure {
     pub message: String,
 }
 
+impl std::fmt::Display for GhFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Which pane a failure is drawn in. Known kinds keep one title on every
+/// surface. `Other` takes its title from the surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureSurface {
+    PrList,
+    IssueList,
+    FileList,
+    Comments,
+    CockpitCounts,
+    Inbox,
+}
+
+/// How loudly a failure is drawn. Warning is `⚠`, danger is `✕`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureSeverity {
+    Warning,
+    Danger,
+}
+
+/// Display-only refinement of [`GhFailureKind`]. `NotFound` and `NoAccess` are
+/// not kinds: HTTP 404 stays [`GhFailureKind::Other`], and only these methods
+/// read the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayKind {
+    Offline,
+    Unauthenticated,
+    CliMissing,
+    RateLimited,
+    NotFound,
+    NoAccess,
+    Other,
+}
+
 impl GhFailure {
     pub fn from_error(error: &anyhow::Error) -> Self {
         Self {
@@ -223,6 +262,102 @@ impl GhFailure {
             message: message.into(),
         }
     }
+
+    /// A failure whose only remaining evidence is the text. Classification uses
+    /// the same markers as [`classify_gh_failure`]; 404 and 403 stay `Other`
+    /// until [`Self::title`] refines them.
+    pub fn from_message(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::from_error(&anyhow::Error::msg(message))
+    }
+
+    pub fn title(&self, surface: FailureSurface) -> String {
+        match self.display_kind() {
+            DisplayKind::Offline => "Can't reach GitHub".to_string(),
+            DisplayKind::Unauthenticated => "gh is not authenticated".to_string(),
+            DisplayKind::CliMissing => "gh is not installed".to_string(),
+            DisplayKind::RateLimited => "GitHub API rate limit exceeded".to_string(),
+            DisplayKind::NotFound => "Repository not found".to_string(),
+            DisplayKind::NoAccess => "No access to this repository".to_string(),
+            DisplayKind::Other => match surface {
+                FailureSurface::PrList => "Couldn't load pull requests",
+                FailureSurface::IssueList => "Couldn't load issues",
+                FailureSurface::FileList => "Couldn't load files",
+                FailureSurface::Comments => "Couldn't load comments",
+                FailureSurface::CockpitCounts => "Couldn't load counts",
+                FailureSurface::Inbox => "Couldn't load the inbox",
+            }
+            .to_string(),
+        }
+    }
+
+    /// The line under the title. An empty string means the pane draws no reason
+    /// line. `Other` is the message collapsed onto one line; the pane truncates
+    /// it to the available width.
+    pub fn reason(&self) -> String {
+        match self.display_kind() {
+            DisplayKind::Offline => "Check your network connection.".to_string(),
+            DisplayKind::Unauthenticated => "run: gh auth login".to_string(),
+            DisplayKind::CliMissing => {
+                "Install GitHub CLI (https://cli.github.com), then retry.".to_string()
+            }
+            DisplayKind::RateLimited => "Try again later.".to_string(),
+            DisplayKind::NotFound => "Check the owner/repo name.".to_string(),
+            DisplayKind::NoAccess => "Check your permissions.".to_string(),
+            DisplayKind::Other => one_line_message(&self.message),
+        }
+    }
+
+    pub fn severity(&self) -> FailureSeverity {
+        match self.display_kind() {
+            DisplayKind::Offline | DisplayKind::RateLimited => FailureSeverity::Warning,
+            DisplayKind::Unauthenticated
+            | DisplayKind::CliMissing
+            | DisplayKind::NotFound
+            | DisplayKind::NoAccess
+            | DisplayKind::Other => FailureSeverity::Danger,
+        }
+    }
+
+    fn display_kind(&self) -> DisplayKind {
+        match self.kind {
+            GhFailureKind::Offline => DisplayKind::Offline,
+            GhFailureKind::Unauthenticated => DisplayKind::Unauthenticated,
+            GhFailureKind::CliMissing => DisplayKind::CliMissing,
+            GhFailureKind::RateLimited => DisplayKind::RateLimited,
+            GhFailureKind::Other => refine_other_message(&self.message),
+        }
+    }
+}
+
+/// 404 and 403 are a display refinement of `Other`. A bare "not found" is not
+/// a repository miss: `command not found` would match it.
+fn refine_other_message(message: &str) -> DisplayKind {
+    let lowered = message.to_ascii_lowercase();
+    if lowered.contains("http 404") || lowered.contains("could not resolve to a repository") {
+        DisplayKind::NotFound
+    } else if lowered.contains("http 403") || lowered.contains("forbidden") {
+        DisplayKind::NoAccess
+    } else {
+        DisplayKind::Other
+    }
+}
+
+/// Newlines become spaces so the reason is one line. Blank text stays blank,
+/// and the pane then skips the reason line.
+fn one_line_message(message: &str) -> String {
+    let mut line = String::new();
+    for part in message.split(['\n', '\r']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(part);
+    }
+    line
 }
 
 /// Execute gh api command with JSON output
@@ -693,5 +828,138 @@ mod tests {
             classify_gh_failure(&anyhow::anyhow!(message)),
             GhFailureKind::RateLimited
         );
+    }
+
+    fn shown(kind: GhFailureKind, message: &str) -> GhFailure {
+        GhFailure {
+            kind,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn http_404_stays_other_and_reads_as_repository_not_found() {
+        for message in [
+            "gh command failed: gh: Not Found (HTTP 404)",
+            "Could not resolve to a repository",
+            "COULD NOT RESOLVE TO A REPOSITORY with owner/name",
+        ] {
+            let failure = GhFailure::from_message(message);
+            assert_eq!(failure.kind, GhFailureKind::Other, "{message}");
+            assert_eq!(
+                failure.title(FailureSurface::PrList),
+                "Repository not found"
+            );
+            assert_eq!(failure.reason(), "Check the owner/repo name.");
+            assert_eq!(failure.severity(), FailureSeverity::Danger);
+            assert_eq!(
+                failure.title(FailureSurface::IssueList),
+                "Repository not found",
+                "a known display kind keeps one title on every surface"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_not_found_is_not_a_missing_repository() {
+        let failure = GhFailure::from_message("gh: command not found");
+        assert_eq!(failure.kind, GhFailureKind::Other);
+        assert_eq!(
+            failure.title(FailureSurface::PrList),
+            "Couldn't load pull requests"
+        );
+        assert_eq!(failure.reason(), "gh: command not found");
+    }
+
+    #[test]
+    fn http_403_and_forbidden_read_as_no_access() {
+        for message in ["HTTP 403: Forbidden", "gh: Forbidden"] {
+            let failure = GhFailure::other(message);
+            assert_eq!(failure.kind, GhFailureKind::Other, "{message}");
+            assert_eq!(
+                failure.title(FailureSurface::FileList),
+                "No access to this repository"
+            );
+            assert_eq!(failure.reason(), "Check your permissions.");
+            assert_eq!(failure.severity(), FailureSeverity::Danger);
+        }
+    }
+
+    #[test]
+    fn known_kinds_keep_one_title_and_the_spec_reason() {
+        let cases = [
+            (
+                GhFailureKind::Offline,
+                FailureSeverity::Warning,
+                "Can't reach GitHub",
+                "Check your network connection.",
+            ),
+            (
+                GhFailureKind::Unauthenticated,
+                FailureSeverity::Danger,
+                "gh is not authenticated",
+                "run: gh auth login",
+            ),
+            (
+                GhFailureKind::CliMissing,
+                FailureSeverity::Danger,
+                "gh is not installed",
+                "Install GitHub CLI (https://cli.github.com), then retry.",
+            ),
+            (
+                GhFailureKind::RateLimited,
+                FailureSeverity::Warning,
+                "GitHub API rate limit exceeded",
+                "Try again later.",
+            ),
+        ];
+        for (kind, severity, title, reason) in cases {
+            let failure = shown(kind, "ignored because the kind is known");
+            assert_eq!(failure.severity(), severity, "{kind:?}");
+            assert_eq!(failure.title(FailureSurface::PrList), title, "{kind:?}");
+            assert_eq!(failure.title(FailureSurface::Inbox), title, "{kind:?}");
+            assert_eq!(failure.reason(), reason, "{kind:?}");
+            assert!(
+                !failure.reason().to_ascii_lowercase().contains("minute"),
+                "rate-limit reset is not available"
+            );
+        }
+    }
+
+    #[test]
+    fn other_titles_follow_the_surface_and_blank_messages_have_no_reason() {
+        let failure = GhFailure::other("  \n  ");
+        assert_eq!(failure.reason(), "");
+        assert_eq!(failure.severity(), FailureSeverity::Danger);
+        assert_eq!(
+            failure.title(FailureSurface::PrList),
+            "Couldn't load pull requests"
+        );
+        assert_eq!(
+            failure.title(FailureSurface::IssueList),
+            "Couldn't load issues"
+        );
+        assert_eq!(
+            failure.title(FailureSurface::FileList),
+            "Couldn't load files"
+        );
+        assert_eq!(
+            failure.title(FailureSurface::Comments),
+            "Couldn't load comments"
+        );
+        assert_eq!(
+            failure.title(FailureSurface::CockpitCounts),
+            "Couldn't load counts"
+        );
+        assert_eq!(
+            failure.title(FailureSurface::Inbox),
+            "Couldn't load the inbox"
+        );
+    }
+
+    #[test]
+    fn other_reason_joins_lines_with_spaces() {
+        let failure = GhFailure::other("first line\nsecond line\r\nthird");
+        assert_eq!(failure.reason(), "first line second line third");
     }
 }

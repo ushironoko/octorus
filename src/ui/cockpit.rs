@@ -8,6 +8,7 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, CockpitMenuItem, LoadState};
+use crate::github::GhFailure;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 use super::chrome::{pane_block, PaneTitle};
@@ -153,8 +154,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_header(frame, app, chunks[0]);
     render_menu(frame, app, selected, repo_available, chunks[1]);
 
-    let help_text = "q: quit  ?: help  r: refresh";
-    let footer_line = footer::build_footer_line(app, help_text);
+    let counts_failed = app.cockpit_state.as_ref().is_some_and(|cockpit| {
+        matches!(cockpit.mentioned_issues_count, LoadState::Error(_))
+            || matches!(cockpit.review_prs_count, LoadState::Error(_))
+    });
+    // The failure status already names the retry key. Leaving `r: refresh` in
+    // the hints would give `r` two labels.
+    let help_text = if counts_failed {
+        "q: quit  ?: help"
+    } else {
+        "q: quit  ?: help  r: refresh"
+    };
+    let width = chunks[2].width.saturating_sub(2) as usize;
+    let footer_line = footer::build_footer_line_fitted(app, help_text, width);
     let footer_block = footer::build_footer_block(app);
     let footer_widget = Paragraph::new(footer_line).block(footer_block);
     frame.render_widget(footer_widget, chunks[2]);
@@ -169,17 +181,14 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let mut lines = mark_lines(select_header_mark(inner_width), inner_width);
     lines.push(Line::raw(""));
 
-    let mention_span = format_count_span("Issues: ", &cockpit.mentioned_issues_count, app);
-    let review_span = format_count_span("  Review PRs: ", &cockpit.review_prs_count, app);
-
-    let count_line = Line::from(vec![
-        Span::raw("  "),
-        mention_span.0,
-        mention_span.1,
-        review_span.0,
-        review_span.1,
-    ]);
-    lines.push(count_line);
+    let mut count_spans = vec![Span::raw("  ")];
+    for (label, state) in [
+        ("Issues: ", &cockpit.mentioned_issues_count),
+        ("  Review PRs: ", &cockpit.review_prs_count),
+    ] {
+        count_spans.extend(count_spans_for(label, state, app));
+    }
+    lines.push(Line::from(count_spans));
 
     let header = Paragraph::new(lines)
         .alignment(Alignment::Center)
@@ -187,27 +196,35 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(header, area);
 }
 
-fn format_count_span<'a>(
-    label: &'a str,
-    state: &LoadState<u32>,
+fn count_spans_for(
+    label: &str,
+    state: &LoadState<u32, GhFailure>,
     app: &App,
-) -> (Span<'a>, Span<'a>) {
-    let label_span = Span::styled(label, Style::default().fg(Color::DarkGray));
-    let value_span = match state {
-        LoadState::Loading => Span::styled(
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        label.to_string(),
+        Style::default().fg(Color::DarkGray),
+    )];
+    match state {
+        LoadState::Loading => spans.push(Span::styled(
             app.spinner_char().to_string(),
             Style::default().fg(Color::Yellow),
-        ),
-        LoadState::Loaded(count) => Span::styled(
+        )),
+        LoadState::Loaded(count) => spans.push(Span::styled(
             count.to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        ),
-        LoadState::Error(_) => Span::styled("N/A", Style::default().fg(Color::Red)),
-        _ => Span::styled("-", Style::default().fg(Color::DarkGray)),
-    };
-    (label_span, value_span)
+        )),
+        LoadState::Error(_) => {
+            spans.push(Span::styled("—".to_string(), app.theme.muted.style()));
+        }
+        _ => spans.push(Span::styled(
+            "-".to_string(),
+            Style::default().fg(Color::DarkGray),
+        )),
+    }
+    spans
 }
 
 fn render_menu(
@@ -642,6 +659,154 @@ mod tests {
             for line in mark_lines(select_header_mark(inner), inner) {
                 assert!(line.width() <= inner, "inner {inner}: {line:?}");
             }
+        }
+    }
+
+    #[test]
+    fn count_failure_is_a_dash_and_a_reason_not_na() {
+        use crate::github::GhFailure;
+        use crate::ui::test_buffer::{cells_of, theme_with, CUSTOM_DANGER, CUSTOM_MUTED};
+
+        let mut app = make_cockpit_app(true);
+        app.theme = theme_with(crate::config::ThemeColors {
+            danger: Some(CUSTOM_DANGER),
+            muted: Some(CUSTOM_MUTED),
+            ..crate::config::ThemeColors::default()
+        });
+        {
+            let cockpit = app.cockpit_state.as_mut().unwrap();
+            cockpit.mentioned_issues_count = LoadState::Error(GhFailure::other("counts broke"));
+            cockpit.review_prs_count = LoadState::NotLoaded;
+        }
+        let buf = render_at(&mut app, 100, 24);
+        let text = screen_text(&buf);
+        assert!(text.contains('—'), "{text}");
+        assert!(text.contains("Review PRs: -"), "{text}");
+        assert!(!count_row(&text).contains('✕'), "{text}");
+        assert!(
+            text.contains("✕ Couldn't load counts · counts broke"),
+            "{text}"
+        );
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(!text.contains("N/A"), "{text}");
+        let dash = cells_of(&buf, "—").expect("em dash");
+        assert!(dash.iter().all(|cell| cell.fg == CUSTOM_MUTED));
+        let mark = cells_of(&buf, "✕").expect("danger mark");
+        assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
+    }
+
+    fn count_row(text: &str) -> String {
+        text.lines()
+            .find(|line| line.contains("Review PRs:"))
+            .unwrap_or(text)
+            .to_string()
+    }
+
+    fn cockpit_with_counts(
+        issues: LoadState<u32, GhFailure>,
+        reviews: LoadState<u32, GhFailure>,
+    ) -> App {
+        let mut app = make_cockpit_app(true);
+        let cockpit = app.cockpit_state.as_mut().unwrap();
+        cockpit.mentioned_issues_count = issues;
+        cockpit.review_prs_count = reviews;
+        app
+    }
+
+    #[test]
+    fn a_loaded_count_stays_when_the_other_count_fails() {
+        let long = format!(
+            "gh command failed: GraphQL: {}",
+            "the issues connection failed while resolving mentionable users ".repeat(3)
+        );
+        for width in [100u16, 60] {
+            let mut app = cockpit_with_counts(
+                LoadState::Error(GhFailure::other(long.clone())),
+                LoadState::Loaded(5),
+            );
+            let text = screen_text(&render_at(&mut app, width, 24));
+            let row = count_row(&text);
+            assert!(
+                row.contains("Review PRs: 5"),
+                "width {width} dropped the loaded count:\n{row}"
+            );
+            assert!(row.contains("Issues:"), "{row}");
+            assert!(
+                !row.contains('✕'),
+                "the count line drew the failure:\n{row}"
+            );
+            assert!(
+                text.contains("Couldn't load counts"),
+                "width {width} hid the failure:\n{text}"
+            );
+        }
+
+        let mut app = cockpit_with_counts(
+            LoadState::Error(GhFailure::other("counts broke")),
+            LoadState::Loaded(5),
+        );
+        let text = screen_text(&render_at(&mut app, 60, 24));
+        let row = count_row(&text);
+        assert!(row.contains("Review PRs: 5"), "{row}");
+    }
+
+    #[test]
+    fn two_failed_counts_share_one_suffix_and_a_narrow_line_keeps_both() {
+        let mut app = cockpit_with_counts(
+            LoadState::Error(GhFailure::other("alpha broke")),
+            LoadState::Error(GhFailure::other("beta broke")),
+        );
+        let text = screen_text(&render_at(&mut app, 100, 24));
+        let row = count_row(&text);
+        assert!(row.contains("Issues:"), "{row}");
+        assert!(row.contains("Review PRs:"), "{row}");
+        assert!(!row.contains('✕'), "{row}");
+        assert!(text.contains("alpha broke"), "{text}");
+        assert!(text.contains("(+1)"), "{text}");
+        assert!(!text.contains("beta broke"), "{text}");
+
+        let mut app = cockpit_with_counts(
+            LoadState::Error(GhFailure::other(
+                "gh command failed: GraphQL: the issues connection failed",
+            )),
+            LoadState::Loaded(5),
+        );
+        let text = screen_text(&render_at(&mut app, 28, 24));
+        let row = count_row(&text);
+        assert!(row.contains("Issues:"), "{row}");
+        assert!(row.contains("Review PRs: 5"), "{row}");
+        assert!(!row.contains('✕'), "suffix took a count's room:\n{row}");
+    }
+
+    #[tokio::test]
+    async fn narrow_cockpit_still_draws() {
+        use crate::github::GhFailure;
+        use crate::ui::test_buffer::{key_press, terminal_at};
+        use crossterm::event::KeyCode;
+
+        let mut app = make_cockpit_app(true);
+        app.cockpit_state.as_mut().unwrap().mentioned_issues_count =
+            LoadState::Error(GhFailure::other("counts broke"));
+        let buf = render_at(&mut app, 58, 14);
+        let text = screen_text(&buf);
+        assert!(!text.contains("Terminal too small"), "{text}");
+        assert!(
+            text.contains('—') || text.contains("OCTORUS") || text.contains('╔'),
+            "{text}"
+        );
+
+        let mut terminal = terminal_at(58, 14);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('r'),
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
+            app.handle_key_event(key_press(code), &mut terminal)
+                .await
+                .unwrap();
         }
     }
 }

@@ -1142,10 +1142,10 @@ impl App {
                 // split view 側の「Loading diff...」が発生しないようにする
                 self.ensure_diff_cache();
             }
-            DataLoadResult::Error(msg) => {
+            DataLoadResult::Error(failure) => {
                 // Loading状態の場合のみエラー表示（既にデータがある場合は無視）
                 if matches!(self.data_state, DataState::Loading) {
-                    self.data_state = DataState::Error(msg);
+                    self.data_state = DataState::Error(failure);
                 }
             }
         }
@@ -1389,15 +1389,17 @@ impl App {
                     self.reapply_filter("issue");
                 }
             }
-            Ok(Err(_e)) => {
+            Ok(Err(failure)) => {
                 let state = self.issue_state.as_mut().unwrap();
-                state.issues.recover_or(vec![]);
+                state.issues.fail(failure);
                 state.issue_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 let state = self.issue_state.as_mut().unwrap();
-                state.issues.recover_or(vec![]);
+                state
+                    .issues
+                    .fail(GhFailure::other("issue list fetch disconnected"));
                 state.issue_list_receiver = None;
             }
         }
