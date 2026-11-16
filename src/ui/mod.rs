@@ -18,6 +18,7 @@ mod pr_description;
 mod pr_list;
 mod simulate_modal;
 mod split_view;
+mod state_view;
 pub mod text_area;
 pub mod theme;
 
@@ -142,8 +143,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             file_list::render_loading(frame, app);
             return;
         }
-        if let DataState::Error(ref msg) = app.data_state {
-            file_list::render_error(frame, app, msg);
+        if let DataState::Error(ref failure) = app.data_state {
+            file_list::render_error(frame, app, failure);
             return;
         }
     }

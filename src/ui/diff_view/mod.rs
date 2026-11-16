@@ -1819,15 +1819,34 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 /// Render inline comments panel for current line
 fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let indices = app.get_comment_indices_at_current_line();
+    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let theme = app.theme;
+    let comments_attention = app.diff_attention().comments;
+
+    if indices.is_empty() {
+        let block = super::chrome::pane_block(
+            theme,
+            super::chrome::PaneTitle::Labeled {
+                label: "",
+                detail: title,
+            },
+            comments_attention,
+        );
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+        super::state_view::render_comment_placeholder(frame, inner_area, app);
+        app.hit_map.push(
+            inner_area,
+            HitTarget::Pane {
+                pane: PaneKind::CommentPanel,
+            },
+        );
+        return;
+    }
 
     let mut lines: Vec<Line> = vec![];
 
-    if indices.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No comments. c: comment, s: suggestion",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else if let Some(ref comments) = app.cmt.review_comments {
+    if let Some(ref comments) = app.cmt.review_comments {
         let has_multiple = indices.len() > 1;
 
         for (i, &idx) in indices.iter().enumerate() {

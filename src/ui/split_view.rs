@@ -407,14 +407,32 @@ fn render_diff_pane_with_comments(
     render_diff_body(frame, app, chunks[1], panes.diff, theme);
 
     let indices = app.get_comment_indices_at_current_line();
-    let mut lines: Vec<Line> = vec![];
+    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let block = pane_block(
+        theme,
+        PaneTitle::Labeled {
+            label: "",
+            detail: title,
+        },
+        panes.comments,
+    );
+    let inner_area = block.inner(chunks[2]);
 
     if indices.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No comments. c: comment, s: suggestion",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else if let Some(ref comments) = app.cmt.review_comments {
+        frame.render_widget(block, chunks[2]);
+        super::state_view::render_comment_placeholder(frame, inner_area, app);
+        app.hit_map.push(
+            inner_area,
+            crate::ui::hit::HitTarget::Pane {
+                pane: crate::ui::hit::PaneKind::CommentPanel,
+            },
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = vec![];
+
+    if let Some(ref comments) = app.cmt.review_comments {
         for (i, &idx) in indices.iter().enumerate() {
             let Some(comment) = comments.get(idx) else {
                 continue;
@@ -446,17 +464,6 @@ fn render_diff_pane_with_comments(
         }
     }
 
-    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
-
-    let block = pane_block(
-        theme,
-        PaneTitle::Labeled {
-            label: "",
-            detail: title,
-        },
-        panes.comments,
-    );
-    let inner_area = block.inner(chunks[2]);
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: true })

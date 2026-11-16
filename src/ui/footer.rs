@@ -38,6 +38,12 @@ pub fn footer_hint_retry_quit(kb: &KeybindingsConfig) -> String {
     )
 }
 
+/// Retry, then the back hint. The issue list returns to the cockpit or the PR
+/// list, so quit stays "Back".
+pub fn footer_hint_retry_back(kb: &KeybindingsConfig) -> String {
+    format!("{} Retry | {}", kb.retry.display(), footer_hint_back(kb))
+}
+
 /// Priority cascade:
 /// 1. Shell input overlay (highest, focused pane only)
 /// 2. Approve confirmation

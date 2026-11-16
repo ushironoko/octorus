@@ -111,7 +111,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let help_text = super::footer::footer_hint_back(&app.config.keybindings);
-    let footer = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
+    let footer_line = super::footer::build_footer_line(app, &help_text);
+    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
@@ -397,6 +398,10 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     }
 
     if threads.is_empty() {
+        if let Some(message) = app.cmt.comment_error.clone() {
+            render_comment_fetch_error(frame, app, area, &message);
+            return;
+        }
         let empty = Paragraph::new("No review comments found")
             .style(app.theme.muted.style())
             .block(Block::default().borders(Borders::ALL));
@@ -770,8 +775,37 @@ fn render_review_thread_data_with_hits(
     }
 }
 
+fn render_comment_fetch_error(frame: &mut Frame, app: &mut App, area: Rect, message: &str) {
+    use super::state_view::{self, retry_action, ViewState};
+    use crate::github::{FailureSurface, GhFailure};
+
+    let failure = GhFailure::from_message(message);
+    let title = failure.title(FailureSurface::Comments);
+    let state = ViewState::Error {
+        title: &title,
+        reason: failure.reason(),
+        actions: vec![retry_action(&app.config.keybindings)],
+        severity: failure.severity(),
+    };
+    state_view::render_in_block(frame, area, &app.theme, None, &state, app.spinner_char());
+    register_comment_list_hits(&mut app.hit_map, area, &[], 0);
+}
+
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     use crate::github::comment::DiscussionComment;
+
+    let empty = app
+        .cmt
+        .discussion_comments
+        .as_ref()
+        .map(|comments| comments.is_empty())
+        .unwrap_or(true);
+    if empty && !app.cmt.discussion_comments_loading {
+        if let Some(message) = app.cmt.discussion_error.clone() {
+            render_comment_fetch_error(frame, app, area, &message);
+            return;
+        }
+    }
 
     let theme = app.theme;
     let attention = app.sole_attention();

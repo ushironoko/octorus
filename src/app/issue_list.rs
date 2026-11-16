@@ -3,7 +3,7 @@ use crossterm::event;
 use tokio::sync::mpsc;
 
 use crate::filter::ListFilter;
-use crate::github::{self, IssueStateFilter};
+use crate::github::{self, GhFailure, IssueStateFilter};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
 use super::types::{IssueState, LoadState};
@@ -36,7 +36,9 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::fetch_issue_list(&repo, filter, 20).await;
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx
+                .send(result.map_err(|error| GhFailure::from_error(&error)))
+                .await;
         });
     }
 
@@ -60,7 +62,9 @@ impl App {
 
         tokio::spawn(async move {
             let result = github::fetch_issue_list_with_offset(&repo, filter, offset, 20).await;
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx
+                .send(result.map_err(|error| GhFailure::from_error(&error)))
+                .await;
         });
     }
 
@@ -221,6 +225,16 @@ impl App {
                 self.issue_state = None;
                 self.state = AppState::PullRequestList;
             }
+            return Ok(());
+        }
+
+        let retrying_failure = self.matches_single_key(&key, &kb.retry)
+            && self
+                .issue_state
+                .as_ref()
+                .is_some_and(|state| matches!(state.issues, LoadState::Error(_)));
+        if retrying_failure {
+            self.reload_issue_list();
             return Ok(());
         }
 

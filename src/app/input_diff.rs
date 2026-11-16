@@ -372,6 +372,16 @@ impl App {
                 return Ok(());
             }
 
+            // `r` is both retry and reply. A line with no comments and a failed
+            // fetch retries; a line that still has comments replies.
+            if self.matches_single_key(&key, &kb.retry)
+                && self.cmt.comment_error.is_some()
+                && !self.has_comment_at_current_line()
+            {
+                self.retry_review_comments();
+                return Ok(());
+            }
+
             if self.matches_single_key(&key, &kb.reply) {
                 if self.has_comment_at_current_line() {
                     self.enter_reply_input();

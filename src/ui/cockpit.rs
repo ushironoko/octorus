@@ -8,10 +8,13 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, CockpitMenuItem, LoadState};
+use crate::github::{FailureSurface, GhFailure};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 use super::chrome::{pane_block, PaneTitle};
+use super::common::truncate_with_width;
 use super::footer;
+use super::state_view::{failure_style, failure_symbol};
 
 const LOGO_LINES: [&str; 6] = [
     r"  ██████╗   ██████╗ ████████╗  ██████╗  ██████╗  ██╗   ██╗ ███████╗",
@@ -169,17 +172,18 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let mut lines = mark_lines(select_header_mark(inner_width), inner_width);
     lines.push(Line::raw(""));
 
-    let mention_span = format_count_span("Issues: ", &cockpit.mentioned_issues_count, app);
-    let review_span = format_count_span("  Review PRs: ", &cockpit.review_prs_count, app);
-
-    let count_line = Line::from(vec![
-        Span::raw("  "),
-        mention_span.0,
-        mention_span.1,
-        review_span.0,
-        review_span.1,
-    ]);
-    lines.push(count_line);
+    let mut count_spans = vec![Span::raw("  ")];
+    count_spans.extend(count_spans_for(
+        "Issues: ",
+        &cockpit.mentioned_issues_count,
+        app,
+    ));
+    count_spans.extend(count_spans_for(
+        "  Review PRs: ",
+        &cockpit.review_prs_count,
+        app,
+    ));
+    lines.push(Line::from(fit_spans(count_spans, inner_width)));
 
     let header = Paragraph::new(lines)
         .alignment(Alignment::Center)
@@ -187,27 +191,71 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(header, area);
 }
 
-fn format_count_span<'a>(
-    label: &'a str,
-    state: &LoadState<u32>,
+fn count_spans_for(
+    label: &str,
+    state: &LoadState<u32, GhFailure>,
     app: &App,
-) -> (Span<'a>, Span<'a>) {
-    let label_span = Span::styled(label, Style::default().fg(Color::DarkGray));
-    let value_span = match state {
-        LoadState::Loading => Span::styled(
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        label.to_string(),
+        Style::default().fg(Color::DarkGray),
+    )];
+    match state {
+        LoadState::Loading => spans.push(Span::styled(
             app.spinner_char().to_string(),
             Style::default().fg(Color::Yellow),
-        ),
-        LoadState::Loaded(count) => Span::styled(
+        )),
+        LoadState::Loaded(count) => spans.push(Span::styled(
             count.to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        ),
-        LoadState::Error(_) => Span::styled("N/A", Style::default().fg(Color::Red)),
-        _ => Span::styled("-", Style::default().fg(Color::DarkGray)),
-    };
-    (label_span, value_span)
+        )),
+        LoadState::Error(failure) => {
+            spans.push(Span::styled("—".to_string(), app.theme.muted.style()));
+            spans.push(Span::styled(
+                count_failure_suffix(failure),
+                failure_style(app.theme, failure.severity()),
+            ));
+        }
+        _ => spans.push(Span::styled(
+            "-".to_string(),
+            Style::default().fg(Color::DarkGray),
+        )),
+    }
+    spans
+}
+
+fn count_failure_suffix(failure: &GhFailure) -> String {
+    let title = failure.title(FailureSurface::CockpitCounts);
+    let reason = failure.reason();
+    if reason.is_empty() {
+        format!(" {} {title}", failure_symbol(failure.severity()))
+    } else {
+        format!(" {} {title} · {reason}", failure_symbol(failure.severity()))
+    }
+}
+
+/// Cut `spans` to `max_width` columns before the header centers the line.
+/// Centering a line that is already wider than the pane clips both ends.
+fn fit_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
+    let mut used = 0usize;
+    let mut fitted = Vec::new();
+    for span in spans {
+        let width = span.content.width();
+        if used + width <= max_width {
+            used += width;
+            fitted.push(span);
+            continue;
+        }
+        let room = max_width.saturating_sub(used);
+        let text = truncate_with_width(&span.content, room);
+        if !text.is_empty() {
+            fitted.push(Span::styled(text.into_owned(), span.style));
+        }
+        break;
+    }
+    fitted
 }
 
 fn render_menu(
@@ -643,5 +691,52 @@ mod tests {
                 assert!(line.width() <= inner, "inner {inner}: {line:?}");
             }
         }
+    }
+
+    #[test]
+    fn count_failure_is_a_dash_and_a_reason_not_na() {
+        use crate::github::GhFailure;
+        use crate::ui::test_buffer::{cells_of, theme_with, CUSTOM_DANGER, CUSTOM_MUTED};
+
+        let mut app = make_cockpit_app(true);
+        app.theme = theme_with(crate::config::ThemeColors {
+            danger: Some(CUSTOM_DANGER),
+            muted: Some(CUSTOM_MUTED),
+            ..crate::config::ThemeColors::default()
+        });
+        {
+            let cockpit = app.cockpit_state.as_mut().unwrap();
+            cockpit.mentioned_issues_count = LoadState::Error(GhFailure::other("counts broke"));
+            cockpit.review_prs_count = LoadState::NotLoaded;
+        }
+        let buf = render_at(&mut app, 100, 24);
+        let text = screen_text(&buf);
+        assert!(text.contains('—'), "{text}");
+        assert!(
+            text.contains("✕ Couldn't load counts · counts broke"),
+            "{text}"
+        );
+        assert!(text.contains("Review PRs: -"), "{text}");
+        assert!(!text.contains("N/A"), "{text}");
+        let dash = cells_of(&buf, "—").expect("em dash");
+        assert!(dash.iter().all(|cell| cell.fg == CUSTOM_MUTED));
+        let mark = cells_of(&buf, "✕").expect("danger mark");
+        assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
+    }
+
+    #[test]
+    fn narrow_cockpit_still_draws() {
+        use crate::github::GhFailure;
+
+        let mut app = make_cockpit_app(true);
+        app.cockpit_state.as_mut().unwrap().mentioned_issues_count =
+            LoadState::Error(GhFailure::other("counts broke"));
+        let buf = render_at(&mut app, 58, 14);
+        let text = screen_text(&buf);
+        assert!(!text.contains("Terminal too small"), "{text}");
+        assert!(
+            text.contains('—') || text.contains("OCTORUS") || text.contains('╔'),
+            "{text}"
+        );
     }
 }

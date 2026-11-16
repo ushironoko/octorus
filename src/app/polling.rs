@@ -13,6 +13,19 @@ use crate::loader::{CommentSubmitResult, DataLoadResult, ReviewSubmitResult};
 use super::types::*;
 use super::{App, DataState};
 
+/// A failed refresh that still has rows keeps the list and puts the reason in
+/// the footer toast. An empty list draws the error in the pane instead.
+fn note_comment_failure(slot: &mut Option<Toast>, had_rows: bool, error: &str) {
+    if !had_rows {
+        return;
+    }
+    let reason = GhFailure::from_message(error).reason();
+    if reason.is_empty() {
+        return;
+    }
+    *slot = Some(Toast::failure(reason));
+}
+
 impl App {
     pub(crate) fn poll_pr_list_updates(&mut self) {
         let Some(ref mut rx) = self.prs.pr_list_receiver else {
@@ -147,6 +160,12 @@ impl App {
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Failed to fetch comments");
                 if self.pr_number == Some(origin_pr) {
+                    let had_rows = self
+                        .cmt
+                        .review_comments
+                        .as_ref()
+                        .is_some_and(|comments| !comments.is_empty());
+                    note_comment_failure(&mut self.cmt.submission_result, had_rows, &error);
                     self.cmt.comment_error = Some(error);
                     self.cmt.comments_loading = false;
                 }
@@ -473,6 +492,12 @@ impl App {
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Failed to fetch discussion comments");
                 if self.pr_number == Some(origin_pr) {
+                    let had_rows = self
+                        .cmt
+                        .discussion_comments
+                        .as_ref()
+                        .is_some_and(|comments| !comments.is_empty());
+                    note_comment_failure(&mut self.cmt.submission_result, had_rows, &error);
                     self.cmt.discussion_error = Some(error);
                     self.cmt.discussion_comments_loading = false;
                 }
@@ -1098,10 +1123,10 @@ impl App {
                 // split view 側の「Loading diff...」が発生しないようにする
                 self.ensure_diff_cache();
             }
-            DataLoadResult::Error(msg) => {
+            DataLoadResult::Error(failure) => {
                 // Loading状態の場合のみエラー表示（既にデータがある場合は無視）
                 if matches!(self.data_state, DataState::Loading) {
-                    self.data_state = DataState::Error(msg);
+                    self.data_state = DataState::Error(failure);
                 }
             }
         }
@@ -1345,15 +1370,17 @@ impl App {
                     self.reapply_filter("issue");
                 }
             }
-            Ok(Err(_e)) => {
+            Ok(Err(failure)) => {
                 let state = self.issue_state.as_mut().unwrap();
-                state.issues.recover_or(vec![]);
+                state.issues.fail(failure);
                 state.issue_list_receiver = None;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 let state = self.issue_state.as_mut().unwrap();
-                state.issues.recover_or(vec![]);
+                state
+                    .issues
+                    .fail(GhFailure::other("issue list fetch disconnected"));
                 state.issue_list_receiver = None;
             }
         }

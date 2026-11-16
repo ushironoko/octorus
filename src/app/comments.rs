@@ -939,6 +939,54 @@ impl App {
             && self.cmt.comment_receiver.is_none()
     }
 
+    /// Fetch review comments again. The error leaves the pane immediately, and a
+    /// cached list is dropped so the retry actually reads GitHub.
+    pub(crate) fn retry_review_comments(&mut self) {
+        self.cmt.comment_error = None;
+        if !self.local_mode {
+            let cache_key = PrCacheKey {
+                repo: self.repo.clone(),
+                pr_number: self.pr_number(),
+            };
+            self.session_cache.remove_review_comments(&cache_key);
+        }
+        self.load_review_comments();
+    }
+
+    /// Fetch discussion comments again. Same rules as [`Self::retry_review_comments`].
+    pub(crate) fn retry_discussion_comments(&mut self) {
+        self.cmt.discussion_error = None;
+        let cache_key = PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number: self.pr_number(),
+        };
+        self.session_cache.remove_discussion_comments(&cache_key);
+        self.load_discussion_comments();
+    }
+
+    /// The comment-list pane is showing a fetch failure rather than rows.
+    fn comment_list_shows_fetch_error(&self) -> bool {
+        match self.cmt.comment_tab {
+            CommentTab::Review => {
+                self.cmt.review_threads.is_empty()
+                    && self.cmt.comment_error.is_some()
+                    && !(self.cmt.comments_loading && self.cmt.review_comments.is_none())
+            }
+            CommentTab::Discussion => {
+                let empty = self
+                    .cmt
+                    .discussion_comments
+                    .as_ref()
+                    .map(|comments| comments.is_empty())
+                    .unwrap_or(true);
+                empty
+                    && self.cmt.discussion_error.is_some()
+                    && !(self.cmt.discussion_comments_loading
+                        && self.cmt.discussion_comments.is_none())
+            }
+        }
+    }
+
     pub(crate) fn load_review_comments(&mut self) {
         let cache_key = PrCacheKey {
             repo: self.repo.clone(),
@@ -1051,6 +1099,14 @@ impl App {
 
         if self.matches_single_key(&key, &kb.help) {
             self.open_help(AppState::CommentList);
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &kb.retry) && self.comment_list_shows_fetch_error() {
+            match self.cmt.comment_tab {
+                CommentTab::Review => self.retry_review_comments(),
+                CommentTab::Discussion => self.retry_discussion_comments(),
+            }
             return Ok(());
         }
 
@@ -1584,7 +1640,12 @@ impl App {
     pub(crate) fn comment_panel_content_lines(&self, panel_inner_width: usize) -> usize {
         let indices = self.get_comment_indices_at_current_line();
         if indices.is_empty() {
-            return 1; // "No comments..." message
+            // Title plus hint, or title, reason, and the retry action.
+            let Some(message) = self.cmt.comment_error.as_deref() else {
+                return 2;
+            };
+            let reason = crate::github::GhFailure::from_message(message).reason();
+            return if reason.is_empty() { 2 } else { 3 };
         }
         let Some(ref comments) = self.cmt.review_comments else {
             return 0;

@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Margin},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{
@@ -14,8 +14,9 @@ use super::common::{
     build_ci_status_span, build_pending_review_span, build_pr_info, render_rally_status_bar,
     render_update_bar,
 };
+use super::state_view::{self, retry_action, ViewState};
 use crate::app::{App, TreeRow};
-use crate::github::ChangedFile;
+use crate::github::{ChangedFile, FailureSurface, GhFailure};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 use crate::ui::theme::Theme;
 use std::collections::HashMap;
@@ -335,20 +336,20 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    let loading_msg = if app.is_local_mode() {
-        format!("{} Loading local diff...", app.spinner_char())
+    let what = if app.is_local_mode() {
+        "Loading local diff…"
     } else {
-        format!("{} Loading PR data...", app.spinner_char())
+        "Loading PR data…"
     };
-    let loading = Paragraph::new(loading_msg)
-        .style(Style::default().fg(Color::Yellow))
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Changed Files"),
-        );
-    frame.render_widget(loading, chunks[1]);
+    let loading = ViewState::Loading { what };
+    state_view::render_in_block(
+        frame,
+        chunks[1],
+        &app.theme,
+        Some("Changed Files"),
+        &loading,
+        app.spinner_char(),
+    );
 
     let footer_text = app
         .pr_open_notice()
@@ -358,7 +359,7 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
     frame.render_widget(footer, chunks[2]);
 }
 
-pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
+pub fn render_error(frame: &mut Frame, app: &App, failure: &GhFailure) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -380,12 +381,29 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    let error = Paragraph::new(format!("Error: {}", error_msg))
-        .style(Style::default().fg(Color::Red))
-        .block(Block::default().borders(Borders::ALL).title("Error"));
-    frame.render_widget(error, chunks[1]);
+    let title = failure.title(FailureSurface::FileList);
+    let error = ViewState::Error {
+        title: &title,
+        reason: failure.reason(),
+        actions: vec![retry_action(&app.config.keybindings)],
+        severity: failure.severity(),
+    };
+    state_view::render_in_block(
+        frame,
+        chunks[1],
+        &app.theme,
+        Some("Changed Files"),
+        &error,
+        app.spinner_char(),
+    );
 
-    let footer = Paragraph::new("r: retry | q: quit").block(Block::default().borders(Borders::ALL));
+    let kb = &app.config.keybindings;
+    let footer_text = format!(
+        "{}: retry │ {}: quit",
+        kb.retry.display_primary(),
+        kb.quit.display_primary(),
+    );
+    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -662,7 +680,7 @@ mod tests {
         │PR #123 - Loading...                                                                    │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ┌Changed Files───────────────────────────────────────────────────────────────────────────┐
-        │                                  ⠋ Loading PR data...                                  │
+        │⠋ Loading PR data…                                                                      │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ┌────────────────────────────────────────────────────────────────────────────────────────┐
         │PR #123 inferred from commit subject; GitHub did not confirm it                         │
@@ -697,12 +715,96 @@ mod tests {
         │PR #1 - Loading...                                                                      │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ┌Changed Files───────────────────────────────────────────────────────────────────────────┐
-        │                                  ⠋ Loading PR data...                                  │
+        │⠋ Loading PR data…                                                                      │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ┌────────────────────────────────────────────────────────────────────────────────────────┐
         │1 config warning (? for details)  ⠋ Please wait... (q: quit)                            │
         └────────────────────────────────────────────────────────────────────────────────────────┘
         ");
+    }
+
+    #[test]
+    fn loading_starts_at_the_top_left_and_errors_use_the_failure_table() {
+        use crate::github::{GhFailure, GhFailureKind};
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        let app = App::new_for_test();
+        let backend = TestBackend::new(90, 9);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render_loading(frame, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        assert_eq!(
+            buf[(1, 4)].symbol(),
+            "⠋",
+            "loading is the first cell of the pane"
+        );
+        let row = (0..90).map(|x| buf[(x, 4)].symbol()).collect::<String>();
+        assert!(row.contains("Loading PR data…"), "{row}");
+        assert!(!row.contains("Loading PR data..."), "{row}");
+
+        let mut app = App::new_for_test();
+        app.config.keybindings.retry = KeySequence::single(KeyBinding::char('z'));
+        app.config.keybindings.quit = KeySequence::single(KeyBinding::char('x'));
+        let failure = GhFailure::other("disk full");
+        let backend = TestBackend::new(90, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_error(frame, &app, &failure))
+            .unwrap();
+        let text = (0..12)
+            .map(|y| {
+                (0..90)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("✕ Couldn't load files"), "{text}");
+        assert!(text.contains("disk full"), "{text}");
+        assert!(text.contains("z: retry"), "{text}");
+        assert!(text.contains("x: quit"), "{text}");
+        assert!(!text.contains("Error: disk full"), "{text}");
+
+        let missing = GhFailure {
+            kind: GhFailureKind::Offline,
+            message: "dial tcp".to_string(),
+        };
+        terminal
+            .draw(|frame| render_error(frame, &app, &missing))
+            .unwrap();
+        let text = (0..12)
+            .map(|y| {
+                (0..90)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("⚠ Can't reach GitHub"), "{text}");
+        assert!(text.contains("Check your network connection."), "{text}");
+    }
+
+    #[test]
+    fn narrow_file_list_error_draws_without_a_too_small_gate() {
+        use crate::github::GhFailure;
+
+        let app = App::new_for_test();
+        let failure = GhFailure::other("disk full");
+        let backend = TestBackend::new(58, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_error(frame, &app, &failure))
+            .unwrap();
+        let text = (0..14)
+            .map(|y| {
+                (0..58)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Couldn't load files"), "{text}");
+        assert!(!text.contains("Terminal too small"), "{text}");
     }
 }
 

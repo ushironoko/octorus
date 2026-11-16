@@ -13,9 +13,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::chrome::{pane_block, PaneTitle};
 use super::common::fit_to_width;
+use super::state_view::{self, clear_filter_hint, retry_action, ViewState};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::IssueSummary;
+use crate::github::{FailureSurface, IssueSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -46,27 +47,49 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(header, chunks[0]);
 
     if matches!(state.issues, crate::app::LoadState::Loading) {
-        let loading = Paragraph::new(format!("{} Loading issues...", app.spinner_char()))
-            .block(Block::default().borders(Borders::ALL).title("Issues"));
-        frame.render_widget(loading, chunks[1]);
+        let loading = ViewState::Loading {
+            what: "Loading issues…",
+        };
+        state_view::render_in_block(
+            frame,
+            chunks[1],
+            &app.theme,
+            Some("Issues"),
+            &loading,
+            app.spinner_char(),
+        );
     } else if let Some(issues) = state.issues.as_loaded() {
         if issues.is_empty() {
-            let empty = Paragraph::new("No issues found")
-                .block(Block::default().borders(Borders::ALL).title("Issues"));
-            frame.render_widget(empty, chunks[1]);
+            let empty = ViewState::Empty {
+                title: "No open issues",
+                hint: None,
+            };
+            state_view::render_in_block(
+                frame,
+                chunks[1],
+                &app.theme,
+                Some("Issues"),
+                &empty,
+                app.spinner_char(),
+            );
         } else {
             let (display_issues, display_selected, total_display, display_indices) =
                 if let Some(ref filter) = state.issue_list_filter {
                     if filter.matched_indices.is_empty() {
-                        let empty_msg = format!("No matches for '{}'", filter.query);
-                        let empty = Paragraph::new(empty_msg)
-                            .style(Style::default().fg(Color::DarkGray))
-                            .block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                                    .title(format!("Issues (0/{})", issues.len())),
-                            );
-                        frame.render_widget(empty, chunks[1]);
+                        let title = format!("No matches for '{}'", filter.query);
+                        let hint = clear_filter_hint(&app.config.keybindings);
+                        let state = ViewState::Empty {
+                            title: &title,
+                            hint: Some(&hint),
+                        };
+                        state_view::render_in_block(
+                            frame,
+                            chunks[1],
+                            &app.theme,
+                            Some(&format!("Issues (0/{})", issues.len())),
+                            &state,
+                            app.spinner_char(),
+                        );
 
                         let mut next_chunk = 2;
                         if has_filter_bar {
@@ -174,7 +197,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+    } else if let crate::app::LoadState::Error(failure) = &state.issues {
+        let title = failure.title(FailureSurface::IssueList);
+        let error = ViewState::Error {
+            title: &title,
+            reason: failure.reason(),
+            actions: vec![retry_action(&app.config.keybindings)],
+            severity: failure.severity(),
+        };
+        state_view::render_in_block(
+            frame,
+            chunks[1],
+            &app.theme,
+            Some("Issues"),
+            &error,
+            app.spinner_char(),
+        );
     } else {
+        // Not loaded yet. That is not a failure, so it keeps the old line and
+        // does not offer retry.
         let empty = Paragraph::new("Failed to load issues")
             .block(Block::default().borders(Borders::ALL).title("Issues"));
         frame.render_widget(empty, chunks[1]);
@@ -194,7 +235,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let help_text = if matches!(
+        app.issue_state.as_ref().map(|state| &state.issues),
+        Some(crate::app::LoadState::Error(_))
+    ) {
+        super::footer::footer_hint_retry_back(&app.config.keybindings)
+    } else {
+        super::footer::footer_hint_back(&app.config.keybindings)
+    };
     let line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
@@ -332,7 +380,7 @@ mod tests {
         │Issue List: test/repo (open)                                                                      │
         └──────────────────────────────────────────────────────────────────────────────────────────────────┘
         ┌Issues────────────────────────────────────────────────────────────────────────────────────────────┐
-        │No issues found                                                                                   │
+        │○ No open issues                                                                                  │
         │                                                                                                  │
         │                                                                                                  │
         │                                                                                                  │
@@ -516,5 +564,75 @@ mod tests {
             !output.contains("Issues"),
             "no issue panel when state is None"
         );
+    }
+
+    #[test]
+    fn other_issue_failure_uses_the_issue_title_and_offers_retry() {
+        use crate::github::{FailureSurface, GhFailure};
+        use crate::keybinding::{KeyBinding, KeySequence};
+        use crate::ui::test_buffer::{cells_of, theme_with, CUSTOM_DANGER};
+
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        let mut issue_state = IssueState::new();
+        issue_state.issues = crate::app::LoadState::Error(GhFailure::other("boom\nsecond"));
+        app.issue_state = Some(issue_state);
+        app.theme = theme_with(crate::config::ThemeColors {
+            danger: Some(CUSTOM_DANGER),
+            ..crate::config::ThemeColors::default()
+        });
+        app.config.keybindings.retry = KeySequence::single(KeyBinding::char('z'));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let text = (0..buf.area().height)
+            .map(|y| row_text(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let failure = GhFailure::other("boom");
+        assert_eq!(
+            failure.title(FailureSurface::IssueList),
+            "Couldn't load issues"
+        );
+        assert!(text.contains("✕ Couldn't load issues"), "{text}");
+        assert!(text.contains("boom second"), "{text}");
+        assert!(text.contains("z: retry"), "{text}");
+        assert!(text.contains("z Retry"), "{text}");
+        assert!(text.contains("Back"), "{text}");
+        let mark = cells_of(&buf, "✕").expect("danger mark");
+        assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
+    }
+
+    #[test]
+    fn issue_list_not_loaded_keeps_the_generic_line_without_retry() {
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        app.issue_state = Some(IssueState::new());
+        let text = render_full(&mut app);
+        assert!(text.contains("Failed to load issues"), "{text}");
+        assert!(!text.contains("Retry"), "{text}");
+        assert!(!text.contains('✕'), "{text}");
+    }
+
+    #[test]
+    fn narrow_issue_list_draws_without_a_too_small_gate() {
+        use crate::github::GhFailure;
+
+        let mut app = App::new_for_test();
+        app.state = AppState::IssueList;
+        let mut issue_state = IssueState::new();
+        issue_state.issues = crate::app::LoadState::Error(GhFailure::other("boom"));
+        app.issue_state = Some(issue_state);
+        let backend = TestBackend::new(58, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = (0..14)
+            .map(|y| row_text(terminal.backend().buffer(), y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Couldn't load issues"), "{text}");
+        assert!(!text.contains("Terminal too small"), "{text}");
     }
 }
