@@ -13,10 +13,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::chrome::{pane_block, PaneTitle};
 use super::common::{fit_to_width, render_update_bar};
-use super::state_view::{self, clear_filter_hint, retry_action, ViewState};
+use super::state_view::{self, clear_filter_hint, ViewState};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::{CiStatus, FailureSurface, PrStateFilter, PullRequestSummary};
+use crate::github::{CiStatus, PrStateFilter, PullRequestSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 fn empty_pr_title(filter: PrStateFilter) -> &'static str {
@@ -209,22 +209,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
-    } else if let crate::app::LoadState::Error(failure) = &app.prs.pr_list {
-        let title = failure.title(FailureSurface::PrList);
-        let state = ViewState::Error {
-            title: &title,
-            reason: failure.reason(),
-            actions: vec![retry_action(&app.config.keybindings)],
-            severity: failure.severity(),
-        };
-        state_view::render_in_block(
-            frame,
-            chunks[1],
-            &app.theme,
-            Some("Pull Requests"),
-            &state,
-            app.spinner_char(),
-        );
+    } else if matches!(app.prs.pr_list, crate::app::LoadState::Error(_)) {
+        // Nothing loaded. The pane stays blank so it does not say the list is
+        // empty, and the footer carries the failure.
+        state_view::render_blank_pane(frame, chunks[1], Some("Pull Requests"));
     } else {
         let empty = Paragraph::new("Failed to load pull requests").block(
             Block::default()
@@ -251,13 +239,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let kb = &app.config.keybindings;
-    let help_text = if matches!(app.prs.pr_list, crate::app::LoadState::Error(_)) {
-        super::footer::footer_hint_retry_quit(kb)
-    } else {
-        super::footer::footer_hint_quit(kb)
-    };
-    let line = super::footer::build_footer_line(app, &help_text);
+    let help_text = super::footer::footer_hint_quit(&app.config.keybindings);
+    let width = area.width.saturating_sub(2) as usize;
+    let line = super::footer::build_footer_line_fitted(app, &help_text, width);
     let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
@@ -861,12 +845,10 @@ mod tests {
         assert!(text.contains("✕ gh is not authenticated"), "{text}");
         assert!(text.contains("run: gh auth login"), "{text}");
         assert!(text.contains("r: retry"), "{text}");
-        assert!(text.contains("r Retry"), "{text}");
+        assert!(!text.contains("No open pull requests"), "{text}");
+        assert!(!text.contains("No pull requests"), "{text}");
         let mark = cells_of(&buf, "✕").expect("danger mark");
         assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
-        assert!(mark
-            .iter()
-            .all(|cell| cell.modifier.contains(Modifier::BOLD)));
     }
 
     #[test]
@@ -997,7 +979,7 @@ mod tests {
         app.config.keybindings.retry = KeySequence::single(KeyBinding::char('z'));
         let text = screen_text(&draw_pr_list(&mut app));
         assert!(text.contains("z: retry"), "{text}");
-        assert!(text.contains("z Retry"), "{text}");
+        assert!(!text.contains("No open pull requests"), "{text}");
     }
 
     #[test]

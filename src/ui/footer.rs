@@ -3,10 +3,14 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders},
 };
+use unicode_width::UnicodeWidthStr;
 
+use super::common::truncate_with_width;
+use super::state_view::{failure_style, failure_symbol};
 use super::theme::Theme;
-use crate::app::{App, ShellPhase, Toast, ToastKind};
+use crate::app::{App, AppState, CommentTab, DataState, LoadState, ShellPhase, Toast, ToastKind};
 use crate::config::KeybindingsConfig;
+use crate::github::{FailureSurface, GhFailure};
 
 pub fn footer_hint_back(kb: &KeybindingsConfig) -> String {
     format!(
@@ -26,24 +30,6 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
     )
 }
 
-/// The footer of a list whose load failed. The retry key comes first, since it is
-/// the way forward.
-pub fn footer_hint_retry_quit(kb: &KeybindingsConfig) -> String {
-    format!(
-        "{} Retry | {} Help | {} Shell | {} Quit",
-        kb.retry.display(),
-        kb.help.display(),
-        kb.shell_command.display(),
-        kb.quit.display(),
-    )
-}
-
-/// Retry, then the back hint. The issue list returns to the cockpit or the PR
-/// list, so quit stays "Back".
-pub fn footer_hint_retry_back(kb: &KeybindingsConfig) -> String {
-    format!("{} Retry | {}", kb.retry.display(), footer_hint_back(kb))
-}
-
 /// Priority cascade:
 /// 1. Shell input overlay (highest, focused pane only)
 /// 2. Approve confirmation
@@ -55,7 +41,14 @@ pub fn footer_hint_retry_back(kb: &KeybindingsConfig) -> String {
 /// Whichever of these applies, the config-warning badge comes first when the config
 /// loaded with warnings.
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
-    build_footer_line_with_focus(app, help_text, true)
+    build_footer_line_fitted(app, help_text, usize::MAX)
+}
+
+/// The footer line fitted to `width` columns, the inside of the footer border.
+/// A load failure is truncated there: hints first, then the reason. The symbol,
+/// the title, and the retry key stay while the width allows them.
+pub fn build_footer_line_fitted<'a>(app: &'a App, help_text: &'a str, width: usize) -> Line<'a> {
+    build_footer_line_with_focus_fitted(app, help_text, true, width)
 }
 
 pub fn build_footer_line_with_focus<'a>(
@@ -63,7 +56,16 @@ pub fn build_footer_line_with_focus<'a>(
     help_text: &'a str,
     is_focused: bool,
 ) -> Line<'a> {
-    build_footer_line_with_op_toast(app, None, help_text, is_focused)
+    build_footer_line_with_focus_fitted(app, help_text, is_focused, usize::MAX)
+}
+
+pub fn build_footer_line_with_focus_fitted<'a>(
+    app: &'a App,
+    help_text: &'a str,
+    is_focused: bool,
+    width: usize,
+) -> Line<'a> {
+    build_footer_line_with_op_toast(app, None, help_text, is_focused, width)
 }
 
 /// Like [`build_footer_line_with_focus`], but a git operation's notice takes the
@@ -74,11 +76,21 @@ pub fn build_footer_line_with_op_toast<'a>(
     op_toast: Option<&Toast>,
     help_text: &'a str,
     is_focused: bool,
+    width: usize,
 ) -> Line<'a> {
-    with_config_warning(
+    let badge = config_warning_span(app);
+    let badge_width = badge
+        .as_ref()
+        .map(|span| span.content.width().saturating_add(2))
+        .unwrap_or(0);
+    let status = footer_status_line(
         app,
-        footer_status_line(app, op_toast, help_text, is_focused),
-    )
+        op_toast,
+        help_text,
+        is_focused,
+        width.saturating_sub(badge_width),
+    );
+    with_badge(badge, status)
 }
 
 fn footer_status_line<'a>(
@@ -86,6 +98,7 @@ fn footer_status_line<'a>(
     op_toast: Option<&Toast>,
     help_text: &'a str,
     is_focused: bool,
+    width: usize,
 ) -> Line<'a> {
     if is_focused {
         if let Some(line) = shell_input_line(app) {
@@ -114,27 +127,255 @@ fn footer_status_line<'a>(
             spans.push(loading_comments_span(app));
         }
         Line::from(spans)
+    } else if let Some(toast) = op_toast {
+        // A fresh operation toast wins over a load failure, the same way a
+        // submit result does. The failure returns when the toast clears.
+        activity_line(app, toast_span(toast, app.theme))
+    } else if let Some(failure) = screen_failure(app) {
+        failure_status_line(&failure, help_text, width)
     } else if let Some(message) = app.pr_open_notice() {
         Line::from(Span::styled(message, app.theme.warning.style()))
     } else {
-        let first = match op_toast {
-            Some(toast) => toast_span(toast, app.theme),
-            None => Span::raw(help_text),
-        };
-        let mut spans = vec![first];
-        if app.cmt.comments_loading {
-            spans.push(Span::raw("  "));
-            spans.push(loading_comments_span(app));
-        }
-        if app.symbol_search.is_searching() {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("{} Searching...", app.spinner_char()),
-                app.theme.warning.style(),
-            ));
-        }
-        Line::from(spans)
+        activity_line(app, Span::raw(help_text))
     }
+}
+
+fn activity_line<'a>(app: &App, first: Span<'a>) -> Line<'a> {
+    let mut spans = vec![first];
+    if app.cmt.comments_loading {
+        spans.push(Span::raw("  "));
+        spans.push(loading_comments_span(app));
+    }
+    if app.symbol_search.is_searching() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{} Searching...", app.spinner_char()),
+            app.theme.warning.style(),
+        ));
+    }
+    Line::from(spans)
+}
+
+struct ShownFailure {
+    head: String,
+    reason: String,
+    action: String,
+    style: Style,
+}
+
+/// The load or fetch failure of the screen on display. It is derived each frame,
+/// so it stays until a retry succeeds or the screen changes.
+fn screen_failure(app: &App) -> Option<ShownFailure> {
+    if !app.state.is_data_state_independent() {
+        if let DataState::Error(failure) = &app.data_state {
+            return Some(shown(app, failure, FailureSurface::FileList, "retry", 0));
+        }
+    }
+    match app.state {
+        AppState::PullRequestList => match &app.prs.pr_list {
+            LoadState::Error(failure) => {
+                Some(shown(app, failure, FailureSurface::PrList, "retry", 0))
+            }
+            _ => None,
+        },
+        AppState::IssueList => match app.issue_state.as_ref().map(|state| &state.issues) {
+            Some(LoadState::Error(failure)) => {
+                Some(shown(app, failure, FailureSurface::IssueList, "retry", 0))
+            }
+            _ => None,
+        },
+        AppState::Cockpit => cockpit_failure(app),
+        AppState::DiffView | AppState::SplitViewDiff => comment_panel_failure(app),
+        AppState::CommentList => comment_list_failure(app),
+        _ => None,
+    }
+}
+
+fn cockpit_failure(app: &App) -> Option<ShownFailure> {
+    let cockpit = app.cockpit_state.as_ref()?;
+    let mut failures = Vec::new();
+    for state in [&cockpit.mentioned_issues_count, &cockpit.review_prs_count] {
+        if let LoadState::Error(failure) = state {
+            failures.push(failure);
+        }
+    }
+    let first = *failures.first()?;
+    let extra = failures.len().saturating_sub(1);
+    Some(shown(
+        app,
+        first,
+        FailureSurface::CockpitCounts,
+        "retry",
+        extra,
+    ))
+}
+
+fn comment_panel_failure(app: &App) -> Option<ShownFailure> {
+    let message = app.cmt.comment_error.as_deref()?;
+    let failure = GhFailure::from_message(message);
+    // The label is what `r` does on this line. A line that still has comments
+    // replies while the panel is open; an empty failed line retries.
+    let label = if app.has_comment_at_current_line() {
+        if app.cmt.comment_panel_open {
+            "reply"
+        } else {
+            ""
+        }
+    } else {
+        "retry"
+    };
+    Some(shown(app, &failure, FailureSurface::Comments, label, 0))
+}
+
+fn comment_list_failure(app: &App) -> Option<ShownFailure> {
+    let message = match app.cmt.comment_tab {
+        CommentTab::Review => app.cmt.comment_error.as_deref(),
+        CommentTab::Discussion => app.cmt.discussion_error.as_deref(),
+    }?;
+    let failure = GhFailure::from_message(message);
+    Some(shown(app, &failure, FailureSurface::Comments, "retry", 0))
+}
+
+fn shown(
+    app: &App,
+    failure: &GhFailure,
+    surface: FailureSurface,
+    label: &str,
+    extra: usize,
+) -> ShownFailure {
+    let title = failure.title(surface);
+    let extra = if extra > 0 {
+        format!(" (+{extra})")
+    } else {
+        String::new()
+    };
+    let action = if label.is_empty() {
+        String::new()
+    } else {
+        let key = if label == "reply" {
+            app.config.keybindings.reply.display_primary()
+        } else {
+            app.config.keybindings.retry.display_primary()
+        };
+        format!("{key}: {label}")
+    };
+    ShownFailure {
+        head: format!("{} {title}{extra}", failure_symbol(failure.severity())),
+        reason: failure.reason(),
+        action,
+        style: failure_style(app.theme, failure.severity()),
+    }
+}
+
+/// `symbol title · reason  key: retry  hints`. Hints are cut first, then the
+/// reason. The symbol, the title, and the key stay while `width` allows them.
+fn failure_status_line(failure: &ShownFailure, hints: &str, width: usize) -> Line<'static> {
+    let (head, reason, action, hints) = fit_failure(
+        &failure.head,
+        &failure.reason,
+        &failure.action,
+        hints,
+        width,
+    );
+    let mut status = head;
+    if !reason.is_empty() {
+        status.push_str(" · ");
+        status.push_str(&reason);
+    }
+    if !action.is_empty() {
+        status.push_str("  ");
+        status.push_str(&action);
+    }
+    let mut spans = vec![Span::styled(status, failure.style)];
+    if !hints.is_empty() {
+        spans.push(Span::raw(format!("  {hints}")));
+    }
+    Line::from(spans)
+}
+
+fn fit_failure(
+    head: &str,
+    reason: &str,
+    action: &str,
+    hints: &str,
+    width: usize,
+) -> (String, String, String, String) {
+    if width == usize::MAX {
+        return (
+            head.to_string(),
+            reason.to_string(),
+            action.to_string(),
+            hints.to_string(),
+        );
+    }
+    if width == 0 {
+        return (String::new(), String::new(), String::new(), String::new());
+    }
+
+    let mut head = head.to_string();
+    let mut reason = reason.to_string();
+    let mut action = action.to_string();
+    let mut hints = hints.to_string();
+
+    let measure = |head: &str, reason: &str, action: &str, hints: &str| -> usize {
+        let mut used = head.width();
+        if !reason.is_empty() {
+            used += 3 + reason.width();
+        }
+        if !action.is_empty() {
+            used += 2 + action.width();
+        }
+        if !hints.is_empty() {
+            used += 2 + hints.width();
+        }
+        used
+    };
+
+    if measure(&head, &reason, &action, &hints) <= width {
+        return (head, reason, action, hints);
+    }
+
+    let without_hints = measure(&head, &reason, &action, "");
+    if without_hints <= width {
+        let hint_room = width - without_hints;
+        if hint_room <= 2 {
+            hints.clear();
+        } else {
+            hints = truncate_with_width(&hints, hint_room - 2).into_owned();
+        }
+        return (head, reason, action, hints);
+    }
+    hints.clear();
+
+    let reserved = head.width()
+        + if action.is_empty() {
+            0
+        } else {
+            2 + action.width()
+        };
+    if reserved <= width {
+        let reason_room = width - reserved;
+        if reason.is_empty() || reason_room <= 3 {
+            reason.clear();
+        } else {
+            reason = truncate_with_width(&reason, reason_room - 3).into_owned();
+        }
+        return (head, reason, action, hints);
+    }
+
+    reason.clear();
+    if head.width() >= width {
+        action.clear();
+        head = truncate_with_width(&head, width).into_owned();
+        return (head, reason, action, hints);
+    }
+    let action_room = width.saturating_sub(head.width() + 2);
+    if action_room == 0 {
+        action.clear();
+    } else {
+        action = truncate_with_width(&action, action_room).into_owned();
+    }
+    (head, reason, action, hints)
 }
 
 /// The footer of a split-view pane that shows no status. Status messages are drawn
@@ -434,24 +675,6 @@ mod tests {
     }
 
     #[test]
-    fn test_footer_hint_retry_quit_leads_with_the_retry_key() {
-        let kb = KeybindingsConfig::default();
-        assert_eq!(
-            footer_hint_retry_quit(&kb),
-            "r Retry | ? Help | ! Shell | q/Esc Quit"
-        );
-    }
-
-    #[test]
-    fn test_footer_hint_retry_quit_reads_the_retry_key_from_keybindings() {
-        let kb = KeybindingsConfig {
-            retry: crate::keybinding::KeySequence::single(crate::keybinding::KeyBinding::char('x')),
-            ..KeybindingsConfig::default()
-        };
-        assert!(footer_hint_retry_quit(&kb).starts_with("x Retry | "));
-    }
-
-    #[test]
     fn test_shell_input_renders_prompt_with_cursor() {
         use crate::app::ShellState;
 
@@ -735,11 +958,202 @@ mod tests {
             Some(&toast),
             HELP,
             true,
+            usize::MAX,
         ));
 
         assert_eq!(
             text,
             "1 config warning (? for details)  \u{2717} Push failed: rejected"
         );
+    }
+
+    use crate::app::{CommentTab, DataState, LoadState};
+    use crate::github::{GhFailure, GhFailureKind};
+
+    fn line_of(app: &App, help: &str, width: usize) -> String {
+        line_to_string(&build_footer_line_fitted(app, help, width))
+    }
+
+    fn pr_failure(kind: GhFailureKind, message: &str) -> App {
+        let mut app = App::new_for_test();
+        app.state = AppState::PullRequestList;
+        app.prs.pr_list = LoadState::Error(GhFailure {
+            kind,
+            message: message.to_string(),
+        });
+        app
+    }
+
+    #[test]
+    fn every_surface_puts_its_failure_in_the_footer() {
+        let pr = pr_failure(GhFailureKind::Unauthenticated, "please run: gh auth login");
+        let text = line_of(&pr, HELP, usize::MAX);
+        assert!(text.starts_with("✕ gh is not authenticated · run: gh auth login  r: retry"));
+        assert!(text.ends_with(HELP), "{text}");
+
+        let mut issues = App::new_for_test();
+        issues.state = AppState::IssueList;
+        let mut issue_state = crate::app::IssueState::new();
+        issue_state.issues = LoadState::Error(GhFailure::other("boom\nsecond"));
+        issues.issue_state = Some(issue_state);
+        let text = line_of(&issues, HELP, usize::MAX);
+        assert!(
+            text.contains("✕ Couldn't load issues · boom second  r: retry"),
+            "{text}"
+        );
+
+        let mut files = App::new_for_test();
+        files.state = AppState::FileList;
+        files.data_state = DataState::Error(GhFailure::other("disk full"));
+        let text = line_of(&files, "q: quit", usize::MAX);
+        assert!(
+            text.contains("✕ Couldn't load files · disk full  r: retry  q: quit"),
+            "{text}"
+        );
+
+        let mut cockpit = App::new_cockpit("owner/repo", crate::config::Config::default(), true);
+        cockpit
+            .cockpit_state
+            .as_mut()
+            .unwrap()
+            .mentioned_issues_count = LoadState::Error(GhFailure::other("counts broke"));
+        let text = line_of(&cockpit, "q: quit  ?: help", usize::MAX);
+        assert!(
+            text.contains("✕ Couldn't load counts · counts broke  r: retry"),
+            "{text}"
+        );
+        cockpit.cockpit_state.as_mut().unwrap().review_prs_count =
+            LoadState::Error(GhFailure::other("beta broke"));
+        let text = line_of(&cockpit, "q: quit  ?: help", usize::MAX);
+        assert!(text.contains("(+1)"), "{text}");
+        assert!(text.contains("counts broke"), "{text}");
+        assert!(!text.contains("beta broke"), "{text}");
+
+        let mut comments = App::new_for_test();
+        comments.state = AppState::DiffView;
+        comments.cmt.comment_panel_open = true;
+        comments.cmt.comment_error = Some("comments failed".to_string());
+        let text = line_of(&comments, "Esc: close", usize::MAX);
+        assert!(
+            text.contains("✕ Couldn't load comments · comments failed  r: retry  Esc: close"),
+            "{text}"
+        );
+
+        comments.state = AppState::CommentList;
+        comments.cmt.comment_tab = CommentTab::Discussion;
+        comments.cmt.discussion_error = Some("discussion failed".to_string());
+        comments.cmt.comment_error = None;
+        let text = line_of(&comments, HELP, usize::MAX);
+        assert!(
+            text.contains("✕ Couldn't load comments · discussion failed  r: retry"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn higher_priority_footer_content_hides_the_failure_until_it_clears() {
+        let mut app = pr_failure(GhFailureKind::Other, "boom");
+        app.cmt.submission_result = Some(Toast::success("Submitted"));
+        let text = line_of(&app, HELP, usize::MAX);
+        assert!(text.contains("Submitted"), "{text}");
+        assert!(!text.contains("Couldn't load pull requests"), "{text}");
+
+        app.cmt.submission_result = Some(Toast::failure("Failed: save"));
+        let text = line_of(&app, HELP, usize::MAX);
+        assert!(text.contains("Failed: save"), "{text}");
+        assert!(!text.contains("Couldn't load pull requests"), "{text}");
+
+        app.cmt.submission_result = None;
+        app.set_submitting_for_test(true);
+        let text = line_of(&app, HELP, usize::MAX);
+        assert!(text.contains("Submitting..."), "{text}");
+        assert!(!text.contains("Couldn't load pull requests"), "{text}");
+
+        app.set_submitting_for_test(false);
+        app.set_pending_approve_body_for_test(Some(String::new()));
+        let text = line_of(&app, HELP, usize::MAX);
+        assert_eq!(text, app.approve_confirmation_footer_text());
+
+        app.set_pending_approve_body_for_test(None);
+        app.shell_state = Some(crate::app::ShellState {
+            input: "ls".to_string(),
+            cursor: 2,
+            phase: ShellPhase::Input,
+            scroll_offset: 0,
+        });
+        let text = line_of(&app, HELP, usize::MAX);
+        assert!(text.contains('!'), "{text}");
+        assert!(!text.contains("Couldn't load pull requests"), "{text}");
+
+        app.shell_state = None;
+        let toast = Toast::failure("Push failed");
+        let text = line_to_string(&build_footer_line_with_op_toast(
+            &app,
+            Some(&toast),
+            HELP,
+            true,
+            usize::MAX,
+        ));
+        assert!(text.contains("Push failed"), "{text}");
+        assert!(!text.contains("Couldn't load pull requests"), "{text}");
+
+        let text = line_of(&app, HELP, usize::MAX);
+        assert!(
+            text.contains("✕ Couldn't load pull requests · boom  r: retry"),
+            "{text}"
+        );
+        assert!(text.contains(HELP), "{text}");
+    }
+
+    #[test]
+    fn a_narrow_failure_drops_hints_before_the_reason_and_keeps_the_key() {
+        let app = pr_failure(GhFailureKind::Other, "abcdefghijklmnopqrstuvwxyz");
+        let hints = "j/k: move | q: quit | extra extra extra";
+        let head = "✕ Couldn't load pull requests";
+        let action = "r: retry";
+        let reserved = head.chars().count() + 2 + action.chars().count();
+
+        let reason_only = line_of(&app, hints, reserved + 3 + 10);
+        assert!(reason_only.contains(head), "{reason_only}");
+        assert!(reason_only.contains(action), "{reason_only}");
+        assert!(reason_only.contains('…'), "{reason_only}");
+        assert!(!reason_only.contains("j/k: move"), "{reason_only}");
+        assert!(
+            !reason_only.contains("abcdefghijklmnopqrstuvwxyz"),
+            "{reason_only}"
+        );
+
+        let with_hints = line_of(&app, hints, reserved + 3 + 26 + 2 + 8);
+        assert!(
+            with_hints.contains("abcdefghijklmnopqrstuvwxyz"),
+            "{with_hints}"
+        );
+        assert!(with_hints.contains(action), "{with_hints}");
+        assert!(with_hints.contains('…'), "{with_hints}");
+        assert!(!with_hints.contains("extra extra extra"), "{with_hints}");
+
+        let tight = line_of(&app, hints, reserved);
+        assert!(tight.contains(head), "{tight}");
+        assert!(tight.contains(action), "{tight}");
+        assert!(!tight.contains('…'), "{tight}");
+        assert!(!tight.contains("j/k"), "{tight}");
+    }
+
+    #[test]
+    fn no_color_failure_keeps_the_symbol() {
+        let mut app = pr_failure(GhFailureKind::Offline, "dial tcp");
+        app.theme = no_color_theme();
+        let text = line_of(&app, HELP, usize::MAX);
+        assert!(text.contains("⚠ Can't reach GitHub"), "{text}");
+
+        let mut app = pr_failure(GhFailureKind::Unauthenticated, "gh auth login");
+        app.theme = no_color_theme();
+        let line = build_footer_line_fitted(&app, HELP, usize::MAX);
+        assert!(line.spans[0]
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD));
+        assert_eq!(line.spans[0].style.fg, None);
+        assert!(line_to_string(&line).contains('✕'));
     }
 }

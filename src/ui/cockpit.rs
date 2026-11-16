@@ -8,13 +8,11 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, CockpitMenuItem, LoadState};
-use crate::github::{FailureSurface, GhFailure};
+use crate::github::GhFailure;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 use super::chrome::{pane_block, PaneTitle};
-use super::common::truncate_with_width;
 use super::footer;
-use super::state_view::{failure_style, failure_symbol};
 
 const LOGO_LINES: [&str; 6] = [
     r"  ██████╗   ██████╗ ████████╗  ██████╗  ██████╗  ██╗   ██╗ ███████╗",
@@ -156,8 +154,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_header(frame, app, chunks[0]);
     render_menu(frame, app, selected, repo_available, chunks[1]);
 
-    let help_text = "q: quit  ?: help  r: refresh";
-    let footer_line = footer::build_footer_line(app, help_text);
+    let counts_failed = app.cockpit_state.as_ref().is_some_and(|cockpit| {
+        matches!(cockpit.mentioned_issues_count, LoadState::Error(_))
+            || matches!(cockpit.review_prs_count, LoadState::Error(_))
+    });
+    // The failure status already names the retry key. Leaving `r: refresh` in
+    // the hints would give `r` two labels.
+    let help_text = if counts_failed {
+        "q: quit  ?: help"
+    } else {
+        "q: quit  ?: help  r: refresh"
+    };
+    let width = chunks[2].width.saturating_sub(2) as usize;
+    let footer_line = footer::build_footer_line_fitted(app, help_text, width);
     let footer_block = footer::build_footer_block(app);
     let footer_widget = Paragraph::new(footer_line).block(footer_block);
     frame.render_widget(footer_widget, chunks[2]);
@@ -173,20 +182,11 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     lines.push(Line::raw(""));
 
     let mut count_spans = vec![Span::raw("  ")];
-    let mut first_failure = None;
     for (label, state) in [
         ("Issues: ", &cockpit.mentioned_issues_count),
         ("  Review PRs: ", &cockpit.review_prs_count),
     ] {
         count_spans.extend(count_spans_for(label, state, app));
-        if first_failure.is_none() {
-            if let LoadState::Error(failure) = state {
-                first_failure = Some(failure);
-            }
-        }
-    }
-    if let Some(failure) = first_failure {
-        append_failure_suffix(&mut count_spans, failure, inner_width, app.theme);
     }
     lines.push(Line::from(count_spans));
 
@@ -225,39 +225,6 @@ fn count_spans_for(
         )),
     }
     spans
-}
-
-fn count_failure_suffix(failure: &GhFailure) -> String {
-    let title = failure.title(FailureSurface::CockpitCounts);
-    let reason = failure.reason();
-    if reason.is_empty() {
-        format!(" {} {title}", failure_symbol(failure.severity()))
-    } else {
-        format!(" {} {title} · {reason}", failure_symbol(failure.severity()))
-    }
-}
-
-/// One suffix after every count. Only the suffix is cut, and it is dropped
-/// when the counts already fill the line.
-fn append_failure_suffix(
-    spans: &mut Vec<Span<'static>>,
-    failure: &GhFailure,
-    inner_width: usize,
-    theme: crate::ui::theme::Theme,
-) {
-    let used: usize = spans.iter().map(|span| span.content.width()).sum();
-    let room = inner_width.saturating_sub(used);
-    if room == 0 {
-        return;
-    }
-    let fitted = truncate_with_width(&count_failure_suffix(failure), room).into_owned();
-    if fitted.is_empty() {
-        return;
-    }
-    spans.push(Span::styled(
-        fitted,
-        failure_style(theme, failure.severity()),
-    ));
 }
 
 fn render_menu(
@@ -714,11 +681,13 @@ mod tests {
         let buf = render_at(&mut app, 100, 24);
         let text = screen_text(&buf);
         assert!(text.contains('—'), "{text}");
+        assert!(text.contains("Review PRs: -"), "{text}");
+        assert!(!count_row(&text).contains('✕'), "{text}");
         assert!(
             text.contains("✕ Couldn't load counts · counts broke"),
             "{text}"
         );
-        assert!(text.contains("Review PRs: -"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
         assert!(!text.contains("N/A"), "{text}");
         let dash = cells_of(&buf, "—").expect("em dash");
         assert!(dash.iter().all(|cell| cell.fg == CUSTOM_MUTED));
@@ -762,7 +731,14 @@ mod tests {
                 "width {width} dropped the loaded count:\n{row}"
             );
             assert!(row.contains("Issues:"), "{row}");
-            assert_eq!(row.matches('✕').count(), 1, "{row}");
+            assert!(
+                !row.contains('✕'),
+                "the count line drew the failure:\n{row}"
+            );
+            assert!(
+                text.contains("Couldn't load counts"),
+                "width {width} hid the failure:\n{text}"
+            );
         }
 
         let mut app = cockpit_with_counts(
@@ -784,9 +760,10 @@ mod tests {
         let row = count_row(&text);
         assert!(row.contains("Issues:"), "{row}");
         assert!(row.contains("Review PRs:"), "{row}");
-        assert_eq!(row.matches('✕').count(), 1, "{row}");
-        assert!(row.contains("alpha broke"), "{row}");
-        assert!(!row.contains("beta broke"), "{row}");
+        assert!(!row.contains('✕'), "{row}");
+        assert!(text.contains("alpha broke"), "{text}");
+        assert!(text.contains("(+1)"), "{text}");
+        assert!(!text.contains("beta broke"), "{text}");
 
         let mut app = cockpit_with_counts(
             LoadState::Error(GhFailure::other(

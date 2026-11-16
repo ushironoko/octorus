@@ -1,8 +1,8 @@
-//! One drawing of loading, empty, and failed panes.
+//! One drawing of loading and empty panes.
 //!
 //! The text sits at the top left of the area it is given. Callers draw the
-//! pane border and pass the inner rect. A failure's words and color come from
-//! [`GhFailure`]; this module does not read stderr.
+//! pane border and pass the inner rect. A failed fetch is not drawn here: the
+//! footer carries the title, the reason, and the retry key.
 
 use ratatui::{
     layout::Rect,
@@ -16,7 +16,7 @@ use super::common::truncate_with_width;
 use super::theme::Theme;
 use crate::app::App;
 use crate::config::KeybindingsConfig;
-use crate::github::{FailureSeverity, FailureSurface, GhFailure};
+use crate::github::FailureSeverity;
 
 pub(super) enum ViewState<'a> {
     Loading {
@@ -25,12 +25,6 @@ pub(super) enum ViewState<'a> {
     Empty {
         title: &'a str,
         hint: Option<&'a str>,
-    },
-    Error {
-        title: &'a str,
-        reason: String,
-        actions: Vec<(String, &'a str)>,
-        severity: FailureSeverity,
     },
 }
 
@@ -67,10 +61,6 @@ pub(super) fn render_in_block(
     render_state(frame, inner, theme, state, spinner);
 }
 
-pub(super) fn retry_action(kb: &KeybindingsConfig) -> (String, &'static str) {
-    (kb.retry.display_primary(), "retry")
-}
-
 pub(super) fn clear_filter_hint(kb: &KeybindingsConfig) -> String {
     format!("{}: clear filter", kb.quit.display())
 }
@@ -97,50 +87,27 @@ pub(super) fn failure_style(theme: Theme, severity: FailureSeverity) -> Style {
     }
 }
 
-fn heading_style(theme: Theme, severity: FailureSeverity) -> Style {
-    match severity {
-        FailureSeverity::Warning => theme.warning.bold(),
-        FailureSeverity::Danger => theme.danger.bold(),
+/// A bordered pane with no body. A failed fetch with nothing loaded uses this,
+/// so the pane does not claim the list is empty.
+pub(super) fn render_blank_pane(frame: &mut Frame, area: Rect, title: Option<&str>) {
+    let mut block = Block::default().borders(Borders::ALL);
+    if let Some(title) = title {
+        block = block.title(title.to_string());
     }
+    frame.render_widget(block, area);
 }
 
-/// True when the comment pane should draw the failure instead of the empty hint.
-/// That is only when the fetch failed and there are no comments on any line.
-pub(super) fn comment_fetch_error_replaces_empty(app: &App) -> bool {
-    app.cmt.comment_error.is_some()
-        && app
-            .cmt
-            .review_comments
-            .as_ref()
-            .is_none_or(|comments| comments.is_empty())
-}
-
-/// The comment panel when the current line has nothing to list. The failure
-/// replaces the empty hint only when no line has a comment. Loading stays on
-/// the footer, which already shows it.
+/// The comment panel when the current line has nothing to list. A failed fetch
+/// leaves the body empty; the footer says why. A successful empty line keeps
+/// the hint.
 pub(super) fn render_comment_placeholder(frame: &mut Frame, area: Rect, app: &App) {
-    if comment_fetch_error_replaces_empty(app) {
-        if let Some(message) = app.cmt.comment_error.as_deref() {
-            render_comment_error(frame, area, app, message);
-            return;
-        }
+    if app.cmt.comment_error.is_some() {
+        return;
     }
     let hint = comment_empty_hint(&app.config.keybindings);
     let state = ViewState::Empty {
         title: "No comments",
         hint: Some(&hint),
-    };
-    render_state(frame, area, &app.theme, &state, app.spinner_char());
-}
-
-pub(super) fn render_comment_error(frame: &mut Frame, area: Rect, app: &App, message: &str) {
-    let failure = GhFailure::from_message(message);
-    let title = failure.title(FailureSurface::Comments);
-    let state = ViewState::Error {
-        title: &title,
-        reason: failure.reason(),
-        actions: vec![retry_action(&app.config.keybindings)],
-        severity: failure.severity(),
     };
     render_state(frame, area, &app.theme, &state, app.spinner_char());
 }
@@ -160,30 +127,6 @@ fn state_lines(
             }
             lines
         }
-        ViewState::Error {
-            title,
-            reason,
-            actions,
-            severity,
-        } => {
-            let mut lines = vec![styled_line(
-                format!("{} {title}", failure_symbol(*severity)),
-                heading_style(*theme, *severity),
-                width,
-            )];
-            if !reason.is_empty() {
-                lines.push(styled_line(reason.clone(), theme.muted.style(), width));
-            }
-            if !actions.is_empty() {
-                let actions = actions
-                    .iter()
-                    .map(|(key, label)| format!("{key}: {label}"))
-                    .collect::<Vec<_>>()
-                    .join(" │ ");
-                lines.push(styled_line(actions, Style::default(), width));
-            }
-            lines
-        }
     }
 }
 
@@ -199,12 +142,10 @@ fn styled_line(text: String, style: Style, width: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ThemeColors, ThemeConfig};
-    use crate::github::GhFailureKind;
+    use crate::config::ThemeColors;
+    use crate::github::{GhFailure, GhFailureKind};
     use crate::keybinding::{KeyBinding, KeySequence};
-    use crate::ui::test_buffer::{
-        screen_text, theme_with, CUSTOM_DANGER, CUSTOM_MUTED, CUSTOM_WARNING,
-    };
+    use crate::ui::test_buffer::{screen_text, theme_with, CUSTOM_MUTED};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
@@ -257,97 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn danger_error_is_a_bold_cross_and_a_muted_reason() {
-        let theme = theme_with(ThemeColors {
-            danger: Some(CUSTOM_DANGER),
-            muted: Some(CUSTOM_MUTED),
-            ..ThemeColors::default()
-        });
-        let state = ViewState::Error {
-            title: "gh is not authenticated",
-            reason: "run: gh auth login".to_string(),
-            actions: vec![("r".to_string(), "retry")],
-            severity: FailureSeverity::Danger,
-        };
-        let buf = draw(&state, theme, 40, 4);
-        let text = screen_text(&buf);
-        assert!(text.contains("✕ gh is not authenticated"), "{text}");
-        assert!(text.contains("run: gh auth login"), "{text}");
-        assert!(text.contains("r: retry"), "{text}");
-        assert_eq!(buf[(0, 0)].fg, CUSTOM_DANGER);
-        assert!(buf[(0, 0)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buf[(0, 1)].fg, CUSTOM_MUTED);
-        assert!(!buf[(0, 1)].modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn warning_error_uses_the_warning_token_and_keeps_the_symbol_without_color() {
-        let theme = theme_with(ThemeColors {
-            warning: Some(CUSTOM_WARNING),
-            ..ThemeColors::default()
-        });
-        let state = ViewState::Error {
-            title: "Can't reach GitHub",
-            reason: "Check your network connection.".to_string(),
-            actions: vec![("z".to_string(), "retry")],
-            severity: FailureSeverity::Warning,
-        };
-        let buf = draw(&state, theme, 48, 4);
-        assert_eq!(buf[(0, 0)].symbol(), "⚠");
-        assert_eq!(buf[(0, 0)].fg, CUSTOM_WARNING);
-        assert!(screen_text(&buf).contains("z: retry"));
-
-        let plain = Theme::resolve(&ThemeConfig::default(), true);
-        let buf = draw(&state, plain, 48, 4);
-        let text = screen_text(&buf);
-        assert!(text.contains('⚠'), "{text}");
-        assert_eq!(buf[(0, 0)].fg, Color::Reset);
-        assert!(buf[(0, 0)].modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn no_color_danger_keeps_the_cross_and_bold() {
-        let plain = Theme::resolve(&ThemeConfig::default(), true);
-        let state = ViewState::Error {
-            title: "gh is not installed",
-            reason: "Install GitHub CLI (https://cli.github.com), then retry.".to_string(),
-            actions: vec![("r".to_string(), "retry")],
-            severity: FailureSeverity::Danger,
-        };
-        let buf = draw(&state, plain, 64, 4);
-        assert_eq!(buf[(0, 0)].symbol(), "✕");
-        assert_eq!(buf[(0, 0)].fg, Color::Reset);
-        assert!(buf[(0, 0)].modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn a_blank_reason_skips_the_reason_line() {
-        let state = ViewState::Error {
-            title: "Couldn't load pull requests",
-            reason: String::new(),
-            actions: vec![("r".to_string(), "retry")],
-            severity: FailureSeverity::Danger,
-        };
-        let text = screen_text(&draw(&state, Theme::test_default(), 40, 4));
-        let lines: Vec<&str> = text.lines().collect();
-        assert!(lines[0].contains("Couldn't load pull requests"), "{text}");
-        assert!(lines[1].contains("r: retry"), "{text}");
-    }
-
-    #[test]
-    fn a_long_reason_is_cut_with_an_ellipsis() {
-        let state = ViewState::Error {
-            title: "Couldn't load pull requests",
-            reason: "abcdefghijklmnopqrstuvwxyz".to_string(),
-            actions: vec![("r".to_string(), "retry")],
-            severity: FailureSeverity::Danger,
-        };
-        let text = screen_text(&draw(&state, Theme::test_default(), 10, 4));
-        assert!(text.contains('…'), "{text}");
-        assert!(!text.contains("uvwxyz"), "{text}");
-    }
-
-    #[test]
     fn a_zero_area_does_not_panic() {
         let backend = TestBackend::new(1, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -379,7 +229,6 @@ mod tests {
         kb.quit = KeySequence::single(KeyBinding::char('x'));
         kb.comment = KeySequence::single(KeyBinding::char('m'));
         kb.suggestion = KeySequence::single(KeyBinding::char('n'));
-        assert_eq!(retry_action(&kb), ("z".to_string(), "retry"));
         assert_eq!(clear_filter_hint(&kb), "x: clear filter");
         assert_eq!(comment_empty_hint(&kb), "m: comment, n: suggestion");
     }
@@ -524,25 +373,37 @@ mod tests {
         let text = screen_text(&draw_ui(&mut app, 100, 30));
         assert!(text.contains("Consider a guard here"), "{text}");
         assert!(!text.contains("○ No comments"), "{text}");
-        assert!(!text.contains("Couldn't load comments"), "{text}");
         let footer = text
             .lines()
             .find(|line| line.contains("Esc: close"))
             .unwrap_or("");
+        assert!(
+            footer.contains("✕ Couldn't load comments"),
+            "{footer}\n{text}"
+        );
+        assert!(footer.contains("comments failed"), "{footer}\n{text}");
         assert!(footer.contains("r: reply"), "{footer}\n{text}");
+        assert!(!footer.contains("r: retry"), "{footer}\n{text}");
     }
 
     #[test]
-    fn an_empty_line_keeps_the_hint_when_another_line_has_comments() {
+    fn an_empty_line_stays_blank_when_another_line_has_comments() {
         let mut app = comment_panel_app();
         app.diff_scroll.selected_line = 1;
         app.cmt.comment_error = Some("comments failed".to_string());
-        app.cmt.submission_result = Some(crate::app::Toast::failure("comments failed"));
         let text = screen_text(&draw_ui(&mut app, 100, 30));
-        assert!(text.contains("○ No comments"), "{text}");
-        assert!(text.contains("c: comment, s: suggestion"), "{text}");
-        assert!(!text.contains("Couldn't load comments"), "{text}");
-        assert!(text.contains("comments failed"), "{text}");
+        assert!(!text.contains("○ No comments"), "{text}");
+        assert!(!text.contains("c: comment, s: suggestion"), "{text}");
+        let footer = text
+            .lines()
+            .find(|line| line.contains("Esc: close"))
+            .unwrap_or("");
+        assert!(
+            footer.contains("✕ Couldn't load comments"),
+            "{footer}\n{text}"
+        );
+        assert!(footer.contains("r: retry"), "{footer}\n{text}");
+        assert!(!footer.contains("reply"), "{footer}\n{text}");
     }
 
     #[tokio::test]
@@ -680,7 +541,6 @@ mod tests {
 
         let mut with_data = comment_panel_app();
         with_data.cmt.comment_error = Some("comments failed".to_string());
-        with_data.cmt.submission_result = Some(crate::app::Toast::failure("comments failed"));
         save_artifact(
             &dir,
             "comments-error-with-data",
@@ -717,6 +577,21 @@ mod tests {
             "narrow-58x14",
             "PR list at 58x14, still the unauthenticated failure",
             &draw_ui(&mut narrow, 58, 14),
+        );
+
+        let mut cockpit_narrow =
+            crate::app::App::new_cockpit("owner/repo", crate::config::Config::default(), true);
+        cockpit_narrow
+            .cockpit_state
+            .as_mut()
+            .unwrap()
+            .mentioned_issues_count =
+            crate::app::LoadState::Error(GhFailure::other("counts broke"));
+        save_artifact(
+            &dir,
+            "cockpit-counts-error-58x14",
+            "Cockpit counts at 58x14, the failure is in the footer",
+            &draw_ui(&mut cockpit_narrow, 58, 14),
         );
     }
 

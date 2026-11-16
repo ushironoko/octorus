@@ -13,10 +13,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::chrome::{pane_block, PaneTitle};
 use super::common::fit_to_width;
-use super::state_view::{self, clear_filter_hint, retry_action, ViewState};
+use super::state_view::{self, clear_filter_hint, ViewState};
 use super::theme::{Theme, SELECTION_MARKER_WIDTH};
 use crate::app::App;
-use crate::github::{FailureSurface, IssueStateFilter, IssueSummary};
+use crate::github::{IssueStateFilter, IssueSummary};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 
 fn empty_issue_title(filter: IssueStateFilter) -> &'static str {
@@ -203,22 +203,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
-    } else if let crate::app::LoadState::Error(failure) = &state.issues {
-        let title = failure.title(FailureSurface::IssueList);
-        let error = ViewState::Error {
-            title: &title,
-            reason: failure.reason(),
-            actions: vec![retry_action(&app.config.keybindings)],
-            severity: failure.severity(),
-        };
-        state_view::render_in_block(
-            frame,
-            chunks[1],
-            &app.theme,
-            Some("Issues"),
-            &error,
-            app.spinner_char(),
-        );
+    } else if matches!(state.issues, crate::app::LoadState::Error(_)) {
+        state_view::render_blank_pane(frame, chunks[1], Some("Issues"));
     } else {
         // Not loaded yet. That is not a failure, so it keeps the old line and
         // does not offer retry.
@@ -241,15 +227,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let help_text = if matches!(
-        app.issue_state.as_ref().map(|state| &state.issues),
-        Some(crate::app::LoadState::Error(_))
-    ) {
-        super::footer::footer_hint_retry_back(&app.config.keybindings)
-    } else {
-        super::footer::footer_hint_back(&app.config.keybindings)
-    };
-    let line = super::footer::build_footer_line(app, &help_text);
+    let help_text = super::footer::footer_hint_back(&app.config.keybindings);
+    let width = area.width.saturating_sub(2) as usize;
+    let line = super::footer::build_footer_line_fitted(app, &help_text, width);
     let footer = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
@@ -605,8 +585,9 @@ mod tests {
         assert!(text.contains("✕ Couldn't load issues"), "{text}");
         assert!(text.contains("boom second"), "{text}");
         assert!(text.contains("z: retry"), "{text}");
-        assert!(text.contains("z Retry"), "{text}");
         assert!(text.contains("Back"), "{text}");
+        assert!(!text.contains("No open issues"), "{text}");
+        assert!(!text.contains("No issues"), "{text}");
         let mark = cells_of(&buf, "✕").expect("danger mark");
         assert!(mark.iter().all(|cell| cell.fg == CUSTOM_DANGER));
     }

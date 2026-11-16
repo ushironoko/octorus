@@ -376,8 +376,12 @@ fn render_diff_footer(
     attention: Attention,
     theme: Theme,
 ) {
-    let footer_line =
-        super::footer::build_footer_line_with_focus(app, help_text, attention.has_keys());
+    let footer_line = super::footer::build_footer_line_with_focus_fitted(
+        app,
+        help_text,
+        attention.has_keys(),
+        area.width.saturating_sub(2) as usize,
+    );
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_focus(
         app,
         attention.border_style(theme),
@@ -427,77 +431,81 @@ fn render_diff_pane_with_comments(
                 pane: crate::ui::hit::PaneKind::CommentPanel,
             },
         );
-        return;
-    }
+    } else {
+        let mut lines: Vec<Line> = vec![];
 
-    let mut lines: Vec<Line> = vec![];
+        if let Some(ref comments) = app.cmt.review_comments {
+            for (i, &idx) in indices.iter().enumerate() {
+                let Some(comment) = comments.get(idx) else {
+                    continue;
+                };
 
-    if let Some(ref comments) = app.cmt.review_comments {
-        for (i, &idx) in indices.iter().enumerate() {
-            let Some(comment) = comments.get(idx) else {
-                continue;
-            };
+                if i > 0 {
+                    lines.push(Line::from(Span::styled(
+                        "───────────────────────────────────────",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
 
-            if i > 0 {
-                lines.push(Line::from(Span::styled(
-                    "───────────────────────────────────────",
-                    Style::default().fg(Color::DarkGray),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("@{}", comment.user.login),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        format!(" (line {})", comment.line_label()),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    pending_comment_tag(comment, theme),
+                ]));
+
+                for line in comment.body.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+                lines.push(Line::from(""));
             }
+        }
 
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("@{}", comment.user.login),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    format!(" (line {})", comment.line_label()),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                pending_comment_tag(comment, theme),
-            ]));
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: true })
+            .scroll((app.cmt.comment_panel_scroll, 0));
+        // The scroll counts wrapped rows, so the scrollbar measures those too.
+        let total_rows = paragraph.line_count(inner_area.width);
+        frame.render_widget(paragraph, chunks[2]);
+        app.hit_map.push(
+            inner_area,
+            crate::ui::hit::HitTarget::Pane {
+                pane: crate::ui::hit::PaneKind::CommentPanel,
+            },
+        );
 
-            for line in comment.body.lines() {
-                lines.push(Line::from(line.to_string()));
-            }
-            lines.push(Line::from(""));
+        if total_rows > inner_area.height as usize {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let max_scroll = total_rows.saturating_sub(1);
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
+
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[2].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: true })
-        .scroll((app.cmt.comment_panel_scroll, 0));
-    // The scroll counts wrapped rows, so the scrollbar measures those too.
-    let total_rows = paragraph.line_count(inner_area.width);
-    frame.render_widget(paragraph, chunks[2]);
-    app.hit_map.push(
-        inner_area,
-        crate::ui::hit::HitTarget::Pane {
-            pane: crate::ui::hit::PaneKind::CommentPanel,
-        },
-    );
-
-    if total_rows > inner_area.height as usize {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("▲"))
-            .end_symbol(Some("▼"));
-
-        let max_scroll = total_rows.saturating_sub(1);
-        let mut scrollbar_state =
-            ScrollbarState::new(max_scroll).position(app.cmt.comment_panel_scroll as usize);
-
-        frame.render_stateful_widget(
-            scrollbar,
-            chunks[2].inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
-
-    let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
+    // The failure status names `r`. The hints keep the other keys.
+    let footer_text = if app.cmt.comment_error.is_some() {
+        "j/k/↑↓: scroll | n/N: jump | Tab: switch | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close"
+    } else {
+        "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close"
+    };
     render_diff_footer(frame, app, chunks[3], footer_text, panes.comments, theme);
 }
 

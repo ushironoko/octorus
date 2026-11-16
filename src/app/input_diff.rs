@@ -316,6 +316,17 @@ impl App {
             return Ok(());
         }
 
+        // The panel is closed, and this line has no comments. `r` retries the
+        // fetch, which is what the footer says.
+        if !self.cmt.comment_panel_open
+            && self.cmt.comment_error.is_some()
+            && !self.has_comment_at_current_line()
+            && self.matches_single_key(&key, &kb.retry)
+        {
+            self.retry_review_comments();
+            return Ok(());
+        }
+
         if self.cmt.comment_panel_open {
             // 複数行選択の開始はパネルより優先する。パネルは開いたままだと
             // 以降の全キーを吸うため(末尾の包括 return)、ここで閉じて

@@ -964,26 +964,12 @@ impl App {
         self.load_discussion_comments();
     }
 
-    /// The comment-list pane is showing a fetch failure rather than rows.
-    fn comment_list_shows_fetch_error(&self) -> bool {
+    /// The visible comment tab has a fetch failure. `r` retries it, including
+    /// when rows from an earlier fetch are still on screen.
+    fn active_tab_fetch_error(&self) -> bool {
         match self.cmt.comment_tab {
-            CommentTab::Review => {
-                self.cmt.review_threads.is_empty()
-                    && self.cmt.comment_error.is_some()
-                    && !(self.cmt.comments_loading && self.cmt.review_comments.is_none())
-            }
-            CommentTab::Discussion => {
-                let empty = self
-                    .cmt
-                    .discussion_comments
-                    .as_ref()
-                    .map(|comments| comments.is_empty())
-                    .unwrap_or(true);
-                empty
-                    && self.cmt.discussion_error.is_some()
-                    && !(self.cmt.discussion_comments_loading
-                        && self.cmt.discussion_comments.is_none())
-            }
+            CommentTab::Review => self.cmt.comment_error.is_some(),
+            CommentTab::Discussion => self.cmt.discussion_error.is_some(),
         }
     }
 
@@ -1102,7 +1088,7 @@ impl App {
             return Ok(());
         }
 
-        if self.matches_single_key(&key, &kb.retry) && self.comment_list_shows_fetch_error() {
+        if self.matches_single_key(&key, &kb.retry) && self.active_tab_fetch_error() {
             match self.cmt.comment_tab {
                 CommentTab::Review => self.retry_review_comments(),
                 CommentTab::Discussion => self.retry_discussion_comments(),
@@ -1640,18 +1626,10 @@ impl App {
     pub(crate) fn comment_panel_content_lines(&self, panel_inner_width: usize) -> usize {
         let indices = self.get_comment_indices_at_current_line();
         if indices.is_empty() {
-            // Title plus hint. The failure replaces that only when no line has
-            // a comment, in which case the pane is title, reason, and retry.
-            let no_rows = self
-                .cmt
-                .review_comments
-                .as_ref()
-                .is_none_or(|comments| comments.is_empty());
-            if no_rows {
-                if let Some(message) = self.cmt.comment_error.as_deref() {
-                    let reason = crate::github::GhFailure::from_message(message).reason();
-                    return if reason.is_empty() { 2 } else { 3 };
-                }
+            // A failed fetch leaves the body empty. A successful empty line is
+            // the title plus the hint.
+            if self.cmt.comment_error.is_some() {
+                return 0;
             }
             return 2;
         }

@@ -7401,7 +7401,7 @@ async fn test_missing_repo_at_startup_shows_reason_then_retry_loads_list() {
     let screen = render_top_lines(&mut app, 24, 24);
     assert!(screen.contains("✕ Repository not found"), "{screen}");
     assert!(screen.contains("Check the owner/repo name."), "{screen}");
-    assert!(screen.contains("r Retry | "), "{screen}");
+    assert!(screen.contains("r: retry"), "{screen}");
 
     app.handle_pr_list_input(make_key(KeyCode::Char('r')))
         .await
@@ -10429,12 +10429,10 @@ async fn test_poll_comment_error_keeps_existing_comments() {
     assert_eq!(comments[0].id, 9);
     assert_eq!(comments[0].body, "kept");
     assert!(!app.cmt.comments_loading);
-    let toast = app
-        .cmt
-        .submission_result
-        .expect("rows stay, reason goes to the footer");
-    assert_eq!(toast.kind(), super::toast::ToastKind::Failure);
-    assert_eq!(toast.message(), "comments failed");
+    assert!(
+        app.cmt.submission_result.is_none(),
+        "a fetch failure is the footer status, not a second toast"
+    );
 }
 
 #[tokio::test]
@@ -10456,7 +10454,7 @@ async fn test_poll_comment_error_leaves_missing_comments_none() {
     assert!(!app.cmt.comments_loading);
     assert!(
         app.cmt.submission_result.is_none(),
-        "an empty fetch draws the error in the pane"
+        "a fetch failure is the footer status, not a toast"
     );
 }
 
@@ -10486,7 +10484,7 @@ async fn test_poll_comment_error_leaves_a_visible_toast_alone() {
 }
 
 #[tokio::test]
-async fn test_poll_comment_error_toasts_once_when_the_failure_starts() {
+async fn test_poll_comment_error_does_not_toast() {
     use tokio::sync::mpsc;
 
     let mut app = App::new_for_test();
@@ -10498,12 +10496,8 @@ async fn test_poll_comment_error_toasts_once_when_the_failure_starts() {
     app.cmt.comment_receiver = Some((4, rx));
     tx.send(Err("comments failed".to_string())).await.unwrap();
     app.poll_comment_updates();
-    assert_eq!(
-        app.cmt.submission_result.as_ref().map(Toast::message),
-        Some("comments failed")
-    );
+    assert!(app.cmt.submission_result.is_none());
 
-    app.cmt.submission_result = None;
     app.cmt.comments_loading = true;
     let (tx, rx) = mpsc::channel(1);
     app.cmt.comment_receiver = Some((4, rx));
@@ -10513,7 +10507,7 @@ async fn test_poll_comment_error_toasts_once_when_the_failure_starts() {
     app.poll_comment_updates();
     assert!(
         app.cmt.submission_result.is_none(),
-        "a refresh that is already failed does not toast again"
+        "a later refresh still does not toast the fetch failure"
     );
     assert_eq!(
         app.cmt.comment_error.as_deref(),

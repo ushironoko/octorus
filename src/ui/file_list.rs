@@ -14,9 +14,9 @@ use super::common::{
     build_ci_status_span, build_pending_review_span, build_pr_info, render_rally_status_bar,
     render_update_bar,
 };
-use super::state_view::{self, retry_action, ViewState};
+use super::state_view::{self, ViewState};
 use crate::app::{App, TreeRow};
-use crate::github::{ChangedFile, FailureSurface, GhFailure};
+use crate::github::{ChangedFile, GhFailure};
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 use crate::ui::theme::Theme;
 use std::collections::HashMap;
@@ -359,7 +359,7 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
     frame.render_widget(footer, chunks[2]);
 }
 
-pub fn render_error(frame: &mut Frame, app: &App, failure: &GhFailure) {
+pub fn render_error(frame: &mut Frame, app: &App, _failure: &GhFailure) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -381,29 +381,12 @@ pub fn render_error(frame: &mut Frame, app: &App, failure: &GhFailure) {
         Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
-    let title = failure.title(FailureSurface::FileList);
-    let error = ViewState::Error {
-        title: &title,
-        reason: failure.reason(),
-        actions: vec![retry_action(&app.config.keybindings)],
-        severity: failure.severity(),
-    };
-    state_view::render_in_block(
-        frame,
-        chunks[1],
-        &app.theme,
-        Some("Changed Files"),
-        &error,
-        app.spinner_char(),
-    );
+    state_view::render_blank_pane(frame, chunks[1], Some("Changed Files"));
 
-    let kb = &app.config.keybindings;
-    let footer_text = format!(
-        "{}: retry │ {}: quit",
-        kb.retry.display_primary(),
-        kb.quit.display_primary(),
-    );
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let help_text = format!("{}: quit", app.config.keybindings.quit.display_primary());
+    let width = chunks[2].width.saturating_sub(2) as usize;
+    let footer_line = super::footer::build_footer_line_fitted(app, &help_text, width);
+    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -746,6 +729,7 @@ mod tests {
         app.config.keybindings.retry = KeySequence::single(KeyBinding::char('z'));
         app.config.keybindings.quit = KeySequence::single(KeyBinding::char('x'));
         let failure = GhFailure::other("disk full");
+        app.data_state = crate::app::DataState::Error(failure.clone());
         let backend = TestBackend::new(90, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -764,11 +748,17 @@ mod tests {
         assert!(text.contains("z: retry"), "{text}");
         assert!(text.contains("x: quit"), "{text}");
         assert!(!text.contains("Error: disk full"), "{text}");
+        let body = text.lines().nth(4).unwrap_or("");
+        assert!(
+            !body.contains("Couldn't") && !body.contains("disk full"),
+            "the pane body drew the failure: {body}"
+        );
 
         let missing = GhFailure {
             kind: GhFailureKind::Offline,
             message: "dial tcp".to_string(),
         };
+        app.data_state = crate::app::DataState::Error(missing.clone());
         terminal
             .draw(|frame| render_error(frame, &app, &missing))
             .unwrap();

@@ -1807,8 +1807,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         "j/k/↑↓: extend selection | c: comment | s: suggest | Esc: cancel".to_string()
     } else if app.cmt.comment_panel_open {
         let kb = &app.config.keybindings;
-        if super::state_view::comment_fetch_error_replaces_empty(app) {
-            format!("{}: retry | Esc: close", kb.retry.display_primary())
+        // The failure status names `r` as retry or reply, whichever it does.
+        // The hints keep the close key and do not label `r` a second time.
+        if app.cmt.comment_error.is_some() {
+            "Esc: close".to_string()
         } else {
             format!("{}: reply | Esc: close", kb.reply.display_primary())
         }
@@ -1816,7 +1818,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         super::footer::footer_hint_back(&app.config.keybindings)
     };
 
-    let footer_line = super::footer::build_footer_line(app, &help_text);
+    let width = area.width.saturating_sub(2) as usize;
+    let footer_line = super::footer::build_footer_line_fitted(app, &help_text, width);
     let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
     frame.render_widget(footer, area);
 }
