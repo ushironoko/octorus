@@ -17,11 +17,13 @@ use notify::EventKind;
 
 /// Cached `git check-ignore` / `git ls-files` answers for one working tree.
 pub struct GitIgnoreCache {
-    /// Watch root as given, after dropping `.` components. May be relative.
+    /// Watch root as given, with `.` dropped and `..` collapsed. May be relative.
     raw_root: PathBuf,
-    /// Absolute watch root as given, without resolving symlinks.
+    /// Absolute watch root as given, lexically cleaned, symlinks kept.
+    /// Used only to match event paths.
     given_root: PathBuf,
-    /// `canonicalize(given_root)`, or `given_root` when that fails.
+    /// `canonicalize` of the original path. `..` is resolved by the filesystem,
+    /// so a symlink in the path still reaches the work tree.
     canonical_root: PathBuf,
     /// Directory passed to `git -C`.
     git_root: PathBuf,
@@ -66,14 +68,16 @@ impl GitIgnoreCache {
 
     /// Remember the watch root. Git is not queried until the first event.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        let raw_root = lexical_clean(&root.into());
-        let given_root = logical_absolute(raw_root.clone());
-        let canonical_root =
-            std::fs::canonicalize(&given_root).unwrap_or_else(|_| given_root.clone());
+        let input = root.into();
+        // Git must see the path the user typed. Collapsing `..` first turns
+        // `<base>/other/lnk/../repo` into `<base>/other/repo` when `lnk` is a
+        // symlink, and that directory does not exist.
+        let joined = join_cwd(&input);
+        let canonical_root = std::fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
         Self {
             git_root: canonical_root.clone(),
-            raw_root,
-            given_root,
+            raw_root: lexical_clean(&input),
+            given_root: lexical_clean(&joined),
             canonical_root,
             loaded: false,
             git_ok: false,
@@ -171,11 +175,12 @@ impl GitIgnoreCache {
             return Some(path);
         }
         // macOS reports the same directory as `/var/...` and `/private/var/...`.
-        // Try the other spelling before treating the path as outside the tree.
-        let Ok(canon) = std::fs::canonicalize(&path) else {
+        // A deleted file has no canonical path of its own; the parent still does.
+        let spelled = alternate_spelling(&path);
+        if spelled == path {
             return None;
-        };
-        self.strip_known(&lexical_clean(&canon))
+        }
+        self.strip_known(&spelled)
     }
 
     fn strip_known(&self, path: &Path) -> Option<PathBuf> {
@@ -356,15 +361,33 @@ fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
     }
 }
 
-fn logical_absolute(path: PathBuf) -> PathBuf {
-    let abs = if path.is_absolute() {
-        path
+fn join_cwd(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
     } else {
         std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+/// Canonical spelling of `path`. A missing last component uses its parent.
+fn alternate_spelling(path: &Path) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return lexical_clean(&canon);
+    }
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
     };
-    lexical_clean(&abs)
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return path.to_path_buf();
+    };
+    std::fs::canonicalize(parent)
+        .map(|parent| lexical_clean(&parent.join(name)))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Drop `.` and collapse `..` without resolving symlinks.

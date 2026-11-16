@@ -712,9 +712,6 @@ impl App {
                 if files.ptr_eq(cached) {
                     let parked = std::mem::replace(cached, SharedFiles::empty());
                     drop(parked);
-                    let result = f(files.make_mut());
-                    *cached = files.clone();
-                    return Some(result);
                 }
                 let result = f(files.make_mut());
                 *cached = files.clone();

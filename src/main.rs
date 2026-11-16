@@ -1422,6 +1422,33 @@ mod tests {
             &mut via_rel,
             &repo.canonicalize().unwrap().join("target/other.rs")
         ));
+
+        // `<base>/other/lnk/../repo` where `lnk` points at the repo. Collapsing
+        // `..` before canonicalize would look for `other/repo`, git would fail,
+        // and the tracked file under target/ would stop refreshing.
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::os::unix::fs::symlink(&repo, other.join("lnk")).unwrap();
+        let dotdot = other.join("lnk").join("..").join("repo");
+        let mut via_dotdot = octorus::local_watch::GitIgnoreCache::new(&dotdot);
+        assert!(
+            refresh(&mut via_dotdot, &repo.join("target/kept.rs")),
+            "git must see the work tree through a symlink followed by .."
+        );
+        assert!(refresh(&mut via_dotdot, &dotdot.join("target/kept.rs")));
+        assert!(refresh(
+            &mut via_dotdot,
+            &repo.canonicalize().unwrap().join("target/kept.rs")
+        ));
+        assert!(!refresh(&mut via_dotdot, &repo.join("target/other.rs")));
+        assert!(!refresh(&mut via_dotdot, &dotdot.join("target/missing.rs")));
+
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+        assert!(
+            !refresh(&mut via_dotdot, &alias.join("target/missing.rs")),
+            "a deleted file under another spelling of the repo stays ignored"
+        );
     }
 
     #[test]
