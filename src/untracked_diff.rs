@@ -6,10 +6,12 @@
 //! A stat whose mtime or ctime falls within two seconds of the read is not
 //! stored: on a coarse filesystem a same-size rewrite in that tick would not
 //! move the timestamp, and the old text would stay cached. The file on screen
-//! is never served from the cache. Several files that miss are read by one
-//! `git diff --no-index` of a hardlink tree when that output rewrites to the
-//! per-file text. Attributes, custom diff prefixes, directories, and a rewrite
-//! that does not line up stay on the per-file command.
+//! is never served from the cache: its batch entry shares one per-file git
+//! process and is left out of the overlay. Several other files that miss are
+//! read by one `git diff --no-index` of a hardlink tree when that output
+//! rewrites to the per-file text. Attributes, custom diff prefixes, textconv
+//! and clean filters, directories, and a rewrite that does not line up stay
+//! on the per-file command. Filter and textconv output is not cached.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -43,28 +45,58 @@ pub(crate) async fn patches(workdir: Option<&str>, rels: &[String]) -> Vec<Optio
     if rels.is_empty() {
         return Vec::new();
     }
-    let Some(ctx) = prepare(workdir, rels).await else {
+    // The file on screen is already in `diff_inflight` via `patch()`. Join
+    // that process before `prepare` (three git commands) can outlast it and
+    // leave this batch to start a second read. It is not cached and not
+    // overlayed.
+    let work = work_path(workdir);
+    let root = std::fs::canonicalize(&work).ok();
+    let fresh = root.as_deref().map(take_fresh).unwrap_or_default();
+    let fresh_idx: Vec<usize> = rels
+        .iter()
+        .enumerate()
+        .filter(|(_, rel)| fresh.contains(rel.as_str()))
+        .map(|(index, _)| index)
+        .collect();
+    let fresh_diffs = async {
+        let mut diffs = Vec::with_capacity(fresh_idx.len());
+        if let Some(root) = &root {
+            for index in &fresh_idx {
+                let diffed = diff_inflight(&work, root, &rels[*index]).await;
+                diffs.push((*index, diffed));
+            }
+        }
+        diffs
+    };
+    let (fresh_diffs, ctx) = tokio::join!(fresh_diffs, prepare(workdir, rels));
+    let Some(ctx) = ctx else {
+        let ready: HashMap<usize, DiffOut> = fresh_diffs.into_iter().collect();
         let mut out = Vec::with_capacity(rels.len());
-        for rel in rels {
-            out.push(diff_no_index_in(workdir, rel).await);
+        for (index, rel) in rels.iter().enumerate() {
+            if let Some(diffed) = ready.get(&index) {
+                out.push(nonempty(diffed.patch.clone()));
+            } else {
+                out.push(diff_no_index_in(workdir, rel).await);
+            }
         }
         return out;
     };
 
-    let fresh = take_fresh(&ctx.root);
     let mut out = vec![None; rels.len()];
+    for (index, diffed) in fresh_diffs {
+        remember(&ctx, &rels[index], &diffed);
+        out[index] = nonempty(diffed.patch);
+    }
     let mut pending = Vec::new();
     for (index, rel) in rels.iter().enumerate() {
         if fresh.contains(rel.as_str()) {
-            pending.push(index);
-        } else if let Some(hit) = cached_hit(&ctx, rel) {
+            continue;
+        }
+        if let Some(hit) = cached_hit(&ctx, rel) {
             out[index] = Some(hit);
         } else {
             pending.push(index);
         }
-    }
-    if pending.is_empty() {
-        return out;
     }
 
     let mut overlay = Vec::new();
@@ -98,9 +130,10 @@ pub(crate) async fn patches(workdir: Option<&str>, rels: &[String]) -> Vec<Optio
                         if let (Some(before), Some(after)) =
                             (before[slot], stat_rel(&ctx.work, &rels[index]))
                         {
-                            // `before` is the stat from before the hardlink. The
-                            // link updates ctime, so the racy-tick check uses
-                            // that earlier stat and the stored key keeps `after`.
+                            // `before` is the stat from before the hardlink.
+                            // The link updates ctime, so the racy-tick check
+                            // uses that earlier stat and the stored key
+                            // keeps `after`.
                             if before.same_body(after) && !racy(before, started) {
                                 store(&ctx.root, &ctx.fp, &rels[index], after, patch.clone());
                             }
@@ -119,11 +152,7 @@ pub(crate) async fn patches(workdir: Option<&str>, rels: &[String]) -> Vec<Optio
     } else {
         single.extend(overlay);
     }
-
     for index in single {
-        if out[index].is_some() {
-            continue;
-        }
         out[index] = diff_with_ctx(&ctx, &rels[index]).await;
     }
     out
@@ -230,6 +259,9 @@ struct Probe {
     prefixes_ok: bool,
     attributes_file: Option<String>,
     unresolved: bool,
+    /// textconv, external diff, or a clean/process filter. The program's
+    /// output is not in the config bytes or the file stat.
+    volatile: bool,
 }
 
 fn cache() -> &'static Mutex<HashMap<PathBuf, WorkdirCache>> {
@@ -301,8 +333,10 @@ async fn prepare(workdir: Option<&str>, rels: &[String]) -> Option<Context> {
         config: hash,
         attrs,
     };
-    let cache_ok = !unresolved;
-    let allow_overlay = probe.prefixes_ok && fp.attrs.is_empty() && cache_ok;
+    // A driver disables the cache only. Overlay still matches the per-file
+    // text when no attributes file selects that driver.
+    let cache_ok = !unresolved && !probe.volatile;
+    let allow_overlay = probe.prefixes_ok && fp.attrs.is_empty() && !unresolved;
     if cache_ok {
         begin(&root, &fp);
     }
@@ -397,6 +431,22 @@ fn cached_count(work: &Path) -> usize {
         .get(&root)
         .map(|entry| entry.entries.len())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn plant_cached_patch(work: &Path, rel: &str, patch: &str) -> bool {
+    let Ok(root) = std::fs::canonicalize(work) else {
+        return false;
+    };
+    let mut guard = lock(cache());
+    let Some(entry) = guard.get_mut(&root) else {
+        return false;
+    };
+    let Some((_, slot)) = entry.entries.get_mut(rel) else {
+        return false;
+    };
+    *slot = patch.to_string();
+    true
 }
 
 fn stat_rel(work: &Path, rel: &str) -> Option<StatKey> {
@@ -498,10 +548,11 @@ async fn git_probe_raw(work: &Path) -> Option<ProbeRaw> {
 /// is not where git reads `info/attributes`.
 async fn attr_paths(work: &Path) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
     let work_base = vec![work.to_path_buf()];
+    // No `--path-format`. Git 2.30 echoes that option, exits 0, and the extra
+    // line would be parsed as a path. Relative lines are joined onto `work`.
     let output = Command::new("git")
         .args([
             "rev-parse",
-            "--path-format=absolute",
             "--git-path",
             "info/attributes",
             "--git-common-dir",
@@ -517,12 +568,9 @@ async fn attr_paths(work: &Path) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
         return (Vec::new(), work_base, false);
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    let (Some(info), Some(common)) = (lines.next(), lines.next()) else {
+    let Some((info_path, common_path)) = parse_rev_parse_paths(work, &text) else {
         return (Vec::new(), work_base, false);
     };
-    let info_path = PathBuf::from(info);
-    let common_path = PathBuf::from(common);
     let mut info_attrs = vec![info_path.clone()];
     let common_info = common_path.join("info").join("attributes");
     if common_info != info_path {
@@ -535,6 +583,30 @@ async fn attr_paths(work: &Path) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
     bases.sort();
     bases.dedup();
     (info_attrs, bases, true)
+}
+
+/// Two paths, in order: `info/attributes`, then the common git dir.
+/// `None` when git echoed an option (`-...`) or the line count is not 2, so
+/// the caller disables the cache instead of guessing a `.git` location.
+fn parse_rev_parse_paths(work: &Path, stdout: &str) -> Option<(PathBuf, PathBuf)> {
+    let lines: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.len() != 2 || lines.iter().any(|line| line.starts_with('-')) {
+        return None;
+    }
+    Some((abs_under(work, lines[0]), abs_under(work, lines[1])))
+}
+
+fn abs_under(work: &Path, line: &str) -> PathBuf {
+    let path = PathBuf::from(line);
+    if path.is_absolute() {
+        path
+    } else {
+        work.join(path)
+    }
 }
 
 /// System and global attribute files. `git var` knows the install prefix
@@ -591,10 +663,27 @@ async fn config_list_raw(work: &Path) -> Option<Vec<u8>> {
     }
 }
 
+fn command_outside_fingerprint(key: &str, value: &[u8]) -> bool {
+    if value.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return false;
+    }
+    if key == "diff.external" {
+        return true;
+    }
+    if let Some(rest) = key.strip_prefix("diff.") {
+        return rest.ends_with(".textconv") || rest.ends_with(".command");
+    }
+    if let Some(rest) = key.strip_prefix("filter.") {
+        return rest.ends_with(".clean") || rest.ends_with(".process");
+    }
+    false
+}
+
 fn parse_probe(bytes: &[u8]) -> Probe {
     let mut prefixes_ok = true;
     let mut attributes_file = None;
     let mut unresolved = false;
+    let mut volatile = false;
     for rec in bytes.split(|byte| *byte == 0) {
         if rec.is_empty() {
             continue;
@@ -606,6 +695,9 @@ fn parse_probe(bytes: &[u8]) -> Probe {
             .trim()
             .to_ascii_lowercase();
         let value = &rec[split + 1..];
+        if command_outside_fingerprint(&key, value) {
+            volatile = true;
+        }
         match key.as_str() {
             "diff.noprefix" | "diff.mnemonicprefix" | "diff.relative" if git_bool_true(value) => {
                 prefixes_ok = false;
@@ -625,6 +717,7 @@ fn parse_probe(bytes: &[u8]) -> Probe {
         prefixes_ok,
         attributes_file,
         unresolved,
+        volatile,
     }
 }
 
@@ -927,48 +1020,11 @@ async fn try_overlay(work: &Path, rels: &[String]) -> Option<HashMap<String, Str
 }
 
 #[cfg(unix)]
-const OVERLAY_PREFIX: &str = "octorus-untracked-";
-
-fn sweep_overlay_temps() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let Ok(dir) = std::fs::read_dir(std::env::temp_dir()) else {
-            return;
-        };
-        let Some(cutoff) =
-            std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(60))
-        else {
-            return;
-        };
-        for entry in dir.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if !name.starts_with(OVERLAY_PREFIX) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if !meta.is_dir() {
-                continue;
-            }
-            // A live overlay is seconds old. Crash leftovers are older.
-            if meta
-                .modified()
-                .ok()
-                .is_some_and(|modified| modified < cutoff)
-            {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    });
-}
-
 async fn try_overlay_unix(work: &Path, rels: &[String]) -> Option<HashMap<String, String>> {
-    sweep_overlay_temps();
+    // Prefix only. A startup sweep of `/tmp/octorus-untracked-*` can delete
+    // another live process's overlay, or a directory the user named that way.
     let tmp = tempfile::Builder::new()
-        .prefix(OVERLAY_PREFIX)
+        .prefix("octorus-untracked-")
         .tempdir()
         .ok()?;
     let empty = tmp.path().join("empty");
@@ -1513,6 +1569,143 @@ Binary files /dev/null and b/bin.dat differ
     }
 
     #[test]
+    fn external_driver_keys_disable_the_cache() {
+        for (key, value) in [
+            ("diff.conv.textconv", "conv.sh"),
+            ("diff.ext.command", "ext.sh"),
+            ("diff.external", "ext.sh"),
+            ("filter.demo.clean", "clean.sh"),
+            ("filter.demo.process", "proc.sh"),
+        ] {
+            let bytes = format!("{key}\n{value}\0");
+            assert!(
+                parse_probe(bytes.as_bytes()).volatile,
+                "{key} should disable the cache"
+            );
+        }
+        assert!(!parse_probe(b"diff.noprefix\nfalse\0filter.lfs.required\ntrue\0").volatile);
+        assert!(!parse_probe(b"diff.conv.textconv\n\0").volatile);
+    }
+
+    #[test]
+    fn echoed_rev_parse_option_is_not_a_path() {
+        let work = Path::new("/repo");
+        assert!(parse_rev_parse_paths(
+            work,
+            "--path-format=absolute\n.git/info/attributes\n.git\n"
+        )
+        .is_none());
+        assert!(parse_rev_parse_paths(work, ".git/info/attributes\n").is_none());
+        assert!(parse_rev_parse_paths(work, "-.git/info/attributes\n.git\n").is_none());
+        let (info, common) = parse_rev_parse_paths(work, ".git/info/attributes\n.git\n").unwrap();
+        assert_eq!(info, work.join(".git/info/attributes"));
+        assert_eq!(common, work.join(".git"));
+        let (info, common) =
+            parse_rev_parse_paths(work, "/common/.git/info/attributes\n/common/.git\n").unwrap();
+        assert_eq!(info, PathBuf::from("/common/.git/info/attributes"));
+        assert_eq!(common, PathBuf::from("/common/.git"));
+    }
+
+    #[tokio::test]
+    async fn fresh_batch_skips_the_cached_patch() {
+        // Isolate config so a host git-lfs filter does not turn the cache off
+        // and hide the assertion. The library itself still reads the real
+        // config in production.
+        if std::env::var_os("OCTORUS_FRESH_ISOLATED").is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "untracked_diff::tests::fresh_batch_skips_the_cached_patch",
+                    "--test-threads=1",
+                ])
+                .env("OCTORUS_FRESH_ISOLATED", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "octorus-test")
+                .env("GIT_AUTHOR_EMAIL", "octorus-test@example.com")
+                .env("GIT_COMMITTER_NAME", "octorus-test")
+                .env("GIT_COMMITTER_EMAIL", "octorus-test@example.com")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated fresh-path child failed");
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        init_repo(dir);
+        write(&dir.join("a.txt"), "alpha\n");
+        write(&dir.join("b.txt"), "beta\n");
+        let rels = vec!["a.txt".to_string(), "b.txt".to_string()];
+        settle_timestamps().await;
+        let first = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(first[0], oracle(dir, "a.txt"));
+        assert!(
+            plant_cached_patch(dir, "a.txt", "STALE\n"),
+            "the aged file should have been cached"
+        );
+        require_fresh(workdir(dir).as_deref(), "a.txt");
+        let second = patches(workdir(dir).as_deref(), &rels).await;
+        assert_eq!(second[0], oracle(dir, "a.txt"));
+        assert_ne!(second[0].as_deref(), Some("STALE\n"));
+        assert_eq!(second[1], first[1]);
+    }
+
+    #[tokio::test]
+    async fn textconv_and_clean_filter_changes_are_not_cached() {
+        let temp = tempfile::tempdir().unwrap();
+        for (kind, key, marker) in [
+            ("textconv", "diff.conv.textconv", "TEXTCONV"),
+            ("clean", "filter.demo.clean", "CLEAN"),
+        ] {
+            let dir = temp.path().join(kind);
+            std::fs::create_dir(&dir).unwrap();
+            init_repo(&dir);
+            let script = temp.path().join(format!("{kind}.sh"));
+            write_script(&script, &format!("#!/bin/sh\necho {marker}_V1\n"));
+            let attr = if kind == "textconv" {
+                "*.txt diff=conv\n"
+            } else {
+                "*.txt filter=demo\n"
+            };
+            write(&dir.join(".gitattributes"), attr);
+            git_repo(&dir, &["config", key, &script.to_string_lossy()]);
+            write(&dir.join("a.txt"), "alpha\n");
+            write(&dir.join("b.txt"), "beta\n");
+            let rels = vec!["a.txt".to_string(), "b.txt".to_string()];
+            settle_timestamps().await;
+            let first = patches(workdir(&dir).as_deref(), &rels).await;
+            assert!(
+                first[0].as_ref().unwrap().contains(&format!("{marker}_V1")),
+                "{kind}: {first:?}"
+            );
+            assert_eq!(first[0], oracle(&dir, "a.txt"), "{kind}");
+            write_script(&script, &format!("#!/bin/sh\necho {marker}_V2\n"));
+            let second = patches(workdir(&dir).as_deref(), &rels).await;
+            assert_eq!(second[0], oracle(&dir, "a.txt"), "{kind}");
+            assert_eq!(second[1], oracle(&dir, "b.txt"), "{kind}");
+            assert!(
+                second[0]
+                    .as_ref()
+                    .unwrap()
+                    .contains(&format!("{marker}_V2")),
+                "{kind} stayed on V1: {second:?}"
+            );
+            assert_ne!(first[0], second[0], "{kind}");
+        }
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    #[test]
     fn stat_matching_the_store_clock_is_racy() {
         let started = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let at = |mtime: u64, ctime: u64| StatKey {
@@ -1559,7 +1752,11 @@ Binary files /dev/null and b/bin.dat differ
         settle_timestamps().await;
         let warmed = patches(workdir(dir).as_deref(), &rels).await;
         assert_eq!(warmed[0], second[0]);
-        assert!(cached_count(dir) >= 2, "stable files are cached");
+        if host_volatile() {
+            assert_eq!(cached_count(dir), 0);
+        } else {
+            assert!(cached_count(dir) >= 2, "stable files are cached");
+        }
         let again = patches(workdir(dir).as_deref(), &rels).await;
         assert_eq!(again, warmed);
     }
@@ -1610,7 +1807,11 @@ Binary files /dev/null and b/bin.dat differ
                 "{}",
                 dir.display()
             );
-            assert!(cached_count(dir) >= 2, "{}", dir.display());
+            if host_volatile() {
+                assert_eq!(cached_count(dir), 0, "{}", dir.display());
+            } else {
+                assert!(cached_count(dir) >= 2, "{}", dir.display());
+            }
             warm.push(first);
         }
 
@@ -1809,6 +2010,17 @@ Binary files /dev/null and b/bin.dat differ
         panic!("git is not on PATH");
     }
 
+    fn host_volatile() -> bool {
+        static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *FLAG.get_or_init(|| {
+            let output = Command::new("git")
+                .args(["config", "--list", "--null"])
+                .output()
+                .expect("git config");
+            parse_probe(&output.stdout).volatile
+        })
+    }
+
     fn host_attributes(repo: &Path) -> bool {
         let mut paths = vec![
             PathBuf::from("/etc/gitattributes"),
@@ -1883,19 +2095,22 @@ Binary files /dev/null and b/bin.dat differ
         log.clear();
         let again = patches(workdir(dir).as_deref(), &rels).await;
         assert_eq!(again, expected);
-        assert_counts(
-            &log,
-            dir,
-            Counts {
-                config: 3,
-                per_file: 0,
-                overlay: 0,
-                name_status: 0,
-                numstat: 0,
-                ls_files: 0,
-                rev_parse: 0,
-            },
-        );
+        let again_counts = log.counts(dir);
+        assert_eq!(again_counts.config, 3, "git log:\n{}", log.repo_log(dir));
+        assert_eq!(again_counts.name_status, 0);
+        if host_volatile() {
+            // A textconv or clean filter is configured, so nothing is cached.
+            if host_attributes(dir) {
+                assert_eq!(again_counts.per_file, rels.len(), "{}", log.repo_log(dir));
+                assert_eq!(again_counts.overlay, 0);
+            } else {
+                assert_eq!(again_counts.overlay, 1, "{}", log.repo_log(dir));
+                assert_eq!(again_counts.per_file, 0);
+            }
+        } else {
+            assert_eq!(again_counts.per_file, 0, "{}", log.repo_log(dir));
+            assert_eq!(again_counts.overlay, 0);
+        }
 
         write(&dir.join("f3.txt"), "file 3\nedited\n");
         log.clear();
@@ -1903,20 +2118,18 @@ Binary files /dev/null and b/bin.dat differ
         let edited_counts = log.counts(dir);
         assert_eq!(edited[3], oracle(dir, "f3.txt"));
         assert_eq!(edited[0], expected[0]);
-        assert_eq!(
-            edited_counts,
-            Counts {
-                config: 3,
-                per_file: 1,
-                overlay: 0,
-                name_status: 0,
-                numstat: 0,
-                ls_files: 0,
-                rev_parse: 0,
-            },
-            "git log:\n{}",
-            log.repo_log(dir)
-        );
+        assert_eq!(edited_counts.config, 3, "{}", log.repo_log(dir));
+        if host_attributes(dir) {
+            let want = if host_volatile() { rels.len() } else { 1 };
+            assert_eq!(edited_counts.per_file, want, "{}", log.repo_log(dir));
+            assert_eq!(edited_counts.overlay, 0);
+        } else if host_volatile() {
+            assert_eq!(edited_counts.overlay, 1, "{}", log.repo_log(dir));
+            assert_eq!(edited_counts.per_file, 0);
+        } else {
+            assert_eq!(edited_counts.per_file, 1, "{}", log.repo_log(dir));
+            assert_eq!(edited_counts.overlay, 0);
+        }
 
         write(&dir.join("f1.txt"), "file 1\nleft\n");
         write(&dir.join("f2.txt"), "file 2\nright\n");
@@ -1926,7 +2139,8 @@ Binary files /dev/null and b/bin.dat differ
         assert_eq!(both[1], oracle(dir, "f1.txt"));
         assert_eq!(both[2], oracle(dir, "f2.txt"));
         if host_attributes(dir) {
-            assert_eq!(two.per_file, 2, "git log:\n{}", log.repo_log(dir));
+            let want = if host_volatile() { rels.len() } else { 2 };
+            assert_eq!(two.per_file, want, "git log:\n{}", log.repo_log(dir));
             assert_eq!(two.overlay, 0, "git log:\n{}", log.repo_log(dir));
         } else {
             assert_eq!(two.per_file, 0, "git log:\n{}", log.repo_log(dir));
@@ -1949,8 +2163,21 @@ Binary files /dev/null and b/bin.dat differ
         assert_eq!(refreshed, both);
         assert_eq!(selected, both[0]);
         let refresh = log.counts(dir);
-        assert_eq!(refresh.per_file, 1, "git log:\n{}", log.repo_log(dir));
-        assert_eq!(refresh.overlay, 0, "git log:\n{}", log.repo_log(dir));
+        if host_volatile() && !host_attributes(dir) {
+            assert_eq!(refresh.overlay, 1, "git log:\n{}", log.repo_log(dir));
+            assert_eq!(refresh.per_file, 1, "git log:\n{}", log.repo_log(dir));
+        } else if host_volatile() {
+            assert_eq!(refresh.overlay, 0, "git log:\n{}", log.repo_log(dir));
+            assert_eq!(
+                refresh.per_file,
+                rels.len(),
+                "git log:\n{}",
+                log.repo_log(dir)
+            );
+        } else {
+            assert_eq!(refresh.per_file, 1, "git log:\n{}", log.repo_log(dir));
+            assert_eq!(refresh.overlay, 0, "git log:\n{}", log.repo_log(dir));
+        }
         assert_eq!(refresh.name_status, 1, "git log:\n{}", log.repo_log(dir));
         assert_eq!(refresh.numstat, 1, "git log:\n{}", log.repo_log(dir));
         assert_eq!(refresh.ls_files, 1, "git log:\n{}", log.repo_log(dir));
@@ -2038,6 +2265,7 @@ Binary files /dev/null and b/bin.dat differ
         if n == 0 {
             let _ = patches(wd.as_deref(), &rels).await;
         } else {
+            require_fresh(wd.as_deref(), &rels[0]);
             let _ = tokio::join!(
                 patch(wd.as_deref(), &rels[0]),
                 patches(wd.as_deref(), &rels),
