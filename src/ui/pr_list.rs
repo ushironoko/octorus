@@ -925,23 +925,30 @@ mod tests {
         let mut app = failed_pr_list_app(GhFailure::other(
             "gh command failed: something unexpected\nsecond line",
         ));
-        let text = screen_text(&draw_pr_list(&mut app));
-        assert!(text.contains("✕ Couldn't load pull requests"), "{text}");
+        let wide = screen_text(&draw_sized(&mut app, 160, 24));
+        assert!(wide.contains("✕ Couldn't load pull requests"), "{wide}");
         assert!(
-            text.contains("gh command failed: something unexpected second line"),
-            "{text}"
+            wide.contains("gh command failed: something unexpected second line"),
+            "{wide}"
         );
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains('?'), "{text}");
 
         let mut app = failed_pr_list_app(GhFailure {
             kind: GhFailureKind::CliMissing,
             message: "Failed to execute gh CLI".to_string(),
         });
-        let text = screen_text(&draw_pr_list(&mut app));
-        assert!(text.contains("✕ gh is not installed"), "{text}");
+        let wide = screen_text(&draw_sized(&mut app, 160, 24));
+        assert!(wide.contains("✕ gh is not installed"), "{wide}");
         assert!(
-            text.contains("Install GitHub CLI (https://cli.github.com), then retry."),
-            "{text}"
+            wide.contains("Install GitHub CLI (https://cli.github.com), then retry."),
+            "{wide}"
         );
+        let text = screen_text(&draw_pr_list(&mut app));
+        assert!(text.contains("Install GitHub CLI"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains("? Help"), "{text}");
 
         let mut app = failed_pr_list_app(GhFailure::other("  "));
         let text = screen_text(&draw_pr_list(&mut app));

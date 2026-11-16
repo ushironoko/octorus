@@ -1827,7 +1827,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 /// Render inline comments panel for current line
 fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let indices = app.get_comment_indices_at_current_line();
-    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let title = super::footer::comment_pane_title(app);
     let theme = app.theme;
     let comments_attention = app.diff_attention().comments;
 
@@ -1836,7 +1836,7 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
             theme,
             super::chrome::PaneTitle::Labeled {
                 label: "",
-                detail: title,
+                detail: title.as_str(),
             },
             comments_attention,
         );
@@ -1896,7 +1896,7 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         }
     }
 
-    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let title = super::footer::comment_pane_title(app);
     let theme = app.theme;
     let comments = app.diff_attention().comments;
 
@@ -1904,7 +1904,7 @@ fn render_inline_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         theme,
         super::chrome::PaneTitle::Labeled {
             label: "",
-            detail: title,
+            detail: title.as_str(),
         },
         comments,
     );

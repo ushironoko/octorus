@@ -353,6 +353,11 @@ mod tests {
             .unwrap_or("");
         assert!(footer.contains("r: retry"), "{footer}\n{text}");
         assert!(!footer.contains("reply"), "{footer}\n{text}");
+        assert!(
+            text.contains("suggest, r: retry"),
+            "the pane title names the key: {text}"
+        );
+        assert!(!text.contains("r: reply"), "{text}");
     }
 
     #[test]
@@ -535,8 +540,35 @@ mod tests {
         save_artifact(
             &dir,
             "comments-error-empty",
-            "Comment panel, empty line with a fetch error",
+            "Comment panel, empty line with a fetch error; the title says retry",
             &draw_ui(&mut comments, 100, 30),
+        );
+
+        let mut loading_comments = comment_panel_app();
+        loading_comments.cmt.review_comments = Some(vec![]);
+        loading_comments.cmt.file_comment_positions.clear();
+        loading_comments.cmt.comment_error = Some("comments failed".to_string());
+        loading_comments.cmt.comments_loading = true;
+        save_artifact(
+            &dir,
+            "comments-error-loading",
+            "Comment failure while comments are loading",
+            &draw_ui(&mut loading_comments, 100, 30),
+        );
+
+        let mut inferred = comment_panel_app();
+        inferred.cmt.review_comments = Some(vec![]);
+        inferred.cmt.file_comment_positions.clear();
+        inferred.cmt.comment_error = Some("comments failed".to_string());
+        inferred.pr_number = Some(123);
+        inferred.pr_open_source = crate::app::PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        save_artifact(
+            &dir,
+            "comments-error-inferred-pr",
+            "Comment failure beside the inferred-PR notice",
+            &draw_ui(&mut inferred, 100, 30),
         );
 
         let mut with_data = comment_panel_app();

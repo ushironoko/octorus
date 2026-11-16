@@ -16,7 +16,7 @@ use super::common::{
 };
 use super::state_view::{self, ViewState};
 use crate::app::{App, TreeRow};
-use crate::github::{ChangedFile, GhFailure};
+use crate::github::ChangedFile;
 use crate::ui::hit::{HitTarget, ListKind, PaneKind};
 use crate::ui::theme::Theme;
 use std::collections::HashMap;
@@ -359,7 +359,7 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
     frame.render_widget(footer, chunks[2]);
 }
 
-pub fn render_error(frame: &mut Frame, app: &App, _failure: &GhFailure) {
+pub fn render_error(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -732,9 +732,7 @@ mod tests {
         app.data_state = crate::app::DataState::Error(failure.clone());
         let backend = TestBackend::new(90, 12);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| render_error(frame, &app, &failure))
-            .unwrap();
+        terminal.draw(|frame| render_error(frame, &app)).unwrap();
         let text = (0..12)
             .map(|y| {
                 (0..90)
@@ -759,9 +757,7 @@ mod tests {
             message: "dial tcp".to_string(),
         };
         app.data_state = crate::app::DataState::Error(missing.clone());
-        terminal
-            .draw(|frame| render_error(frame, &app, &missing))
-            .unwrap();
+        terminal.draw(|frame| render_error(frame, &app)).unwrap();
         let text = (0..12)
             .map(|y| {
                 (0..90)
@@ -786,9 +782,7 @@ mod tests {
         app.data_state = DataState::Error(failure.clone());
         let backend = TestBackend::new(58, 14);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| render_error(frame, &app, &failure))
-            .unwrap();
+        terminal.draw(|frame| render_error(frame, &app)).unwrap();
         let text = (0..14)
             .map(|y| {
                 (0..58)

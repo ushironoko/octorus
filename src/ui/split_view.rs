@@ -411,12 +411,12 @@ fn render_diff_pane_with_comments(
     render_diff_body(frame, app, chunks[1], panes.diff, theme);
 
     let indices = app.get_comment_indices_at_current_line();
-    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let title = super::footer::comment_pane_title(app);
     let block = pane_block(
         theme,
         PaneTitle::Labeled {
             label: "",
-            detail: title,
+            detail: title.as_str(),
         },
         panes.comments,
     );

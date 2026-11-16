@@ -35,8 +35,11 @@ pub fn footer_hint_quit(kb: &KeybindingsConfig) -> String {
 /// 2. Approve confirmation
 /// 3. Comment, issue comment, or review submitting
 /// 4. Submission result
-/// 5. PR open notice
-/// 6. Default help text plus loading indicators
+/// 5. Load/fetch failure. A comment failure waits out `comments_loading`.
+///    The inferred-PR notice, the help hints, and the loading/searching
+///    indicators stay on the same line.
+/// 6. PR open notice, with those same indicators
+/// 7. Default help text plus loading indicators
 ///
 /// Whichever of these applies, the config-warning badge comes first when the config
 /// loaded with warnings.
@@ -132,9 +135,9 @@ fn footer_status_line<'a>(
         // submit result does. The failure returns when the toast clears.
         activity_line(app, toast_span(toast, app.theme))
     } else if let Some(failure) = screen_failure(app) {
-        failure_status_line(&failure, help_text, width)
+        failure_status_line(app, &failure, help_text, width)
     } else if let Some(message) = app.pr_open_notice() {
-        Line::from(Span::styled(message, app.theme.warning.style()))
+        activity_line(app, Span::styled(message, app.theme.warning.style()))
     } else {
         activity_line(app, Span::raw(help_text))
     }
@@ -211,6 +214,11 @@ fn cockpit_failure(app: &App) -> Option<ShownFailure> {
 }
 
 fn comment_panel_failure(app: &App) -> Option<ShownFailure> {
+    // A reload leaves the old error in place. While that reload is running the
+    // spinner is the status, and the failure returns when the reload settles.
+    if app.cmt.comments_loading {
+        return None;
+    }
     let message = app.cmt.comment_error.as_deref()?;
     let failure = GhFailure::from_message(message);
     // The label is what `r` does on this line. A line that still has comments
@@ -229,7 +237,12 @@ fn comment_panel_failure(app: &App) -> Option<ShownFailure> {
 
 fn comment_list_failure(app: &App) -> Option<ShownFailure> {
     let message = match app.cmt.comment_tab {
-        CommentTab::Review => app.cmt.comment_error.as_deref(),
+        CommentTab::Review => {
+            if app.cmt.comments_loading {
+                return None;
+            }
+            app.cmt.comment_error.as_deref()
+        }
         CommentTab::Discussion => app.cmt.discussion_error.as_deref(),
     }?;
     let failure = GhFailure::from_message(message);
@@ -267,15 +280,42 @@ fn shown(
     }
 }
 
-/// `symbol title · reason  key: retry  hints`. Hints are cut first, then the
-/// reason. The symbol, the title, and the key stay while `width` allows them.
-fn failure_status_line(failure: &ShownFailure, hints: &str, width: usize) -> Line<'static> {
-    let (head, reason, action, hints) = fit_failure(
+/// The label `r` has in the comment pane title. It is `retry` on an empty
+/// failed line and `reply` otherwise, which is what that key does.
+pub(super) fn comment_pane_title(app: &App) -> String {
+    let retry = app.cmt.comment_error.is_some() && !app.has_comment_at_current_line();
+    let (key, label) = if retry {
+        (app.config.keybindings.retry.display_primary(), "retry")
+    } else {
+        (app.config.keybindings.reply.display_primary(), "reply")
+    };
+    format!("Comments (j/k/↑↓: scroll, c: comment, s: suggest, {key}: {label})")
+}
+
+/// `notice  symbol title · reason  key: retry  hints`, then the loading and
+/// searching indicators. Their width is reserved before the hints or the
+/// reason are cut. At 80 columns and wider the reason is cut before the help
+/// hint, so `?` and the retry key stay.
+fn failure_status_line(
+    app: &App,
+    failure: &ShownFailure,
+    hints: &str,
+    width: usize,
+) -> Line<'static> {
+    let notice = app.pr_open_notice().unwrap_or_default();
+    let tail_width = activity_tail_width(app);
+    let fitted_width = if width == usize::MAX {
+        usize::MAX
+    } else {
+        width.saturating_sub(tail_width)
+    };
+    let (notice, head, reason, action, hints) = fit_failure_line(
+        &notice,
         &failure.head,
         &failure.reason,
         &failure.action,
         hints,
-        width,
+        fitted_width,
     );
     let mut status = head;
     if !reason.is_empty() {
@@ -283,14 +323,193 @@ fn failure_status_line(failure: &ShownFailure, hints: &str, width: usize) -> Lin
         status.push_str(&reason);
     }
     if !action.is_empty() {
-        status.push_str("  ");
+        if !status.is_empty() {
+            status.push_str("  ");
+        }
         status.push_str(&action);
     }
-    let mut spans = vec![Span::styled(status, failure.style)];
+    let mut spans = Vec::new();
+    if !notice.is_empty() {
+        spans.push(Span::styled(notice, app.theme.warning.style()));
+        if !status.is_empty() || !hints.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+    }
+    spans.push(Span::styled(status, failure.style));
     if !hints.is_empty() {
         spans.push(Span::raw(format!("  {hints}")));
     }
+    push_activity_tail(app, &mut spans);
     Line::from(spans)
+}
+
+fn activity_tail_width(app: &App) -> usize {
+    let mut width = 0;
+    if app.cmt.comments_loading {
+        width += 2 + format!("{} Loading comments...", app.spinner_char()).width();
+    }
+    if app.symbol_search.is_searching() {
+        width += 2 + format!("{} Searching...", app.spinner_char()).width();
+    }
+    width
+}
+
+fn push_activity_tail(app: &App, spans: &mut Vec<Span<'static>>) {
+    if app.cmt.comments_loading {
+        spans.push(Span::raw("  "));
+        spans.push(loading_comments_span(app));
+    }
+    if app.symbol_search.is_searching() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{} Searching...", app.spinner_char()),
+            app.theme.warning.style(),
+        ));
+    }
+}
+
+/// 80 columns is a normal footer. Below that, hints are cut before the reason.
+const NORMAL_FOOTER_WIDTH: usize = 80;
+
+fn fit_failure_line(
+    notice: &str,
+    head: &str,
+    reason: &str,
+    action: &str,
+    hints: &str,
+    width: usize,
+) -> (String, String, String, String, String) {
+    if width == usize::MAX {
+        return (
+            notice.to_string(),
+            head.to_string(),
+            reason.to_string(),
+            action.to_string(),
+            hints.to_string(),
+        );
+    }
+    if width == 0 {
+        return (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+    }
+    if width >= NORMAL_FOOTER_WIDTH {
+        fit_failure_line_normal(notice, head, reason, action, hints, width)
+    } else {
+        let (head, reason, action, hints) = fit_failure(head, reason, action, hints, width);
+        let used = line_width("", &head, &reason, &action, &hints);
+        let room = width.saturating_sub(used);
+        let notice = clip_leading(notice, room);
+        (notice, head, reason, action, hints)
+    }
+}
+
+/// Keep the retry key and the help hint, then the title, then the notice.
+/// The reason takes what is left.
+fn fit_failure_line_normal(
+    notice: &str,
+    head: &str,
+    reason: &str,
+    action: &str,
+    hints: &str,
+    width: usize,
+) -> (String, String, String, String, String) {
+    if line_width(notice, head, reason, action, hints) <= width {
+        return (
+            notice.to_string(),
+            head.to_string(),
+            reason.to_string(),
+            action.to_string(),
+            hints.to_string(),
+        );
+    }
+
+    let protected_hints = if hints.contains('?') {
+        question_prefix(hints)
+    } else {
+        hints.to_string()
+    };
+    let hints = if line_width("", head, "", action, hints) <= width {
+        hints.to_string()
+    } else {
+        protected_hints
+    };
+
+    let base = line_width("", head, "", action, &hints);
+    if base > width {
+        let (head, _, action, hints) = fit_failure(head, "", action, &hints, width);
+        return (String::new(), head, String::new(), action, hints);
+    }
+
+    let mut rest = width - base;
+    let notice = clip_leading(notice, rest);
+    rest = rest.saturating_sub(leading_cost(&notice));
+    let reason = clip_reason(reason, rest);
+    (notice, head.to_string(), reason, action.to_string(), hints)
+}
+
+fn question_prefix(hints: &str) -> String {
+    match hints.find('?') {
+        Some(index) => hints[..=index].to_string(),
+        None => String::new(),
+    }
+}
+
+fn leading_cost(notice: &str) -> usize {
+    if notice.is_empty() {
+        0
+    } else {
+        notice.width() + 2
+    }
+}
+
+fn clip_leading(text: &str, room: usize) -> String {
+    if text.is_empty() || room <= 2 {
+        String::new()
+    } else {
+        truncate_with_width(text, room - 2).into_owned()
+    }
+}
+
+fn clip_reason(reason: &str, room: usize) -> String {
+    if reason.is_empty() || room <= 3 {
+        String::new()
+    } else {
+        truncate_with_width(reason, room - 3).into_owned()
+    }
+}
+
+fn line_width(notice: &str, head: &str, reason: &str, action: &str, hints: &str) -> usize {
+    let mut width = 0;
+    if !notice.is_empty() {
+        width += notice.width();
+    }
+    if !head.is_empty() {
+        if width > 0 {
+            width += 2;
+        }
+        width += head.width();
+    }
+    if !reason.is_empty() {
+        width += 3 + reason.width();
+    }
+    if !action.is_empty() {
+        if width > 0 {
+            width += 2;
+        }
+        width += action.width();
+    }
+    if !hints.is_empty() {
+        if width > 0 {
+            width += 2;
+        }
+        width += hints.width();
+    }
+    width
 }
 
 fn fit_failure(
@@ -1155,5 +1374,96 @@ mod tests {
             .contains(ratatui::style::Modifier::BOLD));
         assert_eq!(line.spans[0].style.fg, None);
         assert!(line_to_string(&line).contains('✕'));
+    }
+
+    #[test]
+    fn a_comment_failure_hides_while_comments_are_loading() {
+        let mut app = App::new_for_test();
+        app.state = AppState::DiffView;
+        app.cmt.comment_panel_open = true;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        app.cmt.comments_loading = true;
+        let text = line_of(&app, "Esc: close", 98);
+        assert!(text.contains("Loading comments..."), "{text}");
+        assert!(!text.contains("Couldn't load comments"), "{text}");
+
+        app.state = AppState::CommentList;
+        app.cmt.comment_tab = CommentTab::Review;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        let text = line_of(&app, HELP, 98);
+        assert!(text.contains("Loading comments..."), "{text}");
+        assert!(!text.contains("Couldn't load comments"), "{text}");
+    }
+
+    #[test]
+    fn a_failure_keeps_the_searching_spinner_and_a_loading_spinner() {
+        let mut app = pr_failure(GhFailureKind::Other, "boom");
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        app.symbol_search = crate::app::SymbolSearchState::Searching {
+            receiver: rx,
+            origin_file_index: 0,
+        };
+        let text = line_of(&app, HELP, 98);
+        assert!(text.contains("Couldn't load pull requests"), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains("Searching..."), "{text}");
+
+        app.symbol_search = crate::app::SymbolSearchState::Idle;
+        app.cmt.comments_loading = true;
+        let text = line_of(&app, HELP, 98);
+        assert!(text.contains("Couldn't load pull requests"), "{text}");
+        assert!(text.contains("Loading comments..."), "{text}");
+        assert!(text.contains("r: retry"), "{text}");
+    }
+
+    #[test]
+    fn a_comment_failure_keeps_the_inferred_pr_notice() {
+        use crate::app::PrOpenSource;
+
+        let mut app = App::new_for_test();
+        app.state = AppState::DiffView;
+        app.pr_number = Some(123);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        app.cmt.comment_panel_open = true;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        let text = line_of(&app, "Esc: close", usize::MAX);
+        assert!(
+            text.contains("PR #123 inferred from commit subject; GitHub did not confirm it"),
+            "{text}"
+        );
+        assert!(
+            text.contains("✕ Couldn't load comments · comments failed  r: retry"),
+            "{text}"
+        );
+
+        let fitted = line_of(&app, "Esc: close", 98);
+        assert!(fitted.contains("inferred"), "{fitted}");
+        assert!(fitted.contains("Couldn't load comments"), "{fitted}");
+        assert!(fitted.contains("r: retry"), "{fitted}");
+    }
+
+    #[test]
+    fn a_long_reason_keeps_the_help_hint_at_normal_width() {
+        let long = format!(
+            "gh command failed: GraphQL: {}",
+            "the issues connection failed while resolving mentionable users ".repeat(4)
+        );
+        let mut app = App::new_cockpit("owner/repo", crate::config::Config::default(), true);
+        app.cockpit_state.as_mut().unwrap().mentioned_issues_count =
+            LoadState::Error(GhFailure::other(long));
+        let help = "q: quit  ?: help";
+        for width in [80usize, 98] {
+            let text = line_of(&app, help, width);
+            assert!(text.contains("Couldn't load counts"), "{width}: {text}");
+            assert!(text.contains("r: retry"), "{width}: {text}");
+            assert!(text.contains('?'), "{width}: {text}");
+            assert!(text.contains('…'), "{width}: {text}");
+            assert!(
+                !text.contains("mentionable"),
+                "the reason took the help hint's columns: {width}: {text}"
+            );
+        }
     }
 }
