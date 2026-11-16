@@ -476,9 +476,11 @@ fn fit_failure_line(
     }
 }
 
-/// Keep the retry key and the whole help hint. Hints are cut before the
-/// reason: with no `?`, the hint budget is what remains after the title, the
-/// key, and the reason. A `?` hint is kept whole ahead of the hints before it.
+/// Keep the retry key and the whole help hint. The full notice outranks the
+/// reason, the key, the `?` hint, and every other hint. When the full notice,
+/// the reason, and the key fit, hints take only what is left. Otherwise the
+/// notice keeps its short floor and the narrow-width rules apply. With no
+/// notice, hints are cut before the reason.
 fn fit_failure_line_normal(
     notice: &str,
     head: &str,
@@ -487,23 +489,51 @@ fn fit_failure_line_normal(
     hints: &str,
     width: usize,
 ) -> (String, String, String, String, String) {
-    let protected = question_hint_that_fits(hints, head, action, reason, notice, width);
+    let notice_locked = !notice.is_empty() && line_width(notice, head, reason, action, "") <= width;
+    let notice_reserve = if notice_locked {
+        notice.to_string()
+    } else {
+        notice_floor(notice)
+    };
+    let protected = if notice_locked {
+        question_segment_that_fits(hints, notice, head, reason, action, width)
+    } else {
+        question_hint_that_fits(hints, head, action, reason, notice, width)
+    };
     let others_src = if hints.contains('?') {
         hints_without_question(hints)
     } else {
         hints.to_string()
     };
-    let notice_reserve = notice_floor(notice);
     let core_full = line_width(&notice_reserve, head, reason, action, &protected);
-    // The whole reason fits beside the title, the key, the notice floor, and
-    // the `?` hint. Other hints take only the leftover, so a cut reason never
-    // sits next to an intact hint. When the reason does not fit, those hints
-    // are already gone and the reason keeps at least its minimum.
-    let reason_locked = core_full <= width;
-    let others = if reason_locked {
-        clip_plain_hints(&others_src, width - core_full)
-    } else {
+    // The whole reason fits beside the reserved notice, the title, the key,
+    // and the `?` hint. Other hints take only the leftover, so a cut reason
+    // never sits next to an intact hint. When the reason does not fit, those
+    // hints are already gone and the reason keeps at least its minimum.
+    let reason_locked = notice_locked || core_full <= width;
+    let others = if !reason_locked {
         String::new()
+    } else if notice_locked {
+        // The separator is measured on the combined line, so the notice is not
+        // shortened to pay for it.
+        let mut others = others_src.clone();
+        loop {
+            let combined = combine_hints(hints, &protected, &others);
+            if others_src.is_empty()
+                || line_width(&notice_reserve, head, reason, action, &combined) <= width
+            {
+                break;
+            }
+            let next = others.width().saturating_sub(1);
+            if next <= 1 {
+                others.clear();
+                break;
+            }
+            others = truncate_with_width(&others, next).into_owned();
+        }
+        others
+    } else {
+        clip_plain_hints(&others_src, width - core_full)
     };
     let hints = combine_hints(hints, &protected, &others);
 
@@ -531,6 +561,26 @@ fn fit_failure_line_notice_first(
     let used = line_width("", &head, &reason, &action, &hints);
     let notice = clip_leading(notice, width.saturating_sub(used));
     (notice, head, reason, action, hints)
+}
+
+/// The `?` hint, kept whole, when it fits after the full notice, the reason,
+/// and the key.
+fn question_segment_that_fits(
+    hints: &str,
+    notice: &str,
+    head: &str,
+    reason: &str,
+    action: &str,
+    width: usize,
+) -> String {
+    let Some(segment) = question_segment(hints) else {
+        return String::new();
+    };
+    if line_width(notice, head, reason, action, &segment) <= width {
+        segment
+    } else {
+        String::new()
+    }
 }
 
 /// The `?` hint, kept whole, when it fits with the title, the key, and the

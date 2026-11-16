@@ -4777,4 +4777,80 @@ mod pending_comment_panel_tests {
         );
         assert!(!footer.contains("Couldn't load comments"), "{footer}");
     }
+
+    const INFERRED_NOTICE: &str = "PR #1 inferred from commit subject; GitHub did not confirm it";
+
+    fn inferred_pr(app: &mut App) {
+        app.pr_number = Some(1);
+        app.pr_open_source = crate::app::PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+    }
+
+    fn draw_at(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        screen_text(terminal.backend().buffer())
+    }
+
+    fn notice_row(text: &str) -> String {
+        text.lines()
+            .find(|line| line.contains("inferred"))
+            .unwrap_or("")
+            .to_string()
+    }
+
+    #[test]
+    fn a_closed_panel_keeps_the_full_inferred_notice_at_160_columns() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::DiffView;
+        app.cmt.comment_panel_open = false;
+        app.cmt.review_comments = Some(Vec::new());
+        app.update_file_comment_positions();
+        app.cmt.comment_error = Some("gh command failed: the server returned more".to_string());
+        inferred_pr(&mut app);
+
+        let footer = notice_row(&draw_at(&mut app, 160, 30));
+        assert!(
+            footer.contains(INFERRED_NOTICE),
+            "the notice was cut so the hints could stay whole: {footer}"
+        );
+        assert!(footer.contains("Couldn't load comments"), "{footer}");
+        assert!(footer.contains("r: retry"), "{footer}");
+        assert!(
+            footer.contains("the server returned more"),
+            "the reason was cut ahead of the hints: {footer}"
+        );
+        assert!(
+            !footer.contains("! Shell | q/Esc Back"),
+            "ordinary hints stayed whole ahead of the notice: {footer}"
+        );
+    }
+
+    #[test]
+    fn an_open_panel_keeps_the_full_inferred_notice_at_160_columns() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::DiffView;
+        app.cmt.comment_error =
+            Some("gh command failed: the server returned an unexpected".to_string());
+        inferred_pr(&mut app);
+
+        let footer = notice_row(&draw_at(&mut app, 160, 30));
+        assert!(
+            footer.contains(INFERRED_NOTICE),
+            "the notice was cut so the hints could stay whole: {footer}"
+        );
+        assert!(footer.contains("Couldn't load comments"), "{footer}");
+        assert!(footer.contains("r: reply"), "{footer}");
+        assert!(
+            footer.contains("the server returned an unexpected"),
+            "the reason was cut ahead of the hints: {footer}"
+        );
+        assert!(
+            !footer.contains("Esc: close"),
+            "the hint stayed whole ahead of the notice: {footer}"
+        );
+    }
 }

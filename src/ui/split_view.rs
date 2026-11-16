@@ -1054,6 +1054,41 @@ mod pending_comment_panel_tests {
     }
 
     #[test]
+    fn split_view_at_220_columns_keeps_the_full_inferred_notice() {
+        use crate::app::PrOpenSource;
+
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.pr_number = Some(1);
+        app.pr_open_source = PrOpenSource::InferredCommitSubject {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        };
+        app.cmt.comment_error = Some("gh command failed: unexpected".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(220, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = screen_text(terminal.backend().buffer());
+        let footer = text
+            .lines()
+            .find(|line| line.contains("inferred"))
+            .unwrap_or("");
+        assert!(
+            footer.contains("PR #1 inferred from commit subject; GitHub did not confirm it"),
+            "the notice was cut so the hints could stay whole: {footer}"
+        );
+        assert!(footer.contains("Couldn't load comments"), "{footer}");
+        assert!(footer.contains("r: reply"), "{footer}");
+        assert!(
+            footer.contains("gh command failed: unexpected"),
+            "the reason was cut ahead of the hints: {footer}"
+        );
+        assert!(
+            !footer.contains("n/N: jump"),
+            "ordinary hints stayed whole ahead of the notice: {footer}"
+        );
+    }
+
+    #[test]
     fn split_panel_tags_a_draft_header() {
         let text = split_screen(CommentPublication::PendingDraft);
 
