@@ -205,7 +205,10 @@ mod tests {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         });
-        app.data_state = DataState::Loaded { pr, files: vec![] };
+        app.data_state = DataState::Loaded {
+            pr,
+            files: vec![].into(),
+        };
         app.open_pr_description();
         app
     }

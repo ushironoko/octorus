@@ -764,7 +764,10 @@ mod tests {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         });
-        app.data_state = DataState::Loaded { pr, files };
+        app.data_state = DataState::Loaded {
+            pr,
+            files: files.into(),
+        };
         app.state = AppState::FileList;
         app
     }

@@ -3469,7 +3469,8 @@ mod no_newline_marker_tests {
                 deletions: 1,
                 patch: Some(patch.to_string()),
                 viewed: false,
-            }],
+            }]
+            .into(),
         };
         app.diff_store.current = cache;
         app

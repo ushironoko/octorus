@@ -9,11 +9,12 @@ use tokio::sync::mpsc;
 
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
+use crate::cache::SharedFiles;
 use crate::diff::{DiffSide, LineType};
 use crate::diff_store::{DiffCacheStore, DiffScrollState, ScrollMode, MAX_STORE_ENTRIES};
 use crate::github::{
-    ChangedFile, CommitListPage, GhFailure, IssueComment, IssueDetail, IssueListPage,
-    IssueStateFilter, IssueSummary, LinkedPr, PrCommit, PullRequest,
+    CommitListPage, GhFailure, IssueComment, IssueDetail, IssueListPage, IssueStateFilter,
+    IssueSummary, LinkedPr, PrCommit, PullRequest,
 };
 use crate::loader::SingleFileDiffResult;
 
@@ -566,14 +567,14 @@ pub struct WatcherHandle {
 
 /// PR data loading state.
 ///
-/// Fields use `Box`/`Vec` instead of `Arc` because the app is single-threaded;
-/// data is shared with `SessionCache` via `clone()` (only on PR refresh).
+/// `files` is a [`SharedFiles`] arc also held by `SessionCache`, so a refresh
+/// does not deep-clone the file list.
 #[derive(Debug, Clone)]
 pub enum DataState {
     Loading,
     Loaded {
         pr: Box<PullRequest>,
-        files: Vec<ChangedFile>,
+        files: SharedFiles,
     },
     Error(String),
 }

@@ -661,7 +661,7 @@ mod tests {
                 },
                 updated_at: "2025-01-01T00:00:00Z".to_string(),
             }),
-            files,
+            files: files.into(),
         };
         app.toggle_file_tree();
         app
@@ -903,7 +903,7 @@ mod tests {
         let marker = "\\ No newline at end of file";
         let mut app = loaded_app();
         if let DataState::Loaded { files, .. } = &mut app.data_state {
-            files[0].patch = Some(NO_NEWLINE_PATCH.to_string());
+            files.make_mut()[0].patch = Some(NO_NEWLINE_PATCH.to_string());
         }
         app.diff_store.current = Some(diff_view::build_plain_diff_cache(NO_NEWLINE_PATCH, 4));
         app.state = AppState::SplitViewDiff;

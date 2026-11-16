@@ -565,7 +565,8 @@ mod symbol_popup_tests {
                 deletions: 1,
                 patch: Some(patch.to_string()),
                 viewed: false,
-            }],
+            }]
+            .into(),
         };
         app.diff_store.current = Some(build_plain_diff_cache(patch, 4));
         app.symbol_popup = Some(SymbolPopupState {
