@@ -432,8 +432,9 @@ fn fit_failure_line(
     }
 }
 
-/// Keep the retry key and the whole help hint. The notice is kept ahead of the
-/// reason, and the reason still gets a few characters when the width allows.
+/// Keep the retry key and the whole help hint. Hints are cut before the
+/// reason: with no `?`, the hint budget is what remains after the title, the
+/// key, and the reason. A `?` hint is kept whole ahead of the hints before it.
 fn fit_failure_line_normal(
     notice: &str,
     head: &str,
@@ -442,13 +443,32 @@ fn fit_failure_line_normal(
     hints: &str,
     width: usize,
 ) -> (String, String, String, String, String) {
-    let hints = hints_for_normal(head, action, hints, width);
+    let protected = question_hint_that_fits(hints, head, action, reason, notice, width);
+    let others_src = if hints.contains('?') {
+        hints_without_question(hints)
+    } else {
+        hints.to_string()
+    };
+    let notice_reserve = notice_floor(notice);
+    let core_full = line_width(&notice_reserve, head, reason, action, &protected);
+    // The whole reason fits beside the title, the key, the notice floor, and
+    // the `?` hint. Other hints take only the leftover, so a cut reason never
+    // sits next to an intact hint. When the reason does not fit, those hints
+    // are already gone and the reason keeps at least its minimum.
+    let reason_locked = core_full <= width;
+    let others = if reason_locked {
+        clip_plain_hints(&others_src, width - core_full)
+    } else {
+        String::new()
+    };
+    let hints = combine_hints(hints, &protected, &others);
+
     let base = line_width("", head, "", action, &hints);
     if base > width {
-        let (head, reason, action, hints) = fit_failure(head, "", action, &hints, width);
+        let (head, reason, action, hints) = fit_failure(head, reason, action, &hints, width);
         return (String::new(), head, reason, action, hints);
     }
-    let (notice, reason) = share_notice_and_reason(notice, reason, width - base);
+    let (notice, reason) = share_notice_and_reason(notice, reason, width - base, reason_locked);
     (notice, head.to_string(), reason, action.to_string(), hints)
 }
 
@@ -469,47 +489,112 @@ fn fit_failure_line_notice_first(
     (notice, head, reason, action, hints)
 }
 
-/// Hints that fit beside the title and the key. A `?` hint is kept whole
-/// (`?: help`, `? Help`) or dropped. It is never cut down to `?` or `?: `.
-fn hints_for_normal(head: &str, action: &str, hints: &str, width: usize) -> String {
-    if line_width("", head, "", action, hints) <= width {
-        return hints.to_string();
+/// The `?` hint, kept whole, when it fits with the title, the key, and the
+/// reason's minimum. It wins over the hints that sit before it.
+fn question_hint_that_fits(
+    hints: &str,
+    head: &str,
+    action: &str,
+    reason: &str,
+    notice: &str,
+    width: usize,
+) -> String {
+    let Some(segment) = question_segment(hints) else {
+        return String::new();
+    };
+    let floor = reason_floor_text(reason);
+    let notice = notice_floor(notice);
+    if line_width(&notice, head, &floor, action, &segment) <= width {
+        segment
+    } else {
+        String::new()
     }
-    if !hints.contains('?') {
-        return hints.to_string();
-    }
-    let through = prefix_through_question_segment(hints);
-    if line_width("", head, "", action, &through) <= width {
-        return through;
-    }
-    let before = prefix_before_question_segment(hints);
-    if !before.is_empty() && line_width("", head, "", action, &before) <= width {
-        return before;
-    }
-    String::new()
 }
 
-fn prefix_through_question_segment(hints: &str) -> String {
+fn question_segment(hints: &str) -> Option<String> {
+    let question = hints.find('?')?;
+    let start = segment_start(hints, question);
+    let end = segment_end(hints, question);
+    let segment = hints[start..end].trim().to_string();
+    if segment.is_empty() {
+        None
+    } else {
+        Some(segment)
+    }
+}
+
+fn hints_without_question(hints: &str) -> String {
     let Some(question) = hints.find('?') else {
         return hints.to_string();
     };
-    let end = hints[question..]
+    let start = segment_start(hints, question);
+    let end = segment_end(hints, question);
+    let sep = if hints.contains(" | ") { " | " } else { "  " };
+    let left = hints[..start].trim_end_matches([' ', '|']);
+    let right = hints[end..].trim_start_matches([' ', '|']);
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => left.to_string(),
+        (true, false) => right.to_string(),
+        (false, false) => format!("{left}{sep}{right}"),
+    }
+}
+
+fn segment_start(hints: &str, question: usize) -> usize {
+    hints[..question]
+        .rfind(" | ")
+        .map(|index| index + 3)
+        .or_else(|| hints[..question].rfind("  ").map(|index| index + 2))
+        .unwrap_or(0)
+}
+
+fn segment_end(hints: &str, question: usize) -> usize {
+    hints[question..]
         .find(" | ")
         .or_else(|| hints[question..].find("  "))
         .map(|index| question + index)
-        .unwrap_or(hints.len());
-    hints[..end].trim_end().to_string()
+        .unwrap_or(hints.len())
 }
 
-fn prefix_before_question_segment(hints: &str) -> String {
-    let Some(question) = hints.find('?') else {
-        return hints.to_string();
+fn combine_hints(original: &str, protected: &str, others: &str) -> String {
+    if protected.is_empty() {
+        return others.to_string();
+    }
+    if others.is_empty() {
+        return protected.to_string();
+    }
+    let sep = if original.contains(" | ") {
+        " | "
+    } else {
+        "  "
     };
-    let cut = hints[..question]
-        .rfind(" | ")
-        .or_else(|| hints[..question].rfind("  "))
-        .unwrap_or(0);
-    hints[..cut].trim_end().to_string()
+    if original.trim_start().starts_with('?') {
+        format!("{protected}{sep}{others}")
+    } else {
+        format!("{others}{sep}{protected}")
+    }
+}
+
+fn clip_plain_hints(hints: &str, budget: usize) -> String {
+    if hints.is_empty() || budget <= 2 {
+        return String::new();
+    }
+    let max = budget - 2;
+    if hints.width() <= max {
+        hints.to_string()
+    } else if max <= 1 {
+        String::new()
+    } else {
+        truncate_with_width(hints, max).into_owned()
+    }
+}
+
+fn reason_floor_text(reason: &str) -> String {
+    if reason.is_empty() {
+        String::new()
+    } else {
+        truncate_with_width(reason, REASON_MIN_WIDTH).into_owned()
+    }
 }
 
 /// `PR #N inferred…`, the shortest form that still says the PR was inferred.
@@ -528,13 +613,26 @@ fn notice_floor(notice: &str) -> String {
     truncate_with_width(notice, 17).into_owned()
 }
 
-fn share_notice_and_reason(notice: &str, reason: &str, rest: usize) -> (String, String) {
-    let reason_min = reason_min_cost(reason);
+fn share_notice_and_reason(
+    notice: &str,
+    reason: &str,
+    rest: usize,
+    lock_reason: bool,
+) -> (String, String) {
     let reason_full = if reason.is_empty() {
         0
     } else {
         3 + reason.width()
     };
+    if lock_reason {
+        let reason_budget = reason_full.min(rest);
+        let spare = rest - reason_budget;
+        return (
+            clip_leading(notice, spare),
+            clip_reason(reason, reason_budget),
+        );
+    }
+    let reason_min = reason_min_cost(reason);
     let notice_floor_cost = leading_cost(&notice_floor(notice));
     let notice_full = leading_cost(notice);
 
@@ -1567,8 +1665,8 @@ mod tests {
         assert!(fitted.contains("Couldn't load comments"), "{fitted}");
         assert!(fitted.contains("r: retry"), "{fitted}");
         assert!(
-            fitted.contains("comme…"),
-            "the reason keeps a few characters beside the notice: {fitted}"
+            fitted.contains("comments failed"),
+            "the reason stays beside the notice: {fitted}"
         );
     }
 
@@ -1645,11 +1743,95 @@ mod tests {
         let text = line_of(&app, hints, 78);
         assert!(text.contains("Couldn't load pull requests"), "{text}");
         assert!(text.contains("r: retry"), "{text}");
+        assert!(text.contains("?: help"), "{text}");
         assert!(
-            text.contains("1234567890123456789012345678901234"),
-            "{text}"
+            !text.contains("1234567890123456789012345678901234"),
+            "the hints before ? were kept and the help hint was not: {text}"
         );
-        assert!(!text.contains("?:"), "{text}");
         assert!(!text.trim_end().ends_with('?'), "{text}");
+    }
+
+    #[test]
+    fn a_split_view_footer_keeps_the_reason_at_160_columns() {
+        use crate::github::comment::CommentPublication;
+        use crate::ui::test_buffer::{app_with_comment_on_added_line, comment_on_added_line};
+
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        let hints = "j/k/↑↓: scroll | n/N: jump | Tab: switch | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
+        for width in [160usize, 220] {
+            let text = line_of(&app, hints, width);
+            assert!(text.contains("Couldn't load comments"), "{width}: {text}");
+            assert!(
+                text.contains("comments failed"),
+                "{width}: the reason was cut away for the hints: {text}"
+            );
+            assert!(text.contains("r: reply"), "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_cut_reason_has_already_cut_the_other_hints() {
+        let long = format!(
+            "gh command failed: {}",
+            "something unexpected happened while loading ".repeat(6)
+        );
+        let mut comment = App::new_for_test();
+        comment.state = AppState::DiffView;
+        comment.cmt.comment_panel_open = true;
+        comment.cmt.comment_error = Some(long.clone());
+        let mut cockpit = App::new_cockpit("owner/repo", crate::config::Config::default(), true);
+        cockpit
+            .cockpit_state
+            .as_mut()
+            .unwrap()
+            .mentioned_issues_count = LoadState::Error(GhFailure::other(long.clone()));
+        let pr = pr_failure(GhFailureKind::Other, &long);
+
+        let cases = [
+            (
+                &comment,
+                "j/k/↑↓: scroll | n/N: jump | Tab: switch | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close",
+            ),
+            (&pr, "? Help | ! Shell | q/Esc Quit"),
+            (&cockpit, "q: quit  ?: help"),
+            (&comment, "Esc: close"),
+        ];
+        for (app, hints) in cases {
+            for width in [50usize, 78, 100, 160, 220] {
+                let text = line_of(app, hints, width);
+                assert_cut_reason_cut_the_other_hints(&text, &long, hints);
+            }
+        }
+    }
+
+    fn assert_cut_reason_cut_the_other_hints(text: &str, reason: &str, hints: &str) {
+        if reason.is_empty() || text.contains(reason) {
+            return;
+        }
+        for segment in hint_segments(hints) {
+            if segment.contains('?') || segment.contains("retry") || segment.contains("reply") {
+                continue;
+            }
+            assert!(
+                !text.contains(segment),
+                "hint `{segment}` is still whole while the reason is cut: {text}"
+            );
+        }
+    }
+
+    fn hint_segments(hints: &str) -> Vec<&str> {
+        let parts: Vec<&str> = if hints.contains(" | ") {
+            hints.split(" | ").collect()
+        } else {
+            hints.split("  ").collect()
+        };
+        parts
+            .into_iter()
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
     }
 }

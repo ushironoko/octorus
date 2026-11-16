@@ -1015,6 +1015,23 @@ mod pending_comment_panel_tests {
     }
 
     #[test]
+    fn split_view_at_160_columns_keeps_the_comment_failure_reason() {
+        let mut app =
+            app_with_comment_on_added_line(comment_on_added_line(CommentPublication::Published));
+        app.state = AppState::SplitViewDiff;
+        app.cmt.comment_error = Some("comments failed".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = screen_text(terminal.backend().buffer());
+        assert!(text.contains("Couldn't load comments"), "{text}");
+        assert!(
+            text.contains("comments failed"),
+            "the split footer dropped the reason: {text}"
+        );
+        assert!(text.contains("r: reply"), "{text}");
+    }
+
+    #[test]
     fn split_panel_tags_a_draft_header() {
         let text = split_screen(CommentPublication::PendingDraft);
 
