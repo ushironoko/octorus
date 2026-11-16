@@ -6,6 +6,7 @@
 # process's stdin, which may never reach end-of-file. The reply comes from the
 # FAKE_GH_* variables. FAKE_GH_DRAFTS answers the pending review's own comments
 # endpoint, and it is matched before the `--slurp` list that FAKE_GH_REVIEWS answers.
+# FAKE_GH_FAIL_FIRST, when set to N, exits 1 for the first N logged calls.
 case " $* " in
     *" --input - "*)
         {
@@ -19,11 +20,30 @@ case " $* " in
         ;;
 esac
 
+# Count this call, which was just appended, and fail the first N when asked.
+if [ -n "${FAKE_GH_FAIL_FIRST:-}" ]; then
+    calls=$(grep -c '^CALL ' "$FAKE_GH_LOG" 2>/dev/null || true)
+    calls=${calls:-0}
+    if [ "$calls" -le "$FAKE_GH_FAIL_FIRST" ]; then
+        printf 'forced failure\n' >&2
+        exit 1
+    fi
+fi
+
 case "$*" in
     */reviews/*/comments*) printf '%s' "$FAKE_GH_DRAFTS" ;;
     *--slurp*) printf '%s' "$FAKE_GH_REVIEWS" ;;
+    *viewerViewedState*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
+    *baseRef*) printf '%s' "$FAKE_GH_PR_CHECK" ;;
     *graphql*) printf '%s' "$FAKE_GH_GRAPHQL" ;;
     */events*) printf '%s' "$FAKE_GH_PUBLISH" ;;
     'pr review'*) printf '%s' "$FAKE_GH_PR_REVIEW" ;;
+    *'pr diff'*)
+        if [ "${FAKE_GH_DIFF_FAIL:-}" = 1 ]; then
+            printf 'diff failed\n' >&2
+            exit 1
+        fi
+        printf '%s' "${FAKE_GH_DIFF-}"
+        ;;
     *) printf '%s' "$FAKE_GH_CREATE" ;;
 esac

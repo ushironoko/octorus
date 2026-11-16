@@ -7,7 +7,7 @@ use lasso::Rodeo;
 use serial_test::serial;
 use tempfile::tempdir;
 
-use crate::cache::{PrCacheKey, PrData};
+use crate::cache::{PrCacheKey, PrData, SharedFiles};
 use crate::diff::{find_diff_line_index, SideLine};
 use crate::github::comment::{ReviewComment, ReviewCommentLocation};
 use crate::github::{ChangedFile, PrCommit, PullRequest};
@@ -445,6 +445,7 @@ async fn test_pr_list_local_toggle_round_trip() {
             pr: Box::new(local_pr),
             files: local_files.into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -503,6 +504,7 @@ async fn test_poll_data_updates_discards_stale_pr_data() {
     tx.send(DataLoadResult::Success {
         pr: Box::new(pr),
         files: vec![],
+        base_tip_sha: None,
     })
     .await
     .unwrap();
@@ -615,6 +617,7 @@ async fn test_handle_data_result_clamps_selected_file_when_files_shrink() {
         DataLoadResult::Success {
             pr,
             files: fewer_files,
+            base_tip_sha: None,
         },
     );
 
@@ -692,6 +695,7 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
         DataLoadResult::Success {
             pr,
             files: fewer_files,
+            base_tip_sha: None,
         },
     );
 
@@ -794,6 +798,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
         DataLoadResult::Success {
             pr,
             files: fewer_files,
+            base_tip_sha: None,
         },
     );
 
@@ -889,6 +894,7 @@ async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchang
         DataLoadResult::Success {
             pr,
             files: same_files,
+            base_tip_sha: None,
         },
     );
 
@@ -959,6 +965,7 @@ async fn test_handle_data_result_keeps_selected_file_by_filename() {
         DataLoadResult::Success {
             pr,
             files: vec![make_file("file_b.rs"), make_file("file_c.rs")],
+            base_tip_sha: None,
         },
     );
 
@@ -1029,6 +1036,7 @@ async fn test_handle_data_result_auto_focus_selects_next_changed_file() {
                 make_file("file_c.rs", 1), // unchanged
                 make_file("file_d.rs", 2), // changed (additions: 1→2)
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -1101,6 +1109,7 @@ async fn test_handle_data_result_auto_focus_prefers_nearest_changed_file() {
                 make_file("file_d.rs", 1), // unchanged
                 make_file("file_e.rs", 2), // changed after (additions: 1→2)
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -1173,6 +1182,7 @@ async fn test_handle_data_result_auto_focus_prefers_next_when_distances_are_tie(
                 make_file("file_d.rs", 2), // changed (index 3, additions: 1→2)
                 make_file("file_e.rs", 1), // unchanged (index 4)
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -1225,6 +1235,7 @@ async fn test_handle_data_result_auto_focus_transitions_to_split_view_diff() {
         DataLoadResult::Success {
             pr: pr.clone(),
             files: vec![make_file("initial.rs", "@@ -1,1 +1,1 @@\n-old\n+new")],
+            base_tip_sha: None,
         },
     );
 
@@ -1564,6 +1575,553 @@ fn test_retry_load_sends_correct_request_type() {
     assert!(matches!(req, RefreshRequest::LocalRefresh));
 }
 
+fn cached_check(updated_at: &str) -> crate::app::CachedPrCheck {
+    crate::app::CachedPrCheck {
+        updated_at: updated_at.to_string(),
+        head_sha: "abc".to_string(),
+        base_ref: "main".to_string(),
+        base_sha: "def".to_string(),
+        base_tip_sha: Some("cafebabe".to_string()),
+    }
+}
+
+fn unchanged_result(
+    pr_number: u32,
+    viewed: Option<std::collections::HashMap<String, bool>>,
+    pr: Option<PullRequest>,
+) -> DataLoadResult {
+    DataLoadResult::Unchanged {
+        pr_number,
+        viewed,
+        pr: pr.map(Box::new),
+    }
+}
+
+fn stored_pull_request(number: u32, title: &str, updated_at: &str) -> PullRequest {
+    PullRequest {
+        number,
+        node_id: Some("PR_node".to_string()),
+        title: title.to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def".to_string(),
+        },
+        user: crate::github::User {
+            login: "octocat".to_string(),
+        },
+        updated_at: updated_at.to_string(),
+    }
+}
+
+fn sample_file(patch: &str, viewed: bool) -> ChangedFile {
+    ChangedFile {
+        filename: "src/main.rs".to_string(),
+        status: "modified".to_string(),
+        additions: 1,
+        deletions: 1,
+        patch: Some(patch.to_string()),
+        viewed,
+    }
+}
+
+fn cache_pr(app: &mut App, number: u32, title: &str, updated_at: &str, patch: &str, viewed: bool) {
+    let key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: number,
+    };
+    app.session_cache.put_pr_data(
+        key,
+        PrData {
+            pr: Box::new(stored_pull_request(number, title, updated_at)),
+            files: SharedFiles::from(vec![sample_file(patch, viewed)]),
+            pr_updated_at: updated_at.to_string(),
+            base_tip_sha: Some("cafebabe".to_string()),
+        },
+    );
+}
+
+#[tokio::test]
+async fn test_select_pr_cache_hit_checks_for_updates_and_keeps_cached_payload() {
+    let mut app = App::new_for_test();
+    let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    cache_pr(
+        &mut app,
+        7,
+        "Keep me",
+        "2024-01-01T00:00:00Z",
+        "@@ cached patch",
+        false,
+    );
+    app.session_cache.put_review_comments(
+        PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        },
+        vec![ReviewComment {
+            id: 1,
+            path: "src/main.rs".to_string(),
+            line: Some(1),
+            start_line: None,
+            body: "cached thread".to_string(),
+            user: crate::github::User {
+                login: "octocat".to_string(),
+            },
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
+            location: ReviewCommentLocation::default(),
+        }],
+    );
+
+    app.select_pr(7);
+
+    match &app.data_state {
+        DataState::Loaded { pr, files } => {
+            assert_eq!(pr.title, "Keep me");
+            assert_eq!(files[0].patch.as_deref(), Some("@@ cached patch"));
+        }
+        other => panic!("cache hit shows the cached PR, got {other:?}"),
+    }
+    assert_eq!(
+        app.cmt
+            .review_comments
+            .as_ref()
+            .map(|comments| comments.len()),
+        Some(1),
+        "cached review threads are still applied on reopen"
+    );
+    match retry_rx.try_recv().unwrap() {
+        RefreshRequest::PrCheckUpdate { pr_number, cached } => {
+            assert_eq!(pr_number, 7);
+            assert_eq!(cached, cached_check("2024-01-01T00:00:00Z"));
+        }
+        other => panic!("a complete cache must not start a full refetch, got {other:?}"),
+    }
+    assert!(retry_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_select_pr_with_a_missing_patch_still_requests_a_full_refetch() {
+    let mut app = App::new_for_test();
+    let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+    app.session_cache.put_pr_data(
+        PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        },
+        PrData {
+            pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+            files: SharedFiles::from(vec![
+                ChangedFile {
+                    filename: "src/main.rs".to_string(),
+                    status: "modified".to_string(),
+                    additions: 1,
+                    deletions: 1,
+                    patch: None,
+                    viewed: false,
+                },
+                {
+                    let mut kept = sample_file("@@ keep", false);
+                    kept.filename = "src/lib.rs".to_string();
+                    kept
+                },
+            ]),
+            pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
+        },
+    );
+
+    app.select_pr(7);
+
+    match &app.data_state {
+        DataState::Loaded { files, .. } => {
+            assert!(files[0].patch.is_none(), "the cached gap stays visible");
+            assert_eq!(files[1].patch.as_deref(), Some("@@ keep"));
+        }
+        other => panic!("the cached PR stays on screen, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            retry_rx.try_recv().unwrap(),
+            RefreshRequest::PrRefresh { pr_number: 7 }
+        ),
+        "a missing patch is refetched in full, including gh pr diff"
+    );
+}
+
+#[tokio::test]
+async fn test_unchanged_reopen_applies_a_fresh_title_and_body_without_replacing_the_patch() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    cache_pr(
+        &mut app,
+        7,
+        "Keep me",
+        "2024-01-01T00:00:00Z",
+        "@@ cached patch",
+        false,
+    );
+    app.cmt.review_comments = Some(vec![]);
+    app.chk.ci_status = Some(crate::github::CiStatus::Success);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
+    };
+    let mut fresh = stored_pull_request(7, "Renamed", "2024-01-01T00:00:00Z");
+    fresh.body = Some("new body".to_string());
+
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((7, rx));
+    tx.send(unchanged_result(7, None, Some(fresh)))
+        .await
+        .unwrap();
+    app.poll_data_updates();
+
+    let DataState::Loaded { pr, files } = &app.data_state else {
+        panic!("the file list stays loaded");
+    };
+    assert_eq!(pr.title, "Renamed");
+    assert_eq!(pr.body.as_deref(), Some("new body"));
+    assert_eq!(files[0].patch.as_deref(), Some("@@ cached patch"));
+    let cached = app
+        .session_cache
+        .get_pr_data(&PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        })
+        .unwrap();
+    assert_eq!(cached.pr.title, "Renamed");
+    assert_eq!(cached.files[0].patch.as_deref(), Some("@@ cached patch"));
+    assert_eq!(cached.base_tip_sha.as_deref(), Some("cafebabe"));
+}
+
+#[tokio::test]
+async fn test_select_pr_cache_miss_still_requests_a_full_refetch() {
+    let mut app = App::new_for_test();
+    let (retry_tx, mut retry_rx) = mpsc::channel::<RefreshRequest>(1);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+
+    app.select_pr(7);
+
+    assert!(matches!(app.data_state, DataState::Loading));
+    assert!(app.cmt.comment_receiver.is_some());
+    assert!(matches!(
+        retry_rx.try_recv().unwrap(),
+        RefreshRequest::PrRefresh { pr_number: 7 }
+    ));
+}
+
+#[test]
+fn test_manual_retry_and_refresh_stay_full_refetch_and_local_mode_is_unchanged() {
+    let (tx, mut rx) = mpsc::channel::<RefreshRequest>(4);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(tx);
+    app.pr_number = Some(7);
+    app.local_mode = false;
+    cache_pr(
+        &mut app,
+        7,
+        "Keep me",
+        "2024-01-01T00:00:00Z",
+        "@@ cached patch",
+        false,
+    );
+
+    app.retry_load();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RefreshRequest::PrRefresh { pr_number: 7 }
+    ));
+
+    app.refresh_all();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RefreshRequest::PrRefresh { pr_number: 7 }
+    ));
+    assert!(app
+        .session_cache
+        .get_pr_data(&PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        })
+        .is_none());
+
+    app.local_mode = true;
+    app.pr_number = Some(0);
+    app.request_check_update(7, cached_check("2024-01-01T00:00:00Z"));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RefreshRequest::LocalRefresh
+    ));
+}
+
+#[tokio::test]
+async fn test_unchanged_reopen_refreshes_viewed_state_without_replacing_the_patch() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    cache_pr(
+        &mut app,
+        7,
+        "Keep me",
+        "2024-01-01T00:00:00Z",
+        "@@ cached patch",
+        false,
+    );
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ cached patch", true), {
+            let mut other = sample_file("@@ other", true);
+            other.filename = "src/lib.rs".to_string();
+            other
+        }]),
+    };
+    app.cmt.review_comments = Some(vec![]);
+    app.chk.ci_status = Some(crate::github::CiStatus::Success);
+    let plain = crate::ui::diff_view::build_plain_diff_cache("@@ cached patch", 4);
+    app.diff_store.set_current(0, plain);
+
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((7, rx));
+    tx.send(unchanged_result(
+        7,
+        Some(std::collections::HashMap::from([(
+            "src/main.rs".to_string(),
+            true,
+        )])),
+        None,
+    ))
+    .await
+    .unwrap();
+    app.poll_data_updates();
+
+    let DataState::Loaded { pr, files } = &app.data_state else {
+        panic!("unchanged reopen keeps the loaded PR");
+    };
+    assert_eq!(pr.title, "Keep me");
+    assert_eq!(files[0].patch.as_deref(), Some("@@ cached patch"));
+    assert!(files[0].viewed, "viewed state from GitHub is applied");
+    assert!(
+        !files[1].viewed,
+        "a file missing from the viewed-state query is unviewed"
+    );
+    assert!(
+        app.diff_store.current.is_some(),
+        "an unchanged patch stays highlighted"
+    );
+    let cached = app
+        .session_cache
+        .get_pr_data(&PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        })
+        .unwrap();
+    assert_eq!(cached.files[0].patch.as_deref(), Some("@@ cached patch"));
+    assert!(cached.files[0].viewed);
+}
+
+#[tokio::test]
+async fn test_changed_fetch_replaces_the_cached_pr() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    cache_pr(
+        &mut app,
+        7,
+        "Old title",
+        "2024-01-01T00:00:00Z",
+        "@@ old patch",
+        false,
+    );
+    app.cmt.review_comments = Some(vec![]);
+    app.chk.ci_status = Some(crate::github::CiStatus::Success);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(7, "Old title", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ old patch", false)]),
+    };
+
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((7, rx));
+    tx.send(DataLoadResult::Success {
+        pr: Box::new(stored_pull_request(7, "New title", "2024-06-01T00:00:00Z")),
+        files: vec![sample_file("@@ new patch", true)],
+        base_tip_sha: None,
+    })
+    .await
+    .unwrap();
+    app.poll_data_updates();
+
+    let DataState::Loaded { pr, files } = &app.data_state else {
+        panic!("a changed PR replaces the screen");
+    };
+    assert_eq!(pr.title, "New title");
+    assert_eq!(pr.updated_at, "2024-06-01T00:00:00Z");
+    assert_eq!(files[0].patch.as_deref(), Some("@@ new patch"));
+    let cached = app
+        .session_cache
+        .get_pr_data(&PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        })
+        .unwrap();
+    assert_eq!(cached.pr.title, "New title");
+    assert_eq!(cached.pr_updated_at, "2024-06-01T00:00:00Z");
+    assert_eq!(cached.files[0].patch.as_deref(), Some("@@ new patch"));
+}
+
+#[tokio::test]
+async fn test_unchanged_viewed_state_for_another_pr_updates_only_that_cache() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(8);
+    cache_pr(
+        &mut app,
+        7,
+        "Other",
+        "2024-01-01T00:00:00Z",
+        "@@ other",
+        false,
+    );
+    app.cmt.review_comments = Some(vec![]);
+    app.chk.ci_status = Some(crate::github::CiStatus::Success);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(8, "Current", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ current", false)]),
+    };
+
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((8, rx));
+    tx.send(unchanged_result(
+        7,
+        Some(std::collections::HashMap::from([(
+            "src/main.rs".to_string(),
+            true,
+        )])),
+        None,
+    ))
+    .await
+    .unwrap();
+    app.poll_data_updates();
+
+    let DataState::Loaded { files, .. } = &app.data_state else {
+        panic!("the open PR stays loaded");
+    };
+    assert!(!files[0].viewed);
+    assert_eq!(files[0].patch.as_deref(), Some("@@ current"));
+    let other = app
+        .session_cache
+        .get_pr_data(&PrCacheKey {
+            repo: app.repo.clone(),
+            pr_number: 7,
+        })
+        .unwrap();
+    assert!(other.files[0].viewed);
+    assert_eq!(other.files[0].patch.as_deref(), Some("@@ other"));
+}
+
+#[tokio::test]
+async fn test_failed_viewed_state_read_keeps_cached_flags() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    app.cmt.review_comments = Some(vec![]);
+    app.chk.ci_status = Some(crate::github::CiStatus::Success);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ cached patch", true)]),
+    };
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((7, rx));
+    tx.send(unchanged_result(7, None, None)).await.unwrap();
+    app.poll_data_updates();
+
+    let DataState::Loaded { files, .. } = &app.data_state else {
+        panic!("loaded data stays");
+    };
+    assert!(files[0].viewed);
+    assert_eq!(files[0].patch.as_deref(), Some("@@ cached patch"));
+}
+
+#[tokio::test]
+#[serial]
+#[cfg(unix)]
+async fn test_unchanged_reopen_still_fetches_checks_when_the_list_has_no_rollup() {
+    use crate::github::fake_gh::FakeGh;
+    use crate::github::CiStatus;
+
+    let gh = FakeGh::install("[]", "[]", "", "");
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    app.chk.ci_status = None;
+    app.cmt.review_comments = Some(vec![]);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
+    };
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((7, rx));
+    tx.send(unchanged_result(7, None, None)).await.unwrap();
+    app.poll_data_updates();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            app.poll_ci_status_updates();
+            if app.chk.ci_status.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("CI checks still refresh when updated_at is unchanged");
+    assert!(
+        gh.calls().contains("pr checks"),
+        "checks refresh is a gh pr checks call: {}",
+        gh.calls()
+    );
+    assert_eq!(app.chk.ci_status, Some(CiStatus::None));
+}
+
+#[tokio::test]
+#[serial]
+#[cfg(unix)]
+async fn test_unchanged_reopen_does_not_refetch_checks_the_list_already_has() {
+    use crate::github::fake_gh::FakeGh;
+    use crate::github::CiStatus;
+
+    let gh = FakeGh::install("[]", "[]", "", "");
+    let mut app = App::new_for_test();
+    app.pr_number = Some(7);
+    app.chk.ci_status = Some(CiStatus::Success);
+    app.cmt.review_comments = Some(vec![]);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(stored_pull_request(7, "Keep me", "2024-01-01T00:00:00Z")),
+        files: SharedFiles::from(vec![sample_file("@@ cached patch", false)]),
+    };
+    let (tx, rx) = mpsc::channel(1);
+    app.data_receiver = Some((7, rx));
+    tx.send(unchanged_result(7, None, None)).await.unwrap();
+    app.poll_data_updates();
+
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !gh.calls().contains("pr checks"),
+        "a rollup already on screen is not fetched again: {}",
+        gh.calls()
+    );
+}
+
 #[test]
 fn test_is_shift_char_shortcut_accepts_uppercase() {
     let key = KeyEvent {
@@ -1839,7 +2397,14 @@ async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_ral
         viewed: false,
     }];
 
-    app.handle_data_result(0, DataLoadResult::Success { pr, files });
+    app.handle_data_result(
+        0,
+        DataLoadResult::Success {
+            pr,
+            files,
+            base_tip_sha: None,
+        },
+    );
 
     // State should NOT transition to SplitViewDiff during BG rally
     assert_eq!(app.state, AppState::FileList);
@@ -3204,6 +3769,7 @@ async fn test_restore_data_from_cache_hit() {
             }]
             .into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -3908,6 +4474,7 @@ fn test_refresh_all_invalidates_session_cache() {
             pr: Box::new(make_local_pr()),
             files: vec![].into(),
             pr_updated_at: "x".to_string(),
+            base_tip_sha: None,
         },
     );
     assert!(app.session_cache.get_pr_data(&cache_key).is_some());
@@ -5354,6 +5921,7 @@ fn test_submit_local_comment_persists_and_loads() {
             pr: Box::new(make_local_pr()),
             files: app.files().to_vec().into(),
             pr_updated_at: "".to_string(),
+            base_tip_sha: None,
         },
     );
 
@@ -10006,6 +10574,7 @@ fn make_loaded_app() -> App {
                 ),
                 viewed: false,
             }],
+            base_tip_sha: None,
         },
     );
     app
@@ -10201,6 +10770,7 @@ async fn test_zen_mode_auto_focus_transitions_to_diff_view() {
                 patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
                 viewed: false,
             }],
+            base_tip_sha: None,
         },
     );
 
@@ -11978,6 +12548,7 @@ async fn a_comment_read_without_the_drafts_is_not_cached() {
             pr: Box::new(make_local_pr()),
             files: vec![].into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
     app.session_cache
@@ -12011,6 +12582,7 @@ async fn a_comment_read_with_the_drafts_is_cached_and_sets_the_count() {
             pr: Box::new(make_local_pr()),
             files: vec![].into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
     let (tx, rx) = mpsc::channel(1);
@@ -12048,6 +12620,7 @@ fn a_cached_comment_list_restores_the_draft_count() {
             pr: Box::new(make_local_pr()),
             files: vec![].into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            base_tip_sha: None,
         },
     );
     app.session_cache.put_review_comments(
@@ -12328,6 +12901,7 @@ async fn unchanged_files_keep_highlighted_diff_cache_across_refresh() {
                 refresh_file("a.rs", Some(patch_a)),
                 refresh_file("b.rs", Some(patch_b)),
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -12360,6 +12934,7 @@ async fn changed_file_is_invalidated_and_rehighlighted() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("a.rs", Some(new_patch))],
+            base_tip_sha: None,
         },
     );
 
@@ -12397,6 +12972,7 @@ async fn reordered_file_list_never_applies_another_files_cache() {
                 refresh_file("b.rs", Some(patch)),
                 refresh_file("a.rs", Some(patch)),
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -12444,6 +13020,7 @@ async fn inserted_and_removed_files_do_not_shift_a_cache_onto_the_wrong_file() {
                 refresh_file("c.rs", Some(patch_c)),
                 refresh_file("b.rs", Some(patch_b)),
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -12462,6 +13039,7 @@ async fn inserted_and_removed_files_do_not_shift_a_cache_onto_the_wrong_file() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("b.rs", Some(patch_b))],
+            base_tip_sha: None,
         },
     );
 
@@ -12490,6 +13068,7 @@ async fn duplicate_filenames_drop_caches_instead_of_guessing() {
                 refresh_file("a.rs", Some(patch)),
                 refresh_file("a.rs", Some(patch)),
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -12513,6 +13092,7 @@ async fn phase1_hides_unconfirmed_highlight_then_installs_or_rebuilds() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("a.rs", None)],
+            base_tip_sha: None,
         },
     );
 
@@ -12551,6 +13131,7 @@ async fn phase1_hides_unconfirmed_highlight_then_installs_or_rebuilds() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("a.rs", None)],
+            base_tip_sha: None,
         },
     );
     assert!(app.diff_store.current.is_none());
@@ -12584,6 +13165,7 @@ async fn lazy_diff_none_does_not_show_stale_content() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("a.rs", None)],
+            base_tip_sha: None,
         },
     );
     assert!(app.diff_store.current.is_none());
@@ -12618,6 +13200,7 @@ async fn same_patch_rename_does_not_reuse_the_old_files_highlight() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("b.rs", Some(patch))],
+            base_tip_sha: None,
         },
     );
 
@@ -12646,6 +13229,7 @@ async fn phase1_refresh_drops_highlight_when_the_structural_signature_changes() 
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![changed],
+            base_tip_sha: None,
         },
     );
 
@@ -12668,6 +13252,7 @@ async fn markdown_flag_mismatch_rebuilds_the_viewed_file() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("README.md", Some(patch))],
+            base_tip_sha: None,
         },
     );
 
@@ -12701,6 +13286,7 @@ async fn refresh_cancels_highlight_on_file_switch_and_respawns_when_the_index_mo
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("b.rs", Some(patch_b))],
+            base_tip_sha: None,
         },
     );
 
@@ -12736,6 +13322,7 @@ async fn refresh_cancels_highlight_on_file_switch_and_respawns_when_the_index_mo
                 refresh_file("c.rs", Some("@@ -1 +1 @@\n-c\n+c\n")),
                 refresh_file("b.rs", Some(patch_b)),
             ],
+            base_tip_sha: None,
         },
     );
 
@@ -12763,6 +13350,7 @@ async fn same_file_refresh_keeps_the_in_flight_highlight_job() {
         DataLoadResult::Success {
             pr: Box::new(refresh_pr()),
             files: vec![refresh_file("a.rs", Some(patch))],
+            base_tip_sha: None,
         },
     );
 
@@ -12785,6 +13373,7 @@ async fn refresh_shares_one_file_list_between_the_screen_and_the_session_cache()
                 refresh_file("a.rs", Some(patch_a)),
                 refresh_file("b.rs", None),
             ],
+            base_tip_sha: None,
         },
     );
 

@@ -2,14 +2,14 @@ use anyhow::Result;
 use crossterm::event;
 use tokio::sync::mpsc;
 
-use crate::cache::PrCacheKey;
+use crate::cache::{PrCacheKey, PrData};
 use crate::filter::ListFilter;
 use crate::github::{self, PrStateFilter};
 use crate::keybinding::{event_to_keybinding, SequenceMatch};
 
 use crate::github::CiStatus;
 
-use super::types::{LoadState, PendingDrafts};
+use super::types::{CachedPrCheck, LoadState, PendingDrafts};
 use super::{App, AppState, DataState, PrOpenSource};
 
 impl App {
@@ -366,7 +366,21 @@ impl App {
             repo: self.repo.clone(),
             pr_number,
         };
+        // A complete cache can skip the file list after the timestamp check.
+        // A missing patch, or no stored file list, takes the full refetch that
+        // reopen used before the check existed. `gh pr diff` is part of that
+        // refetch, so a patch an earlier fetch failed to store is retried.
+        let mut cached_check = None;
         if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
+            if cached_file_list_is_complete(cached) {
+                cached_check = Some(CachedPrCheck {
+                    updated_at: cached.pr.updated_at.clone(),
+                    head_sha: cached.pr.head.sha.clone(),
+                    base_ref: cached.pr.base.ref_name.clone(),
+                    base_sha: cached.pr.base.sha.clone(),
+                    base_tip_sha: cached.base_tip_sha.clone(),
+                });
+            }
             let diff_line_count = Self::calc_diff_line_count(&cached.files, 0);
             self.data_state = DataState::Loaded {
                 pr: cached.pr.clone(),
@@ -384,11 +398,17 @@ impl App {
 
         // Eagerly load review comments in the background so they're
         // available by the time the user opens the comment list or file list.
+        // This stays independent of the PR payload: review threads are not
+        // covered by `updated_at`, and a cache hit must not skip this load.
         if !self.local_mode {
             self.load_review_comments();
         }
 
-        self.retry_load();
+        if let Some(cached) = cached_check {
+            self.request_check_update(pr_number, cached);
+        } else {
+            self.retry_load();
+        }
     }
     /// Clear transient state accumulated in PR detail screens.
     /// data_receiver / retry_sender are long-lived and kept intact.
@@ -450,4 +470,12 @@ impl App {
             };
         }
     }
+}
+
+/// A successful fetch stores the file list it got back, including an empty list
+/// for a pull request with no files. A file with no patch is the `gh pr diff`
+/// fallback that did not land. A failed fetch is not stored, so the next open
+/// is a cache miss rather than an error-marked entry.
+fn cached_file_list_is_complete(data: &PrData) -> bool {
+    data.files.iter().all(|file| file.patch.is_some())
 }

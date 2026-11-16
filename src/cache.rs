@@ -462,6 +462,9 @@ pub struct PrData {
     pub pr: Box<PullRequest>,
     pub files: SharedFiles,
     pub pr_updated_at: String,
+    /// Tip of the base branch when this payload was fetched. `None` means the
+    /// next reopen cannot prove the three-dot diff is still current.
+    pub base_tip_sha: Option<String>,
 }
 
 /// インメモリセッションキャッシュ（LRU eviction 付き）。
@@ -534,6 +537,37 @@ impl SessionCache {
         self.touch(&key);
         self.pr_data.insert(key, data);
         self.evict_if_needed();
+    }
+
+    /// Apply a reopen that did not replace the file list. `pr` replaces the
+    /// cached pull request when the probe succeeded. `viewed` replaces flags
+    /// when that query succeeded; a path missing from a successful query is
+    /// unviewed, matching the full fetch. Patches stay either way.
+    pub fn apply_unchanged_refresh(
+        &mut self,
+        key: &PrCacheKey,
+        pr: Option<&PullRequest>,
+        viewed: Option<&HashMap<String, bool>>,
+    ) {
+        if pr.is_none() && viewed.is_none() {
+            return;
+        }
+        if !self.pr_data.contains_key(key) {
+            return;
+        }
+        self.touch(key);
+        let Some(data) = self.pr_data.get_mut(key) else {
+            return;
+        };
+        if let Some(pr) = pr {
+            data.pr_updated_at = pr.updated_at.clone();
+            *data.pr = pr.clone();
+        }
+        if let Some(viewed) = viewed {
+            for file in data.files.make_mut() {
+                file.viewed = viewed.get(&file.filename).copied().unwrap_or(false);
+            }
+        }
     }
 
     pub fn contains_pr(&self, key: &PrCacheKey) -> bool {
@@ -1444,6 +1478,7 @@ mod tests {
                 pr: Box::new(pr),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
 
@@ -1473,6 +1508,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1493,6 +1529,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(complete_key.clone(), vec![make_review_comment(1)]);
@@ -1548,6 +1585,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_discussion_comments(key.clone(), vec![]);
@@ -1569,6 +1607,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1592,6 +1631,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_discussion_comments(key.clone(), vec![]);
@@ -1615,6 +1655,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1681,6 +1722,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 1", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_pr_data(
@@ -1689,6 +1731,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 2", "2024-01-02")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-02".to_string(),
+                base_tip_sha: None,
             },
         );
 
@@ -1712,6 +1755,7 @@ mod tests {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
                     files: vec![].into(),
                     pr_updated_at: "2024-01-01".to_string(),
+                    base_tip_sha: None,
                 },
             );
             cache.put_review_comments(key, vec![]);
@@ -1753,6 +1797,7 @@ mod tests {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
                     files: vec![].into(),
                     pr_updated_at: "2024-01-01".to_string(),
+                    base_tip_sha: None,
                 },
             );
         }
@@ -1775,6 +1820,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
 
@@ -1811,6 +1857,7 @@ mod tests {
                 pr: Box::new(make_test_pr("test", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
         cache.put_review_comments(key.clone(), vec![]);
@@ -1835,6 +1882,7 @@ mod tests {
                     pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
                     files: vec![].into(),
                     pr_updated_at: "2024-01-01".to_string(),
+                    base_tip_sha: None,
                 },
             );
         }
@@ -1850,6 +1898,7 @@ mod tests {
                 pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
                 files: vec![].into(),
                 pr_updated_at: "2024-01-01".to_string(),
+                base_tip_sha: None,
             },
         );
 

@@ -141,6 +141,186 @@ pub async fn fetch_pr(repo: &str, pr_number: u32) -> Result<PullRequest> {
     serde_json::from_value(json).context("Failed to parse PR response")
 }
 
+/// Pull request metadata plus the live tip of its base branch.
+///
+/// `pr.base.sha` is the base SHA GitHub stored on the pull request. It does not
+/// follow the base branch, so the file list can go stale while that SHA, the
+/// head SHA, and `updated_at` stay put. `base_tip_sha` is `baseRef.target.oid`
+/// from the same request. `None` means the ref is gone or the field was absent.
+pub struct PrSnapshot {
+    pub pr: PullRequest,
+    pub base_tip_sha: Option<String>,
+}
+
+const PR_SNAPSHOT_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id number title body state updatedAt headRefName headRefOid baseRefName baseRefOid author{__typename login} baseRef{target{oid}}}}}";
+
+/// One metadata read: the pull request, and the current tip of its base branch.
+pub async fn fetch_pr_snapshot(repo: &str, pr_number: u32) -> Result<PrSnapshot> {
+    let Some((owner, name)) = repo.split_once('/') else {
+        anyhow::bail!("repository {repo} is not owner/name");
+    };
+    if owner.is_empty() || name.is_empty() {
+        anyhow::bail!("repository {repo} is not owner/name");
+    }
+    let number = pr_number.to_string();
+    let response = gh_api_graphql(
+        PR_SNAPSHOT_QUERY,
+        &[
+            ("owner", FieldValue::String(owner)),
+            ("name", FieldValue::String(name)),
+            ("number", FieldValue::Raw(&number)),
+        ],
+    )
+    .await?;
+    parse_pr_snapshot(response)
+}
+
+pub(crate) fn parse_pr_snapshot(response: serde_json::Value) -> Result<PrSnapshot> {
+    // A `baseRef` resolution error still carries the pull request. The tip is
+    // then missing, and the caller refetches the file list. Any other error
+    // fails the read.
+    let tip_unreadable = base_ref_errors_only(&response);
+    if !tip_unreadable {
+        check_graphql_errors(&response)?;
+    }
+    let parsed: GqlPrSnapshot =
+        serde_json::from_value(response).context("Failed to parse pull request metadata")?;
+    let pull = parsed
+        .data
+        .and_then(|data| data.repository)
+        .and_then(|repo| repo.pull_request)
+        .context("Pull request metadata was not in the response")?;
+    let base_tip_sha = if tip_unreadable {
+        None
+    } else {
+        pull.base_ref.and_then(|base_ref| {
+            let oid = base_ref.target?.oid;
+            if oid.is_empty() {
+                None
+            } else {
+                Some(oid)
+            }
+        })
+    };
+    Ok(PrSnapshot {
+        pr: PullRequest {
+            number: pull.number,
+            node_id: pull.id.filter(|id| !id.is_empty()),
+            title: pull.title,
+            // GraphQL returns "" where REST returns null. An empty body must
+            // stay None so the reviewer prompt still uses its placeholder.
+            body: pull.body.filter(|body| !body.is_empty()),
+            state: rest_state(&pull.state),
+            head: Branch {
+                ref_name: pull.head_ref_name,
+                sha: pull.head_ref_oid,
+            },
+            base: Branch {
+                ref_name: pull.base_ref_name,
+                sha: pull.base_ref_oid,
+            },
+            user: User {
+                login: rest_login(pull.author),
+            },
+            updated_at: pull.updated_at,
+        },
+        base_tip_sha,
+    })
+}
+
+/// REST `state` is `open` or `closed`. GraphQL adds `MERGED` for a pull
+/// request whose REST `state` is `closed`.
+fn rest_state(state: &str) -> String {
+    match state {
+        "MERGED" => "closed".to_string(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+/// REST `user.login` for a bot is `{login}[bot]`. GraphQL `author.login` omits
+/// that suffix. A deleted account is `author: null` here and `ghost` on REST.
+fn rest_login(author: Option<GqlAuthor>) -> String {
+    match author {
+        Some(author) if author.type_name == "Bot" && !author.login.ends_with("[bot]") => {
+            format!("{}[bot]", author.login)
+        }
+        Some(author) => author.login,
+        None => "ghost".to_string(),
+    }
+}
+
+fn base_ref_errors_only(response: &serde_json::Value) -> bool {
+    let Some(errors) = response.get("errors").and_then(|errors| errors.as_array()) else {
+        return false;
+    };
+    !errors.is_empty()
+        && errors.iter().all(|error| {
+            error
+                .get("path")
+                .and_then(|path| path.as_array())
+                .is_some_and(|path| {
+                    path.iter()
+                        .any(|segment| segment.as_str() == Some("baseRef"))
+                })
+        })
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshot {
+    data: Option<GqlPrSnapshotData>,
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshotData {
+    repository: Option<GqlPrSnapshotRepo>,
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshotRepo {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<GqlPrSnapshotPull>,
+}
+
+#[derive(Deserialize)]
+struct GqlPrSnapshotPull {
+    #[serde(default)]
+    id: Option<String>,
+    number: u32,
+    title: String,
+    body: Option<String>,
+    state: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "headRefOid")]
+    head_ref_oid: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
+    #[serde(rename = "baseRefOid")]
+    base_ref_oid: String,
+    author: Option<GqlAuthor>,
+    #[serde(default, rename = "baseRef")]
+    base_ref: Option<GqlBaseRef>,
+}
+
+#[derive(Deserialize)]
+struct GqlAuthor {
+    #[serde(default, rename = "__typename")]
+    type_name: String,
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct GqlBaseRef {
+    target: Option<GqlOid>,
+}
+
+#[derive(Deserialize)]
+struct GqlOid {
+    oid: String,
+}
+
 pub async fn fetch_changed_files(repo: &str, pr_number: u32) -> Result<Vec<ChangedFile>> {
     let endpoint = format!("repos/{}/pulls/{}/files?per_page=100", repo, pr_number);
     let json = gh_api_paginate(&endpoint).await?;
@@ -220,24 +400,8 @@ pub async fn fetch_files_viewed_state(
     _repo: &str,
     pr_node_id: &str,
 ) -> Result<HashMap<String, bool>> {
-    let query = r#"
-query($pullRequestId: ID!, $after: String) {
-  node(id: $pullRequestId) {
-    ... on PullRequest {
-      files(first: 100, after: $after) {
-        nodes {
-          path
-          viewerViewedState
-        }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-      }
-    }
-  }
-}
-"#;
+    // One line so the test double logs the node id on the same CALL line as the query.
+    let query = "query($pullRequestId:ID!,$after:String){node(id:$pullRequestId){... on PullRequest{files(first:100,after:$after){nodes{path viewerViewedState}pageInfo{hasNextPage endCursor}}}}}";
 
     let mut viewed_state = HashMap::new();
     let mut after: Option<String> = None;
@@ -392,6 +556,208 @@ pub async fn fetch_pr_checks(repo: &str, pr_number: u32) -> Result<Vec<CheckItem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot_pull(base_ref: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_node",
+                        "number": 7,
+                        "title": "Title",
+                        "body": "body",
+                        "state": "OPEN",
+                        "updatedAt": "2024-01-01T00:00:00Z",
+                        "headRefName": "feature",
+                        "headRefOid": "abc",
+                        "baseRefName": "main",
+                        "baseRefOid": "def",
+                        "author": { "login": "octocat" },
+                        "baseRef": base_ref,
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn parse_pr_snapshot_reads_the_base_branch_tip() {
+        let snapshot = parse_pr_snapshot(snapshot_pull(serde_json::json!({
+            "target": { "oid": "cafebabe" }
+        })))
+        .unwrap();
+        assert_eq!(snapshot.base_tip_sha.as_deref(), Some("cafebabe"));
+        assert_eq!(snapshot.pr.state, "open");
+        assert_eq!(snapshot.pr.base.sha, "def");
+        assert_eq!(snapshot.pr.head.sha, "abc");
+        assert_eq!(snapshot.pr.node_id.as_deref(), Some("PR_node"));
+        assert_eq!(snapshot.pr.user.login, "octocat");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_bot_author_uses_the_rest_login() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["author"] = serde_json::json!({
+            "__typename": "Bot",
+            "login": "dependabot"
+        });
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.user.login, "dependabot[bot]");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_null_author_is_ghost() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["author"] = serde_json::Value::Null;
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.user.login, "ghost");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_merged_state_is_closed() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["state"] = serde_json::json!("MERGED");
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.state, "closed");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_matches_the_rest_pull_request() {
+        let rest: PullRequest = serde_json::from_value(serde_json::json!({
+            "number": 7,
+            "node_id": "PR_node",
+            "title": "Title",
+            "body": "body",
+            "state": "open",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main", "sha": "def"},
+            "user": {"login": "octocat"},
+            "draft": true,
+            "created_at": "2023-12-01T00:00:00Z",
+            "labels": [{"name": "bug"}]
+        }))
+        .unwrap();
+        let snapshot = parse_pr_snapshot(snapshot_pull(serde_json::json!({
+            "target": { "oid": "cafebabe" }
+        })))
+        .unwrap();
+
+        assert_eq!(snapshot.pr.number, rest.number);
+        assert_eq!(snapshot.pr.node_id, rest.node_id);
+        assert_eq!(snapshot.pr.title, rest.title);
+        assert_eq!(snapshot.pr.body, rest.body);
+        assert_eq!(snapshot.pr.state, rest.state);
+        assert_eq!(snapshot.pr.user.login, rest.user.login);
+        assert_eq!(snapshot.pr.head.ref_name, rest.head.ref_name);
+        assert_eq!(snapshot.pr.head.sha, rest.head.sha);
+        assert_eq!(snapshot.pr.base.ref_name, rest.base.ref_name);
+        assert_eq!(snapshot.pr.base.sha, rest.base.sha);
+        assert_eq!(snapshot.pr.updated_at, rest.updated_at);
+
+        let rest_without_body: PullRequest = serde_json::from_value(serde_json::json!({
+            "number": 7,
+            "node_id": "PR_node",
+            "title": "Title",
+            "body": null,
+            "state": "open",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main", "sha": "def"},
+            "user": {"login": "octocat"}
+        }))
+        .unwrap();
+        for graphql_body in [serde_json::json!(""), serde_json::Value::Null] {
+            let mut response = snapshot_pull(serde_json::json!({
+                "target": { "oid": "cafebabe" }
+            }));
+            response["data"]["repository"]["pullRequest"]["body"] = graphql_body;
+            let parsed = parse_pr_snapshot(response).unwrap();
+            assert_eq!(parsed.pr.body, rest_without_body.body);
+            assert!(parsed.pr.body.is_none());
+        }
+    }
+
+    #[test]
+    fn parse_pr_snapshot_empty_body_is_none() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["body"] = serde_json::json!("");
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.body, None);
+    }
+
+    #[test]
+    fn empty_body_snapshot_keeps_the_reviewer_placeholder() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["body"] = serde_json::json!("");
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        let context = crate::ai::Context {
+            repo: "owner/repo".to_string(),
+            pr_number: snapshot.pr.number,
+            pr_title: snapshot.pr.title.clone(),
+            pr_body: snapshot.pr.body.clone(),
+            diff: String::new(),
+            working_dir: None,
+            head_sha: snapshot.pr.head.sha.clone(),
+            base_branch: snapshot.pr.base.ref_name.clone(),
+            external_comments: Vec::new(),
+            local_mode: false,
+            file_patches: Vec::new(),
+        };
+        let prompt = crate::ai::PromptLoader::new(
+            &crate::config::AiConfig::default(),
+            std::path::Path::new("/tmp"),
+        )
+        .load_reviewer_prompt(&context, 1);
+        assert!(
+            prompt.contains("(No description provided)"),
+            "an empty body uses the placeholder, got {prompt}"
+        );
+    }
+
+    #[test]
+    fn parse_pr_snapshot_missing_base_ref_has_no_tip() {
+        let snapshot = parse_pr_snapshot(snapshot_pull(serde_json::Value::Null)).unwrap();
+        assert!(snapshot.base_tip_sha.is_none());
+        assert_eq!(snapshot.pr.updated_at, "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_null_target_has_no_tip() {
+        let snapshot =
+            parse_pr_snapshot(snapshot_pull(serde_json::json!({ "target": null }))).unwrap();
+        assert!(snapshot.base_tip_sha.is_none());
+    }
+
+    #[test]
+    fn parse_pr_snapshot_base_ref_error_keeps_the_pull_request_without_a_tip() {
+        let mut body = snapshot_pull(serde_json::Value::Null);
+        body["errors"] = serde_json::json!([{
+            "message": "Could not resolve baseRef",
+            "path": ["repository", "pullRequest", "baseRef"]
+        }]);
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert!(snapshot.base_tip_sha.is_none());
+        assert_eq!(snapshot.pr.title, "Title");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_other_graphql_error_fails() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["errors"] = serde_json::json!([{
+            "message": "nope",
+            "path": ["repository", "pullRequest", "title"]
+        }]);
+        assert!(parse_pr_snapshot(body).is_err());
+    }
+
+    #[test]
+    fn parse_pr_snapshot_graphql_error_fails() {
+        let error = parse_pr_snapshot(serde_json::json!({
+            "errors": [{ "message": "base ref failed" }]
+        }));
+        assert!(error.is_err());
+    }
 
     #[test]
     fn test_pr_state_filter_as_gh_arg() {

@@ -14,6 +14,19 @@ pub enum DataLoadResult {
     Success {
         pr: Box<PullRequest>,
         files: Vec<ChangedFile>,
+        /// Live tip of the base branch from the same metadata read. `None`
+        /// means that ref was gone or the field was missing.
+        base_tip_sha: Option<String>,
+    },
+    /// The cached file list and patches are still current. `pr` is the pull
+    /// request read used for the comparison, so title, body, state, and user
+    /// replace the cached copy even when `updated_at` did not move. `None`
+    /// leaves that copy untouched. `viewed` is the fresh per-file viewer state
+    /// when that query succeeded; `None` leaves the cached flags untouched.
+    Unchanged {
+        pr_number: u32,
+        viewed: Option<HashMap<String, bool>>,
+        pr: Option<Box<PullRequest>>,
     },
     /// エラー
     Error(github::GhFailure),
@@ -53,8 +66,15 @@ pub enum ReviewSubmitResult {
 pub enum FetchMode {
     /// 新規取得（キャッシュミスまたは強制更新）
     Fresh,
-    /// 更新チェックのみ（キャッシュヒット時）
-    CheckUpdate(String), // cached updated_at
+    /// Cache-hit reopen of a complete file list.
+    ///
+    /// When `updated_at`, head SHA, base ref/SHA, and the live base-branch tip
+    /// all match, the file list and patches stay cached. The pull request read
+    /// is still applied, and viewed state is still refreshed. A mismatch, a
+    /// missing base tip, or a failed read runs the same full fetch as
+    /// [`FetchMode::Fresh`]. A cache that is missing a patch or a file list
+    /// does not use this mode.
+    CheckUpdate(crate::app::CachedPrCheck),
 }
 
 /// バックグラウンドでPRデータを取得
@@ -68,8 +88,8 @@ pub async fn fetch_pr_data(
         FetchMode::Fresh => {
             fetch_and_send(&repo, pr_number, tx).await;
         }
-        FetchMode::CheckUpdate(cached_updated_at) => {
-            check_for_updates(&repo, pr_number, &cached_updated_at, tx).await;
+        FetchMode::CheckUpdate(cached) => {
+            check_for_updates(&repo, pr_number, &cached, tx).await;
         }
     }
 }
@@ -129,6 +149,7 @@ pub async fn fetch_local_diff(
         .send(DataLoadResult::Success {
             pr: Box::new(pr),
             files,
+            base_tip_sha: None,
         })
         .await;
 }
@@ -211,10 +232,12 @@ pub async fn fetch_single_file_diff(
 
 async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadResult>) {
     match tokio::try_join!(
-        github::fetch_pr(repo, pr_number),
+        load_pr_snapshot(repo, pr_number),
         github::fetch_changed_files(repo, pr_number)
     ) {
-        Ok((pr, mut files)) => {
+        Ok((snapshot, mut files)) => {
+            let pr = snapshot.pr;
+            let base_tip_sha = snapshot.base_tip_sha;
             if let Some(pr_node_id) = pr.node_id.as_deref() {
                 match github::fetch_files_viewed_state(repo, pr_node_id).await {
                     Ok(viewed_state) => {
@@ -258,6 +281,7 @@ async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadRes
                 .send(DataLoadResult::Success {
                     pr: Box::new(pr),
                     files,
+                    base_tip_sha,
                 })
                 .await;
         }
@@ -269,19 +293,91 @@ async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadRes
     }
 }
 
+/// The light check and the full fetch share one metadata read so the base
+/// tip does not cost an extra `gh` call. If that read fails, the full fetch
+/// still loads the pull request the way it did before the tip was added.
+async fn load_pr_snapshot(repo: &str, pr_number: u32) -> Result<github::PrSnapshot> {
+    match github::fetch_pr_snapshot(repo, pr_number).await {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => {
+            warn!(
+                "base-tip metadata failed for {repo}#{pr_number}, reading the pull request without it: {error}"
+            );
+            let pr = github::fetch_pr(repo, pr_number).await?;
+            Ok(github::PrSnapshot {
+                pr,
+                base_tip_sha: None,
+            })
+        }
+    }
+}
+
 async fn check_for_updates(
     repo: &str,
     pr_number: u32,
-    cached_updated_at: &str,
+    cached: &crate::app::CachedPrCheck,
     tx: mpsc::Sender<DataLoadResult>,
 ) {
-    // PRの基本情報だけ取得してupdated_atを比較
-    if let Ok(fresh_pr) = github::fetch_pr(repo, pr_number).await {
-        if fresh_pr.updated_at != cached_updated_at {
-            // 更新あり → 全データ再取得
+    // One PR read compares the timestamp, the commits the diff is based on, and
+    // the live tip of the base branch. A match keeps the file list and patches.
+    // The read itself is applied, so a title, body, state, or user change that
+    // did not move `updated_at` still shows up. A mismatch, a missing base tip,
+    // or a failed read uses the full fetch.
+    match github::fetch_pr_snapshot(repo, pr_number).await {
+        Ok(snapshot) if cached_diff_is_current(cached, &snapshot) => {
+            let viewed = refresh_viewed_state(repo, snapshot.pr.node_id.as_deref()).await;
+            let _ = tx
+                .send(DataLoadResult::Unchanged {
+                    pr_number,
+                    viewed,
+                    pr: Some(Box::new(snapshot.pr)),
+                })
+                .await;
+        }
+        Ok(_) => {
             fetch_and_send(repo, pr_number, tx).await;
         }
-        // 更新なし → 何もしない（キャッシュデータをそのまま使用）
+        Err(error) => {
+            warn!(
+                "updated_at check failed for {repo}#{pr_number}, falling back to a full fetch: {error}"
+            );
+            fetch_and_send(repo, pr_number, tx).await;
+        }
+    }
+}
+
+/// The file list is the three-dot diff against the base branch. A timestamp
+/// match is not enough when a commit moved, or when the base branch tip moved
+/// without `base.sha`. A missing tip on either side is not a match.
+fn cached_diff_is_current(
+    cached: &crate::app::CachedPrCheck,
+    snapshot: &github::PrSnapshot,
+) -> bool {
+    let fresh = &snapshot.pr;
+    let tips_match = match (&cached.base_tip_sha, &snapshot.base_tip_sha) {
+        (Some(cached_tip), Some(fresh_tip)) => cached_tip == fresh_tip,
+        _ => false,
+    };
+    fresh.updated_at == cached.updated_at
+        && fresh.head.sha == cached.head_sha
+        && fresh.base.ref_name == cached.base_ref
+        && fresh.base.sha == cached.base_sha
+        && tips_match
+}
+
+/// Viewer viewed-state is not part of the PR `updated_at` timestamp.
+/// `None` means the query did not succeed, so cached flags must be kept.
+async fn refresh_viewed_state(
+    repo: &str,
+    pr_node_id: Option<&str>,
+) -> Option<HashMap<String, bool>> {
+    let pr_node_id = pr_node_id?;
+    match github::fetch_files_viewed_state(repo, pr_node_id).await {
+        Ok(viewed) => Some(viewed),
+        Err(error) => {
+            warn!("Failed to fetch viewed-state for PR files: {error}");
+            None
+        }
     }
 }
 
@@ -679,6 +775,9 @@ mod tests {
         let result = rx.recv().await.unwrap();
         let files = match result {
             DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Unchanged { .. } => {
+                panic!("local diff reported an update check")
+            }
             DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
         };
 
@@ -728,6 +827,9 @@ mod tests {
         let result = rx.recv().await.unwrap();
         let files = match result {
             DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Unchanged { .. } => {
+                panic!("local diff reported an update check")
+            }
             DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
         };
 
@@ -775,6 +877,9 @@ mod tests {
         let result = rx.recv().await.unwrap();
         let files = match result {
             DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Unchanged { .. } => {
+                panic!("local diff reported an update check")
+            }
             DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
         };
 
@@ -1188,6 +1293,9 @@ index 1234567..abcdefg 100644
         let result = rx.recv().await.unwrap();
         let files = match result {
             DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Unchanged { .. } => {
+                panic!("local diff reported an update check")
+            }
             DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
         };
 
@@ -1277,5 +1385,685 @@ index 1234567..abcdefg 100644
         );
         let patch = result.patch.unwrap();
         assert!(patch.contains("+fn modified()"));
+    }
+}
+
+/// `gh` call counts for a cache-hit reopen. The test double logs every call.
+#[cfg(all(test, unix))]
+mod check_update_calls {
+    use super::*;
+    use crate::github::fake_gh::FakeGh;
+    use serial_test::serial;
+    use tokio::sync::mpsc;
+
+    const UPDATED_AT: &str = "2024-01-01T00:00:00Z";
+    const NEW_UPDATED_AT: &str = "2024-06-01T00:00:00Z";
+    const PATCH: &str = "@@ -1 +1 @@\n-old\n+new\n";
+    const BASE_TIP: &str = "cafebabe";
+
+    fn pr_json(updated_at: &str) -> String {
+        pr_json_parts(updated_at, "Title", "abc", "main", "def", Some(BASE_TIP))
+    }
+
+    fn pr_json_parts(
+        updated_at: &str,
+        title: &str,
+        head_sha: &str,
+        base_ref: &str,
+        base_sha: &str,
+        base_tip: Option<&str>,
+    ) -> String {
+        let base_ref_value = match base_tip {
+            Some(oid) => serde_json::json!({ "target": { "oid": oid } }),
+            None => serde_json::Value::Null,
+        };
+        serde_json::json!({
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_node",
+                        "number": 7,
+                        "title": title,
+                        "body": "body",
+                        "state": "OPEN",
+                        "updatedAt": updated_at,
+                        "headRefName": "feature",
+                        "headRefOid": head_sha,
+                        "baseRefName": base_ref,
+                        "baseRefOid": base_sha,
+                        "author": { "login": "octocat" },
+                        "baseRef": base_ref_value,
+                    }
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// The metadata read is GraphQL. `FAKE_GH_CREATE` is left empty so a REST
+    /// pull that leaked in cannot satisfy it.
+    fn open_gh(files: &str, metadata: &str, viewed: &str, publish: &str) -> FakeGh {
+        let gh = FakeGh::install(files, "", viewed, publish);
+        gh.set_pr_check(metadata);
+        gh
+    }
+
+    fn cached_check(updated_at: &str) -> crate::app::CachedPrCheck {
+        crate::app::CachedPrCheck {
+            updated_at: updated_at.to_string(),
+            head_sha: "abc".to_string(),
+            base_ref: "main".to_string(),
+            base_sha: "def".to_string(),
+            base_tip_sha: Some(BASE_TIP.to_string()),
+        }
+    }
+
+    fn files_json(patch: Option<&str>) -> String {
+        serde_json::json!([[{
+            "filename": "src/main.rs",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "patch": patch,
+        }]])
+        .to_string()
+    }
+
+    fn viewed_json(state: &str) -> String {
+        serde_json::json!({
+            "data": {
+                "node": {
+                    "files": {
+                        "nodes": [{ "path": "src/main.rs", "viewerViewedState": state }],
+                        "pageInfo": { "hasNextPage": false, "endCursor": null }
+                    }
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn calls_of(gh: &FakeGh) -> Vec<String> {
+        gh.calls()
+            .lines()
+            .filter(|line| line.starts_with("CALL ") && call_is_for_pr(line))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The fake `gh` is process-wide, so `pulls/1` and `issues/1` from other
+    /// tests can land in this log. Count only this module's PR 7.
+    fn call_is_for_pr(line: &str) -> bool {
+        contains_pr_token(line, "/pulls/7")
+            || contains_pr_token(line, "pr diff 7")
+            || contains_pr_token(line, "pr checks 7")
+            || contains_pr_token(line, "number=7")
+            || line.contains("pullRequestId=PR_node")
+    }
+
+    fn contains_pr_token(line: &str, token: &str) -> bool {
+        let mut rest = line;
+        while let Some(index) = rest.find(token) {
+            let after = index + token.len();
+            let boundary = match rest[after..].chars().next() {
+                Some(ch) => !ch.is_ascii_digit(),
+                None => true,
+            };
+            if boundary {
+                return true;
+            }
+            rest = &rest[index + 1..];
+        }
+        false
+    }
+
+    /// `(metadata, file list, viewed state, full diff)`
+    fn classify(calls: &[String]) -> (usize, usize, usize, usize) {
+        let mut metadata = 0;
+        let mut files = 0;
+        let mut viewed = 0;
+        let mut diff = 0;
+        for call in calls {
+            if call.contains("pr diff") {
+                diff += 1;
+            } else if call.contains("viewerViewedState") {
+                viewed += 1;
+            } else if call.contains("--slurp") || call.contains("/files?") {
+                files += 1;
+            } else {
+                metadata += 1;
+            }
+        }
+        (metadata, files, viewed, diff)
+    }
+
+    #[test]
+    fn call_filter_ignores_other_pull_requests() {
+        assert!(call_is_for_pr("CALL api repos/o/r/pulls/7"));
+        assert!(call_is_for_pr(
+            "CALL api repos/o/r/pulls/7/files?per_page=100"
+        ));
+        assert!(!call_is_for_pr("CALL api repos/o/r/pulls/1"));
+        assert!(!call_is_for_pr("CALL api repos/o/r/pulls/70"));
+        assert!(!call_is_for_pr("CALL api repos/o/r/issues/1"));
+        assert!(call_is_for_pr("CALL pr diff 7 -R owner/repo"));
+        assert!(!call_is_for_pr("CALL pr diff 70 -R owner/repo"));
+        assert!(call_is_for_pr(
+            "CALL api graphql -f query=query{baseRef{target{oid}}} -F number=7"
+        ));
+        assert!(!call_is_for_pr(
+            "CALL api graphql -f query=query{baseRef{target{oid}}} -F number=1"
+        ));
+        assert!(call_is_for_pr(
+            "CALL api graphql -f query=query{viewerViewedState} -f pullRequestId=PR_node"
+        ));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fresh_fetch_loads_metadata_files_and_viewed_state() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json(UPDATED_AT),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data("owner/repo".to_string(), 7, FetchMode::Fresh, tx).await;
+        let DataLoadResult::Success {
+            pr,
+            files,
+            base_tip_sha,
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("fresh fetch succeeds");
+        };
+        assert_eq!(pr.updated_at, UPDATED_AT);
+        assert_eq!(pr.state, "open");
+        assert_eq!(base_tip_sha.as_deref(), Some(BASE_TIP));
+        assert_eq!(files[0].patch.as_deref(), Some(PATCH));
+        assert!(files[0].viewed);
+
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (1, 1, 1, 0),
+            "fresh reopen calls: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fresh_fetch_requests_the_full_diff_when_a_patch_is_missing() {
+        let gh = open_gh(
+            &files_json(None),
+            &pr_json(UPDATED_AT),
+            &viewed_json("UNVIEWED"),
+            "",
+        );
+        gh.set_diff("diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old\n+recovered\n");
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data("owner/repo".to_string(), 7, FetchMode::Fresh, tx).await;
+        let DataLoadResult::Success { files, .. } = rx.recv().await.unwrap() else {
+            panic!("fresh fetch succeeds");
+        };
+        let patch = files[0].patch.as_deref().expect("gh pr diff fills the gap");
+        assert!(
+            patch.contains("+recovered"),
+            "the recovered patch is the diff body, got {patch}"
+        );
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (1, 1, 1, 1),
+            "a missing patch is metadata, files, viewed, and gh pr diff: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_failed_diff_keeps_the_file_and_leaves_the_patch_missing() {
+        let gh = open_gh(
+            &files_json(None),
+            &pr_json(UPDATED_AT),
+            &viewed_json("UNVIEWED"),
+            "",
+        );
+        gh.fail_diff();
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data("owner/repo".to_string(), 7, FetchMode::Fresh, tx).await;
+        let DataLoadResult::Success { files, .. } = rx.recv().await.unwrap() else {
+            panic!("a diff failure does not fail the file list");
+        };
+        assert!(files[0].patch.is_none());
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (1, 1, 1, 1),
+            "the diff is still attempted: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn unchanged_updated_at_skips_files_and_patches_but_refreshes_viewed_state() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json(UPDATED_AT),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Unchanged {
+            pr_number,
+            viewed,
+            pr,
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("matching updated_at does not replace the file list");
+        };
+        assert_eq!(pr_number, 7);
+        assert_eq!(pr.expect("the probe is applied").title, "Title");
+        let viewed = viewed.expect("viewed state is refreshed");
+        assert_eq!(viewed.get("src/main.rs"), Some(&true));
+
+        let calls = calls_of(&gh);
+        assert_eq!(
+            calls.len(),
+            2,
+            "an unchanged reopen is two gh calls: {calls:?}"
+        );
+        assert_eq!(
+            classify(&calls),
+            (1, 0, 1, 0),
+            "unchanged reopen skips the file list and gh pr diff: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn changed_updated_at_does_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json(NEW_UPDATED_AT),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success { pr, files, .. } = rx.recv().await.unwrap() else {
+            panic!("a changed timestamp replaces the cached payload");
+        };
+        assert_eq!(pr.updated_at, NEW_UPDATED_AT);
+        assert_eq!(files[0].patch.as_deref(), Some(PATCH));
+        assert!(files[0].viewed);
+
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "changed reopen is the updated_at probe plus a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn updated_at_check_failure_falls_back_to_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json(NEW_UPDATED_AT),
+            &viewed_json("UNVIEWED"),
+            "",
+        );
+        gh.fail_first(1);
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success { pr, files, .. } = rx.recv().await.unwrap() else {
+            panic!("a failed updated_at read still loads the PR");
+        };
+        assert_eq!(pr.updated_at, NEW_UPDATED_AT);
+        assert_eq!(files[0].patch.as_deref(), Some(PATCH));
+        assert!(!files[0].viewed);
+
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "failed probe is followed by a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn viewed_state_failure_keeps_the_unchanged_result() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json(UPDATED_AT),
+            r#"{"errors":[{"message":"nope"}]}"#,
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Unchanged { viewed, .. } = rx.recv().await.unwrap() else {
+            panic!("a failed viewed-state read does not refetch files");
+        };
+        assert!(viewed.is_none());
+        let calls = calls_of(&gh);
+        assert_eq!(classify(&calls), (1, 0, 1, 0), "{calls:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_node_id_skips_the_viewed_state_query() {
+        let pr = serde_json::json!({
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "id": null,
+                        "number": 7,
+                        "title": "Title",
+                        "body": null,
+                        "state": "OPEN",
+                        "updatedAt": UPDATED_AT,
+                        "headRefName": "feature",
+                        "headRefOid": "abc",
+                        "baseRefName": "main",
+                        "baseRefOid": "def",
+                        "author": { "login": "octocat" },
+                        "baseRef": { "target": { "oid": BASE_TIP } }
+                    }
+                }
+            }
+        })
+        .to_string();
+        let gh = open_gh(&files_json(Some(PATCH)), &pr, &viewed_json("VIEWED"), "");
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Unchanged { viewed, .. } = rx.recv().await.unwrap() else {
+            panic!("matching updated_at still skips the file list");
+        };
+        assert!(viewed.is_none());
+        let calls = calls_of(&gh);
+        assert_eq!(classify(&calls), (1, 0, 0, 0), "{calls:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn same_timestamp_with_a_new_title_keeps_the_file_list_and_returns_the_title() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Renamed", "abc", "main", "def", Some(BASE_TIP)),
+            &viewed_json("UNVIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Unchanged { pr, .. } = rx.recv().await.unwrap() else {
+            panic!("a title change with the same commits does not refetch files");
+        };
+        assert_eq!(pr.expect("fresh metadata").title, "Renamed");
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (1, 0, 1, 0),
+            "title comes from the probe: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn same_timestamp_with_a_new_head_sha_does_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Title", "fff", "main", "def", Some(BASE_TIP)),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success { pr, files, .. } = rx.recv().await.unwrap() else {
+            panic!("a new head with the same updated_at replaces the file list");
+        };
+        assert_eq!(pr.head.sha, "fff");
+        assert_eq!(files[0].patch.as_deref(), Some(PATCH));
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "head mismatch is a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn same_timestamp_with_a_new_base_ref_does_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Title", "abc", "develop", "def", Some(BASE_TIP)),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success { pr, .. } = rx.recv().await.unwrap() else {
+            panic!("a new base ref with the same updated_at replaces the file list");
+        };
+        assert_eq!(pr.base.ref_name, "develop");
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "base ref mismatch is a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn same_timestamp_with_a_new_base_sha_does_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Title", "abc", "main", "fff", Some(BASE_TIP)),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success { pr, .. } = rx.recv().await.unwrap() else {
+            panic!("a new base sha with the same updated_at replaces the file list");
+        };
+        assert_eq!(pr.base.sha, "fff");
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "base sha mismatch is a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn same_base_tip_stays_on_the_light_path() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Title", "abc", "main", "def", Some(BASE_TIP)),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        assert!(
+            matches!(rx.recv().await.unwrap(), DataLoadResult::Unchanged { .. }),
+            "the same base tip keeps the cached file list"
+        );
+        let calls = calls_of(&gh);
+        assert_eq!(
+            calls.len(),
+            2,
+            "an unchanged reopen is two gh calls: {calls:?}"
+        );
+        assert_eq!(classify(&calls), (1, 0, 1, 0), "{calls:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn moved_base_tip_with_unchanged_commits_does_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Title", "abc", "main", "def", Some("deadbeef")),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success {
+            pr,
+            files,
+            base_tip_sha,
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("a moved base tip replaces the file list");
+        };
+        assert_eq!(pr.updated_at, UPDATED_AT);
+        assert_eq!(pr.head.sha, "abc");
+        assert_eq!(pr.base.sha, "def");
+        assert_eq!(base_tip_sha.as_deref(), Some("deadbeef"));
+        assert_eq!(files[0].patch.as_deref(), Some(PATCH));
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "base tip mismatch is a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_base_ref_does_the_full_fetch() {
+        let gh = open_gh(
+            &files_json(Some(PATCH)),
+            &pr_json_parts(UPDATED_AT, "Title", "abc", "main", "def", None),
+            &viewed_json("VIEWED"),
+            "",
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data(
+            "owner/repo".to_string(),
+            7,
+            FetchMode::CheckUpdate(cached_check(UPDATED_AT)),
+            tx,
+        )
+        .await;
+        let DataLoadResult::Success { base_tip_sha, .. } = rx.recv().await.unwrap() else {
+            panic!("a missing base ref replaces the file list");
+        };
+        assert!(base_tip_sha.is_none());
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "a missing base ref is a full fetch: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn metadata_graphql_failure_still_loads_the_pull_request() {
+        let rest = serde_json::json!({
+            "number": 7,
+            "node_id": "PR_node",
+            "title": "From REST",
+            "body": "body",
+            "state": "open",
+            "updated_at": UPDATED_AT,
+            "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main", "sha": "def"},
+            "user": {"login": "octocat"}
+        })
+        .to_string();
+        let gh = FakeGh::install(&files_json(Some(PATCH)), &rest, &viewed_json("VIEWED"), "");
+        gh.set_pr_check("{");
+        let (tx, mut rx) = mpsc::channel(1);
+        fetch_pr_data("owner/repo".to_string(), 7, FetchMode::Fresh, tx).await;
+        let DataLoadResult::Success {
+            pr, base_tip_sha, ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("a failed base-tip read still loads the pull request");
+        };
+        assert_eq!(pr.title, "From REST");
+        assert!(base_tip_sha.is_none());
+        let calls = calls_of(&gh);
+        assert_eq!(
+            classify(&calls),
+            (2, 1, 1, 0),
+            "the REST pull request replaces the failed metadata read: {calls:?}"
+        );
     }
 }
