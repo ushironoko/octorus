@@ -162,7 +162,8 @@ pub(crate) fn app_with_comment_on_added_line(comment: ReviewComment) -> App {
             deletions: 0,
             patch: Some(ADDED_LINE_PATCH.to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
     app.cmt.review_comments = Some(vec![comment]);

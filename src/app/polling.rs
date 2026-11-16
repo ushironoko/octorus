@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::ai::orchestrator::RallyEvent;
 use crate::ai::RallyState;
-use crate::cache::{PrCacheKey, PrData};
+use crate::cache::{PrCacheKey, PrData, SharedFiles};
 use crate::diff_store::{PrefetchItem, MAX_PREFETCH_FILES};
 use crate::github::{ChangedFile, CiStatus, GhFailure};
 use crate::loader::{CommentSubmitResult, DataLoadResult, ReviewSubmitResult};
@@ -94,7 +94,7 @@ impl App {
                         PrData {
                             pr_updated_at: pr.updated_at.clone(),
                             pr,
-                            files,
+                            files: SharedFiles::from(files),
                         },
                     );
                 }
@@ -281,77 +281,51 @@ impl App {
     /// 1 tick に1バッチだと 340バッチ × 100ms = 34秒かかるため、
     /// 利用可能な全バッチをまとめて処理する。
     pub(crate) fn poll_batch_diff_updates(&mut self) {
-        let Some(ref mut rx) = self.batch_diff_receiver else {
+        let Some(rx) = self.batch_diff_receiver.as_mut() else {
             return;
         };
 
-        let mut current_file_updated = false;
-        let mut any_received = false;
-
-        // インデックスマップをループ外で1回だけ構築
-        let index_map: Option<HashMap<String, usize>> =
-            if let DataState::Loaded { ref files, .. } = self.data_state {
-                Some(
-                    files
-                        .iter()
-                        .enumerate()
-                        .map(|(i, f)| (f.filename.clone(), i))
-                        .collect(),
-                )
-            } else {
-                None
-            };
-
+        let mut batches = Vec::new();
+        let mut disconnected = false;
         loop {
             match rx.try_recv() {
-                Ok(results) => {
-                    any_received = true;
-
-                    if let DataState::Loaded { ref mut files, .. } = self.data_state {
-                        if let Some(ref index_map) = index_map {
-                            for result in &results {
-                                if let Some(&idx) = index_map.get(&result.filename) {
-                                    if files[idx].patch.is_none() {
-                                        files[idx].patch = result.patch.clone();
-                                        if idx == self.selected_file {
-                                            current_file_updated = true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // SessionCache も更新
-                    if let Some(pr_number) = self.pr_number {
-                        let key = PrCacheKey {
-                            repo: self.repo.clone(),
-                            pr_number,
-                        };
-                        for result in &results {
-                            self.session_cache.update_file_patch(
-                                &key,
-                                &result.filename,
-                                result.patch.clone(),
-                            );
-                        }
-                    }
-                }
+                Ok(results) => batches.push(results),
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.batch_diff_receiver = None;
-                    // 全バッチ完了: patch 含むシグネチャを更新し、コンテンツ変更を検出
-                    if self.local_mode {
-                        self.update_patch_signatures_and_auto_focus();
-                    }
+                    disconnected = true;
                     break;
                 }
             }
         }
+        if disconnected {
+            self.batch_diff_receiver = None;
+        }
+
+        let mut current_file_updated = false;
+        let any_received = !batches.is_empty();
+        for results in batches {
+            let updates: Vec<(String, Option<String>)> = results
+                .into_iter()
+                .map(|result| (result.filename, result.patch))
+                .collect();
+            let filled = self.fill_shared_patches(&updates);
+            if filled.contains(&self.selected_file) {
+                current_file_updated = true;
+            }
+            for idx in filled {
+                if let Some(patch) = self.files().get(idx).and_then(|file| file.patch.clone()) {
+                    self.invalidate_cached_patch(idx, &patch);
+                }
+            }
+        }
+
+        if disconnected && self.local_mode {
+            // 全バッチ完了: patch 含むシグネチャを更新し、コンテンツ変更を検出
+            self.update_patch_signatures_and_auto_focus();
+        }
 
         // ループ終了後にまとめて後処理
         if current_file_updated {
-            self.diff_store.clear_current();
             self.lazy_diff_receiver = None;
             self.lazy_diff_pending_file = None;
             self.update_diff_line_count();
@@ -394,43 +368,32 @@ impl App {
 
     /// lazy diff の結果をポーリングして適用
     pub(crate) fn poll_lazy_diff_updates(&mut self) {
-        let Some(ref mut rx) = self.lazy_diff_receiver else {
+        let received = {
+            let Some(rx) = self.lazy_diff_receiver.as_mut() else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::error::TryRecvError::Empty) => return,
+                Err(mpsc::error::TryRecvError::Disconnected) => None,
+            }
+        };
+        self.lazy_diff_receiver = None;
+        self.lazy_diff_pending_file = None;
+        let Some(result) = received else {
             return;
         };
 
-        match rx.try_recv() {
-            Ok(result) => {
-                self.lazy_diff_receiver = None;
-                self.lazy_diff_pending_file = None;
-
-                if let DataState::Loaded { ref mut files, .. } = self.data_state {
-                    if let Some(file) = files.iter_mut().find(|f| f.filename == result.filename) {
-                        // バッチが先に到着済みなら上書きしない（重複適用防止）
-                        if file.patch.is_none() {
-                            file.patch = result.patch.clone();
-                        }
-                    }
-                }
-
-                // SessionCache も更新
-                if let Some(pr_number) = self.pr_number {
-                    let key = PrCacheKey {
-                        repo: self.repo.clone(),
-                        pr_number,
-                    };
-                    self.session_cache
-                        .update_file_patch(&key, &result.filename, result.patch);
-                }
-
-                self.diff_store.clear_current();
-                self.update_diff_line_count();
-                self.ensure_diff_cache();
+        let selected = self.selected_file;
+        let filled = self.fill_shared_patches(&[(result.filename, result.patch)]);
+        for idx in &filled {
+            if let Some(patch) = self.files().get(*idx).and_then(|file| file.patch.clone()) {
+                self.invalidate_cached_patch(*idx, &patch);
             }
-            Err(mpsc::error::TryRecvError::Empty) => {}
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.lazy_diff_receiver = None;
-                self.lazy_diff_pending_file = None;
-            }
+        }
+        if filled.contains(&selected) {
+            self.update_diff_line_count();
+            self.ensure_diff_cache();
         }
     }
 
@@ -704,15 +667,139 @@ impl App {
         }
 
         let marked_set: HashSet<&str> = marked_paths.iter().map(|path| path.as_str()).collect();
-        if let DataState::Loaded { files, .. } = &mut self.data_state {
+        self.with_shared_files_mut(|files| {
             for file in files.iter_mut() {
                 if marked_set.contains(file.filename.as_str()) {
                     file.viewed = set_viewed;
                 }
             }
-        }
+        });
 
         self.sync_loaded_data_to_cache();
+    }
+
+    fn current_cache_key(&self) -> Option<PrCacheKey> {
+        let pr_number = self.pr_number?;
+        Some(PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number,
+        })
+    }
+
+    fn data_files_ptr(&self) -> Option<*const ChangedFile> {
+        match &self.data_state {
+            DataState::Loaded { files, .. } => Some(files.as_ptr()),
+            _ => None,
+        }
+    }
+
+    fn take_data_files(&mut self) -> Option<SharedFiles> {
+        match &mut self.data_state {
+            DataState::Loaded { files, .. } => Some(std::mem::replace(files, SharedFiles::empty())),
+            _ => None,
+        }
+    }
+
+    fn set_data_files(&mut self, shared: SharedFiles) {
+        if let DataState::Loaded { files, .. } = &mut self.data_state {
+            *files = shared;
+        }
+    }
+
+    fn clone_loaded_files(&self) -> Option<SharedFiles> {
+        match &self.data_state {
+            DataState::Loaded { files, .. } => Some(files.clone()),
+            _ => None,
+        }
+    }
+
+    /// Mutate the loaded file list in place.
+    ///
+    /// When the session cache holds the same `Arc`, that clone is dropped for
+    /// the duration of the write so [`SharedFiles::make_mut`] does not deep-copy
+    /// the patches, then both sides point at the updated allocation again.
+    fn with_shared_files_mut<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
+        let Some(key) = self
+            .current_cache_key()
+            .filter(|key| self.session_cache.contains_pr(key))
+        else {
+            return self.with_data_files_only(f);
+        };
+        let shared = self.session_cache.files_ptr(&key) == self.data_files_ptr();
+        if shared {
+            drop(self.take_data_files());
+            let result = self.session_cache.with_files_mut(&key, f)?;
+            if let Some(files) = self.session_cache.clone_files(&key) {
+                self.set_data_files(files);
+            }
+            return Some(result);
+        }
+        let result = self.with_data_files_only(f)?;
+        if let Some(files) = self.clone_loaded_files() {
+            self.session_cache.set_files(&key, files);
+        }
+        Some(result)
+    }
+
+    fn with_data_files_only<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
+        match &mut self.data_state {
+            DataState::Loaded { files, .. } => Some(f(files.make_mut())),
+            _ => None,
+        }
+    }
+
+    /// Fill still-missing patches by filename. One index lookup per result.
+    fn fill_shared_patches(&mut self, updates: &[(String, Option<String>)]) -> Vec<usize> {
+        let Some(key) = self
+            .current_cache_key()
+            .filter(|key| self.session_cache.contains_pr(key))
+        else {
+            return self.fill_data_files_indexed(updates);
+        };
+        let shared = self.session_cache.files_ptr(&key) == self.data_files_ptr();
+        if shared {
+            drop(self.take_data_files());
+            let filled = self
+                .session_cache
+                .fill_missing_file_patches(&key, updates.iter().cloned());
+            if let Some(files) = self.session_cache.clone_files(&key) {
+                self.set_data_files(files);
+            }
+            return filled;
+        }
+        let filled = self.fill_data_files_indexed(updates);
+        if let Some(files) = self.clone_loaded_files() {
+            self.session_cache.set_files(&key, files);
+        }
+        filled
+    }
+
+    fn fill_data_files_indexed(&mut self, updates: &[(String, Option<String>)]) -> Vec<usize> {
+        let mut index: HashMap<&str, usize> = HashMap::new();
+        for (idx, file) in self.files().iter().enumerate() {
+            index.entry(file.filename.as_str()).or_insert(idx);
+        }
+        let planned: Vec<(usize, String, Option<String>)> = updates
+            .iter()
+            .filter_map(|(name, patch)| {
+                let idx = *index.get(name.as_str())?;
+                Some((idx, name.clone(), patch.clone()))
+            })
+            .collect();
+        let mut filled = Vec::new();
+        self.with_data_files_only(|files| {
+            for (idx, name, patch) in planned {
+                let Some(file) = files.get_mut(idx) else {
+                    continue;
+                };
+                if file.filename != name || file.patch.is_some() || patch.is_none() {
+                    continue;
+                }
+                file.patch = patch;
+                filled.push(idx);
+            }
+        });
+        filled
     }
 
     pub(crate) fn sync_loaded_data_to_cache(&mut self) {
@@ -942,7 +1029,7 @@ impl App {
                 let old_selected = self.selected_file;
                 let mut next_selected = if files.is_empty() {
                     0
-                } else if let Some(filename) = old_selected_file {
+                } else if let Some(filename) = old_selected_file.as_deref() {
                     files
                         .iter()
                         .position(|file| file.filename == filename)
@@ -955,18 +1042,21 @@ impl App {
                     next_selected = idx;
                 }
 
-                if next_selected != old_selected {
-                    self.diff_store.clear_current();
+                let next_filename = files.get(next_selected).map(|file| file.filename.as_str());
+                let switched_file = next_filename != old_selected_file.as_deref();
+                // Same path moved to a new index is not a file switch: keep the
+                // highlight and the scroll position. A different file cancels the
+                // in-flight highlight inside reconcile (#270).
+                if switched_file {
                     self.diff_scroll.reset();
                     self.cmt.comment_panel_open = false;
                     self.cmt.comment_panel_scroll = 0;
                 }
 
                 self.selected_file = next_selected;
-                if changed_file_index.is_some() {
-                    self.file_list_scroll_offset =
-                        self.file_list_scroll_offset.min(self.selected_file);
+                self.file_list_scroll_offset = self.file_list_scroll_offset.min(self.selected_file);
 
+                if changed_file_index.is_some() {
                     // BG rally 中は state 遷移をスキップ（ファイル選択のみ更新）
                     let rally_running_in_bg = self
                         .ai_rally_state
@@ -980,28 +1070,30 @@ impl App {
                     {
                         self.enter_diff_from_file_list();
                     }
-                    self.sync_diff_to_selected_file();
-                } else {
-                    self.file_list_scroll_offset =
-                        self.file_list_scroll_offset.min(self.selected_file);
                 }
-                let line_count = Self::calc_diff_line_count(&files, self.selected_file);
-                self.diff_scroll.set_line_count(line_count);
-                // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
-                self.diff_store.clear();
+                let old_files = match &self.data_state {
+                    DataState::Loaded { files, .. } => files.clone(),
+                    _ => SharedFiles::empty(),
+                };
+                let files = SharedFiles::from(files);
+                self.reconcile_diff_caches(&old_files, &files);
+                let patch_present = files
+                    .get(self.selected_file)
+                    .and_then(|file| file.patch.as_ref())
+                    .is_some();
+                if patch_present || switched_file || self.diff_store.current.is_none() {
+                    let line_count = Self::calc_diff_line_count(&files, self.selected_file);
+                    self.diff_scroll.set_line_count(line_count);
+                }
                 // Check if we need to start AI Rally (--ai-rally flag was passed)
                 let should_start_rally =
                     self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loading);
-                // clone() でキャッシュと DataState の両方にデータを格納（Arc不使用）
+                // キャッシュと DataState は同じ Arc を持つ。ファイル一覧はコピーしない。
                 let cache_key = PrCacheKey {
                     repo: self.repo.clone(),
                     pr_number: origin_pr,
                 };
-                let local_files_for_signature = if self.local_mode {
-                    Some(files.clone())
-                } else {
-                    None
-                };
+                let local_files_for_signature = self.local_mode.then(|| files.clone());
                 self.session_cache.put_pr_data(
                     cache_key,
                     PrData {
@@ -1011,6 +1103,10 @@ impl App {
                     },
                 );
                 self.data_state = DataState::Loaded { pr, files };
+                if changed_file_index.is_some() {
+                    // Data is current, so auto-focus can sync the diff it landed on.
+                    self.sync_diff_to_selected_file();
+                }
                 // PRデータが更新されたため、PR description キャッシュを無効化・再構築
                 self.pr_description_cache = None;
                 if self.state == AppState::PrDescription {
@@ -1224,7 +1320,7 @@ impl App {
 
         // patch シグネチャを更新
         self.local_file_patch_signatures.clear();
-        for file in files {
+        for file in files.as_slice() {
             if file.patch.is_some() {
                 self.local_file_patch_signatures
                     .insert(file.filename.clone(), Self::local_file_full_signature(file));

@@ -443,7 +443,7 @@ async fn test_pr_list_local_toggle_round_trip() {
         },
         PrData {
             pr: Box::new(local_pr),
-            files: local_files,
+            files: local_files.into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
         },
     );
@@ -601,7 +601,7 @@ async fn test_handle_data_result_clamps_selected_file_when_files_shrink() {
     // Set initial loaded state with 5 files
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files,
+        files: initial_files.into(),
     };
     app.selected_file = 4; // Last file selected
 
@@ -666,7 +666,7 @@ async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes()
     // Set initial loaded state with 5 files
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files,
+        files: initial_files.into(),
     };
     app.selected_file = 4;
     app.diff_scroll.selected_line = 10;
@@ -756,7 +756,7 @@ async fn test_handle_data_result_resyncs_comment_positions_when_selected_file_ch
     // Set initial loaded state with 5 files, selected_file = 4
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files,
+        files: initial_files.into(),
     };
     app.selected_file = 4;
 
@@ -863,7 +863,7 @@ async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchang
     // Set initial loaded state
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files,
+        files: initial_files.into(),
     };
     app.selected_file = 1;
     app.diff_scroll.selected_line = 2;
@@ -949,7 +949,7 @@ async fn test_handle_data_result_keeps_selected_file_by_filename() {
 
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files.clone(),
+        files: initial_files.clone().into(),
     };
     app.selected_file = 1; // file_b.rs
     app.remember_local_file_signatures(&initial_files);
@@ -1015,7 +1015,7 @@ async fn test_handle_data_result_auto_focus_selects_next_changed_file() {
 
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files.clone(),
+        files: initial_files.clone().into(),
     };
     app.remember_local_file_signatures(&initial_files);
 
@@ -1086,7 +1086,7 @@ async fn test_handle_data_result_auto_focus_prefers_nearest_changed_file() {
 
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files.clone(),
+        files: initial_files.clone().into(),
     };
     app.remember_local_file_signatures(&initial_files);
 
@@ -1158,7 +1158,7 @@ async fn test_handle_data_result_auto_focus_prefers_next_when_distances_are_tie(
 
     app.data_state = DataState::Loaded {
         pr: pr.clone(),
-        files: initial_files.clone(),
+        files: initial_files.clone().into(),
     };
     app.remember_local_file_signatures(&initial_files);
 
@@ -1712,7 +1712,8 @@ async fn test_poll_mark_viewed_applies_unmark() {
                 patch: None,
                 viewed: true,
             },
-        ],
+        ]
+        .into(),
     };
 
     let (tx, rx) = mpsc::channel(1);
@@ -1772,7 +1773,8 @@ async fn test_poll_mark_viewed_skips_apply_on_pr_mismatch() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     let (tx, rx) = mpsc::channel(1);
@@ -1880,7 +1882,8 @@ fn test_toggle_markdown_rich() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+test".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     assert!(!app.is_markdown_rich());
@@ -1909,7 +1912,8 @@ fn test_toggle_markdown_rich_clears_receivers() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+test".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     // Simulate having active receivers
@@ -1953,7 +1957,8 @@ fn test_toggle_markdown_rich_clears_only_md_cache() {
                 patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
 
     // Add cache entries for both files
@@ -1997,7 +2002,8 @@ fn test_toggle_markdown_rich_preserves_non_md_diff_cache() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     let rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
@@ -2045,7 +2051,8 @@ fn make_app_with_patch(patch: &str) -> App {
             deletions: 1,
             patch: Some(patch.to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
     app
@@ -2955,7 +2962,7 @@ async fn test_patch_signature_detects_same_numstat_different_patch() {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: initial_files,
+        files: initial_files.into(),
     };
 
     // 初回バッチ完了: patch シグネチャを保存（オートフォーカスはスキップ）
@@ -2988,7 +2995,7 @@ async fn test_patch_signature_detects_same_numstat_different_patch() {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: updated_files,
+        files: updated_files.into(),
     };
 
     // 2回目バッチ完了: file_b.rs の patch が変わった → オートフォーカス
@@ -3142,7 +3149,8 @@ fn test_files_returns_files_when_loaded() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     assert_eq!(app.files().len(), 1);
     assert_eq!(app.files()[0].filename, "a.rs");
@@ -3160,7 +3168,7 @@ fn test_pr_returns_some_when_loaded() {
     let mut app = App::new_for_test();
     app.data_state = DataState::Loaded {
         pr: Box::new(make_local_pr()),
-        files: vec![],
+        files: vec![].into(),
     };
     assert!(app.pr().is_some());
     assert_eq!(app.pr().unwrap().number, 0);
@@ -3193,7 +3201,8 @@ async fn test_restore_data_from_cache_hit() {
                 deletions: 0,
                 patch: Some("@@ -1 +1 @@\n+line".to_string()),
                 viewed: false,
-            }],
+            }]
+            .into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
         },
     );
@@ -3502,7 +3511,8 @@ fn test_handle_filter_input_char_updates_query() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     let mut filter = crate::filter::ListFilter::new();
     filter.apply(app.files(), |_, _| true);
@@ -3526,7 +3536,8 @@ fn test_handle_filter_input_backspace() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     let mut filter = crate::filter::ListFilter::new();
     filter.insert_char('a');
@@ -3552,7 +3563,8 @@ fn test_handle_filter_input_enter_deactivates() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     let mut filter = crate::filter::ListFilter::new();
     filter.insert_char('t');
@@ -3650,7 +3662,8 @@ fn test_reapply_filter_file_list() {
                 patch: None,
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
     let mut filter = crate::filter::ListFilter::new();
     filter.insert_char('l');
@@ -3686,7 +3699,8 @@ fn test_handle_filter_navigation_down() {
                 patch: None,
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
     let mut filter = crate::filter::ListFilter::new();
     filter.apply(app.files(), |_, _| true);
@@ -3721,7 +3735,8 @@ fn test_handle_filter_navigation_up() {
                 patch: None,
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
     let mut filter = crate::filter::ListFilter::new();
     filter.apply(app.files(), |_, _| true);
@@ -3891,7 +3906,7 @@ fn test_refresh_all_invalidates_session_cache() {
         cache_key.clone(),
         PrData {
             pr: Box::new(make_local_pr()),
-            files: vec![],
+            files: vec![].into(),
             pr_updated_at: "x".to_string(),
         },
     );
@@ -3933,7 +3948,8 @@ async fn test_handle_mark_viewed_key_v_returns_true() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     let key = make_key(KeyCode::Char('v'));
     assert!(app.handle_mark_viewed_key(key));
@@ -4463,7 +4479,8 @@ fn test_start_ai_rally_stashes_seed_review_while_waiting_for_confirmation() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+fn main() {}".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     app.start_ai_rally();
@@ -5086,7 +5103,8 @@ async fn test_jump_back_restores_position() {
                 ),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
 
     // Push current position (line 5 is valid: a.rs has 7 diff lines, indices 0-6)
@@ -5180,7 +5198,8 @@ fn test_enter_comment_input_no_patch() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     // Should not panic
@@ -5216,7 +5235,8 @@ fn test_enter_comment_input_works_in_local_mode() {
             deletions: 0,
             patch: Some(patch.to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.diff_scroll.selected_line = 2;
     app.state = AppState::DiffView;
@@ -5255,7 +5275,7 @@ async fn test_open_comment_list_transitions_state() {
             },
             updated_at: "".to_string(),
         }),
-        files: vec![],
+        files: vec![].into(),
     };
     app.previous_state = AppState::FileList;
     app.open_comment_list();
@@ -5267,7 +5287,7 @@ async fn test_open_comment_list_sets_previous_state() {
     let mut app = App::new_for_test();
     app.data_state = DataState::Loaded {
         pr: Box::new(make_local_pr()),
-        files: vec![],
+        files: vec![].into(),
     };
     app.state = AppState::FileList;
     app.previous_state = AppState::FileList;
@@ -5283,7 +5303,7 @@ fn test_open_comment_list_transitions_state_in_local_mode() {
     app.pr_number = Some(0);
     app.data_state = DataState::Loaded {
         pr: Box::new(make_local_pr()),
-        files: vec![],
+        files: vec![].into(),
     };
     app.state = AppState::FileList;
     app.previous_state = AppState::FileList;
@@ -5318,7 +5338,8 @@ fn test_submit_local_comment_persists_and_loads() {
             deletions: 0,
             patch: Some(patch.to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.diff_scroll.selected_line = 2;
     app.state = AppState::DiffView;
@@ -5331,7 +5352,7 @@ fn test_submit_local_comment_persists_and_loads() {
         cache_key,
         PrData {
             pr: Box::new(make_local_pr()),
-            files: app.files().to_vec(),
+            files: app.files().to_vec().into(),
             pr_updated_at: "".to_string(),
         },
     );
@@ -5370,7 +5391,8 @@ fn test_submit_local_comment_persists_and_loads() {
             deletions: 0,
             patch: Some(patch.to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     reloaded.load_review_comments();
 
@@ -6157,7 +6179,8 @@ fn a_range_that_mixes_a_deleted_line_with_the_new_file_does_not_open() {
 #[tokio::test]
 async fn pressing_c_on_a_deleted_line_range_opens_a_left_comment() {
     let mut app = make_app_with_patch(LEFT_RANGE_PATCH);
-    if let DataState::Loaded { ref mut files, .. } = app.data_state {
+    if let DataState::Loaded { files, .. } = &mut app.data_state {
+        let files = files.make_mut();
         files[0].additions = 0;
         files[0].deletions = 2;
     }
@@ -6335,7 +6358,8 @@ fn a_range_saved_on_deleted_lines_is_labeled_on_the_left() {
     let tempdir = tempdir().unwrap();
     let _cache_home = ScopedCacheHome::new(tempdir.path());
     let mut app = make_app_with_patch(LEFT_RANGE_PATCH);
-    if let DataState::Loaded { ref mut files, .. } = app.data_state {
+    if let DataState::Loaded { files, .. } = &mut app.data_state {
+        let files = files.make_mut();
         files[0].additions = 0;
         files[0].deletions = 2;
     }
@@ -6745,7 +6769,7 @@ fn left_comment_waits_for_a_loading_patch_before_calling_it_outdated() {
     let mut app = make_app_with_patch(SIDE_PATCH);
     let comment = review_on(1, Some(11), Some("LEFT"), None, "pending");
     if let DataState::Loaded { files, .. } = &mut app.data_state {
-        files[0].patch = None;
+        files.make_mut()[0].patch = None;
     }
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     app.batch_diff_receiver = Some(rx);
@@ -7134,7 +7158,8 @@ async fn test_jump_to_comment_sets_file_and_line() {
                 patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
     app.cmt.review_comments = Some(vec![crate::github::comment::ReviewComment {
         id: 1,
@@ -7474,7 +7499,8 @@ async fn test_poll_diff_cache_accepts_valid() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+line".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
     app.diff_scroll.line_count = 2;
@@ -7520,7 +7546,8 @@ async fn test_poll_diff_cache_rejects_stale_file() {
                 patch: Some("@@ -1 +1 @@\n+line2".to_string()),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
     app.selected_file = 1; // We're now looking at file 1
 
@@ -7568,7 +7595,8 @@ async fn test_poll_prefetch_stores_cache() {
                 patch: Some("@@ -1 +1 @@\n+line2".to_string()),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
     app.selected_file = 0;
 
@@ -7597,7 +7625,8 @@ async fn test_poll_prefetch_skips_current_file() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+line".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
 
@@ -8194,7 +8223,8 @@ async fn test_poll_mark_viewed_success() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     let (tx, rx) = mpsc::channel(1);
@@ -8231,7 +8261,8 @@ async fn test_poll_mark_viewed_error() {
             deletions: 0,
             patch: None,
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     let (tx, rx) = mpsc::channel(1);
@@ -8427,7 +8458,10 @@ fn test_open_pr_description_state_transition() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
     app.state = AppState::FileList;
 
     app.open_pr_description();
@@ -8462,7 +8496,10 @@ fn test_open_pr_description_from_split_view() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
     app.state = AppState::SplitViewFileList;
 
     app.open_pr_description();
@@ -8495,7 +8532,10 @@ fn test_open_pr_description_body_none() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
 
     app.open_pr_description();
 
@@ -8527,7 +8567,10 @@ fn test_open_pr_description_body_empty() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
 
     app.open_pr_description();
 
@@ -8559,7 +8602,10 @@ fn test_toggle_markdown_rich_clears_pr_description_cache() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
 
     // Build cache
     app.open_pr_description();
@@ -8594,7 +8640,10 @@ fn test_pr_description_cache_reuse() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
 
     // First open
     app.open_pr_description();
@@ -8630,7 +8679,8 @@ async fn test_ensure_diff_cache_non_md_ignores_markdown_rich_mismatch() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
     app.markdown_rich = false;
@@ -8666,7 +8716,8 @@ fn test_ensure_diff_cache_store_non_md_ignores_markdown_rich_mismatch() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
     app.markdown_rich = false;
@@ -8707,7 +8758,8 @@ async fn prefetch_plain_cache_still_starts_a_full_highlight() {
             deletions: 0,
             patch: Some(patch.to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
 
@@ -8760,7 +8812,8 @@ async fn test_ensure_diff_cache_md_invalidates_on_markdown_rich_mismatch() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+# Hello".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
     app.selected_file = 0;
     app.markdown_rich = true;
@@ -8821,7 +8874,8 @@ async fn test_pr_description_toggle_rich_preserves_prefetch_and_store() {
             deletions: 0,
             patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
             viewed: false,
-        }],
+        }]
+        .into(),
     };
 
     // プリフェッチ済みキャッシュをストアに配置
@@ -8886,7 +8940,10 @@ fn test_rebuild_pr_description_cache_preserves_scroll() {
         },
         updated_at: "2024-01-01T00:00:00Z".to_string(),
     });
-    app.data_state = DataState::Loaded { pr, files: vec![] };
+    app.data_state = DataState::Loaded {
+        pr,
+        files: vec![].into(),
+    };
 
     app.open_pr_description();
     assert_eq!(app.pr_description_scroll_offset, 0);
@@ -8929,7 +8986,8 @@ fn test_symbol_search_stale_result_discarded_when_file_changed() {
                 patch: Some("@@ -1 +1 @@\n+line".to_string()),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
 
     // Simulate an async search started from file 0
@@ -9097,7 +9155,8 @@ async fn test_poll_git_ops_starts_prefetch_after_status_update() {
                 patch: Some("@@ -1 +1 @@\n+b".to_string()),
                 viewed: false,
             },
-        ],
+        ]
+        .into(),
     };
 
     // GitOpsState をセットアップ（status_receiver に結果を送信済み）
@@ -9429,7 +9488,7 @@ pub(crate) fn make_app_with_files(filenames: &[&str]) -> App {
     let files: Vec<ChangedFile> = filenames.iter().map(|n| make_changed_file(n)).collect();
     app.data_state = DataState::Loaded {
         pr: make_test_pr(),
-        files,
+        files: files.into(),
     };
     app.state = AppState::FileList;
     app
@@ -9708,7 +9767,7 @@ fn test_rebuild_on_data_reload() {
     ];
     app.data_state = DataState::Loaded {
         pr: make_test_pr(),
-        files,
+        files: files.into(),
     };
 
     app.rebuild_file_tree_if_active();
@@ -11748,7 +11807,7 @@ async fn a_comment_read_without_the_drafts_is_not_cached() {
         key.clone(),
         PrData {
             pr: Box::new(make_local_pr()),
-            files: vec![],
+            files: vec![].into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
         },
     );
@@ -11781,7 +11840,7 @@ async fn a_comment_read_with_the_drafts_is_cached_and_sets_the_count() {
         key.clone(),
         PrData {
             pr: Box::new(make_local_pr()),
-            files: vec![],
+            files: vec![].into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
         },
     );
@@ -11818,7 +11877,7 @@ fn a_cached_comment_list_restores_the_draft_count() {
         key.clone(),
         PrData {
             pr: Box::new(make_local_pr()),
-            files: vec![],
+            files: vec![].into(),
             pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
         },
     );
@@ -12011,4 +12070,523 @@ async fn the_diff_comment_marker_stays_while_comments_reload() {
     );
     assert!(during.contains("keep me"), "{during}");
     assert!(during.contains("Loading comments"), "{during}");
+}
+
+fn refresh_pr() -> PullRequest {
+    PullRequest {
+        number: 1,
+        node_id: None,
+        title: "Test PR".to_string(),
+        body: None,
+        state: "open".to_string(),
+        head: crate::github::Branch {
+            ref_name: "feature".to_string(),
+            sha: "abc123".to_string(),
+        },
+        base: crate::github::Branch {
+            ref_name: "main".to_string(),
+            sha: "def456".to_string(),
+        },
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        updated_at: "2024-01-01T00:00:00Z".to_string(),
+    }
+}
+
+fn refresh_file(name: &str, patch: Option<&str>) -> ChangedFile {
+    ChangedFile {
+        filename: name.to_string(),
+        status: "modified".to_string(),
+        additions: 1,
+        deletions: 0,
+        patch: patch.map(str::to_string),
+        viewed: false,
+    }
+}
+
+fn highlighted_cache(file_index: usize, patch: &str, markdown_rich: bool) -> DiffCache {
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache(patch, 4);
+    cache.file_index = file_index;
+    cache.highlighted = true;
+    cache.markdown_rich = markdown_rich;
+    cache
+}
+
+fn app_for_refresh() -> App {
+    let (app, _tx) = App::new_loading(
+        "owner/repo",
+        1,
+        Config::default(),
+        RepositoryAvailability::Available,
+    );
+    app
+}
+
+fn loaded(app: &mut App, files: Vec<ChangedFile>) {
+    app.data_state = DataState::Loaded {
+        pr: Box::new(refresh_pr()),
+        files: files.into(),
+    };
+}
+
+#[tokio::test]
+async fn unchanged_files_keep_highlighted_diff_cache_across_refresh() {
+    let mut app = app_for_refresh();
+    let patch_a = "@@ -1 +1 @@\n-a\n+b\n";
+    let patch_b = "@@ -1 +1 @@\n-c\n+d\n";
+    loaded(
+        &mut app,
+        vec![
+            refresh_file("a.rs", Some(patch_a)),
+            refresh_file("b.rs", Some(patch_b)),
+        ],
+    );
+    app.selected_file = 0;
+    app.diff_scroll.selected_line = 1;
+    app.diff_scroll.scroll_offset = 1;
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch_a, false), true);
+    app.diff_store
+        .store
+        .insert(1, highlighted_cache(1, patch_b, false));
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![
+                refresh_file("a.rs", Some(patch_a)),
+                refresh_file("b.rs", Some(patch_b)),
+            ],
+        },
+    );
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(current.highlighted);
+    assert_eq!(current.patch_hash, hash_string(patch_a));
+    assert_eq!(current.file_index, 0);
+    assert_eq!(app.diff_store.current_key(), Some(&0));
+    assert!(!app.diff_store.highlight_in_flight());
+    let stored = app.diff_store.store_get(&1).unwrap();
+    assert!(stored.highlighted);
+    assert_eq!(stored.patch_hash, hash_string(patch_b));
+    assert_eq!(stored.file_index, 1);
+    assert_eq!(app.diff_scroll.selected_line, 1);
+    assert_eq!(app.diff_scroll.scroll_offset, 1);
+    assert_eq!(app.selected_file, 0);
+}
+
+#[tokio::test]
+async fn changed_file_is_invalidated_and_rehighlighted() {
+    let mut app = app_for_refresh();
+    let old_patch = "@@ -1 +1 @@\n-old\n+a\n";
+    let new_patch = "@@ -1 +1 @@\n-old\n+b\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(old_patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, old_patch, false), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("a.rs", Some(new_patch))],
+        },
+    );
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(!current.highlighted, "a changed file is shown plain first");
+    assert_eq!(current.patch_hash, hash_string(new_patch));
+    assert_eq!(current.file_index, 0);
+    assert!(app.diff_store.highlight_in_flight());
+    assert!(app.diff_store.store_get(&0).is_none());
+}
+
+#[tokio::test]
+async fn reordered_file_list_never_applies_another_files_cache() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-same\n+same\n";
+    loaded(
+        &mut app,
+        vec![
+            refresh_file("a.rs", Some(patch)),
+            refresh_file("b.rs", Some(patch)),
+        ],
+    );
+    app.selected_file = 0;
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, true), true);
+    app.diff_store
+        .store
+        .insert(1, highlighted_cache(1, patch, false));
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![
+                refresh_file("b.rs", Some(patch)),
+                refresh_file("a.rs", Some(patch)),
+            ],
+        },
+    );
+
+    assert_eq!(app.selected_file, 1, "selection follows a.rs");
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert_eq!(current.file_index, 1);
+    assert!(current.highlighted);
+    assert!(
+        current.markdown_rich,
+        "the viewed file kept its own cache, not b.rs"
+    );
+    let stored = app.diff_store.store_get(&0).unwrap();
+    assert_eq!(stored.file_index, 0);
+    assert!(stored.highlighted);
+    assert!(!stored.markdown_rich, "index 0 is b.rs, not a.rs");
+    assert!(app.diff_store.store_get(&1).is_none());
+}
+
+#[tokio::test]
+async fn inserted_and_removed_files_do_not_shift_a_cache_onto_the_wrong_file() {
+    let mut app = app_for_refresh();
+    let patch_a = "@@ -1 +1 @@\n-a\n+a\n";
+    let patch_b = "@@ -1 +1 @@\n-b\n+b\n";
+    let patch_c = "@@ -1 +1 @@\n-c\n+c\n";
+    loaded(
+        &mut app,
+        vec![
+            refresh_file("a.rs", Some(patch_a)),
+            refresh_file("b.rs", Some(patch_b)),
+        ],
+    );
+    app.selected_file = 1;
+    app.diff_store
+        .store
+        .insert(0, highlighted_cache(0, patch_a, false));
+    app.diff_store
+        .install_current(1, highlighted_cache(1, patch_b, true), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![
+                refresh_file("a.rs", Some(patch_a)),
+                refresh_file("c.rs", Some(patch_c)),
+                refresh_file("b.rs", Some(patch_b)),
+            ],
+        },
+    );
+
+    assert_eq!(app.selected_file, 2);
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert_eq!(current.patch_hash, hash_string(patch_b));
+    assert_eq!(current.file_index, 2);
+    assert!(current.markdown_rich);
+    let stored = app.diff_store.store_get(&0).unwrap();
+    assert_eq!(stored.patch_hash, hash_string(patch_a));
+    assert!(app.diff_store.store_get(&1).is_none());
+    assert_ne!(stored.patch_hash, hash_string(patch_c));
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("b.rs", Some(patch_b))],
+        },
+    );
+
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.files()[0].filename, "b.rs");
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert_eq!(current.patch_hash, hash_string(patch_b));
+    assert!(current.highlighted);
+    assert!(current.markdown_rich);
+    assert_eq!(app.diff_store.store_len(), 0);
+}
+
+#[tokio::test]
+async fn duplicate_filenames_drop_caches_instead_of_guessing() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-same\n+same\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, true), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![
+                refresh_file("a.rs", Some(patch)),
+                refresh_file("a.rs", Some(patch)),
+            ],
+        },
+    );
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(!current.highlighted);
+    assert!(!current.markdown_rich);
+    assert_eq!(current.file_index, 0);
+    assert_eq!(app.diff_store.store_len(), 0);
+}
+
+#[tokio::test]
+async fn phase1_refresh_keeps_highlight_until_the_patch_confirms_or_changes_it() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-old\n+keep\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_scroll.selected_line = 1;
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, false), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("a.rs", None)],
+        },
+    );
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(current.highlighted);
+    assert_eq!(current.patch_hash, hash_string(patch));
+    assert!(!app.diff_store.highlight_in_flight());
+    assert_eq!(app.diff_scroll.selected_line, 1);
+    assert!(app.files()[0].patch.is_none());
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.batch_diff_receiver = Some(rx);
+    tx.try_send(vec![crate::loader::SingleFileDiffResult {
+        filename: "a.rs".to_string(),
+        patch: Some(patch.to_string()),
+    }])
+    .unwrap();
+    drop(tx);
+    app.poll_batch_diff_updates();
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(current.highlighted);
+    assert_eq!(current.patch_hash, hash_string(patch));
+    assert!(!app.diff_store.highlight_in_flight());
+    assert_eq!(app.files()[0].patch.as_deref(), Some(patch));
+
+    let changed = "@@ -1 +1 @@\n-old\n+changed\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, false), true);
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("a.rs", None)],
+        },
+    );
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.batch_diff_receiver = Some(rx);
+    tx.try_send(vec![crate::loader::SingleFileDiffResult {
+        filename: "a.rs".to_string(),
+        patch: Some(changed.to_string()),
+    }])
+    .unwrap();
+    drop(tx);
+    app.poll_batch_diff_updates();
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(!current.highlighted);
+    assert_eq!(current.patch_hash, hash_string(changed));
+    assert!(app.diff_store.highlight_in_flight());
+    assert_eq!(app.files()[0].patch.as_deref(), Some(changed));
+}
+
+#[tokio::test]
+async fn phase1_refresh_drops_highlight_when_the_structural_signature_changes() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-old\n+keep\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, false), true);
+
+    let mut changed = refresh_file("a.rs", None);
+    changed.additions = 9;
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![changed],
+        },
+    );
+
+    assert!(app.diff_store.current.is_none());
+    assert!(!app.diff_store.highlight_in_flight());
+    assert_eq!(app.diff_store.store_len(), 0);
+}
+
+#[tokio::test]
+async fn markdown_flag_mismatch_rebuilds_the_viewed_file() {
+    let mut app = app_for_refresh();
+    app.markdown_rich = true;
+    let patch = "@@ -1 +1 @@\n-old\n+new\n";
+    loaded(&mut app, vec![refresh_file("README.md", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, false), true);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("README.md", Some(patch))],
+        },
+    );
+
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert!(!current.highlighted);
+    assert!(current.markdown_rich);
+    assert_eq!(current.patch_hash, hash_string(patch));
+    assert!(app.diff_store.highlight_in_flight());
+}
+
+#[tokio::test]
+async fn refresh_cancels_highlight_on_file_switch_and_respawns_when_the_index_moves() {
+    let mut app = app_for_refresh();
+    let patch_a = "@@ -1 +1 @@\n-a\n+a\n";
+    let patch_b = "@@ -1 +1 @@\n-b\n+b\n";
+    loaded(
+        &mut app,
+        vec![
+            refresh_file("a.rs", Some(patch_a)),
+            refresh_file("b.rs", Some(patch_b)),
+        ],
+    );
+    let mut plain = highlighted_cache(0, patch_a, false);
+    plain.highlighted = false;
+    app.diff_store.install_current(0, plain, true);
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    let token = app.diff_store.begin_highlight(rx);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("b.rs", Some(patch_b))],
+        },
+    );
+
+    assert!(token.is_cancelled());
+    assert!(tx
+        .try_send((0, highlighted_cache(0, patch_a, false)))
+        .is_err());
+    assert_eq!(app.files()[0].filename, "b.rs");
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert_eq!(current.patch_hash, hash_string(patch_b));
+    assert!(!current.highlighted);
+    assert!(app.diff_store.highlight_in_flight());
+
+    loaded(
+        &mut app,
+        vec![
+            refresh_file("a.rs", Some(patch_a)),
+            refresh_file("b.rs", Some(patch_b)),
+        ],
+    );
+    app.selected_file = 1;
+    let mut plain = highlighted_cache(1, patch_b, false);
+    plain.highlighted = false;
+    app.diff_store.install_current(1, plain, true);
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    let token = app.diff_store.begin_highlight(rx);
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![
+                refresh_file("a.rs", Some(patch_a)),
+                refresh_file("c.rs", Some("@@ -1 +1 @@\n-c\n+c\n")),
+                refresh_file("b.rs", Some(patch_b)),
+            ],
+        },
+    );
+
+    assert!(token.is_cancelled());
+    assert_eq!(app.selected_file, 2);
+    let current = app.diff_store.current.as_ref().unwrap();
+    assert_eq!(current.file_index, 2);
+    assert_eq!(current.patch_hash, hash_string(patch_b));
+    assert!(!current.highlighted);
+    assert!(app.diff_store.highlight_in_flight());
+}
+
+#[tokio::test]
+async fn same_file_refresh_keeps_the_in_flight_highlight_job() {
+    let mut app = app_for_refresh();
+    let patch = "@@ -1 +1 @@\n-a\n+b\n";
+    loaded(&mut app, vec![refresh_file("a.rs", Some(patch))]);
+    app.diff_store
+        .install_current(0, highlighted_cache(0, patch, false), true);
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    let token = app.diff_store.begin_highlight(rx);
+
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![refresh_file("a.rs", Some(patch))],
+        },
+    );
+
+    assert!(!token.is_cancelled());
+    assert!(app.diff_store.highlight_in_flight());
+    assert!(app.diff_store.current.as_ref().unwrap().highlighted);
+    let _ = tx;
+}
+
+#[tokio::test]
+async fn refresh_shares_one_file_list_between_the_screen_and_the_session_cache() {
+    let mut app = app_for_refresh();
+    let patch_a = "@@ -1 +1 @@\n-a\n+b\n";
+    let patch_b = "@@ -1 +1 @@\n+b\n";
+    app.handle_data_result(
+        1,
+        DataLoadResult::Success {
+            pr: Box::new(refresh_pr()),
+            files: vec![
+                refresh_file("a.rs", Some(patch_a)),
+                refresh_file("b.rs", None),
+            ],
+        },
+    );
+
+    let key = PrCacheKey {
+        repo: app.repo.clone(),
+        pr_number: 1,
+    };
+    let data_ptr = match &app.data_state {
+        DataState::Loaded { files, .. } => files.as_ptr(),
+        _ => panic!("expected loaded files"),
+    };
+    assert_eq!(app.session_cache.files_ptr(&key), Some(data_ptr));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    app.batch_diff_receiver = Some(rx);
+    tx.try_send(vec![crate::loader::SingleFileDiffResult {
+        filename: "b.rs".to_string(),
+        patch: Some(patch_b.to_string()),
+    }])
+    .unwrap();
+    app.poll_batch_diff_updates();
+
+    let data_ptr_after = match &app.data_state {
+        DataState::Loaded { files, .. } => files.as_ptr(),
+        _ => panic!("expected loaded files"),
+    };
+    assert_eq!(data_ptr_after, data_ptr);
+    assert_eq!(app.session_cache.files_ptr(&key), Some(data_ptr));
+    assert_eq!(app.files()[0].patch.as_deref(), Some(patch_a));
+    assert_eq!(app.files()[1].patch.as_deref(), Some(patch_b));
+    assert_eq!(
+        app.session_cache.get_pr_data(&key).unwrap().files[1]
+            .patch
+            .as_deref(),
+        Some(patch_b)
+    );
 }

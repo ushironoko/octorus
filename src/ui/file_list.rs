@@ -748,7 +748,8 @@ mod pending_header_tests {
                 deletions: 0,
                 patch: None,
                 viewed: false,
-            }],
+            }]
+            .into(),
         };
         app.cmt.pending_drafts = drafts;
         app

@@ -591,12 +591,17 @@ fn setup_local_watch(
     std::thread::spawn({
         let refresh_tx = refresh_tx.clone();
         move || {
+            let ignore =
+                std::sync::Mutex::new(octorus::local_watch::GitIgnoreCache::new(&watch_dir));
             let callback = move |result: notify::Result<notify::Event>| {
                 let Ok(event) = result else {
                     return;
                 };
 
-                let should_refresh = should_refresh_local_change(&event.paths, &event.kind);
+                let should_refresh = {
+                    let mut ignore = ignore.lock().unwrap_or_else(|err| err.into_inner());
+                    should_refresh_local_change(&event.paths, &event.kind, &mut ignore)
+                };
 
                 if should_refresh && !refresh_pending.swap(true, Ordering::AcqRel) {
                     let _ = refresh_tx.try_send(RefreshRequest::LocalRefresh);
@@ -616,21 +621,12 @@ fn setup_local_watch(
     });
 }
 
-fn should_refresh_local_change(paths: &[PathBuf], kind: &EventKind) -> bool {
-    !matches!(kind, EventKind::Access(_))
-        && paths
-            .iter()
-            .any(|path| !is_git_file(path) && !is_octorus_config_file(path))
-}
-
-fn is_git_file(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == ".git")
-}
-
-fn is_octorus_config_file(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == ".octorus")
+fn should_refresh_local_change(
+    paths: &[PathBuf],
+    kind: &EventKind,
+    ignore: &mut octorus::local_watch::GitIgnoreCache,
+) -> bool {
+    octorus::local_watch::should_refresh_local_change(paths, kind, ignore)
 }
 
 /// Run the app with a specific PR number (existing flow)
@@ -958,13 +954,18 @@ mod tests {
     use super::*;
     use notify::event::{AccessKind, AccessMode, CreateKind};
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn test_should_refresh_local_change_ignores_access_events() {
         let paths = vec![PathBuf::from("src/main.rs")];
         let kind = EventKind::Access(AccessKind::Close(AccessMode::Write));
 
-        assert!(!should_refresh_local_change(&paths, &kind));
+        assert!(!should_refresh_local_change(
+            &paths,
+            &kind,
+            &mut octorus::local_watch::GitIgnoreCache::allow_all()
+        ));
     }
 
     #[test]
@@ -972,7 +973,11 @@ mod tests {
         let paths = vec![PathBuf::from(".git/HEAD"), PathBuf::from(".git/index.lock")];
         let kind = EventKind::Create(CreateKind::File);
 
-        assert!(!should_refresh_local_change(&paths, &kind));
+        assert!(!should_refresh_local_change(
+            &paths,
+            &kind,
+            &mut octorus::local_watch::GitIgnoreCache::allow_all()
+        ));
     }
 
     #[test]
@@ -983,13 +988,21 @@ mod tests {
         ];
         let kind = EventKind::Create(CreateKind::File);
 
-        assert!(should_refresh_local_change(&paths, &kind));
+        assert!(should_refresh_local_change(
+            &paths,
+            &kind,
+            &mut octorus::local_watch::GitIgnoreCache::allow_all()
+        ));
     }
 
     #[test]
     fn test_is_git_file_identifies_git_path() {
-        assert!(is_git_file(std::path::Path::new(".git/refs/heads/main")));
-        assert!(!is_git_file(std::path::Path::new("src/main.rs")));
+        assert!(octorus::local_watch::is_git_file(std::path::Path::new(
+            ".git/refs/heads/main"
+        )));
+        assert!(!octorus::local_watch::is_git_file(std::path::Path::new(
+            "src/main.rs"
+        )));
     }
 
     #[test]
@@ -1000,18 +1013,24 @@ mod tests {
         ];
         let kind = EventKind::Create(CreateKind::File);
 
-        assert!(!should_refresh_local_change(&paths, &kind));
+        assert!(!should_refresh_local_change(
+            &paths,
+            &kind,
+            &mut octorus::local_watch::GitIgnoreCache::allow_all()
+        ));
     }
 
     #[test]
     fn test_is_octorus_config_file() {
-        assert!(is_octorus_config_file(std::path::Path::new(
-            ".octorus/config.toml"
-        )));
-        assert!(is_octorus_config_file(std::path::Path::new(
-            ".octorus/prompts/reviewer.md"
-        )));
-        assert!(!is_octorus_config_file(std::path::Path::new("src/main.rs")));
+        assert!(octorus::local_watch::is_octorus_config_file(
+            std::path::Path::new(".octorus/config.toml")
+        ));
+        assert!(octorus::local_watch::is_octorus_config_file(
+            std::path::Path::new(".octorus/prompts/reviewer.md")
+        ));
+        assert!(!octorus::local_watch::is_octorus_config_file(
+            std::path::Path::new("src/main.rs")
+        ));
     }
 
     #[test]
@@ -1162,5 +1181,145 @@ mod tests {
           -h, --help                       Print help
           -V, --version                    Print version
         "#);
+    }
+
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("-c")
+            .arg("user.email=test@example.com")
+            .arg("-c")
+            .arg("user.name=Test")
+            .args(args)
+            .status()
+            .unwrap_or_else(|err| panic!("git {args:?}: {err}"));
+        assert!(status.success(), "git {args:?} failed with {status}");
+    }
+
+    fn refresh(cache: &mut octorus::local_watch::GitIgnoreCache, path: &std::path::Path) -> bool {
+        should_refresh_local_change(
+            &[path.to_path_buf()],
+            &EventKind::Create(CreateKind::File),
+            cache,
+        )
+    }
+
+    #[test]
+    fn watcher_without_git_still_ignores_target_and_node_modules() {
+        let dir = tempdir().unwrap();
+        // A broken .git stops discovery of a parent repository, so this exercises
+        // the fallback that only skips target/ and node_modules/.
+        std::fs::write(dir.path().join(".git"), "gitdir: /nonexistent\n").unwrap();
+        let mut cache = octorus::local_watch::GitIgnoreCache::new(dir.path());
+
+        assert!(cache.is_ignored(PathBuf::from("target/debug/octorus").as_path()));
+        assert!(cache.is_ignored(PathBuf::from("node_modules/leftpad/index.js").as_path()));
+        assert!(!cache.is_ignored(PathBuf::from("src/main.rs").as_path()));
+        assert!(!cache.is_ignored(PathBuf::from("notes.txt").as_path()));
+        assert!(refresh(&mut cache, PathBuf::from("src/main.rs").as_path()));
+        assert!(!refresh(
+            &mut cache,
+            PathBuf::from("target/debug/octorus").as_path()
+        ));
+    }
+
+    #[test]
+    fn watcher_ignores_gitignored_paths_but_not_tracked_files_or_gitignore() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(root.join("ignoreddir")).unwrap();
+        std::fs::write(
+            root.join(".gitignore"),
+            "target/\nnode_modules/\n*.log\nignoreddir/\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(root.join("sub/.gitignore"), "secret.txt\n").unwrap();
+        std::fs::write(root.join("sub/keep.rs"), "fn keep() {}\n").unwrap();
+        std::fs::write(root.join("sub/secret.txt"), "secret\n").unwrap();
+        std::fs::write(root.join("tracked.log"), "tracked\n").unwrap();
+        std::fs::write(root.join("noise.log"), "noise\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+        std::fs::write(root.join("target/debug/foo"), "bin\n").unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "module\n").unwrap();
+        std::fs::write(root.join("ignoreddir/a.txt"), "ignored\n").unwrap();
+        std::fs::write(root.join("ignoreddir/tracked.txt"), "forced\n").unwrap();
+
+        git(&root, &["init"]);
+        git(&root, &["add", "-A"]);
+        git(&root, &["add", "-f", "tracked.log"]);
+        git(&root, &["add", "-f", "ignoreddir/tracked.txt"]);
+        // Leave the force-added directory file out of the first index so the
+        // cache records ignoreddir/ as a blanket prefix, then prove a later
+        // index update lets that tracked file refresh.
+        git(&root, &["reset", "--", "ignoreddir/tracked.txt"]);
+        git(&root, &["commit", "-m", "init"]);
+        // Untracked, and not ignored until .gitignore grows a rule for it.
+        std::fs::write(root.join("scratch.tmp"), "scratch\n").unwrap();
+
+        let mut cache = octorus::local_watch::GitIgnoreCache::new(&root);
+        let kind = EventKind::Create(CreateKind::File);
+
+        assert!(!refresh(&mut cache, &root.join("target/debug/foo")));
+        assert!(!refresh(
+            &mut cache,
+            &root.join("node_modules/pkg/index.js")
+        ));
+        assert!(!refresh(&mut cache, &root.join("noise.log")));
+        assert!(!refresh(&mut cache, &root.join("sub/secret.txt")));
+        assert!(!refresh(&mut cache, &root.join("ignoreddir/a.txt")));
+        assert!(!refresh(&mut cache, PathBuf::from(".git/HEAD").as_path()));
+        assert!(!refresh(
+            &mut cache,
+            PathBuf::from(".octorus/config.toml").as_path()
+        ));
+
+        assert!(refresh(&mut cache, &root.join("src/main.rs")));
+        assert!(refresh(&mut cache, PathBuf::from("src/main.rs").as_path()));
+        assert!(refresh(&mut cache, &root.join("keep.txt")));
+        assert!(refresh(&mut cache, &root.join("sub/keep.rs")));
+        assert!(refresh(&mut cache, &root.join("notes.txt")));
+        assert!(refresh(&mut cache, &root.join("src/new_untracked.rs")));
+        assert!(refresh(&mut cache, &root.join("tracked.log")));
+        assert!(refresh(&mut cache, &root.join(".gitignore")));
+        assert!(refresh(&mut cache, &root.join("scratch.tmp")));
+
+        assert!(should_refresh_local_change(
+            &[root.join(".git/HEAD"), root.join("src/main.rs")],
+            &kind,
+            &mut cache
+        ));
+        assert!(!should_refresh_local_change(
+            &[root.join("target/debug/foo"), root.join("noise.log")],
+            &kind,
+            &mut cache
+        ));
+
+        // A tracked file under a previously blanket-ignored directory still
+        // refreshes once the index change is observed. The index event itself
+        // does not reload the diff.
+        assert!(!refresh(&mut cache, &root.join("ignoreddir/tracked.txt")));
+        git(&root, &["add", "-f", "ignoreddir/tracked.txt"]);
+        git(&root, &["commit", "-m", "track forced file"]);
+        assert!(!refresh(&mut cache, &root.join(".git/index")));
+        assert!(refresh(&mut cache, &root.join("ignoreddir/tracked.txt")));
+        assert!(!refresh(&mut cache, &root.join("ignoreddir/a.txt")));
+
+        std::fs::write(
+            root.join(".gitignore"),
+            "target/\nnode_modules/\n*.log\nignoreddir/\nscratch.tmp\n",
+        )
+        .unwrap();
+        assert!(refresh(&mut cache, &root.join(".gitignore")));
+        assert!(!refresh(&mut cache, &root.join("scratch.tmp")));
+        assert!(refresh(&mut cache, &root.join("src/main.rs")));
+        assert!(refresh(&mut cache, &root.join("tracked.log")));
+        assert!(refresh(&mut cache, &root.join("notes.txt")));
     }
 }
