@@ -152,7 +152,7 @@ pub struct PrSnapshot {
     pub base_tip_sha: Option<String>,
 }
 
-const PR_SNAPSHOT_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id number title body state updatedAt headRefName headRefOid baseRefName baseRefOid author{login} baseRef{target{oid}}}}}";
+const PR_SNAPSHOT_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id number title body state updatedAt headRefName headRefOid baseRefName baseRefOid author{__typename login} baseRef{target{oid}}}}}";
 
 /// One metadata read: the pull request, and the current tip of its base branch.
 pub async fn fetch_pr_snapshot(repo: &str, pr_number: u32) -> Result<PrSnapshot> {
@@ -208,7 +208,7 @@ pub(crate) fn parse_pr_snapshot(response: serde_json::Value) -> Result<PrSnapsho
             node_id: pull.id.filter(|id| !id.is_empty()),
             title: pull.title,
             body: pull.body,
-            state: pull.state.to_ascii_lowercase(),
+            state: rest_state(&pull.state),
             head: Branch {
                 ref_name: pull.head_ref_name,
                 sha: pull.head_ref_oid,
@@ -218,12 +218,33 @@ pub(crate) fn parse_pr_snapshot(response: serde_json::Value) -> Result<PrSnapsho
                 sha: pull.base_ref_oid,
             },
             user: User {
-                login: pull.author.map(|author| author.login).unwrap_or_default(),
+                login: rest_login(pull.author),
             },
             updated_at: pull.updated_at,
         },
         base_tip_sha,
     })
+}
+
+/// REST `state` is `open` or `closed`. GraphQL adds `MERGED` for a pull
+/// request whose REST `state` is `closed`.
+fn rest_state(state: &str) -> String {
+    match state {
+        "MERGED" => "closed".to_string(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+/// REST `user.login` for a bot is `{login}[bot]`. GraphQL `author.login` omits
+/// that suffix. A deleted account is `author: null` here and `ghost` on REST.
+fn rest_login(author: Option<GqlAuthor>) -> String {
+    match author {
+        Some(author) if author.type_name == "Bot" && !author.login.ends_with("[bot]") => {
+            format!("{}[bot]", author.login)
+        }
+        Some(author) => author.login,
+        None => "ghost".to_string(),
+    }
 }
 
 fn base_ref_errors_only(response: &serde_json::Value) -> bool {
@@ -283,6 +304,8 @@ struct GqlPrSnapshotPull {
 
 #[derive(Deserialize)]
 struct GqlAuthor {
+    #[serde(default, rename = "__typename")]
+    type_name: String,
     login: String,
 }
 
@@ -567,6 +590,68 @@ mod tests {
         assert_eq!(snapshot.pr.head.sha, "abc");
         assert_eq!(snapshot.pr.node_id.as_deref(), Some("PR_node"));
         assert_eq!(snapshot.pr.user.login, "octocat");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_bot_author_uses_the_rest_login() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["author"] = serde_json::json!({
+            "__typename": "Bot",
+            "login": "dependabot"
+        });
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.user.login, "dependabot[bot]");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_null_author_is_ghost() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["author"] = serde_json::Value::Null;
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.user.login, "ghost");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_merged_state_is_closed() {
+        let mut body = snapshot_pull(serde_json::json!({ "target": { "oid": "cafebabe" } }));
+        body["data"]["repository"]["pullRequest"]["state"] = serde_json::json!("MERGED");
+        let snapshot = parse_pr_snapshot(body).unwrap();
+        assert_eq!(snapshot.pr.state, "closed");
+    }
+
+    #[test]
+    fn parse_pr_snapshot_matches_the_rest_pull_request() {
+        let rest: PullRequest = serde_json::from_value(serde_json::json!({
+            "number": 7,
+            "node_id": "PR_node",
+            "title": "Title",
+            "body": "body",
+            "state": "open",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main", "sha": "def"},
+            "user": {"login": "octocat"},
+            "draft": true,
+            "created_at": "2023-12-01T00:00:00Z",
+            "labels": [{"name": "bug"}]
+        }))
+        .unwrap();
+        let snapshot = parse_pr_snapshot(snapshot_pull(serde_json::json!({
+            "target": { "oid": "cafebabe" }
+        })))
+        .unwrap();
+
+        assert_eq!(snapshot.pr.number, rest.number);
+        assert_eq!(snapshot.pr.node_id, rest.node_id);
+        assert_eq!(snapshot.pr.title, rest.title);
+        assert_eq!(snapshot.pr.body, rest.body);
+        assert_eq!(snapshot.pr.state, rest.state);
+        assert_eq!(snapshot.pr.user.login, rest.user.login);
+        assert_eq!(snapshot.pr.head.ref_name, rest.head.ref_name);
+        assert_eq!(snapshot.pr.head.sha, rest.head.sha);
+        assert_eq!(snapshot.pr.base.ref_name, rest.base.ref_name);
+        assert_eq!(snapshot.pr.base.sha, rest.base.sha);
+        assert_eq!(snapshot.pr.updated_at, rest.updated_at);
     }
 
     #[test]
