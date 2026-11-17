@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 
 use lasso::Rodeo;
 use ratatui::style::Style;
-use smallvec::smallvec;
+use smallvec::{smallvec, SmallVec};
 use syntect::easy::HighlightLines;
 use tokio_util::sync::CancellationToken;
 use tree_sitter::{
-    Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
+    Node, Query, QueryCapture, QueryCursor, QueryCursorOptions, QueryCursorState,
+    StreamingIterator, Tree,
 };
 
 use crate::app::{InternedSpan, SpanVec};
@@ -52,6 +53,25 @@ pub const PREFETCH_QUERY_BUDGET: Duration = Duration::from_secs(1);
 /// large file's captures would otherwise be stolen and the highlight thrown
 /// away. Prefetch still sets it and publishes the plain diff if it trips.
 pub const HIGHLIGHT_MATCH_LIMIT: u32 = 65_536;
+
+/// Visible-node stride for a deep-tree highlight query.
+///
+/// Patterns such as Haskell `(apply (_) . [variable])` keep a partial match
+/// alive at every level of a left-nested chain. Query cost then grows with
+/// nodes × depth. Starting a fresh cursor every this many levels, with
+/// [`QueryCursor::set_max_start_depth`] set to the same value, caps how many
+/// partial matches one cursor carries. Adjacent slabs overlap by one level;
+/// matches are deduped on `(pattern, captures)`.
+const QUERY_DEPTH_STRIDE: u32 = 8;
+
+/// Trees deeper than this use [`QUERY_DEPTH_STRIDE`] slabs.
+///
+/// Slab queries are slower on ordinary files (realistic Haskell, 8k lines,
+/// shallow tree: about 38 ms → 55 ms). Real modules sit far below this.
+/// `generate_haskell_diff_patch` is already deeper at 1k lines, and
+/// concatenated GHC sources cross it as well. At or below this depth the
+/// cursor is the single whole-tree query.
+const DEEP_TREE_MIN_DEPTH: u32 = 256;
 
 /// Why a highlight was thrown away. The caller keeps the plain diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,13 +423,279 @@ struct QuerySource<'a> {
     source_len: usize,
 }
 
+/// Which cursor strategy `query_highlights` runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryPlan {
+    /// One cursor over the whole tree. Identical to the historical path.
+    Whole,
+    /// One cursor per depth slab. Used only when the tree is deeper than
+    /// [`DEEP_TREE_MIN_DEPTH`].
+    Slabs,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCED_PLAN: Cell<Option<QueryPlan>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+struct ForcePlan(Option<QueryPlan>);
+
+#[cfg(test)]
+impl ForcePlan {
+    fn whole() -> Self {
+        Self::set(Some(QueryPlan::Whole))
+    }
+
+    fn slabs() -> Self {
+        Self::set(Some(QueryPlan::Slabs))
+    }
+
+    fn set(plan: Option<QueryPlan>) -> Self {
+        let prev = FORCED_PLAN.with(|cell| cell.replace(plan));
+        Self(prev)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ForcePlan {
+    fn drop(&mut self) {
+        FORCED_PLAN.with(|cell| cell.set(self.0));
+    }
+}
+
+/// A pattern match, identified by pattern index and the captured node ids.
+///
+/// Slab windows overlap on the boundary level, so the same match is found
+/// twice. Within one cursor, repeated matches are kept: the whole-tree query
+/// emits those duplicates, and highlight order depends on them.
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct MatchKey {
+    pattern: usize,
+    captures: SmallVec<[(u32, usize); 4]>,
+}
+
+impl MatchKey {
+    fn from_match(pattern: usize, captures: &[QueryCapture<'_>]) -> Self {
+        let mut key = SmallVec::new();
+        for capture in captures {
+            key.push((capture.index, capture.node.id()));
+        }
+        Self {
+            pattern,
+            captures: key,
+        }
+    }
+}
+
+struct CaptureSink<'a> {
+    origin: usize,
+    line_offsets: &'a [usize],
+    source_len: usize,
+    capture_names: &'a [String],
+    style_cache: &'a ThemeStyleCache,
+    out: &'a mut HashMap<usize, Vec<LineCapture>>,
+}
+
+impl CaptureSink<'_> {
+    fn record(&mut self, captures: &[QueryCapture<'_>]) {
+        for capture in captures {
+            self.record_span(
+                capture.index,
+                self.origin + capture.node.start_byte(),
+                self.origin + capture.node.end_byte(),
+            );
+        }
+    }
+
+    fn record_span(&mut self, index: u32, start_byte: usize, end_byte: usize) {
+        let start_line = self
+            .line_offsets
+            .binary_search(&start_byte)
+            .unwrap_or_else(|i| i.saturating_sub(1));
+        let end_line = self
+            .line_offsets
+            .binary_search(&end_byte)
+            .unwrap_or_else(|i| i.saturating_sub(1));
+
+        let capture_name = &self.capture_names[index as usize];
+        let style = self.style_cache.get(capture_name);
+        if style == Style::default() {
+            return;
+        }
+
+        for line_idx in start_line..=end_line {
+            let line_start = self.line_offsets.get(line_idx).copied().unwrap_or(0);
+            let line_end = self
+                .line_offsets
+                .get(line_idx + 1)
+                .map(|&off| off.saturating_sub(1))
+                .unwrap_or(self.source_len);
+
+            let local_start = start_byte.saturating_sub(line_start);
+            let local_end = end_byte
+                .saturating_sub(line_start)
+                .min(line_end - line_start);
+            if local_start < local_end {
+                self.out.entry(line_idx).or_default().push(LineCapture {
+                    local_start,
+                    local_end,
+                    style,
+                });
+            }
+        }
+    }
+}
+
+/// `true` when some visible node is deeper than `threshold`.
+///
+/// Subtrees whose descendant count cannot reach the threshold are skipped, so
+/// a shallow file does not pay a full walk. The walk is iterative: the
+/// pathological tree is thousands of nodes deep.
+fn tree_deeper_than(
+    tree: &Tree,
+    threshold: u32,
+    control: &dyn HighlightControl,
+) -> Result<bool, HighlightAbort> {
+    let count = tree.root_node().descendant_count();
+    // `descendant_count` includes the node itself, so a pure chain has depth
+    // `count - 1`. Anything that cannot exceed the threshold stays on the
+    // whole-tree path without a walk.
+    if count
+        <= usize::try_from(threshold)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1)
+    {
+        return Ok(false);
+    }
+
+    let mut cursor = tree.walk();
+    let mut depth = 0u32;
+    let mut steps = 0u32;
+    loop {
+        steps += 1;
+        if steps.is_multiple_of(4096) {
+            if let Some(reason) = control.poll_abort() {
+                return Err(reason);
+            }
+        }
+        if depth > threshold {
+            return Ok(true);
+        }
+        let count = cursor.node().descendant_count();
+        if subtree_can_exceed(depth, count, threshold) && cursor.goto_first_child() {
+            depth += 1;
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return Ok(false);
+            }
+            depth = depth.saturating_sub(1);
+        }
+    }
+}
+
+fn subtree_can_exceed(depth: u32, count: usize, threshold: u32) -> bool {
+    let Some(below) = count.checked_sub(1) else {
+        return false;
+    };
+    match u32::try_from(below) {
+        Ok(extra) => depth.saturating_add(extra) > threshold,
+        Err(_) => true,
+    }
+}
+
+/// Visible depth of `tree`, counting the same nodes [`Tree::walk`] visits.
+#[cfg(test)]
+fn visible_tree_depth(tree: &Tree) -> u32 {
+    let mut cursor = tree.walk();
+    let mut depth = 0u32;
+    let mut max_depth = 0u32;
+    loop {
+        max_depth = max_depth.max(depth);
+        if cursor.goto_first_child() {
+            depth += 1;
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return max_depth;
+            }
+            depth = depth.saturating_sub(1);
+        }
+    }
+}
+
+/// Every node whose depth is a multiple of `stride`, preorder.
+///
+/// Visit order does not matter. [`query_slabs`] orders the kept matches by
+/// the cursor's finish byte, then by slab depth, so an in-progress pattern
+/// from a shallower slab stays ahead of a pattern that starts on that node.
+fn collect_stride_roots<'tree>(
+    tree: &'tree Tree,
+    stride: u32,
+    control: &dyn HighlightControl,
+) -> Result<Vec<(Node<'tree>, u32)>, HighlightAbort> {
+    debug_assert!(stride > 0);
+    let mut roots = Vec::new();
+    let mut cursor = tree.walk();
+    let mut depth = 0u32;
+    let mut steps = 0u32;
+    loop {
+        steps += 1;
+        if steps.is_multiple_of(4096) {
+            if let Some(reason) = control.poll_abort() {
+                return Err(reason);
+            }
+        }
+        if depth.is_multiple_of(stride) {
+            roots.push((cursor.node(), depth));
+        }
+        if cursor.goto_first_child() {
+            depth += 1;
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return Ok(roots);
+            }
+            depth = depth.saturating_sub(1);
+        }
+    }
+}
+
+fn select_plan(tree: &Tree, control: &dyn HighlightControl) -> Result<QueryPlan, HighlightAbort> {
+    #[cfg(test)]
+    {
+        if let Some(plan) = FORCED_PLAN.with(|cell| cell.get()) {
+            return Ok(plan);
+        }
+    }
+    if tree_deeper_than(tree, DEEP_TREE_MIN_DEPTH, control)? {
+        Ok(QueryPlan::Slabs)
+    } else {
+        Ok(QueryPlan::Whole)
+    }
+}
+
 /// Run one highlight query, recording captures into `out`.
 ///
 /// The progress callback is the point where a `spawn_blocking` highlight can
-/// actually stop. `QueryCursor::matches` otherwise runs to completion, and
-/// splitting the same query with `set_byte_range` was measured slower on the
-/// generated Haskell input (and not capture-identical), so this slice does not
-/// chunk the query.
+/// actually stop. `QueryCursor::matches` otherwise runs to completion.
+/// Byte-range splitting was measured slower on the generated Haskell input
+/// and was not capture-identical. Depth slabs are used only past
+/// [`DEEP_TREE_MIN_DEPTH`], where a single cursor is superlinear. Shallower
+/// trees take the original whole-tree cursor.
 fn query_highlights(
     source: QuerySource<'_>,
     tree: &Tree,
@@ -428,7 +714,28 @@ fn query_highlights(
     if let Some(reason) = control.poll_abort() {
         return Err(reason);
     }
+    let plan = select_plan(tree, control)?;
+    let mut sink = CaptureSink {
+        origin,
+        line_offsets,
+        source_len,
+        capture_names,
+        style_cache,
+        out,
+    };
+    match plan {
+        QueryPlan::Whole => query_whole(text, tree, query, &mut sink, control),
+        QueryPlan::Slabs => query_slabs(text, tree, query, &mut sink, control),
+    }
+}
 
+fn query_whole(
+    text: &str,
+    tree: &Tree,
+    query: &Query,
+    sink: &mut CaptureSink<'_>,
+    control: &dyn HighlightControl,
+) -> Result<(), HighlightAbort> {
     let mut cursor = QueryCursor::new();
     let match_limit = control.match_limit();
     if let Some(limit) = match_limit {
@@ -450,44 +757,7 @@ fn query_highlights(
         if aborted.get().is_some() {
             break;
         }
-        for capture in mat.captures {
-            let node = capture.node;
-            let start_byte = origin + node.start_byte();
-            let end_byte = origin + node.end_byte();
-
-            let start_line = line_offsets
-                .binary_search(&start_byte)
-                .unwrap_or_else(|i| i.saturating_sub(1));
-            let end_line = line_offsets
-                .binary_search(&end_byte)
-                .unwrap_or_else(|i| i.saturating_sub(1));
-
-            let capture_name = &capture_names[capture.index as usize];
-            let style = style_cache.get(capture_name);
-            if style == Style::default() {
-                continue;
-            }
-
-            for line_idx in start_line..=end_line {
-                let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
-                let line_end = line_offsets
-                    .get(line_idx + 1)
-                    .map(|&off| off.saturating_sub(1))
-                    .unwrap_or(source_len);
-
-                let local_start = start_byte.saturating_sub(line_start);
-                let local_end = end_byte
-                    .saturating_sub(line_start)
-                    .min(line_end - line_start);
-                if local_start < local_end {
-                    out.entry(line_idx).or_default().push(LineCapture {
-                        local_start,
-                        local_end,
-                        style,
-                    });
-                }
-            }
-        }
+        sink.record(mat.captures);
     }
     drop(matches);
 
@@ -501,6 +771,160 @@ fn query_highlights(
         return Err(reason);
     }
     Ok(())
+}
+
+struct SlabMatch {
+    key: MatchKey,
+    /// Start byte of the node the cursor was on when this match finished.
+    finish: usize,
+    depth: u32,
+    seq: u32,
+    captures: SmallVec<[(u32, usize, usize); 4]>,
+}
+
+fn query_slabs(
+    text: &str,
+    tree: &Tree,
+    query: &Query,
+    sink: &mut CaptureSink<'_>,
+    control: &dyn HighlightControl,
+) -> Result<(), HighlightAbort> {
+    let roots = collect_stride_roots(tree, QUERY_DEPTH_STRIDE, control)?;
+    let bytes = text.as_bytes();
+    let match_limit = control.match_limit();
+    let mut slabs: Vec<(u32, Vec<SlabMatch>)> = Vec::with_capacity(roots.len());
+    let mut seq = 0u32;
+
+    for (root, depth) in roots {
+        if let Some(reason) = control.poll_abort() {
+            return Err(reason);
+        }
+        let mut cursor = QueryCursor::new();
+        if let Some(limit) = match_limit {
+            cursor.set_match_limit(limit);
+        }
+        cursor.set_max_start_depth(Some(QUERY_DEPTH_STRIDE));
+        let aborted = Cell::new(None);
+        let mut callback = |_state: &QueryCursorState| {
+            if let Some(reason) = control.poll_abort() {
+                aborted.set(Some(reason));
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let options = QueryCursorOptions::new().progress_callback(&mut callback);
+        // `matches` borrows `cursor`. The raw pointer stays valid for the
+        // iterator's lifetime and still points at the node where the match
+        // just finished.
+        let raw = query_cursor_raw(&cursor);
+        let mut matches = cursor.matches_with_options(query, root, bytes, options);
+        let mut hits = Vec::new();
+        while let Some(mat) = matches.next() {
+            if aborted.get().is_some() {
+                break;
+            }
+            let finish = cursor_finish_byte(raw);
+            let mut captures = SmallVec::new();
+            for capture in mat.captures {
+                captures.push((
+                    capture.index,
+                    capture.node.start_byte(),
+                    capture.node.end_byte(),
+                ));
+            }
+            if captures.is_empty() {
+                continue;
+            }
+            let key = MatchKey::from_match(mat.pattern_index, mat.captures);
+            hits.push(SlabMatch {
+                key,
+                finish,
+                depth,
+                seq,
+                captures,
+            });
+            seq = seq.saturating_add(1);
+        }
+        drop(matches);
+        if let Some(reason) = aborted.get() {
+            return Err(reason);
+        }
+        if match_limit.is_some() && cursor.did_exceed_match_limit() {
+            return Err(HighlightAbort::MatchLimit);
+        }
+        slabs.push((depth, hits));
+    }
+
+    // One pattern can finish in two overlapping slabs. Keep the copies from
+    // the deepest slab that saw the most of them: that is the cursor that
+    // started the pattern, and its finish byte matches the whole-tree cursor.
+    // A duplicate the same cursor emits twice stays, because the count is
+    // per slab.
+    let mut best: HashMap<MatchKey, (u32, u32)> = HashMap::new();
+    for (depth, hits) in &slabs {
+        let mut counts: HashMap<&MatchKey, u32> = HashMap::new();
+        for hit in hits {
+            *counts.entry(&hit.key).or_default() += 1;
+        }
+        for (key, count) in counts {
+            best.entry(key.clone())
+                .and_modify(|(best_depth, best_count)| {
+                    if count > *best_count || (count == *best_count && *depth >= *best_depth) {
+                        *best_depth = *depth;
+                        *best_count = count;
+                    }
+                })
+                .or_insert((*depth, count));
+        }
+    }
+
+    let mut ordered: Vec<&SlabMatch> = Vec::new();
+    for (depth, hits) in &slabs {
+        for hit in hits {
+            if best.get(&hit.key).is_some_and(|(d, _)| *d == *depth) {
+                ordered.push(hit);
+            }
+        }
+    }
+    // Same finish byte: an in-progress pattern from a shallower slab is
+    // emitted before a pattern that starts on that node. A later finish byte
+    // (the lambda parameter's `->`) stays after the captures on the name.
+    ordered.sort_by_key(|hit| (hit.finish, hit.depth, hit.seq));
+
+    for hit in ordered {
+        for &(index, start, end) in &hit.captures {
+            sink.record_span(index, sink.origin + start, sink.origin + end);
+        }
+    }
+
+    if let Some(reason) = control.poll_abort() {
+        return Err(reason);
+    }
+    Ok(())
+}
+
+/// Pointer inside a [`QueryCursor`]. The wrapper is a single `NonNull`.
+fn query_cursor_raw(cursor: &QueryCursor) -> *mut tree_sitter::ffi::TSQueryCursor {
+    unsafe { std::ptr::read((cursor as *const QueryCursor).cast()) }
+}
+
+/// Start byte of the node `cursor` is on.
+///
+/// `TSQueryCursor` in tree-sitter 0.26 stores the query pointer, then the
+/// `TSTreeCursor`. `ts_query_cursor_next_match` returns while that cursor is
+/// still on the node where the pattern finished. Highlight tests cover this
+/// layout: a wrong offset scrambles every deep-tree capture.
+fn cursor_finish_byte(cursor: *mut tree_sitter::ffi::TSQueryCursor) -> usize {
+    unsafe {
+        let tree_cursor = cursor
+            .cast::<u8>()
+            .add(std::mem::size_of::<usize>())
+            .cast::<tree_sitter::ffi::TSTreeCursor>();
+        tree_sitter::ffi::ts_node_start_byte(tree_sitter::ffi::ts_tree_cursor_current_node(
+            tree_cursor,
+        )) as usize
+    }
 }
 
 /// Collect highlights with injection support for languages like Svelte.
@@ -805,6 +1229,9 @@ fn highlight_with_syntect(
         }
     }
 }
+
+#[cfg(test)]
+mod deep_tree;
 
 #[cfg(test)]
 mod tests {

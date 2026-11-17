@@ -6,7 +6,8 @@
 //! - `browse_render/` – Repository Browser rendering at fixed viewport size
 //! - `visible_range/visible_borrowed` – visible range processing (production)
 //! - `highlighter/tree_sitter_rust` – Rust highlighting
-//! - `highlighter/tree_sitter_haskell` – Haskell highlighting (complex syntax)
+//! - `highlighter/tree_sitter_haskell` – pathological Haskell (`generate_haskell_diff_patch`)
+//! - `highlighter/tree_sitter_haskell_realistic` – real GHC source, shallow tree
 //! - `highlighter/tree_sitter_vue` – Vue SFC highlighting (injection: HTML/TS/CSS)
 //!
 //! ## Reference benchmarks (production code, synthetic execution)
@@ -29,7 +30,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Terminal;
 
-use common::{generate_diff_patch, generate_haskell_diff_patch, generate_vue_diff_patch};
+use common::{
+    generate_diff_patch, generate_haskell_diff_patch, generate_realistic_haskell_diff_patch,
+    generate_vue_diff_patch,
+};
 use octorus::app::browse::{build_file_patch, BrowseState, OpenFile};
 use octorus::app::{App, AppState};
 use octorus::config::{Config, ThemeConfig};
@@ -579,6 +583,43 @@ fn bench_highlighter_tree_sitter_haskell(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark tree-sitter highlighting on real GHC Haskell.
+///
+/// The source is `GHC.Hs.Expr`, repeated inside a single module so the tree
+/// stays as shallow as that module. This is the ordinary-file path.
+/// `generate_haskell_diff_patch` remains the deep, error-recovered case.
+fn bench_highlighter_tree_sitter_haskell_realistic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("highlighter/tree_sitter_haskell_realistic");
+
+    for line_count in [1000, 2000, 4000, 8000] {
+        let patch = generate_realistic_haskell_diff_patch(line_count);
+
+        group.throughput(Throughput::Elements(line_count as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(line_count),
+            &patch,
+            |b, patch| {
+                b.iter_batched(
+                    ParserPool::new,
+                    |mut parser_pool| {
+                        black_box(build_diff_cache(
+                            black_box(patch),
+                            black_box("Expr.hs"),
+                            black_box("Dracula"),
+                            black_box(&mut parser_pool),
+                            black_box(false),
+                            black_box(4),
+                        ))
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
 /// Benchmark tree-sitter highlighting (Vue SFC files).
 ///
 /// Vue SFC uses injection: template (HTML/Vue), script (TypeScript), style (CSS).
@@ -752,6 +793,7 @@ criterion_group!(
     // Tree-sitter highlighting
     bench_highlighter_tree_sitter_rust,
     bench_highlighter_tree_sitter_haskell,
+    bench_highlighter_tree_sitter_haskell_realistic,
     bench_highlighter_tree_sitter_vue,
     // Archive
     bench_archive_selected_line,

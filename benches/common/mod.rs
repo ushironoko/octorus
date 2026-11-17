@@ -317,6 +317,54 @@ pub fn generate_haskell_diff_patch(line_count: usize) -> String {
     lines.join("\n")
 }
 
+/// A diff whose post-change text is real GHC Haskell, scaled to `line_count`.
+///
+/// The body of `GHC.Hs.Expr` is repeated under one module header. The tree
+/// stays about as deep as that module, which is the ordinary highlight path.
+/// [`generate_haskell_diff_patch`] is the deep error-recovered counterpart.
+pub fn generate_realistic_haskell_diff_patch(line_count: usize) -> String {
+    let source = include_str!("../../tests/fixtures/highlight/ghc/Expr.hs");
+    let scaled = scale_haskell_module(source, line_count);
+    let mut lines = Vec::with_capacity(line_count + 1);
+    lines.push(format!("@@ -1,{line_count} +1,{line_count} @@"));
+    for line in scaled.lines() {
+        lines.push(format!(" {line}"));
+    }
+    lines.join("\n")
+}
+
+/// Keep the module header and imports once, then repeat the body.
+fn scale_haskell_module(source: &str, line_count: usize) -> String {
+    if line_count == 0 {
+        return String::new();
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut last_import = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("import ") {
+            last_import = i;
+        }
+    }
+    let header_end = (last_import + 1).min(lines.len());
+    let mut out = Vec::with_capacity(line_count);
+    out.extend_from_slice(&lines[..header_end]);
+    let body = if header_end < lines.len() {
+        &lines[header_end..]
+    } else {
+        &lines[..]
+    };
+    while out.len() < line_count {
+        out.extend_from_slice(body);
+    }
+    out.truncate(line_count);
+    let mut scaled = out.join("\n");
+    scaled.push('\n');
+    scaled
+}
+
 /// Generate a line of realistic Haskell code
 fn generate_haskell_line(rng: &mut ChaCha8Rng, line_num: usize) -> String {
     let templates = [
