@@ -18,6 +18,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # remove once a ratatui-core release after 0.1.2 contains ratatui PR #2887
+    ignore:
+      - dependency-name: "unicode-width"
+        versions:
+          - ">= 0.2.3"
     groups:
       cargo-minor-patch:
         patterns:
