@@ -24,6 +24,7 @@ pub mod symbol;
 pub mod symbols;
 pub mod syntax;
 pub mod ui;
+mod untracked_diff;
 
 // Re-export commonly used types for benchmarks
 pub use app::{CachedDiffLine, DiffCache, InternedSpan};

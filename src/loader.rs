@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -189,17 +189,24 @@ pub async fn fetch_local_diffs_batched(
         }
     }
 
-    // untracked ファイルは per-file で git diff --no-index（バッチ不可）
-    for batch in untracked_filenames.chunks(batch_size) {
-        let mut results = Vec::with_capacity(batch.len());
-        for filename in batch {
-            let patch = run_git_no_index_diff(wd, filename).await.ok();
-            let patch = patch.filter(|p| !p.is_empty());
-            results.push(SingleFileDiffResult {
+    // Untracked files have no blob in HEAD. Unchanged bodies are reused from a
+    // stat cache. A cold batch is one `git diff --no-index` of a hardlink tree
+    // when that output rewrites to the per-file text, and the per-file command
+    // otherwise. Chunks stay the same size the UI already receives.
+    let loaded = crate::untracked_diff::patches(wd, &untracked_filenames).await;
+    debug_assert_eq!(loaded.len(), untracked_filenames.len());
+    for (batch, patches) in untracked_filenames
+        .chunks(batch_size)
+        .zip(loaded.chunks(batch_size))
+    {
+        let results: Vec<SingleFileDiffResult> = batch
+            .iter()
+            .zip(patches.iter())
+            .map(|(filename, patch)| SingleFileDiffResult {
                 filename: filename.clone(),
-                patch,
-            });
-        }
+                patch: patch.clone(),
+            })
+            .collect();
         if tx.send(results).await.is_err() {
             return;
         }
@@ -216,10 +223,7 @@ pub async fn fetch_single_file_diff(
     let wd = working_dir.as_deref();
 
     let patch = if is_untracked {
-        run_git_no_index_diff(wd, &filename)
-            .await
-            .ok()
-            .filter(|p| !p.is_empty())
+        crate::untracked_diff::patch(wd, &filename).await
     } else {
         run_git_diff_file(wd, &filename)
             .await
@@ -563,12 +567,14 @@ async fn merge_untracked_files_lazy(working_dir: Option<&str>, files: &mut Vec<C
         Err(_) => return,
     };
     let names = parse_path_list(&untracked_output);
+    let mut seen: HashSet<String> = files.iter().map(|file| file.filename.clone()).collect();
+    let mut present = Vec::new();
 
     for filename in names {
-        if files.iter().any(|f| f.filename == filename) {
+        if !seen.insert(filename.clone()) {
             continue;
         }
-
+        present.push(filename.clone());
         files.push(ChangedFile {
             filename,
             status: "added".to_string(),
@@ -580,6 +586,8 @@ async fn merge_untracked_files_lazy(working_dir: Option<&str>, files: &mut Vec<C
     }
 
     files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
+    // Drop cache entries for untracked paths that are gone or now tracked.
+    crate::untracked_diff::retain(working_dir, &present);
 }
 
 async fn current_head_sha(working_dir: Option<&str>) -> Result<String> {
@@ -649,42 +657,6 @@ async fn run_git_diff_file(working_dir: Option<&str>, filename: &str) -> Result<
 
 async fn run_git_untracked(working_dir: Option<&str>) -> Result<String> {
     run_git_command(working_dir, &["ls-files", "--others", "--exclude-standard"]).await
-}
-
-async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Result<String> {
-    let mut command = Command::new("git");
-    // Disable C-quoting of non-ASCII paths to get raw UTF-8 output
-    command.args(["-c", "core.quotePath=false"]);
-    command.args([
-        "diff",
-        "--no-ext-diff",
-        "--no-color",
-        "--no-index",
-        "--",
-        "/dev/null",
-        filename,
-    ]);
-
-    if let Some(dir) = working_dir {
-        command.current_dir(dir);
-    }
-
-    let output = command
-        .output()
-        .await
-        .context("failed to spawn git no-index diff command")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if output.status.success() {
-        return Ok(stdout);
-    }
-
-    if stdout.trim().is_empty() && !output.stderr.is_empty() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        anyhow::bail!("git diff --no-index failed: {}", stderr.trim());
-    }
-
-    Ok(stdout)
 }
 
 #[cfg(test)]
