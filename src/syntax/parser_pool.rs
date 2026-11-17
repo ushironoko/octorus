@@ -98,9 +98,265 @@ fn shared_highlight_query(lang: SupportedLanguage) -> Option<&'static Query> {
     if let Some(query) = slot.get() {
         return Some(query);
     }
-    let query = Query::new(&lang.ts_language(), lang.highlights_query()).ok()?;
+    let source = lang.highlights_query();
+    let query = Query::new(&lang.ts_language(), source).ok()?;
+    // Flags are published before the query. A reader that observes the query
+    // also observes the flags for the same source text.
+    let _ = nested_flags_slot(lang).set(pattern_nested_flags(source));
     let _ = slot.set(query);
     slot.get()
+}
+
+fn nested_flags_slot(lang: SupportedLanguage) -> &'static OnceLock<Vec<u8>> {
+    static SLOTS: [OnceLock<Vec<u8>>; HIGHLIGHT_QUERY_SLOT_COUNT] =
+        [const { OnceLock::new() }; HIGHLIGHT_QUERY_SLOT_COUNT];
+    &SLOTS[highlight_query_slot_index(lang)]
+}
+
+const SUPPORTED_LANGUAGES: [SupportedLanguage; HIGHLIGHT_QUERY_SLOT_COUNT] = {
+    use SupportedLanguage::{
+        Bash, CSharp, Cpp, Css, Go, Haskell, Java, JavaScript, JavaScriptReact, Lua, Markdown,
+        MarkdownInline, MoonBit, Php, Python, Ruby, Rust, Svelte, Swift, TypeScript,
+        TypeScriptReact, Vue, Zig, C,
+    };
+    [
+        Rust,
+        TypeScript,
+        TypeScriptReact,
+        JavaScript,
+        JavaScriptReact,
+        Go,
+        Python,
+        Ruby,
+        Zig,
+        C,
+        Cpp,
+        Java,
+        CSharp,
+        Lua,
+        Bash,
+        Php,
+        Swift,
+        Haskell,
+        MoonBit,
+        Svelte,
+        Vue,
+        Css,
+        Markdown,
+        MarkdownInline,
+    ]
+};
+
+/// Paren depth of the deepest `@` capture inside each pattern, or `0` when
+/// every capture annotates the pattern root.
+///
+/// The whole-tree cursor emits the deeper capture first when two patterns
+/// finish on the same range. Depth-slab queries need that to put the stream
+/// back.
+pub(crate) fn nested_pattern_flags(query: &Query) -> &'static [u8] {
+    for lang in SUPPORTED_LANGUAGES {
+        let Some(stored) = highlight_query_slot(lang).get() else {
+            continue;
+        };
+        if std::ptr::eq(stored, query) {
+            return nested_flags_slot(lang)
+                .get()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+        }
+    }
+    &[]
+}
+
+/// One depth per top-level pattern in a highlights query.
+///
+/// `0` is a root capture (`(variable) @variable`) or a pattern whose `@` sits
+/// outside the sexp. A named root with an interior `@` records that paren
+/// depth. `(#...)` predicates are not captures.
+pub(crate) fn pattern_nested_flags(source: &str) -> Vec<u8> {
+    let bytes = source.as_bytes();
+    let mut flags = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b';' => {
+                i = skip_line(bytes, i);
+            }
+            b'"' => {
+                flags.push(0);
+                i = skip_string(bytes, i);
+            }
+            b'(' | b'[' => {
+                if bytes[i] == b'(' && next_non_ws_is(bytes, i + 1, b'#') {
+                    i = skip_balanced(bytes, i);
+                    continue;
+                }
+                let (nested, next) = consume_pattern(bytes, i);
+                flags.push(nested);
+                i = if next > i { next } else { i + 1 };
+            }
+            _ => i += 1,
+        }
+    }
+    flags
+}
+
+fn consume_pattern(bytes: &[u8], start: usize) -> (u8, usize) {
+    let named = bytes[start] == b'(' && sexp_starts_with_name(bytes, start);
+    let mut i = start;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut capture_depth = 0u8;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b';' {
+            i = skip_line(bytes, i);
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if c == b'(' || c == b'[' {
+            if c == b'(' && next_non_ws_is(bytes, i + 1, b'#') {
+                i = skip_balanced(bytes, i);
+                continue;
+            }
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if c == b')' || c == b']' {
+            depth -= 1;
+            i += 1;
+            if depth == 0 {
+                break;
+            }
+            continue;
+        }
+        if c == b'@' && depth >= 1 {
+            capture_depth = capture_depth.max(u8::try_from(depth).unwrap_or(u8::MAX));
+        }
+        i += 1;
+    }
+    // `((identifier) @name (#eq? ...))` wraps a root capture so a predicate
+    // can see it. An `@` at depth >= 2 is a real inner capture even when the
+    // pattern root is an alternation or a sibling anchor.
+    // A top-level alternation is one pattern. An `@` two levels down inside
+    // `((decl/signature) @function . (decl/function name: (variable) @function))`
+    // is a real inner capture even though the root is not a single named node.
+    let depth = if bytes[start] == b'[' {
+        0
+    } else if named || capture_depth >= 2 {
+        capture_depth
+    } else {
+        0
+    };
+    (depth, i)
+}
+
+fn skip_string(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 1;
+    let mut escape = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if escape {
+            escape = false;
+        } else if c == b'\\' {
+            escape = true;
+        } else if c == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    i
+}
+
+fn sexp_starts_with_name(bytes: &[u8], open: usize) -> bool {
+    let i = skip_ws_and_comments(bytes, open + 1);
+    bytes
+        .get(i)
+        .is_some_and(|c| *c == b'_' || c.is_ascii_alphabetic())
+}
+
+fn next_non_ws_is(bytes: &[u8], start: usize, expected: u8) -> bool {
+    bytes.get(skip_ws_and_comments(bytes, start)) == Some(&expected)
+}
+
+fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+            b';' => i = skip_line(bytes, i),
+            _ => break,
+        }
+    }
+    i
+}
+
+fn skip_line(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i] != b'\n' {
+        i += 1;
+    }
+    i
+}
+
+fn skip_balanced(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b';' {
+            i = skip_line(bytes, i);
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if c == b'(' || c == b'[' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if c == b')' || c == b']' {
+            depth -= 1;
+            i += 1;
+            if depth == 0 {
+                return i;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    i
 }
 
 fn highlight_query_slot(lang: SupportedLanguage) -> &'static OnceLock<Query> {
@@ -477,5 +733,42 @@ mod tests {
         assert!(ParserPool::supports_extension("md"));
         assert!(ParserPool::supports_extension("markdown"));
         assert!(ParserPool::supports_extension("md_inline"));
+    }
+
+    #[test]
+    fn pattern_nested_flags_follow_capture_position() {
+        let source = r#"
+; comment (not a pattern)
+(variable) @variable
+(decl name: (variable) @function)
+(field_identifier) @property
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @function.method))
+((identifier) @constant
+ (#match? @constant "^[A-Z]"))
+(decl/bind name: (variable) @variable)
+[
+  (variable) @variable
+  (qualified (variable) @variable)
+]
+"#;
+        assert_eq!(pattern_nested_flags(source), vec![0, 1, 0, 2, 0, 1, 0]);
+    }
+
+    #[test]
+    fn nested_flags_cover_every_highlight_pattern() {
+        for (index, lang) in SUPPORTED_LANGUAGES.iter().copied().enumerate() {
+            assert_eq!(highlight_query_slot_index(lang), index);
+            let Some(query) = shared_highlight_query(lang) else {
+                continue;
+            };
+            let flags = nested_pattern_flags(query);
+            assert_eq!(
+                flags.len(),
+                query.pattern_count(),
+                "{lang:?} nested flags do not match the compiled query"
+            );
+        }
     }
 }
