@@ -740,6 +740,14 @@ impl App {
     /// write so [`SharedFiles::make_mut`] does not copy the patches. Otherwise
     /// the screen list is edited and the cache is pointed at that `Arc`.
     fn edit_shared_files<R>(&mut self, f: impl FnOnce(&mut [ChangedFile]) -> R) -> Option<R> {
+        // A unique `make_mut` can replace a patch string in the same buffer
+        // address. Bump before the write so the line index cannot treat that
+        // address as the text it already indexed.
+        self.bump_files_generation();
+        // The index holds the file-list Arc so a replaced list cannot reuse a
+        // patch address. Release it before make_mut, or the edit copies every
+        // patch. The generation bump above makes the released index miss.
+        self.release_cached_files();
         let key = self.current_cache_key();
         let data_state = &mut self.data_state;
         let session_cache = &mut self.session_cache;
@@ -1101,7 +1109,7 @@ impl App {
                         base_tip_sha,
                     },
                 );
-                self.data_state = DataState::Loaded { pr, files };
+                self.install_loaded(pr, files);
                 if changed_file_index.is_some() {
                     // Data is current, so auto-focus can sync the diff it landed on.
                     self.sync_diff_to_selected_file();

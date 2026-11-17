@@ -45,15 +45,15 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        let file = match self.files().get(self.selected_file) {
-            Some(f) => f,
-            None => return Ok(()),
-        };
-        let patch = match file.patch.as_ref() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-        let info = match crate::diff::get_line_info(patch, self.diff_scroll.selected_line) {
+        if self
+            .files()
+            .get(self.selected_file)
+            .and_then(|file| file.patch.as_ref())
+            .is_none()
+        {
+            return Ok(());
+        }
+        let info = match self.cached_line_info(self.diff_scroll.selected_line) {
             Some(i) => i,
             None => return Ok(()),
         };
@@ -193,16 +193,14 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        // 行番号: new_line_number があれば使用、なければ 1
+        let line_number = self
+            .cached_line_info(self.diff_scroll.selected_line)
+            .and_then(|info| info.new_line_number);
         let file = match self.files().get(self.selected_file) {
             Some(f) => f.clone(),
             None => return Ok(()),
         };
-
-        // 行番号: new_line_number があれば使用、なければ 1
-        let line_number = file.patch.as_ref().and_then(|patch| {
-            crate::diff::get_line_info(patch, self.diff_scroll.selected_line)
-                .and_then(|info| info.new_line_number)
-        });
 
         // リポジトリルート取得 → フルパス構築
         let full_path = match &self.working_dir {

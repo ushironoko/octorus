@@ -2,7 +2,7 @@ use ratatui::buffer::{Buffer, Cell};
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, DataState};
+use crate::app::App;
 use crate::config::{ThemeColors, ThemeConfig};
 use crate::github::comment::{CommentPublication, ReviewComment, ReviewCommentLocation};
 use crate::github::{Branch, ChangedFile, PullRequest, User};
@@ -135,8 +135,8 @@ pub(crate) fn comment_on_added_line(publication: CommentPublication) -> ReviewCo
 /// place it. The caller sets the app state.
 pub(crate) fn app_with_comment_on_added_line(comment: ReviewComment) -> App {
     let mut app = App::new_for_test();
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 1,
             node_id: None,
             title: "Title".to_string(),
@@ -155,7 +155,7 @@ pub(crate) fn app_with_comment_on_added_line(comment: ReviewComment) -> App {
             },
             updated_at: "2026-11-10T00:00:00Z".to_string(),
         }),
-        files: vec![ChangedFile {
+        vec![ChangedFile {
             filename: "src/main.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,
@@ -164,7 +164,7 @@ pub(crate) fn app_with_comment_on_added_line(comment: ReviewComment) -> App {
             viewed: false,
         }]
         .into(),
-    };
+    );
     app.selected_file = 0;
     app.cmt.review_comments = Some(vec![comment]);
     app.update_file_comment_positions();

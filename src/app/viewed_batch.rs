@@ -22,8 +22,8 @@ fn file(name: &str, viewed: bool) -> ChangedFile {
 fn loaded(pr_node_id: &str, files: Vec<ChangedFile>) -> App {
     let mut app = App::new_for_test();
     app.pr_number = Some(193);
-    app.data_state = DataState::Loaded {
-        pr: Box::new(PullRequest {
+    app.install_loaded(
+        Box::new(PullRequest {
             number: 193,
             node_id: Some(pr_node_id.to_string()),
             title: "Test".to_string(),
@@ -42,8 +42,8 @@ fn loaded(pr_node_id: &str, files: Vec<ChangedFile>) -> App {
             },
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }),
-        files: files.into(),
-    };
+        files.into(),
+    );
     app
 }
 

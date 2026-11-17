@@ -187,6 +187,549 @@ impl PatchLineInfo<'_> {
     }
 }
 
+/// `u32::MAX` stands for "no file line" in the compact row table.
+/// A real diff line number does not reach it: hunk counters start near 1.
+const NO_FILE_LINE: u32 = u32::MAX;
+
+/// One owned index of a patch.
+///
+/// Built once per patch text. Row lookup is O(1). A file-line lookup is a
+/// binary search over the rows of that side. The index stores byte offsets
+/// into the patch, not copies of the line text, so a million-line patch keeps
+/// a few dozen bytes per row instead of a second copy of the diff.
+///
+/// `get_line_info` numbers and `find_diff_line_index` numbers are recorded
+/// separately. They agree on real diffs and disagree on a malformed `@@` line
+/// (the scan keeps the previous counters; `get_line_info` clears them). The
+/// index preserves both.
+pub struct PatchLookup {
+    /// The patch is larger than `u32` offsets can name. Callers use the linear scans.
+    fallback: bool,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
+    /// Low 3 bits are [`LineType`]. Bit 7 is the `\ No newline` marker.
+    kinds: Vec<u8>,
+    old_lines: Vec<u32>,
+    new_lines: Vec<u32>,
+    /// `0` means this row has no GitHub position.
+    positions: Vec<u32>,
+    /// `(file line, diff row)`, sorted by line then row. First row wins.
+    old_rows: Vec<(u32, u32)>,
+    new_rows: Vec<(u32, u32)>,
+    /// Indexed by GitHub position. `0` means the position is not a file row.
+    pos_sides: Vec<u8>,
+    pos_lines: Vec<u32>,
+}
+
+/// A review comment reduced to the fields that place its marker.
+///
+/// `side` / `line` is the end. `start_line` is set for a range. `start_side`
+/// is the side of that start, already defaulted the way GitHub does: a missing
+/// start side uses the end side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommentAnchor {
+    pub side: DiffSide,
+    pub line: u32,
+    pub start_line: Option<u32>,
+    pub start_side: DiffSide,
+}
+
+impl PatchLookup {
+    pub fn build(patch: &str) -> Self {
+        if patch.len() > u32::MAX as usize {
+            return Self::fallback();
+        }
+
+        let mut lookup = Self {
+            fallback: false,
+            starts: Vec::new(),
+            ends: Vec::new(),
+            kinds: Vec::new(),
+            old_lines: Vec::new(),
+            new_lines: Vec::new(),
+            positions: Vec::new(),
+            old_rows: Vec::new(),
+            new_rows: Vec::new(),
+            pos_sides: Vec::new(),
+            pos_lines: Vec::new(),
+        };
+        lookup.record_rows(patch);
+        lookup.record_side_rows(patch);
+        lookup.record_positions(patch);
+        lookup.starts.shrink_to_fit();
+        lookup.ends.shrink_to_fit();
+        lookup.kinds.shrink_to_fit();
+        lookup.old_lines.shrink_to_fit();
+        lookup.new_lines.shrink_to_fit();
+        lookup.positions.shrink_to_fit();
+        lookup.old_rows.shrink_to_fit();
+        lookup.new_rows.shrink_to_fit();
+        lookup.pos_sides.shrink_to_fit();
+        lookup.pos_lines.shrink_to_fit();
+        lookup
+    }
+
+    fn fallback() -> Self {
+        Self {
+            fallback: true,
+            starts: Vec::new(),
+            ends: Vec::new(),
+            kinds: Vec::new(),
+            old_lines: Vec::new(),
+            new_lines: Vec::new(),
+            positions: Vec::new(),
+            old_rows: Vec::new(),
+            new_rows: Vec::new(),
+            pos_sides: Vec::new(),
+            pos_lines: Vec::new(),
+        }
+    }
+
+    pub fn is_fallback(&self) -> bool {
+        self.fallback
+    }
+
+    pub fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.starts.is_empty()
+    }
+
+    /// Bytes retained by the index, not counting the patch text it points into.
+    pub fn allocated_bytes(&self) -> usize {
+        self.starts.capacity() * std::mem::size_of::<u32>()
+            + self.ends.capacity() * std::mem::size_of::<u32>()
+            + self.kinds.capacity()
+            + self.old_lines.capacity() * std::mem::size_of::<u32>()
+            + self.new_lines.capacity() * std::mem::size_of::<u32>()
+            + self.positions.capacity() * std::mem::size_of::<u32>()
+            + self.old_rows.capacity() * std::mem::size_of::<(u32, u32)>()
+            + self.new_rows.capacity() * std::mem::size_of::<(u32, u32)>()
+            + self.pos_sides.capacity()
+            + self.pos_lines.capacity() * std::mem::size_of::<u32>()
+    }
+
+    /// Same result as [`get_line_info`]. `patch` must be the text this index was built from.
+    pub fn line_info(&self, patch: &str, row: usize) -> Option<DiffLineInfo> {
+        if self.fallback {
+            return get_line_info(patch, row);
+        }
+        let start = *self.starts.get(row)? as usize;
+        let end = *self.ends.get(row)? as usize;
+        if start > end || end > patch.len() {
+            return None;
+        }
+        let raw = &patch[start..end];
+        let line_type = self.line_type(row)?;
+        Some(DiffLineInfo {
+            line_content: line_body(line_type, raw).to_string(),
+            line_type,
+            old_line_number: file_line(self.old_lines[row]),
+            new_line_number: file_line(self.new_lines[row]),
+            diff_position: nonzero(self.positions[row]),
+        })
+    }
+
+    /// Same result as [`find_diff_line_index`].
+    pub fn find_line(&self, target: SideLine) -> Option<usize> {
+        if self.fallback {
+            return None;
+        }
+        let rows = match target.side {
+            DiffSide::Left => &self.old_rows,
+            DiffSide::Right => &self.new_rows,
+        };
+        let idx = rows.partition_point(|&(line, _)| line < target.line);
+        match rows.get(idx) {
+            Some(&(line, row)) if line == target.line => Some(row as usize),
+            _ => None,
+        }
+    }
+
+    /// Same rows, in patch order, as [`diff_rows_on_side`].
+    pub fn rows_on_side(&self, side: DiffSide, start: u32, end: u32) -> Vec<usize> {
+        if self.fallback {
+            return Vec::new();
+        }
+        let (lo, hi) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let rows = match side {
+            DiffSide::Left => &self.old_rows,
+            DiffSide::Right => &self.new_rows,
+        };
+        let from = rows.partition_point(|&(line, _)| line < lo);
+        let to = rows.partition_point(|&(line, _)| line <= hi);
+        let mut found: Vec<usize> = rows[from..to]
+            .iter()
+            .map(|&(_, row)| row as usize)
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
+    /// Same result as [`position_to_side_line`].
+    pub fn side_line_at_position(&self, position: u32) -> Option<SideLine> {
+        if self.fallback || position == 0 {
+            return None;
+        }
+        let idx = position as usize;
+        match self.pos_sides.get(idx).copied().unwrap_or(0) {
+            1 => Some(SideLine::left(self.pos_lines[idx])),
+            2 => Some(SideLine::right(self.pos_lines[idx])),
+            _ => None,
+        }
+    }
+
+    pub fn is_no_newline(&self, row: usize) -> bool {
+        self.kinds.get(row).is_some_and(|kind| kind & 0x80 != 0)
+    }
+
+    /// Same answer as [`validate_multiline_range`].
+    pub fn is_suggestion_range(&self, start: usize, end: usize) -> bool {
+        if self.fallback || start > end {
+            return false;
+        }
+        for idx in start..=end {
+            if self.is_no_newline(idx) {
+                return false;
+            }
+            match self.line_type(idx) {
+                Some(LineType::Added | LineType::Context) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Same answer as [`review_comment_span`], without rebuilding an index.
+    pub fn review_comment_span(&self, start: usize, end: usize) -> Option<ReviewCommentSpan> {
+        if self.fallback || start > end {
+            return None;
+        }
+        let mut side = None;
+        let mut first_line = None;
+        let mut last_line = None;
+        let mut position = None;
+        for idx in start..=end {
+            let line_type = self.line_type(idx)?;
+            let (row_side, line) = review_comment_line(
+                line_type,
+                file_line(self.old_lines[idx]),
+                file_line(self.new_lines[idx]),
+            )?;
+            match side {
+                None => side = Some(row_side),
+                Some(expected) if expected != row_side => return None,
+                Some(_) => {}
+            }
+            if first_line.is_none() {
+                first_line = Some(line);
+            }
+            last_line = Some(line);
+            position = nonzero(self.positions[idx]);
+        }
+        let side = side?;
+        let first = first_line?;
+        let last = last_line?;
+        let diff_position = position?;
+        let start_line = (first < last).then_some(first);
+        if start != end && start_line.is_none() {
+            return None;
+        }
+        Some(ReviewCommentSpan {
+            side,
+            start_line,
+            line: last,
+            diff_position,
+        })
+    }
+
+    /// Same rows as [`marker_rows`] for an index that was built from this patch.
+    pub fn marker_rows(&self, anchor: CommentAnchor) -> Vec<usize> {
+        if self.fallback {
+            return Vec::new();
+        }
+        marker_rows(
+            anchor,
+            |target| self.find_line(target),
+            |side, start, end| self.rows_on_side(side, start, end),
+        )
+    }
+
+    /// File side and line of one diff row, when the row can take a comment.
+    pub fn row_side_line(&self, row: usize) -> Option<SideLine> {
+        let line_type = self.line_type(row)?;
+        let (side, line) = review_comment_line(
+            line_type,
+            file_line(*self.old_lines.get(row)?),
+            file_line(*self.new_lines.get(row)?),
+        )?;
+        Some(SideLine { side, line })
+    }
+
+    fn line_type(&self, row: usize) -> Option<LineType> {
+        self.kinds.get(row).map(|kind| match kind & 0x07 {
+            0 => LineType::Meta,
+            1 => LineType::Header,
+            2 => LineType::Added,
+            3 => LineType::Removed,
+            _ => LineType::Context,
+        })
+    }
+
+    fn record_rows(&mut self, patch: &str) {
+        let base = patch.as_ptr() as usize;
+        let mut old_line_number: Option<u32> = None;
+        let mut new_line_number: Option<u32> = None;
+        let mut position_counter: Option<u32> = None;
+        let mut classifier = PatchClassifier::new();
+
+        for line in patch.lines() {
+            let offset = (line.as_ptr() as usize).wrapping_sub(base);
+            let end = offset + line.len();
+            self.starts.push(offset as u32);
+            self.ends.push(end as u32);
+
+            let (line_type, _) = classifier.classify(line);
+            let (on_old, on_new) = file_row_sides(line_type, line);
+            match line_type {
+                LineType::Meta => {}
+                LineType::Header => {
+                    match hunk_line_starts(line) {
+                        Some((old_start, new_start)) => {
+                            old_line_number = Some(old_start);
+                            new_line_number = Some(new_start);
+                        }
+                        None => {
+                            old_line_number = None;
+                            new_line_number = None;
+                        }
+                    }
+                    position_counter = Some(position_counter.map_or(0, |p| p + 1));
+                }
+                LineType::Added | LineType::Context | LineType::Removed => {
+                    position_counter = position_counter.map(|p| p + 1);
+                }
+            }
+            let current_position = match line_type {
+                LineType::Meta => None,
+                LineType::Header if position_counter == Some(0) => None,
+                _ => position_counter,
+            };
+            let mut kind = match line_type {
+                LineType::Meta => 0,
+                LineType::Header => 1,
+                LineType::Added => 2,
+                LineType::Removed => 3,
+                LineType::Context => 4,
+            };
+            if is_no_newline_marker(line) {
+                kind |= 0x80;
+            }
+            self.kinds.push(kind);
+            self.old_lines
+                .push(old_line_number.filter(|_| on_old).unwrap_or(NO_FILE_LINE));
+            self.new_lines
+                .push(new_line_number.filter(|_| on_new).unwrap_or(NO_FILE_LINE));
+            self.positions.push(current_position.unwrap_or(0));
+
+            if on_old {
+                old_line_number = old_line_number.map(|n| n + 1);
+            }
+            if on_new {
+                new_line_number = new_line_number.map(|n| n + 1);
+            }
+        }
+    }
+
+    fn record_side_rows(&mut self, patch: &str) {
+        let mut old_line: Option<u32> = None;
+        let mut new_line: Option<u32> = None;
+        for (index, line) in patch.lines().enumerate() {
+            if line.starts_with("@@") {
+                if let Some((old_start, new_start)) = hunk_line_starts(line) {
+                    old_line = Some(old_start);
+                    new_line = Some(new_start);
+                }
+                continue;
+            }
+            let on_old = line.starts_with('-') || line.starts_with(' ') || line.is_empty();
+            let on_new = line.starts_with('+') || line.starts_with(' ') || line.is_empty();
+            if !on_old && !on_new {
+                continue;
+            }
+            let row = index as u32;
+            if on_old {
+                if let Some(number) = old_line {
+                    self.old_rows.push((number, row));
+                }
+            }
+            if on_new {
+                if let Some(number) = new_line {
+                    self.new_rows.push((number, row));
+                }
+            }
+            if on_old {
+                old_line = old_line.map(|number| number + 1);
+            }
+            if on_new {
+                new_line = new_line.map(|number| number + 1);
+            }
+        }
+        self.old_rows.sort_unstable();
+        self.new_rows.sort_unstable();
+    }
+
+    fn record_positions(&mut self, patch: &str) {
+        let mut old_line: Option<u32> = None;
+        let mut new_line: Option<u32> = None;
+        let mut position_counter: Option<u32> = None;
+        let mut classifier = PatchClassifier::new();
+
+        for line in patch.lines() {
+            let (line_type, _) = classifier.classify(line);
+            match line_type {
+                LineType::Meta => {}
+                LineType::Header => {
+                    if let Some((old_start, new_start)) = hunk_line_starts(line) {
+                        old_line = Some(old_start);
+                        new_line = Some(new_start);
+                    }
+                    let counter = position_counter.map_or(0, |p| p + 1);
+                    position_counter = Some(counter);
+                    if counter != 0 {
+                        self.note_position(counter, 0, 0);
+                    }
+                }
+                LineType::Added | LineType::Context | LineType::Removed => {
+                    let Some(counter) = position_counter.map(|p| p + 1) else {
+                        continue;
+                    };
+                    position_counter = Some(counter);
+                    let is_file_row = !is_no_newline_marker(line);
+                    if !is_file_row {
+                        self.note_position(counter, 0, 0);
+                    } else {
+                        match line_type {
+                            LineType::Removed => match old_line {
+                                Some(number) => self.note_position(counter, 1, number),
+                                None => self.note_position(counter, 0, 0),
+                            },
+                            _ => match new_line {
+                                Some(number) => self.note_position(counter, 2, number),
+                                None => self.note_position(counter, 0, 0),
+                            },
+                        }
+                    }
+                    if is_file_row {
+                        if line_type != LineType::Added {
+                            old_line = old_line.map(|n| n + 1);
+                        }
+                        if line_type != LineType::Removed {
+                            new_line = new_line.map(|n| n + 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn note_position(&mut self, position: u32, side: u8, line: u32) {
+        let idx = position as usize;
+        if self.pos_sides.len() <= idx {
+            self.pos_sides.resize(idx + 1, 0);
+            self.pos_lines.resize(idx + 1, 0);
+        }
+        self.pos_sides[idx] = side;
+        self.pos_lines[idx] = line;
+    }
+}
+
+fn file_line(number: u32) -> Option<u32> {
+    (number != NO_FILE_LINE).then_some(number)
+}
+
+fn nonzero(position: u32) -> Option<u32> {
+    (position != 0).then_some(position)
+}
+
+fn line_body(line_type: LineType, raw: &str) -> &str {
+    match line_type {
+        LineType::Added => raw.strip_prefix('+').unwrap_or(raw),
+        LineType::Removed => raw.strip_prefix('-').unwrap_or(raw),
+        LineType::Context => raw.strip_prefix(' ').unwrap_or(raw),
+        LineType::Header | LineType::Meta => raw,
+    }
+}
+
+/// Diff rows that should carry one comment's marker.
+///
+/// `find` and `rows_on_side` are the patch queries. The linear scans and
+/// [`PatchLookup`] both plug in here, so the placement rules live in one place.
+pub fn marker_rows(
+    anchor: CommentAnchor,
+    mut find: impl FnMut(SideLine) -> Option<usize>,
+    mut rows_on_side: impl FnMut(DiffSide, u32, u32) -> Vec<usize>,
+) -> Vec<usize> {
+    if anchor.side == DiffSide::Left && !left_anchor_in_patch(&anchor, &mut find) {
+        return Vec::new();
+    }
+    let Some(end_row) = find(SideLine {
+        side: anchor.side,
+        line: anchor.line,
+    }) else {
+        return Vec::new();
+    };
+    let Some(start) = anchor.start_line else {
+        return vec![end_row];
+    };
+    if start == anchor.line && anchor.start_side == anchor.side {
+        return vec![end_row];
+    }
+    match find(SideLine {
+        side: anchor.start_side,
+        line: start,
+    }) {
+        Some(_) if anchor.start_side == anchor.side && start < anchor.line => {
+            rows_on_side(anchor.side, start, anchor.line)
+        }
+        Some(start_row) if start_row != end_row => {
+            let mut rows = vec![start_row, end_row];
+            rows.sort_unstable();
+            rows
+        }
+        _ => vec![end_row],
+    }
+}
+
+/// [`marker_rows`] over a linear scan of `patch`.
+pub fn linear_marker_rows(patch: &str, anchor: CommentAnchor) -> Vec<usize> {
+    marker_rows(
+        anchor,
+        |target| find_diff_line_index(patch, target),
+        |side, start, end| diff_rows_on_side(patch, side, start, end),
+    )
+}
+
+/// Every `LEFT` endpoint must hit an old-file row. A `RIGHT` start is not required.
+fn left_anchor_in_patch(
+    anchor: &CommentAnchor,
+    find: &mut impl FnMut(SideLine) -> Option<usize>,
+) -> bool {
+    if find(SideLine::left(anchor.line)).is_none() {
+        return false;
+    }
+    let Some(start) = anchor.start_line else {
+        return true;
+    };
+    anchor.start_side == DiffSide::Right || find(SideLine::left(start)).is_some()
+}
+
 /// Which file a diff line number belongs to.
 ///
 /// `Left` is the old file (`-` and context lines). `Right` is the new file
@@ -2487,6 +3030,242 @@ diff --git a/f.rs b/f.rs
             result.contains_key("日本語ファイル.rs"),
             "keys: {:?}",
             result.keys()
+        );
+    }
+
+    fn varied_patches() -> Vec<String> {
+        let mut patches = vec![
+            String::new(),
+            SAMPLE_PATCH.to_string(),
+            "@@ -1,3 +1,3 @@\n ctx one\n-gone two\n+new two\n ctx three".into(),
+            "@@ -1,2 +1,2 @@\n-old1\n+new1\n@@ -10,3 +10,3 @@\n ctx10\n-old11\n+new11\n ctx12".into(),
+            "diff --git a/foo.rs b/foo.rs\nindex 123..456 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }".into(),
+            "diff --git a/old.rs b/new.rs\nsimilarity index 92%\nrename from old.rs\nrename to new.rs\nindex aaa..bbb 100644\n--- a/old.rs\n+++ b/new.rs\n@@ -1,2 +1,2 @@\n kept\n-old\n+new\n".into(),
+            "Binary files a/pic.bin and b/pic.bin differ\n".into(),
+            "GIT binary patch\nliteral 0\nHcmV?d00001\n".into(),
+            "@@ -0,0 +1,2 @@\n+first\n+second\n".into(),
+            "@@ -1,2 +0,0 @@\n-gone\n-also\n".into(),
+            "@@ -1,2 +1,2 @@\r\n kept\r\n-old\r\n+new\r\n".into(),
+            "@@ -1,1 +1,1 @@\n 日本語\n+追加\n-削除\n".into(),
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n".into(),
+            MARKER_NEW_SIDE_LACKS_NEWLINE.to_string(),
+            MARKER_OLD_SIDE_LACKS_NEWLINE.to_string(),
+            MARKER_BOTH_SIDES_LACK_NEWLINE.to_string(),
+            MARKER_THEN_SECOND_HUNK.to_string(),
+            "@@ not a hunk\n+still here\n context\n".into(),
+            "@@ -1,3 +1,3 @@\n--- this is file content\n+++ so is this\n kept\n".into(),
+            " \n+\n-\n\n\\ No newline at end of file\n".into(),
+            "@@ -1,1 +1,1 @@\n \\ No newline at end of file\n".into(),
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -5,1 +5,2 @@\n kept\n+added\n@@ -1,1 +8,1 @@\n-backwards\n".into(),
+            "no header at all\n+plus\n-minus\n space\n".into(),
+        ];
+        // Fixed-seed patches: meta, hunks, added, removed, context, blank, marker, `diff`.
+        let mut state = 0x191u64;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            state
+        };
+        for _ in 0..24 {
+            let count = (next() % 70) as usize;
+            let mut lines = Vec::with_capacity(count + 4);
+            if next() % 2 == 0 {
+                lines.push("diff --git a/f.rs b/f.rs".to_string());
+                lines.push("index 111..222 100644".to_string());
+                lines.push("--- a/f.rs".to_string());
+                lines.push("+++ b/f.rs".to_string());
+            }
+            let mut old = 1u32;
+            let mut new = 1u32;
+            for i in 0..count {
+                match next() % 11 {
+                    0 => {
+                        let old_start = old + (next() % 5) as u32;
+                        let new_start = new + (next() % 5) as u32;
+                        old = old_start;
+                        new = new_start;
+                        lines.push(format!("@@ -{old_start},4 +{new_start},4 @@"));
+                    }
+                    1 => lines.push(format!("+added {i}")),
+                    2 => lines.push(format!("-removed {i}")),
+                    3 => lines.push(format!(" context {i}")),
+                    4 => lines.push(String::new()),
+                    5 => lines.push("\\ No newline at end of file".to_string()),
+                    6 => lines.push("diff --git a/mid.rs b/mid.rs".to_string()),
+                    7 => lines.push("--- inside".to_string()),
+                    8 => lines.push("+++ inside".to_string()),
+                    9 => lines.push("@@ -not,valid +1 @@".to_string()),
+                    _ => lines.push(format!(" bare {i} 行")),
+                }
+            }
+            let sep = if next() % 3 == 0 { "\r\n" } else { "\n" };
+            patches.push(lines.join(sep));
+        }
+        patches
+    }
+
+    fn assert_lookup_matches_linear(patch: &str) {
+        let lookup = PatchLookup::build(patch);
+        assert!(!lookup.is_fallback());
+        let rows = patch.lines().count();
+        assert_eq!(lookup.len(), rows, "{patch:?}");
+        for row in 0..=rows {
+            let from_index = lookup.line_info(patch, row);
+            let direct = get_line_info(patch, row);
+            assert_eq!(
+                from_index.as_ref().map(numbering_key),
+                direct.as_ref().map(numbering_key),
+                "row {row} of {patch:?}"
+            );
+        }
+        let mut probed = vec![0, 1, 2, 9, 10, 11, 30, 100];
+        for line in patch.lines() {
+            if let Some((old, new)) = hunk_line_starts(line) {
+                probed.push(old);
+                probed.push(old.saturating_add(1));
+                probed.push(new);
+                probed.push(new.saturating_add(1));
+            }
+        }
+        for line in probed {
+            for side in [DiffSide::Left, DiffSide::Right] {
+                let target = SideLine { side, line };
+                assert_eq!(
+                    lookup.find_line(target),
+                    find_diff_line_index(patch, target),
+                    "{target:?} in {patch:?}"
+                );
+            }
+        }
+        let ranges = [(1, 1), (1, 4), (4, 1), (10, 12), (0, 3), (2, 30)];
+        for (start, end) in ranges {
+            assert_eq!(
+                lookup.rows_on_side(DiffSide::Left, start, end),
+                diff_rows_on_side(patch, DiffSide::Left, start, end),
+                "left {start}..={end} in {patch:?}"
+            );
+            assert_eq!(
+                lookup.rows_on_side(DiffSide::Right, start, end),
+                diff_rows_on_side(patch, DiffSide::Right, start, end),
+                "right {start}..={end} in {patch:?}"
+            );
+        }
+        let max_pos = u32::try_from(rows).unwrap_or(u32::MAX);
+        for position in 0..=max_pos.saturating_add(1) {
+            assert_eq!(
+                lookup.side_line_at_position(position),
+                position_to_side_line(patch, position),
+                "position {position} in {patch:?}"
+            );
+        }
+        if rows > 0 {
+            let end = rows - 1;
+            let start = end / 2;
+            assert_eq!(
+                lookup.is_suggestion_range(start, end),
+                validate_multiline_range(patch, start, end),
+                "suggestion {start}..={end} in {patch:?}"
+            );
+            assert_eq!(
+                lookup.review_comment_span(start, end),
+                review_comment_span(patch, start, end),
+                "span {start}..={end} in {patch:?}"
+            );
+        }
+        for side in [DiffSide::Left, DiffSide::Right] {
+            for start_side in [DiffSide::Left, DiffSide::Right] {
+                for (line, start_line) in [(1, None), (2, Some(1)), (11, Some(10)), (3, Some(9))] {
+                    let anchor = CommentAnchor {
+                        side,
+                        line,
+                        start_line,
+                        start_side,
+                    };
+                    let linear = marker_rows(
+                        anchor,
+                        |target| find_diff_line_index(patch, target),
+                        |row_side, start, end| diff_rows_on_side(patch, row_side, start, end),
+                    );
+                    let indexed = marker_rows(
+                        anchor,
+                        |target| lookup.find_line(target),
+                        |row_side, start, end| lookup.rows_on_side(row_side, start, end),
+                    );
+                    assert_eq!(linear, indexed, "{anchor:?} in {patch:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn patch_lookup_matches_linear_scans_on_varied_patches() {
+        for patch in varied_patches() {
+            assert_lookup_matches_linear(&patch);
+        }
+    }
+
+    #[test]
+    fn patch_lookup_stays_compact_per_row() {
+        let mut lines = vec!["@@ -1,400 +1,400 @@".to_string()];
+        for i in 0..400 {
+            let prefix = match i % 5 {
+                0 => "+",
+                1 => "-",
+                _ => " ",
+            };
+            lines.push(format!("{prefix}line {i}"));
+        }
+        let patch = lines.join("\n");
+        let lookup = PatchLookup::build(&patch);
+        let per_row = lookup.allocated_bytes() / lookup.len().max(1);
+        assert!(
+            per_row <= 64,
+            "index uses {per_row} bytes/row; a million rows must stay near a few dozen bytes each"
+        );
+    }
+
+    /// A LEFT comment whose start line is gone is not placed, not even on its end
+    /// row. A RIGHT comment in that situation stays on the end row. This is the
+    /// current placement rule (including the asymmetry); the index must not "fix" it.
+    #[test]
+    fn left_comment_with_a_missing_start_stays_unplaced() {
+        let patch = "@@ -10,2 +10,2 @@\n kept\n-old\n+new\n";
+        let lookup = PatchLookup::build(patch);
+        let left = CommentAnchor {
+            side: DiffSide::Left,
+            line: 11,
+            start_line: Some(1),
+            start_side: DiffSide::Left,
+        };
+        let right = CommentAnchor {
+            side: DiffSide::Right,
+            line: 11,
+            start_line: Some(1),
+            start_side: DiffSide::Right,
+        };
+        let linear = |anchor| {
+            marker_rows(
+                anchor,
+                |target| find_diff_line_index(patch, target),
+                |side, start, end| diff_rows_on_side(patch, side, start, end),
+            )
+        };
+        assert!(linear(left).is_empty());
+        assert_eq!(
+            marker_rows(
+                left,
+                |target| lookup.find_line(target),
+                |side, start, end| lookup.rows_on_side(side, start, end),
+            ),
+            linear(left)
+        );
+        assert_eq!(linear(right), vec![3]);
+        assert_eq!(
+            marker_rows(
+                right,
+                |target| lookup.find_line(target),
+                |side, start, end| lookup.rows_on_side(side, start, end),
+            ),
+            linear(right)
         );
     }
 }

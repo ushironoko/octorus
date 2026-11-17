@@ -3536,7 +3536,7 @@ mod tests {
 #[cfg(test)]
 mod no_newline_marker_tests {
     use super::*;
-    use crate::app::{AppState, DataState};
+    use crate::app::AppState;
     use crate::config::ThemeConfig;
     use crate::github::{Branch, ChangedFile, PullRequest, User};
     use crate::ui::test_buffer::{find_column, row_text, screen_text};
@@ -3563,8 +3563,8 @@ mod no_newline_marker_tests {
     fn app_showing(patch: &str, filename: &str, cache: Option<DiffCache>) -> App {
         let mut app = App::new_for_test();
         app.state = AppState::DiffView;
-        app.data_state = DataState::Loaded {
-            pr: Box::new(PullRequest {
+        app.install_loaded(
+            Box::new(PullRequest {
                 number: 1,
                 node_id: None,
                 title: "Title".to_string(),
@@ -3583,7 +3583,7 @@ mod no_newline_marker_tests {
                 },
                 updated_at: "2025-01-01T00:00:00Z".to_string(),
             }),
-            files: vec![ChangedFile {
+            vec![ChangedFile {
                 filename: filename.to_string(),
                 status: "modified".to_string(),
                 additions: 2,
@@ -3592,7 +3592,7 @@ mod no_newline_marker_tests {
                 viewed: false,
             }]
             .into(),
-        };
+        );
         app.diff_store.current = cache;
         app
     }

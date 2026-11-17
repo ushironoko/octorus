@@ -379,22 +379,25 @@ impl App {
         // A missing patch, or no stored file list, takes the full refetch that
         // reopen used before the check existed. `gh pr diff` is part of that
         // refetch, so a patch an earlier fetch failed to store is retried.
+        let restored = self.session_cache.get_pr_data(&cache_key).map(|cached| {
+            let cached_check = cached_file_list_is_complete(cached).then(|| CachedPrCheck {
+                updated_at: cached.pr.updated_at.clone(),
+                head_sha: cached.pr.head.sha.clone(),
+                base_ref: cached.pr.base.ref_name.clone(),
+                base_sha: cached.pr.base.sha.clone(),
+                base_tip_sha: cached.base_tip_sha.clone(),
+            });
+            (
+                cached_check,
+                Self::calc_diff_line_count(&cached.files, 0),
+                cached.pr.clone(),
+                cached.files.clone(),
+            )
+        });
         let mut cached_check = None;
-        if let Some(cached) = self.session_cache.get_pr_data(&cache_key) {
-            if cached_file_list_is_complete(cached) {
-                cached_check = Some(CachedPrCheck {
-                    updated_at: cached.pr.updated_at.clone(),
-                    head_sha: cached.pr.head.sha.clone(),
-                    base_ref: cached.pr.base.ref_name.clone(),
-                    base_sha: cached.pr.base.sha.clone(),
-                    base_tip_sha: cached.base_tip_sha.clone(),
-                });
-            }
-            let diff_line_count = Self::calc_diff_line_count(&cached.files, 0);
-            self.data_state = DataState::Loaded {
-                pr: cached.pr.clone(),
-                files: cached.files.clone(),
-            };
+        if let Some((check, diff_line_count, pr, files)) = restored {
+            cached_check = check;
+            self.install_loaded(pr, files);
             self.diff_scroll.line_count = diff_line_count;
             self.start_prefetch_all_files();
             if self.start_ai_rally_on_load {

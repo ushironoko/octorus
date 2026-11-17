@@ -2,11 +2,55 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
+use crate::cache::SharedFiles;
+use crate::diff::{get_line_info, PatchLookup};
 use crate::github::{ChangedFile, PullRequest};
 use crate::syntax::ParserPool;
 
 use super::types::*;
 use super::{App, DataState};
+
+/// The patch index last built for one file.
+///
+/// `files` is a clone of the file-list `Arc` the index was built from. Holding
+/// it keeps that allocation alive, so a later list cannot reuse the patch
+/// buffer's address and still pass the pointer check. `patch_ptr` and
+/// `patch_len` are compared, never dereferenced. `generation` moves when the
+/// list is replaced or edited in place.
+pub(crate) struct CachedPatchLookup {
+    file_index: usize,
+    filename: String,
+    files: SharedFiles,
+    patch_hash: u64,
+    patch_ptr: usize,
+    patch_len: usize,
+    generation: u64,
+    pub(crate) lookup: PatchLookup,
+}
+
+enum LookupDecision {
+    Retarget {
+        files: SharedFiles,
+        ptr: usize,
+        len: usize,
+    },
+    Rebuild {
+        filename: String,
+        files: SharedFiles,
+        hash: u64,
+        ptr: usize,
+        len: usize,
+        lookup: Box<PatchLookup>,
+    },
+}
+
+/// Owned suggestion range taken from the cached index.
+pub(crate) struct CachedSuggestion {
+    pub end_line: u32,
+    pub start_line: u32,
+    pub diff_position: u32,
+    pub original_code: String,
+}
 
 impl App {
     pub(crate) fn calc_diff_line_count(files: &[ChangedFile], selected: usize) -> usize {
@@ -52,6 +96,228 @@ impl App {
         self.request_lazy_diff();
         self.ensure_diff_cache();
     }
+    #[cfg(test)]
+    pub(crate) fn patch_lookup_builds(&self) -> u64 {
+        self.patch_lookup_builds
+    }
+
+    pub(crate) fn bump_files_generation(&mut self) {
+        self.files_generation = self.files_generation.wrapping_add(1);
+    }
+
+    /// Install a loaded pull request. Every `DataState::Loaded` assignment
+    /// goes through here so the line index cannot keep a generation from the
+    /// previous file list.
+    pub(crate) fn install_loaded(&mut self, pr: Box<PullRequest>, files: SharedFiles) {
+        self.bump_files_generation();
+        self.data_state = DataState::Loaded { pr, files };
+    }
+
+    /// Drop the file-list `Arc` held by the index so [`SharedFiles::make_mut`]
+    /// can edit the on-screen list in place. The generation bump that precedes
+    /// the edit makes this index miss; the text is hashed before reuse.
+    pub(crate) fn release_cached_files(&mut self) {
+        if let Some(cached) = self.cached_patch_lookup.as_mut() {
+            drop(std::mem::replace(&mut cached.files, SharedFiles::empty()));
+        }
+    }
+
+    /// Build the patch index for the selected file, or reuse it.
+    ///
+    /// The plain diff is drawn without this. Callers are line lookup and
+    /// comment placement, so the first paint of a file does not wait on it.
+    /// A hit requires the same file-list `Arc` the index is holding, plus the
+    /// same patch buffer. The same text in a new list (highlight keep, a
+    /// watcher refresh of an unchanged file) retargets the existing index.
+    /// Different text rebuilds it.
+    pub(crate) fn ensure_patch_lookup(&mut self) -> bool {
+        let decision = {
+            let DataState::Loaded { files, .. } = &self.data_state else {
+                self.cached_patch_lookup = None;
+                return false;
+            };
+            let Some(file) = files.get(self.selected_file) else {
+                self.cached_patch_lookup = None;
+                return false;
+            };
+            let Some(patch) = file.patch.as_deref() else {
+                return false;
+            };
+            let ptr = patch.as_ptr() as usize;
+            let len = patch.len();
+            let file_index = self.selected_file;
+            let generation = self.files_generation;
+            let hit = self.cached_patch_lookup.as_ref().is_some_and(|cached| {
+                cached.generation == generation
+                    && cached.files.ptr_eq(files)
+                    && cached.file_index == file_index
+                    && cached.filename == file.filename
+                    && cached.patch_ptr == ptr
+                    && cached.patch_len == len
+            });
+            if hit {
+                return true;
+            }
+            let held = files.clone();
+            let hash = hash_string(patch);
+            if self.cached_patch_lookup.as_ref().is_some_and(|cached| {
+                cached.filename == file.filename
+                    && cached.patch_hash == hash
+                    && !cached.lookup.is_fallback()
+            }) {
+                LookupDecision::Retarget {
+                    files: held,
+                    ptr,
+                    len,
+                }
+            } else {
+                let lookup = Box::new(PatchLookup::build(patch));
+                LookupDecision::Rebuild {
+                    filename: file.filename.clone(),
+                    files: held,
+                    hash,
+                    ptr,
+                    len,
+                    lookup,
+                }
+            }
+        };
+        match decision {
+            LookupDecision::Retarget { files, ptr, len } => {
+                if let Some(cached) = self.cached_patch_lookup.as_mut() {
+                    cached.file_index = self.selected_file;
+                    cached.files = files;
+                    cached.patch_ptr = ptr;
+                    cached.patch_len = len;
+                    cached.generation = self.files_generation;
+                }
+                true
+            }
+            LookupDecision::Rebuild {
+                filename,
+                files,
+                hash,
+                ptr,
+                len,
+                lookup,
+            } => {
+                self.patch_lookup_builds = self.patch_lookup_builds.saturating_add(1);
+                let lookup = *lookup;
+                self.cached_patch_lookup = Some(CachedPatchLookup {
+                    file_index: self.selected_file,
+                    filename,
+                    files,
+                    patch_hash: hash,
+                    patch_ptr: ptr,
+                    patch_len: len,
+                    generation: self.files_generation,
+                    lookup,
+                });
+                true
+            }
+        }
+    }
+
+    fn selected_patch_and_lookup(&self) -> Option<(&str, &PatchLookup)> {
+        let DataState::Loaded { files, .. } = &self.data_state else {
+            return None;
+        };
+        let patch = files.get(self.selected_file)?.patch.as_deref()?;
+        let lookup = &self.cached_patch_lookup.as_ref()?.lookup;
+        Some((patch, lookup))
+    }
+
+    /// [`crate::diff::get_line_info`] for the selected file, from the cached index.
+    pub(crate) fn cached_line_info(
+        &mut self,
+        line_index: usize,
+    ) -> Option<crate::diff::DiffLineInfo> {
+        if !self.ensure_patch_lookup() {
+            return None;
+        }
+        let (patch, lookup) = self.selected_patch_and_lookup()?;
+        if lookup.is_fallback() {
+            get_line_info(patch, line_index)
+        } else {
+            lookup.line_info(patch, line_index)
+        }
+    }
+
+    /// [`crate::diff::review_comment_span`] for the selected file, from the cached index.
+    pub(crate) fn cached_review_span(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Option<crate::diff::ReviewCommentSpan> {
+        if !self.ensure_patch_lookup() {
+            return None;
+        }
+        let (patch, lookup) = self.selected_patch_and_lookup()?;
+        if lookup.is_fallback() {
+            crate::diff::review_comment_span(patch, start, end)
+        } else {
+            lookup.review_comment_span(start, end)
+        }
+    }
+
+    /// Suggestion range for the selected file, from the cached index.
+    ///
+    /// `None` when the range is not a new-file run. The checks match
+    /// [`crate::diff::validate_multiline_range`] followed by the line reads
+    /// the multiline suggestion composer used to take from [`crate::diff::PatchIndex`].
+    pub(crate) fn cached_suggestion(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Option<CachedSuggestion> {
+        if !self.ensure_patch_lookup() {
+            return None;
+        }
+        let (patch, lookup) = self.selected_patch_and_lookup()?;
+        let row_info = |row: usize| {
+            if lookup.is_fallback() {
+                get_line_info(patch, row)
+            } else {
+                lookup.line_info(patch, row)
+            }
+        };
+        let valid = if lookup.is_fallback() {
+            crate::diff::validate_multiline_range(patch, start, end)
+        } else {
+            lookup.is_suggestion_range(start, end)
+        };
+        if !valid {
+            return None;
+        }
+        let end_info = row_info(end)?;
+        if !matches!(
+            end_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return None;
+        }
+        let end_line = end_info.new_line_number?;
+        let diff_position = end_info.diff_position?;
+        let start_line = row_info(start)?.new_line_number?;
+        let mut original_lines = Vec::new();
+        for row in start..=end {
+            if let Some(info) = row_info(row) {
+                if matches!(
+                    info.line_type,
+                    crate::diff::LineType::Added | crate::diff::LineType::Context
+                ) {
+                    original_lines.push(info.line_content);
+                }
+            }
+        }
+        Some(CachedSuggestion {
+            end_line,
+            start_line,
+            diff_position,
+            original_code: original_lines.join("\n"),
+        })
+    }
+
     pub fn ensure_diff_cache(&mut self) {
         let file_index = self.selected_file;
         let markdown_rich = self.markdown_rich;
@@ -460,5 +726,110 @@ mod patch_tests {
     fn test_empty_lines_in_body() {
         let patch = build_pr_description_patch("Hello\n\nWorld");
         assert_eq!(patch, "@@ -1,3 +1,3 @@\n Hello\n \n World\n");
+    }
+}
+
+#[cfg(test)]
+mod address_reuse_tests {
+    use super::*;
+    use crate::diff::DiffSide;
+    use crate::github::{Branch, ChangedFile, PullRequest, User};
+
+    fn pull_request() -> Box<PullRequest> {
+        Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Test".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc".to_string(),
+            },
+            base: Branch {
+                ref_name: "main".to_string(),
+                sha: "def".to_string(),
+            },
+            user: User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        })
+    }
+
+    fn files_with(patch: &str) -> Vec<ChangedFile> {
+        vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        }]
+    }
+
+    /// A refresh can free patch A and later place patch C, of the same length,
+    /// at A's address. The index must answer for C. The cache key is forged to
+    /// the recycled address so the test does not depend on the allocator.
+    #[test]
+    fn a_recycled_patch_address_cannot_serve_the_previous_index() {
+        let patch_a = "@@ -12,6 +12,7 @@\n context\n+added\n";
+        let patch_b = "@@ -1,1 +1,1 @@\n-only\n";
+        let patch_c = "@@ -13,6 +13,7 @@\n context\n+added\n";
+        assert_eq!(patch_a.len(), patch_c.len());
+        assert_ne!(patch_a, patch_c);
+
+        let mut app = App::new_for_test();
+        app.install_loaded(pull_request(), files_with(patch_a).into());
+        let indexed = app.cached_line_info(1).expect("context row of A");
+        assert_eq!(indexed.new_line_number, Some(12));
+        assert_eq!(indexed.review_comment_line(), Some((DiffSide::Right, 12)));
+        assert_eq!(app.patch_lookup_builds(), 1);
+
+        let held_a = app
+            .cached_patch_lookup
+            .as_ref()
+            .expect("index holds the file list")
+            .files
+            .clone();
+
+        app.install_loaded(pull_request(), files_with(patch_b).into());
+        app.install_loaded(pull_request(), files_with(patch_c).into());
+
+        // B and C replaced the on-screen list without a lookup. A is still
+        // allocated because the index holds that Arc.
+        assert_eq!(held_a[0].patch.as_deref(), Some(patch_a));
+        let current = match &app.data_state {
+            DataState::Loaded { files, .. } => files.clone(),
+            DataState::Loading | DataState::Error(_) => panic!("C is loaded"),
+        };
+        assert!(!held_a.ptr_eq(&current));
+        assert_eq!(current[0].patch.as_deref(), Some(patch_c));
+
+        let patch = current[0].patch.as_ref().expect("C has a patch");
+        let forged_ptr = patch.as_ptr() as usize;
+        let forged_len = patch.len();
+        let generation = app.files_generation;
+        let file_index = app.selected_file;
+        let filename = current[0].filename.clone();
+        let cached = app.cached_patch_lookup.as_mut().expect("index remains");
+        cached.patch_ptr = forged_ptr;
+        cached.patch_len = forged_len;
+        cached.generation = generation;
+        cached.file_index = file_index;
+        cached.filename = filename;
+        assert!(!cached.files.ptr_eq(&current));
+
+        let info = app.cached_line_info(1).expect("context row of C");
+        let expected = get_line_info(patch_c, 1).expect("linear scan of C");
+        assert_eq!(info.new_line_number, expected.new_line_number);
+        assert_eq!(info.old_line_number, expected.old_line_number);
+        assert_eq!(info.line_content, expected.line_content);
+        assert_eq!(info.diff_position, expected.diff_position);
+        assert_eq!(info.line_type, expected.line_type);
+        assert_eq!(info.new_line_number, Some(13));
+        assert_eq!(info.old_line_number, Some(13));
+        assert_eq!(info.review_comment_line(), Some((DiffSide::Right, 13)));
+        assert_eq!(app.patch_lookup_builds(), 2);
     }
 }

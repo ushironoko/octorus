@@ -226,8 +226,8 @@ mod tests {
     #[test]
     fn test_build_pr_info_loaded() {
         let mut app = App::new_for_test();
-        app.data_state = DataState::Loaded {
-            pr: Box::new(PullRequest {
+        app.install_loaded(
+            Box::new(PullRequest {
                 number: 42,
                 node_id: None,
                 title: "Add feature X".to_string(),
@@ -246,8 +246,8 @@ mod tests {
                 },
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
             }),
-            files: vec![].into(),
-        };
+            vec![].into(),
+        );
         assert_eq!(build_pr_info(&app), "PR #42: Add feature X by @alice");
     }
 
