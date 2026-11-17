@@ -68,7 +68,7 @@ tree-sitter-bash = "0.25.1"
 tree-sitter-php = "0.24.2"
 tree-sitter-swift = "0.7.1"
 # tree-sitter-kotlin-ng = "1.1.0"  # TODO: highlights.scm が tree-sitter 互換でない (#lua-match?)
-tree-sitter-haskell = "0.23.1"
+tree-sitter-haskell = "0.24.1"
 # tree-sitter-svelte-ng = "1.0.2"  # TODO: injection が必要 (syntect にフォールバック)
 # Phase 2: MoonBit
 tree-sitter-moonbit = { package = "octorus-tree-sitter-moonbit", path = "crates/tree-sitter-moonbit", version = "0.1.0" }

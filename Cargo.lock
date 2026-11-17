@@ -1013,7 +1013,7 @@ dependencies = [
  "tree-sitter-c-sharp",
  "tree-sitter-cpp",
  "tree-sitter-go",
- "tree-sitter-haskell",
+ "tree-sitter-haskell 0.23.1",
  "tree-sitter-java",
  "tree-sitter-javascript",
  "tree-sitter-lua",
@@ -1585,7 +1585,7 @@ dependencies = [
  "tree-sitter-cpp",
  "tree-sitter-css",
  "tree-sitter-go",
- "tree-sitter-haskell",
+ "tree-sitter-haskell 0.24.1",
  "tree-sitter-html",
  "tree-sitter-java",
  "tree-sitter-javascript",
@@ -3115,6 +3115,16 @@ name = "tree-sitter-haskell"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-haskell"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "781de30e0d1ec8e6db4ed799d36ce1cedaf4684374dada45ebe2a8ea44c3f814"
 dependencies = [
  "cc",
  "tree-sitter-language",
