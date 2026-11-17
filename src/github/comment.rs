@@ -264,7 +264,9 @@ pub async fn create_review_comment(
 ///
 /// GitHub API の `line`/`start_line`/`side`/`start_side` パラメータを使用。
 /// `start` は範囲の先頭、`end` は末尾で、それぞれの `side` を `LEFT`/`RIGHT` に
-/// 変換して送る。`start.line` < `end.line` であること。単一行の場合は
+/// 変換して送る。`start` は diff 上で `end` より前であること。同じ side なら
+/// それは `start.line` < `end.line` を意味する。行番号は別ファイルのものなので、
+/// `LEFT` から `RIGHT` への範囲も送れる。単一行の場合は
 /// [`create_review_comment`] を使用。
 ///
 /// NOTE: `subject_type` は送らない。`line`/`start_line`/`side`/`start_side` と
