@@ -2,7 +2,8 @@
 //!
 //! Capture order is part of the highlight: `apply_line_highlights` resolves
 //! overlaps from that order, and the whole-tree cursor emits duplicate
-//! captures. These tests compare the rendered spans, not the match set.
+//! captures. These tests compare the rendered spans and the raw capture
+//! sequence the cursor emitted.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -13,8 +14,9 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{
     apply_line_highlights, collect_line_highlights_bounded,
-    collect_line_highlights_with_injections, visible_tree_depth, ForcePlan, HighlightAbort,
-    HighlightControl, Highlighter, LineHighlights, QueryPlan, DEEP_TREE_MIN_DEPTH,
+    collect_line_highlights_with_injections, selected_query_plan, trace_raw_captures,
+    visible_tree_depth, ForcePlan, HighlightAbort, HighlightControl, Highlighter, LineHighlights,
+    OpenHighlight, QueryPlan, DEEP_TREE_MIN_DEPTH,
 };
 use crate::syntax::ParserPool;
 use crate::ui::diff_view::build_diff_cache;
@@ -107,6 +109,87 @@ fn assert_same_highlight(filename: &str, source: &str) {
         !whole.is_empty() || source.trim().is_empty(),
         "{filename} produced no highlighted spans"
     );
+    assert_same_captures(filename, source);
+}
+
+fn assert_same_captures(filename: &str, source: &str) {
+    let mut pool = ParserPool::new();
+    let highlighter = Highlighter::for_file(filename, "Dracula");
+    let Some(parsed) = highlighter.parse_source(source, &mut pool) else {
+        return;
+    };
+    let query = pool.get_or_create_query(parsed.lang).expect("query");
+    let names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let style = highlighter.style_cache().expect("style");
+    let _guard = force(Some(QueryPlan::Whole));
+    let whole = trace_raw_captures(source, &parsed.tree, query, &names, style);
+    drop(_guard);
+    let _guard = force(Some(QueryPlan::Slabs));
+    let slabs = trace_raw_captures(source, &parsed.tree, query, &names, style);
+    assert_eq!(
+        whole.len(),
+        slabs.len(),
+        "{filename} capture count differs (whole {}, slabs {})",
+        whole.len(),
+        slabs.len()
+    );
+    for (i, (left, right)) in whole.iter().zip(&slabs).enumerate() {
+        if left.pattern == right.pattern
+            && left.index == right.index
+            && left.start == right.start
+            && left.end == right.end
+        {
+            continue;
+        }
+        let name = names
+            .get(left.index as usize)
+            .map(String::as_str)
+            .unwrap_or("?");
+        let other = names
+            .get(right.index as usize)
+            .map(String::as_str)
+            .unwrap_or("?");
+        let left_text = source.get(left.start..left.end).unwrap_or("");
+        let right_text = source.get(right.start..right.end).unwrap_or("");
+        let listed = |caps: &[super::RawCapture]| {
+            let mut lines = String::new();
+            let mut shown = 0;
+            for (n, cap) in caps.iter().enumerate() {
+                if cap.start != left.start || cap.end != left.end {
+                    continue;
+                }
+                if shown >= 8 {
+                    lines.push_str(" ...");
+                    break;
+                }
+                shown += 1;
+                lines.push_str(&format!(
+                    "\n  [{n}] p{} finish {} d{}",
+                    cap.pattern, cap.finish, cap.depth
+                ));
+            }
+            lines
+        };
+        panic!(
+            "{filename} capture {i} differs\n whole p{} {name} {left_text:?} {}..{} finish {} d{}\n slabs p{} {other} {right_text:?} {}..{} finish {} d{}\n whole same-range:{}\n slabs same-range:{}",
+            left.pattern,
+            left.start,
+            left.end,
+            left.finish,
+            left.depth,
+            right.pattern,
+            right.start,
+            right.end,
+            right.finish,
+            right.depth,
+            listed(&whole),
+            listed(&slabs)
+        );
+    }
 }
 
 fn tree_depth(filename: &str, source: &str) -> u32 {
@@ -859,4 +942,212 @@ fn slab_path_still_honors_cancellation_and_match_limit() {
         highlight_bounded("Synthetic.hs", &source, &limited).err(),
         Some(HighlightAbort::MatchLimit)
     );
+}
+
+fn parsed_tree(filename: &str, source: &str) -> tree_sitter::Tree {
+    let mut pool = ParserPool::new();
+    let highlighter = Highlighter::for_file(filename, "Dracula");
+    highlighter
+        .parse_source(source, &mut pool)
+        .unwrap_or_else(|| panic!("{filename} did not parse"))
+        .tree
+}
+
+fn bushy_rust(depth: usize, width: usize) -> String {
+    let mut source = String::from("fn main() {\n");
+    for _ in 0..depth {
+        source.push_str("{\n");
+        for n in 0..width {
+            source.push_str("let _x = ");
+            source.push_str(&n.to_string());
+            source.push_str(";\n");
+        }
+    }
+    for _ in 0..depth {
+        source.push_str("}\n");
+    }
+    source.push_str("}\n");
+    source
+}
+
+fn peak_rss_bytes() -> u64 {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    for line in status.lines() {
+        let Some(rest) = line.strip_prefix("VmHWM:") else {
+            continue;
+        };
+        let kb: u64 = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        return kb.saturating_mul(1024);
+    }
+    0
+}
+
+#[test]
+fn deep_chain_uses_slabs_and_keeps_capture_order() {
+    let source = post_change_source(&generate_haskell_diff_patch(1_000));
+    let tree = parsed_tree("Synthetic.hs", &source);
+    let depth = visible_tree_depth(&tree);
+    assert!(
+        depth > DEEP_TREE_MIN_DEPTH,
+        "synthetic depth {depth} never reached the slab threshold"
+    );
+    assert_eq!(selected_query_plan(&tree).expect("plan"), QueryPlan::Slabs);
+    assert_same_captures("Synthetic.hs", &source);
+}
+
+#[test]
+fn bushy_deep_tree_stays_on_the_whole_cursor() {
+    let source = bushy_rust(520, 16);
+    let tree = parsed_tree("bushy.rs", &source);
+    let depth = visible_tree_depth(&tree);
+    assert!(
+        depth > DEEP_TREE_MIN_DEPTH,
+        "bushy fixture depth {depth} is not deep enough to test the gate"
+    );
+    assert_eq!(
+        selected_query_plan(&tree).expect("plan"),
+        QueryPlan::Whole,
+        "a wide tree at depth {depth} must stay on the whole-tree cursor"
+    );
+}
+
+/// Peak RSS of one deep highlight.
+///
+/// ```text
+/// OCTORUS_RSS_CASE=synthetic|js|ghc|realistic|file
+/// OCTORUS_RSS_PLAN=auto|whole|slabs
+/// OCTORUS_RSS_LINES=1050000
+/// OCTORUS_RSS_FILE=/path   (when case=file)
+/// cargo test --release --lib syntax::highlighter::deep_tree::deep_input_peak_rss -- --ignored --exact
+/// ```
+///
+/// Writes `octorus-rss-<case>-<plan>.txt` under the temp dir with elapsed
+/// milliseconds and `VmHWM`. The auto and slabs plans must stay under 8 GiB.
+#[test]
+#[ignore = "peak RSS of a ~1M-line highlight; run release with --ignored"]
+fn deep_input_peak_rss() {
+    let case = std::env::var("OCTORUS_RSS_CASE").unwrap_or_else(|_| "synthetic".to_string());
+    let plan_name = std::env::var("OCTORUS_RSS_PLAN").unwrap_or_else(|_| "auto".to_string());
+    let source = match case.as_str() {
+        "js" => js_million(rss_lines(1_000_000)),
+        "ghc" => ghc_million(rss_lines(1_020_000)),
+        "realistic" => scale_haskell_module(&ghc("Expr.hs"), rss_lines(8_000)),
+        "file" => {
+            let path = std::env::var("OCTORUS_RSS_FILE").expect("OCTORUS_RSS_FILE");
+            std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{path}: {err}"))
+        }
+        _ => post_change_source(&generate_haskell_diff_patch(rss_lines(1_050_000))),
+    };
+    let filename = match case.as_str() {
+        "js" => "million.js",
+        "ghc" | "file" if source_looks_like_haskell(&source) => "million.hs",
+        "file" => "million.txt",
+        _ => "Synthetic.hs",
+    };
+    let filename = if case == "file" {
+        std::env::var("OCTORUS_RSS_NAME").unwrap_or_else(|_| filename.to_string())
+    } else {
+        filename.to_string()
+    };
+    let plan = match plan_name.as_str() {
+        "whole" => Some(QueryPlan::Whole),
+        "slabs" => Some(QueryPlan::Slabs),
+        _ => None,
+    };
+    let before = peak_rss_bytes();
+    let mut pool = ParserPool::new();
+    let highlighter = Highlighter::for_file(&filename, "Dracula");
+    let parsed = highlighter
+        .parse_source(&source, &mut pool)
+        .unwrap_or_else(|| panic!("{filename} did not parse"));
+    let depth = visible_tree_depth(&parsed.tree);
+    let nodes = parsed.tree.root_node().descendant_count();
+    let chosen = selected_query_plan(&parsed.tree).expect("plan");
+    let query = pool.get_or_create_query(parsed.lang).expect("query");
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let style = highlighter.style_cache().expect("style");
+    let _guard = force(plan);
+    let started = std::time::Instant::now();
+    collect_line_highlights_bounded(
+        &source,
+        &parsed.tree,
+        query,
+        &capture_names,
+        style,
+        &OpenHighlight,
+    )
+    .expect("highlight");
+    let elapsed_ms = started.elapsed().as_millis();
+    drop(_guard);
+    let after = peak_rss_bytes();
+    let path = std::env::temp_dir().join(format!("octorus-rss-{case}-{plan_name}.txt"));
+    std::fs::write(
+        &path,
+        format!(
+            "case={case} plan={plan_name} chosen={chosen:?} ms={elapsed_ms} rss_before={before} rss_after={after} depth={depth} nodes={nodes} bytes={}\n",
+            source.len()
+        ),
+    )
+    .expect("write rss");
+    if plan_name != "whole" {
+        assert!(
+            after < 8 * 1024 * 1024 * 1024,
+            "peak RSS {after} bytes for {case}/{plan_name}; see {}",
+            path.display()
+        );
+    }
+}
+
+fn rss_lines(default: usize) -> usize {
+    std::env::var("OCTORUS_RSS_LINES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(default)
+}
+
+fn source_looks_like_haskell(source: &str) -> bool {
+    source.contains("module ") || source.contains("::")
+}
+
+fn js_million(statements: usize) -> String {
+    let mut source = String::new();
+    for _ in 0..308 {
+        source.push_str("{\n");
+    }
+    for i in 0..statements {
+        source.push_str("x = ");
+        source.push_str(&i.to_string());
+        source.push_str(";\n");
+    }
+    for _ in 0..308 {
+        source.push_str("}\n");
+    }
+    source
+}
+
+fn ghc_million(target_lines: usize) -> String {
+    let parts = [ghc("Expr.hs"), ghc("Pat.hs"), ghc("Type.hs")];
+    let batch_lines: usize = parts.iter().map(|part| part.lines().count() + 1).sum();
+    let mut source = String::new();
+    let mut lines = 0usize;
+    while lines < target_lines {
+        for part in &parts {
+            source.push_str(part);
+            source.push('\n');
+        }
+        lines += batch_lines;
+    }
+    source
 }
