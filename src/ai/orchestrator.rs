@@ -1528,8 +1528,7 @@ impl Orchestrator {
                 self.pr_number,
                 &context.head_sha,
                 &comment.path,
-                anchor.line,
-                anchor.side.as_github_side(),
+                anchor,
                 &body_with_prefix,
             )
             .await
