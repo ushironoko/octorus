@@ -1497,7 +1497,6 @@ impl Orchestrator {
 
         // Post inline comments with rate limit handling
         for comment in &review.comments {
-            // Convert line number to patch position
             let patch = context
                 .file_patches
                 .iter()
@@ -1509,9 +1508,14 @@ impl Orchestrator {
                 continue;
             };
 
-            let Some(position) = crate::diff::line_number_to_position(patch, comment.line) else {
+            // Reviewer output names a new-file line. That is the line the old
+            // `position` lookup could place, sent now as `line` + `side`.
+            // Added and context rows are RIGHT. A line that is not on the new
+            // file (including a deletion, which needs the old-file number and
+            // LEFT) is skipped, which is what a missing position did.
+            let Some(anchor) = crate::diff::line_number_to_side_line(patch, comment.line) else {
                 warn!(
-                    "Could not convert line {} to position for {}, skipping comment",
+                    "Could not place line {} in the diff for {}, skipping comment",
                     comment.line, comment.path
                 );
                 continue;
@@ -1524,14 +1528,18 @@ impl Orchestrator {
                 self.pr_number,
                 &context.head_sha,
                 &comment.path,
-                position,
+                anchor.line,
+                anchor.side.as_github_side(),
                 &body_with_prefix,
             )
             .await
             {
                 warn!(
-                    "Failed to post inline comment on {}:{} (position {}): {}",
-                    comment.path, comment.line, position, e
+                    "Failed to post inline comment on {}:{} ({}): {}",
+                    comment.path,
+                    anchor.line,
+                    anchor.side.as_github_side(),
+                    e
                 );
             }
             // Rate limit mitigation: small delay between API calls

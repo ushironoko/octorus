@@ -655,16 +655,15 @@ pub fn review_comment_span(patch: &str, start: usize, end: usize) -> Option<Revi
     })
 }
 
-/// Convert a file line number (new_line_number) to a patch position.
+/// Convert a new-file line number to a patch position.
 ///
-/// Used by AI Rally to convert line numbers from reviewer output to GitHub API positions.
-/// Scans the entire patch to find the Added or Context line matching the target line number.
-/// Position counting follows the same rules as `get_line_info`: meta lines are skipped,
-/// the first `@@` is not counted (position 1 is the line below it), and subsequent `@@`
-/// headers are counted.
+/// Scans for the Added or Context row with that new-file number. Position
+/// counting matches [`get_line_info`]: meta lines are skipped, the first `@@`
+/// is not counted, and later `@@` headers are. Works with GitHub API patches
+/// (starting with `@@`) and local diffs (starting with `diff --git`).
 ///
-/// Works with both GitHub API patches (starting with `@@`) and local diff patches
-/// (starting with `diff --git` meta lines).
+/// Posting a review comment sends [`line_number_to_side_line`], which is this
+/// position as `line` and `side`. The position itself is not sent.
 pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
     let mut new_line_number: Option<u32> = None;
     let mut position_counter: Option<u32> = None;
@@ -697,6 +696,20 @@ pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
         }
     }
     None
+}
+
+/// `line` and `side` for a reviewer comment on new-file line `target_line`.
+///
+/// This is [`line_number_to_position`] followed by [`position_to_side_line`]:
+/// the rows the deprecated `position` could place, as the file line and side
+/// `POST /pulls/{n}/comments` accepts. An added or context row is `RIGHT` with
+/// `target_line`. A line that is not on the new file is `None`, including a
+/// deletion. A deleted-line comment is `LEFT` plus the old-file number, which
+/// this lookup does not invent from a new-file line number. A position that is
+/// not a file row is `None` too, so the caller skips it instead of posting.
+pub fn line_number_to_side_line(patch: &str, target_line: u32) -> Option<SideLine> {
+    let position = line_number_to_position(patch, target_line)?;
+    position_to_side_line(patch, position)
 }
 
 /// The row a GitHub review-comment `position` names, as the side and line number GitHub
@@ -1696,6 +1709,42 @@ index 1234567..abcdefg 100644
     fn test_line_number_to_position_nonexistent_line() {
         assert_eq!(line_number_to_position(SAMPLE_PATCH, 999), None);
         assert_eq!(line_number_to_position(SAMPLE_PATCH, 0), None);
+    }
+
+    #[test]
+    fn line_number_to_side_line_is_right_for_every_line_position_could_place() {
+        // Context and added rows are the new file. A deletion is not, so the
+        // old-file number stays unplaced, matching the position lookup.
+        let deleted = "@@ -1,2 +1,1 @@\n kept\n-gone\n";
+        assert_eq!(
+            line_number_to_side_line(deleted, 1),
+            Some(SideLine::right(1))
+        );
+        assert_eq!(line_number_to_side_line(deleted, 2), None);
+
+        let patches = [
+            SAMPLE_PATCH,
+            "@@ -1,3 +1,3 @@\n-old1\n+new1\n ctx\n@@ -10,2 +10,2 @@\n-old2\n+new2",
+            "diff --git a/foo.rs b/foo.rs\nindex 123..456 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }",
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file",
+        ];
+        for patch in patches {
+            for line in 0..30 {
+                let Some(position) = line_number_to_position(patch, line) else {
+                    assert_eq!(
+                        line_number_to_side_line(patch, line),
+                        None,
+                        "{patch:?} line {line}"
+                    );
+                    continue;
+                };
+                assert_eq!(
+                    line_number_to_side_line(patch, line),
+                    Some(SideLine::right(line)),
+                    "position {position} of line {line} in {patch:?}"
+                );
+            }
+        }
     }
 
     // --- position_to_side_line tests ---
