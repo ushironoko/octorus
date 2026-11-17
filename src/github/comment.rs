@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::client::{gh_api_paginate, gh_api_post, FieldValue};
 use super::pr::User;
+use crate::diff::SideLine;
 
 /// ジェネリックなfetch & parse関数（ページネーション対応）
 async fn fetch_and_parse<T: DeserializeOwned>(
@@ -167,45 +168,44 @@ impl ApiField {
 
 /// `commit_id`, `path`, `body`, `line`, `side` for one line.
 ///
-/// `side` is `RIGHT` with the new-file line (added or context) or `LEFT` with
-/// the old-file line (deleted). `subject_type` and the deprecated `position`
-/// are not included.
+/// `line.side` becomes GitHub's `RIGHT` (new file: added or context) or `LEFT`
+/// (old file: deleted) here, where the request is built. `subject_type` and the
+/// deprecated `position` are not included.
 fn single_line_review_comment_fields(
     commit_id: &str,
     path: &str,
     body: &str,
-    line: u32,
-    side: &str,
+    line: SideLine,
 ) -> Vec<ApiField> {
     vec![
         ApiField::string("body", body),
         ApiField::string("commit_id", commit_id),
         ApiField::string("path", path),
-        ApiField::raw_number("line", line),
-        ApiField::string("side", side),
+        ApiField::raw_number("line", line.line),
+        ApiField::string("side", line.side.as_github_side()),
     ]
 }
 
-/// `start_line`/`start_side` plus `line`/`side` for a range on one side.
+/// `start_line`/`start_side` plus `line`/`side` for a range.
 ///
-/// Same keys `create_multiline_review_comment` has always posted. `subject_type`
-/// and `position` are not included.
+/// Same keys `create_multiline_review_comment` has always posted. Each end's
+/// side is converted to `LEFT`/`RIGHT` here. `subject_type` and `position` are
+/// not included.
 fn multiline_review_comment_fields(
     commit_id: &str,
     path: &str,
     body: &str,
-    start_line: u32,
-    end_line: u32,
-    side: &str,
+    start: SideLine,
+    end: SideLine,
 ) -> Vec<ApiField> {
     vec![
         ApiField::string("body", body),
         ApiField::string("commit_id", commit_id),
         ApiField::string("path", path),
-        ApiField::raw_number("start_line", start_line),
-        ApiField::raw_number("line", end_line),
-        ApiField::string("start_side", side),
-        ApiField::string("side", side),
+        ApiField::raw_number("start_line", start.line),
+        ApiField::raw_number("line", end.line),
+        ApiField::string("start_side", start.side.as_github_side()),
+        ApiField::string("side", end.side.as_github_side()),
     ]
 }
 
@@ -234,25 +234,23 @@ async fn post_pull_comment(
 /// 単一行のレビューコメントを作成する。
 ///
 /// `POST /repos/{owner}/{repo}/pulls/{n}/comments` に `commit_id`, `path`,
-/// `body`, `line`, `side` を送る。`line` はそのファイルの行番号で、`side` が
-/// `RIGHT` なら新しいファイル（追加行・コンテキスト行）、`LEFT` なら古いファイル
-/// （削除行）の番号を渡す。
+/// `body`, `line`, `side` を送る。`line` はそのファイルの行番号で、side が
+/// 右なら新しいファイル（追加行・コンテキスト行）、左なら古いファイル（削除行）
+/// の番号を渡す。`LEFT`/`RIGHT` への変換はリクエストを組むときだけ行う。
 ///
 /// NOTE: `subject_type` は送らない。`line`/`side` と一緒に送ると oneOf で
 /// `"subject_type" is not a permitted key` の 422 になる（2026-11-17 に確認）。
 /// `subject_type` を付けなければ 201 で、応答の `subject_type` は API が `line` にする。
 /// 複数行の [`create_multiline_review_comment`] も同じ規則。非推奨の `position` は送らない。
-#[allow(clippy::too_many_arguments)]
 pub async fn create_review_comment(
     repo: &str,
     pr_number: u32,
     commit_id: &str,
     path: &str,
-    line: u32,
-    side: &str,
+    line: SideLine,
     body: &str,
 ) -> Result<ReviewComment> {
-    let fields = single_line_review_comment_fields(commit_id, path, body, line, side);
+    let fields = single_line_review_comment_fields(commit_id, path, body, line);
     post_pull_comment(
         repo,
         pr_number,
@@ -265,25 +263,27 @@ pub async fn create_review_comment(
 /// 複数行レビューコメントを作成する。
 ///
 /// GitHub API の `line`/`start_line`/`side`/`start_side` パラメータを使用。
-/// `start_line` < `line` であること。単一行の場合は `create_review_comment` を使用。
+/// `start` は範囲の先頭、`end` は末尾で、それぞれの `side` を `LEFT`/`RIGHT` に
+/// 変換して送る。`start` は diff 上で `end` より前であること。同じ side なら
+/// それは `start.line` < `end.line` を意味する。行番号は別ファイルのものなので、
+/// `LEFT` から `RIGHT` への範囲も送れる。単一行の場合は
+/// [`create_review_comment`] を使用。
 ///
 /// NOTE: `subject_type` は送らない。`line`/`start_line`/`side`/`start_side` と
 /// 一緒に送ると oneOf で `"subject_type" is not a permitted key` の 422 になる
 /// （2026-11-17 に確認）。付けなければ 201 で、API は line-level コメントとして扱う
 /// （応答の `subject_type` は `line`）。単一行の [`create_review_comment`] と同じ規則。
 /// 非推奨の `position` は送らない。
-#[allow(clippy::too_many_arguments)]
 pub async fn create_multiline_review_comment(
     repo: &str,
     pr_number: u32,
     commit_id: &str,
     path: &str,
-    start_line: u32,
-    end_line: u32,
-    side: &str,
+    start: SideLine,
+    end: SideLine,
     body: &str,
 ) -> Result<ReviewComment> {
-    let fields = multiline_review_comment_fields(commit_id, path, body, start_line, end_line, side);
+    let fields = multiline_review_comment_fields(commit_id, path, body, start, end);
     post_pull_comment(
         repo,
         pr_number,
@@ -568,7 +568,8 @@ mod tests {
 
     #[test]
     fn single_line_right_request_is_the_new_file_line_and_side() {
-        let fields = single_line_review_comment_fields("abc", "src/app.rs", "nit", 42, "RIGHT");
+        let fields =
+            single_line_review_comment_fields("abc", "src/app.rs", "nit", SideLine::right(42));
         assert_eq!(
             fields.iter().map(|field| field.key).collect::<Vec<_>>(),
             ["body", "commit_id", "path", "line", "side"]
@@ -589,7 +590,8 @@ mod tests {
 
     #[test]
     fn single_line_left_request_is_the_old_file_line() {
-        let fields = single_line_review_comment_fields("abc", "src/app.rs", "gone", 11, "LEFT");
+        let fields =
+            single_line_review_comment_fields("abc", "src/app.rs", "gone", SideLine::left(11));
         assert_number_field(&fields, "line");
         assert_string_field(&fields, "side");
         assert_eq!(
@@ -606,7 +608,13 @@ mod tests {
 
     #[test]
     fn multiline_request_sends_the_range_on_one_side() {
-        let fields = multiline_review_comment_fields("abc", "src/app.rs", "span", 10, 12, "RIGHT");
+        let fields = multiline_review_comment_fields(
+            "abc",
+            "src/app.rs",
+            "span",
+            SideLine::right(10),
+            SideLine::right(12),
+        );
         assert_eq!(
             fields.iter().map(|field| field.key).collect::<Vec<_>>(),
             [
@@ -639,7 +647,13 @@ mod tests {
 
     #[test]
     fn multiline_left_request_uses_the_old_file_for_both_ends() {
-        let fields = multiline_review_comment_fields("abc", "src/app.rs", "gone", 11, 12, "LEFT");
+        let fields = multiline_review_comment_fields(
+            "abc",
+            "src/app.rs",
+            "gone",
+            SideLine::left(11),
+            SideLine::left(12),
+        );
         assert_eq!(
             request_object(&fields),
             serde_json::json!({
@@ -653,6 +667,31 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn multiline_request_sends_each_end_side() {
+        let fields = multiline_review_comment_fields(
+            "abc",
+            "src/app.rs",
+            "span",
+            SideLine::left(11),
+            SideLine::right(12),
+        );
+        assert_string_field(&fields, "start_side");
+        assert_string_field(&fields, "side");
+        assert_eq!(
+            request_object(&fields),
+            serde_json::json!({
+                "body": "span",
+                "commit_id": "abc",
+                "path": "src/app.rs",
+                "start_line": 11,
+                "line": 12,
+                "start_side": "LEFT",
+                "side": "RIGHT",
+            })
+        );
+    }
 }
 
 /// The comment posts run against the `gh` test double, so the logged argv is the
@@ -661,6 +700,7 @@ mod tests {
 #[cfg(all(test, unix))]
 mod fake_gh_tests {
     use super::{create_multiline_review_comment, create_review_comment};
+    use crate::diff::SideLine;
     use crate::github::fake_gh::FakeGh;
     use serial_test::serial;
 
@@ -684,9 +724,10 @@ mod fake_gh_tests {
     async fn create_review_comment_posts_line_and_right_side() {
         let gh = FakeGh::install("", &created(42, "RIGHT"), "", "");
 
-        let comment = create_review_comment("o/r", 7, "abc", "src/app.rs", 42, "RIGHT", "nit")
-            .await
-            .unwrap();
+        let comment =
+            create_review_comment("o/r", 7, "abc", "src/app.rs", SideLine::right(42), "nit")
+                .await
+                .unwrap();
 
         let calls = gh.calls();
         assert_posted_without_subject_type_or_position(&calls);
@@ -704,7 +745,7 @@ mod fake_gh_tests {
     async fn create_review_comment_posts_left_for_an_old_file_line() {
         let gh = FakeGh::install("", &created(11, "LEFT"), "", "");
 
-        create_review_comment("o/r", 7, "abc", "src/app.rs", 11, "LEFT", "gone")
+        create_review_comment("o/r", 7, "abc", "src/app.rs", SideLine::left(11), "gone")
             .await
             .unwrap();
 
@@ -720,9 +761,17 @@ mod fake_gh_tests {
     async fn create_multiline_review_comment_posts_the_range_without_subject_type() {
         let gh = FakeGh::install("", &created(12, "RIGHT"), "", "");
 
-        create_multiline_review_comment("o/r", 7, "abc", "src/app.rs", 10, 12, "RIGHT", "span")
-            .await
-            .unwrap();
+        create_multiline_review_comment(
+            "o/r",
+            7,
+            "abc",
+            "src/app.rs",
+            SideLine::right(10),
+            SideLine::right(12),
+            "span",
+        )
+        .await
+        .unwrap();
 
         let calls = gh.calls();
         assert_posted_without_subject_type_or_position(&calls);
@@ -738,9 +787,17 @@ mod fake_gh_tests {
     async fn create_multiline_review_comment_posts_left_for_both_ends() {
         let gh = FakeGh::install("", &created(12, "LEFT"), "", "");
 
-        create_multiline_review_comment("o/r", 7, "abc", "src/app.rs", 11, 12, "LEFT", "gone")
-            .await
-            .unwrap();
+        create_multiline_review_comment(
+            "o/r",
+            7,
+            "abc",
+            "src/app.rs",
+            SideLine::left(11),
+            SideLine::left(12),
+            "gone",
+        )
+        .await
+        .unwrap();
 
         let calls = gh.calls();
         assert_posted_without_subject_type_or_position(&calls);
@@ -749,5 +806,31 @@ mod fake_gh_tests {
         assert!(calls.contains("-f start_side=LEFT"), "{calls}");
         assert!(calls.contains("-f side=LEFT"), "{calls}");
         assert!(!calls.contains("RIGHT"), "{calls}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn create_multiline_review_comment_posts_each_end_side() {
+        let gh = FakeGh::install("", &created(12, "RIGHT"), "", "");
+
+        create_multiline_review_comment(
+            "o/r",
+            7,
+            "abc",
+            "src/app.rs",
+            SideLine::left(11),
+            SideLine::right(12),
+            "span",
+        )
+        .await
+        .unwrap();
+
+        let calls = gh.calls();
+        assert_posted_without_subject_type_or_position(&calls);
+        assert!(calls.contains("-F start_line=11"), "{calls}");
+        assert!(calls.contains("-F line=12"), "{calls}");
+        assert!(calls.contains("-f start_side=LEFT"), "{calls}");
+        assert!(calls.contains("-f side=RIGHT"), "{calls}");
+        assert!(calls.contains("-f body=span"), "{calls}");
     }
 }
