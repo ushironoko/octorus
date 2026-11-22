@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794720542536,
+  "lastUpdate": 1795326411106,
   "repoUrl": "https://github.com/ushironoko/octorus",
   "entries": {
     "octorus Benchmark": [
@@ -18381,6 +18381,250 @@ window.BENCHMARK_DATA = {
             "name": "diff_parsing/get_line_info_complexity/complex",
             "value": 15764,
             "range": "± 1364",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "ushironoko",
+            "username": "ushironoko",
+            "email": "apple19940820@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f0ba7614bc248de7b2bfb583a133125acf7748e2",
+          "message": "Highlight deep syntax trees with depth-bounded queries (#284)\n\n* Highlight deep syntax trees with depth-bounded queries\n\nError-recovered Haskell nests apply-chains thousands deep, and a\ntree-sitter query cursor then costs nodes times depth. Past a depth of\n256, run the highlight query from every eighth level with\nset_max_start_depth(8) and replay captures in whole-cursor order.\nShallower files keep the original single cursor.\n\nRefs #190.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n* Bound slab-query memory and match whole-cursor capture order\n\nSlab queries now run only for a narrow chain deeper than 512, pack\nmatches into one arena, and dedupe only against the parent slab. Bushy\nand ordinary files stay on the original cursor. The finish byte is read\nthrough QueryCursor::into_raw, tree-sitter is pinned to 0.26.11, and a\nfailed layout probe falls back to the whole-tree cursor. Raw capture\norder matches that cursor.\n\nRefs #190.\n\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>\n\n---------\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>\nCo-authored-by: ushironoko <ushironoko@users.noreply.github.com>",
+          "timestamp": "2026-11-17T15:26:03Z",
+          "url": "https://github.com/ushironoko/octorus/commit/f0ba7614bc248de7b2bfb583a133125acf7748e2"
+        },
+        "date": 1795326410697,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "diff_parsing/classify_line/header",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_diff",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_plus",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/meta_minus",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/added",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/removed",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line/context_long",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/100",
+            "value": 238,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/500",
+            "value": 1162,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/classify_line_batch/1000",
+            "value": 2310,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/start/5",
+            "value": 1068,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/middle/50",
+            "value": 1176,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/100/end/95",
+            "value": 1294,
+            "range": "± 222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/start/5",
+            "value": 4583,
+            "range": "± 59",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/middle/250",
+            "value": 5340,
+            "range": "± 258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/500/end/495",
+            "value": 5978,
+            "range": "± 118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/start/5",
+            "value": 8829,
+            "range": "± 186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/middle/500",
+            "value": 10453,
+            "range": "± 178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info/1000/end/995",
+            "value": 11823,
+            "range": "± 192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/simple",
+            "value": 9829,
+            "range": "± 269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/get_line_info_complexity/complex",
+            "value": 10479,
+            "range": "± 269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/100/start/5",
+            "value": 9,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/100/middle/50",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/100/end/95",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/500/start/5",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/500/middle/250",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/500/end/495",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/1000/start/5",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/1000/middle/500",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/patch_lookup_line/1000/end/995",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/comment_positions/indexed/1000",
+            "value": 43783,
+            "range": "± 2987",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/comment_positions/linear/1000",
+            "value": 757467,
+            "range": "± 16234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/comment_positions/indexed/100000",
+            "value": 9867590,
+            "range": "± 113536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/comment_positions/linear/100000",
+            "value": 205523232,
+            "range": "± 2506093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/comment_positions/indexed/1000000",
+            "value": 83298598,
+            "range": "± 2001916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diff_parsing/comment_positions/linear/1000000",
+            "value": 1049181456,
+            "range": "± 43842384",
             "unit": "ns/iter"
           }
         ]
