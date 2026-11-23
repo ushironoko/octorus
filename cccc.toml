@@ -1,0 +1,4 @@
+# Report-only. No max-cognitive / max-cyclomatic: cccc exits 0 however high
+# a function scores, so CI records the ranking and does not gate on it.
+languages = ["rust"]
+exclude = ["**/tests.rs", "tests/**", "benches/**"]
