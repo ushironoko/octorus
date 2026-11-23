@@ -777,6 +777,38 @@ class Service {
     }
 
     #[test]
+    fn test_extract_haskell_type_synonym() {
+        let source = "module Example where\n\ntype Label = Text\n";
+        insta::assert_debug_snapshot!(outline(source, "Example.hs"), @r#"
+        [
+            (
+                "Example",
+                Module,
+                1,
+                0,
+            ),
+            (
+                "Label",
+                Type,
+                3,
+                0,
+            ),
+        ]
+        "#);
+    }
+
+    #[test]
+    fn test_haskell_tags_query_names_type_synonym() {
+        let source = include_str!("queries/haskell/tags.scm");
+        assert!(
+            source.contains("(type_synonym name: (name) @name) @definition.type"),
+            "haskell tags must name the 0.24.1 type synonym node"
+        );
+        tree_sitter::Query::new(&tree_sitter_haskell::LANGUAGE.into(), source)
+            .expect("haskell tags query compiles");
+    }
+
+    #[test]
     fn test_extract_markdown_headings() {
         let source = "# Title\n\nintro\n\n## Usage\n\n### Options\n";
         insta::assert_debug_snapshot!(outline(source, "README.md"), @r#"
