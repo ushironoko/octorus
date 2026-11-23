@@ -73,8 +73,8 @@ pub fn local_log_timestamp() -> String {
 }
 
 fn format_local_now(format: &str) -> String {
-    Timestamp::now()
-        .to_zoned_datetime(local_time_zone())
+    let now = Timestamp::now();
+    now.to_zoned_datetime(local_zone_at(now.as_second()))
         .strftime(format)
         .to_string()
 }
@@ -82,17 +82,45 @@ fn format_local_now(format: &str) -> String {
 /// Zone chrono 0.4.45's `Local` would use.
 ///
 /// Usable `TZ` values follow chrono's file-then-POSIX rules (`from_posix_tz`).
+/// A POSIX rule is parsed with chrono's `from_tz_string(..., false)`, not jiff.
 /// `TZ` unset reads `/etc/localtime` as TZif, following symlinks and ignoring
 /// the link text. Anything else uses the `iana-time-zone` 0.1.64 name fallback
 /// chrono calls, then `/usr/share/zoneinfo/<name>`, else UTC.
+#[cfg(test)]
 fn local_time_zone() -> jiff::tz::TimeZone {
+    local_zone_at(Timestamp::now().as_second())
+}
+
+fn local_zone_at(unix_time: i64) -> jiff::tz::TimeZone {
+    match current_resolved_zone() {
+        ResolvedZone::Named(zone) => zone,
+        ResolvedZone::Posix(rule) => fixed_zone(rule.offset_at(unix_time)),
+    }
+}
+
+fn fixed_zone(offset: Option<i32>) -> jiff::tz::TimeZone {
+    let Some(seconds) = offset else {
+        return jiff::tz::TimeZone::UTC;
+    };
+    jiff::tz::Offset::from_seconds(seconds)
+        .map(jiff::tz::TimeZone::fixed)
+        .unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+#[derive(Clone)]
+enum ResolvedZone {
+    Named(jiff::tz::TimeZone),
+    Posix(crate::posix_tz::PosixZone),
+}
+
+fn current_resolved_zone() -> ResolvedZone {
     #[cfg(unix)]
     {
         cached_unix_zone()
     }
     #[cfg(not(unix))]
     {
-        jiff::tz::TimeZone::try_system().unwrap_or(jiff::tz::TimeZone::UTC)
+        ResolvedZone::Named(jiff::tz::TimeZone::try_system().unwrap_or(jiff::tz::TimeZone::UTC))
     }
 }
 
@@ -196,7 +224,7 @@ fn choose_explicit_tz(
 }
 
 fn posix_rule(tz: &str) -> bool {
-    jiff::tz::TimeZone::posix(tz).is_ok()
+    crate::posix_tz::parse(tz).is_some()
 }
 
 fn locate_tz_file(spec: &str, exists: &mut impl FnMut(&str) -> bool) -> Option<String> {
@@ -282,13 +310,13 @@ fn openwrt_word(text: &str) -> Result<(&str, &str), ()> {
 }
 
 #[cfg(unix)]
-fn cached_unix_zone() -> jiff::tz::TimeZone {
+fn cached_unix_zone() -> ResolvedZone {
     use std::cell::RefCell;
     use std::time::SystemTime;
 
     struct Cache {
         key: CacheKey,
-        zone: jiff::tz::TimeZone,
+        zone: ResolvedZone,
         last_checked: SystemTime,
     }
 
@@ -359,7 +387,7 @@ fn should_replace_cached_zone(window_elapsed: bool, same_key: bool) -> bool {
 }
 
 #[cfg(unix)]
-fn load_unix_zone() -> jiff::tz::TimeZone {
+fn load_unix_zone() -> ResolvedZone {
     let tz = std::env::var("TZ").ok();
     let link = std::fs::read_link("/etc/localtime").ok();
     let localtime = match &link {
@@ -389,17 +417,21 @@ fn load_unix_zone() -> jiff::tz::TimeZone {
     // `TimeZone::local` failed (the TZif did not parse). Chrono still runs
     // the name fallback before UTC.
     let mut exists = |path: &str| std::fs::File::open(path).is_ok();
-    name_fallback_zone(&input, &mut exists)
+    ResolvedZone::Named(name_fallback_zone(&input, &mut exists))
 }
 
 #[cfg(unix)]
-fn zone_from_choice(choice: &ZoneChoice) -> Option<jiff::tz::TimeZone> {
+fn zone_from_choice(choice: &ZoneChoice) -> Option<ResolvedZone> {
     match choice {
-        ZoneChoice::Utc => Some(jiff::tz::TimeZone::UTC),
-        ZoneChoice::Posix(rule) => jiff::tz::TimeZone::posix(rule).ok(),
-        ZoneChoice::LocaltimeFile => read_tzif("/etc/localtime", "localtime"),
-        ZoneChoice::Zoneinfo(name) => read_tzif(&zoneinfo_load_path(name), name),
-        ZoneChoice::ExplicitFile { path, name } => read_tzif(path, name),
+        ZoneChoice::Utc => Some(ResolvedZone::Named(jiff::tz::TimeZone::UTC)),
+        ZoneChoice::Posix(rule) => crate::posix_tz::parse(rule).map(ResolvedZone::Posix),
+        ZoneChoice::LocaltimeFile => {
+            read_tzif("/etc/localtime", "localtime").map(ResolvedZone::Named)
+        }
+        ZoneChoice::Zoneinfo(name) => {
+            read_tzif(&zoneinfo_load_path(name), name).map(ResolvedZone::Named)
+        }
+        ZoneChoice::ExplicitFile { path, name } => read_tzif(path, name).map(ResolvedZone::Named),
     }
 }
 
@@ -1563,6 +1595,37 @@ mod tests {
         assert_eq!(invalid.ours, name);
         assert_ne!(invalid.ours, invalid.jiff);
         assert_ne!(invalid.ours, "unknown");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_digit_posix_minutes_stay_on_the_rule() {
+        if let Ok(path) = std::env::var("OCTORUS_TIMEFMT_POSIX_PROBE") {
+            let instant = 1_718_452_800;
+            let civil = Timestamp::new(instant, 0)
+                .expect("probe instant")
+                .to_zoned_datetime(local_zone_at(instant))
+                .strftime("%Y%m%d-%H%M%S")
+                .to_string();
+            std::fs::write(&path, civil).unwrap_or_else(|error| panic!("write {path}: {error}"));
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("octorus-posix-probe-{}", std::process::id()));
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("timefmt::tests::single_digit_posix_minutes_stay_on_the_rule")
+            .arg("--exact")
+            .env("OCTORUS_TIMEFMT_POSIX_PROBE", &path)
+            .env("TZ", "XYZ9:0")
+            .output()
+            .expect("spawn posix probe");
+        let report = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(report, "20240615-030000");
     }
 
     #[cfg(unix)]
