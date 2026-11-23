@@ -832,6 +832,14 @@ fn spine_exceeds(
 /// stack would sit on top of the tree. Everything else uses the cursor.
 const WINDOW_DEPTH: u32 = 65_536;
 
+/// `true` when free RAM beside the already-built tree covers main's cursor
+/// walk (ancestor stack plus the capture map).
+#[cfg(not(test))]
+fn cursor_fits_in_available() -> bool {
+    const CURSOR_FREE_BYTES: u64 = 1536 * 1024 * 1024;
+    mem_available_bytes().is_some_and(|avail| avail > CURSOR_FREE_BYTES)
+}
+
 fn window_required(tree: &Tree, control: &dyn HighlightControl) -> Result<bool, HighlightAbort> {
     #[cfg(test)]
     if FORCE_WINDOW.with(Cell::get) {
@@ -1156,6 +1164,13 @@ fn query_slabs(
     if u32::try_from(text.len()).is_err() || spill_unusable() {
         return query_whole(text, tree, query, sink, control);
     }
+    // Same choice as `begin_slab_highlight`: an uncapped process with RAM
+    // left uses the stride-cursor walk main uses. `query_whole` on a chain
+    // this deep does not finish; the window walk is only for a tight cap.
+    #[cfg(not(test))]
+    if cgroup_headroom().is_none() && cursor_fits_in_available() {
+        return query_slabs_cursor(text, tree, query, sink, control);
+    }
     // The cursor walk is the same algorithm main uses. The window walk is
     // only for a spine so deep that the cursor's ancestor stack is itself
     // a large allocation.
@@ -1352,6 +1367,12 @@ pub(crate) fn begin_slab_highlight(
         return Ok(None);
     }
     if u32::try_from(text.len()).is_err() || spill_unusable() {
+        return Ok(None);
+    }
+    // No cgroup cap and enough RAM left beside the tree: main's cursor. Checked
+    // before the spine probe so an uncapped run does not walk 65k nodes twice.
+    #[cfg(not(test))]
+    if cgroup_headroom().is_none() && cursor_fits_in_available() {
         return Ok(None);
     }
     // A moderately deep chain still fits in the cursor walk main uses. Only a
@@ -2274,6 +2295,12 @@ impl SpillFile {
 
     /// Spill completed records once `mem` passes the budget. The live record
     /// stays, so the next slab's parent hashes are still a memory read.
+    ///
+    /// The budget is a ceiling, not a sliding window. Flushing only the page
+    /// that crossed it and then `drain`ing that page shifts the whole tail.
+    /// A 256 MiB tail is a 256 MiB copy per 4 KiB, which spilled at about
+    /// 0.5 MB/s and never finished the 822k walk. Once the tail is over the
+    /// ceiling, write every completed page before the live record in one pass.
     fn flush_overflow(&mut self) -> Result<(), SlabQueryError> {
         let limit = self.budget.max(SPILL_TAIL);
         if self.mem.len() <= limit {
@@ -2283,8 +2310,7 @@ impl SpillFile {
         let last = self.offsets.last().copied().unwrap_or(self.mem_off);
         let live_at = usize::try_from(last.saturating_sub(self.mem_off)).unwrap_or(usize::MAX);
         let live_at = live_at.min(self.mem.len());
-        let want = (self.mem.len() - limit).min(live_at);
-        let n = want & !(page - 1);
+        let n = live_at & !(page - 1);
         if n == 0 {
             return Ok(());
         }
@@ -2311,18 +2337,31 @@ impl SpillFile {
             return Ok(());
         }
         self.ensure_file()?;
-        let off = self.mem_off;
-        if self.direct.is_some() {
-            let aligned = align_copy(&self.mem[..n]);
-            if let Some(direct) = self.direct.as_ref() {
-                pwrite_all(direct, off, aligned.as_slice())?;
+        // One aligned copy of the whole prefix would double the tail. 8 MiB
+        // O_DIRECT chunks stay page-aligned (the prefix and this size both are)
+        // and the tail is shifted only after the prefix is on disk.
+        const CHUNK: usize = 8 * 1024 * 1024;
+        let direct = self.direct.is_some();
+        let mut written = 0;
+        while written < n {
+            let len = (n - written).min(CHUNK);
+            let off = self.mem_off + written as u64;
+            let chunk = self.mem[written..written + len].to_vec();
+            if direct {
+                let aligned = align_copy(&chunk);
+                let file = self.direct.as_ref().ok_or(SlabQueryError::Spill)?;
+                pwrite_all(file, off, aligned.as_slice())?;
+            } else {
+                let buffered = self.buffered.as_mut().ok_or(SlabQueryError::Spill)?;
+                buffered.seek(SeekFrom::Start(off)).map_err(spill_err)?;
+                buffered.write_all(&chunk).map_err(spill_err)?;
             }
-        } else {
-            let chunk = self.mem[..n].to_vec();
-            let buffered = self.buffered.as_mut().ok_or(SlabQueryError::Spill)?;
-            buffered.seek(SeekFrom::Start(off)).map_err(spill_err)?;
-            buffered.write_all(&chunk).map_err(spill_err)?;
-            let _ = sync_and_drop_cache(buffered, off, n as u64);
+            written += len;
+        }
+        if !direct {
+            if let Some(buffered) = self.buffered.as_mut() {
+                let _ = sync_and_drop_cache(buffered, self.mem_off, n as u64);
+            }
         }
         self.mem.drain(..n);
         self.mem_off += n as u64;
@@ -2580,8 +2619,39 @@ fn production_arena_budget() -> usize {
         Some(free) => usize::try_from(free - MARGIN)
             .unwrap_or(CAP)
             .clamp(SPILL_TAIL, CAP),
+        // No cgroup limit. A fixed 256 MiB ceiling spilled the rest of the
+        // arena and, before the prefix flush, never finished. Size the ceiling
+        // from MemAvailable so ample RAM keeps the arena, the same as main.
+        None => budget_from_available(mem_available_bytes()),
+    }
+}
+
+/// Arena ceiling when `memory.max` is `max`. `MemAvailable` is sampled once,
+/// at spill creation, while the tree is already resident.
+fn budget_from_available(avail: Option<u64>) -> usize {
+    /// Room for the highlight map and allocator overhead beside the arena.
+    const MARGIN: u64 = 512 * 1024 * 1024;
+    match avail {
+        Some(avail) if avail > MARGIN => usize::try_from(avail - MARGIN).unwrap_or(usize::MAX / 4),
+        Some(_) => SPILL_TAIL,
         None => 256 * 1024 * 1024,
     }
+}
+
+#[cfg(not(test))]
+fn mem_available_bytes() -> Option<u64> {
+    parse_mem_available(&std::fs::read_to_string("/proc/meminfo").unwrap_or_default())
+}
+
+fn parse_mem_available(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("MemAvailable:") else {
+            continue;
+        };
+        let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+        return kb.checked_mul(1024);
+    }
+    None
 }
 
 /// `memory.max - memory.current` for this process's cgroup v2, when both are
@@ -3737,6 +3807,58 @@ mod tests {
         spill.write_record(0, &sample_live(0, 8)).expect("record");
         assert!(spill.buffered.is_none(), "a small slab opened a spill file");
         assert_eq!(spill.mem_off, 0);
+    }
+
+    #[test]
+    fn crossing_the_budget_flushes_the_whole_prefix() {
+        let _budget = override_spill_budget(64 * 1024);
+        let mut spill = SpillFile::create();
+        let mut flushed = false;
+        for record in 0..30 {
+            spill
+                .write_record(record, &sample_live(record, 200))
+                .expect("record");
+            if spill.mem_off == 0 {
+                continue;
+            }
+            flushed = true;
+            assert!(
+                spill.mem_off > page_size() * 4,
+                "flushed only {} bytes; a one-page flush shifts the whole tail",
+                spill.mem_off
+            );
+            assert!(
+                spill.mem.len() < page_size() as usize + 24 * 1024,
+                "kept {} bytes resident after the flush",
+                spill.mem.len()
+            );
+            break;
+        }
+        assert!(flushed, "records never crossed the budget");
+        let mut stream = spill.into_stream();
+        let (depth, kept, _) = stream.read_kept(stream.offsets[0]).expect("first record");
+        assert_eq!(depth, 0);
+        assert_eq!(kept.len(), 200);
+        let last = *stream.offsets.last().expect("last offset");
+        let (depth, kept, _) = stream.read_kept(last).expect("last record");
+        assert!(depth > 0);
+        assert_eq!(kept.len(), 200);
+    }
+
+    #[test]
+    fn unlimited_budget_tracks_available_memory() {
+        assert_eq!(budget_from_available(None), 256 * 1024 * 1024);
+        assert_eq!(budget_from_available(Some(100 * 1024 * 1024)), SPILL_TAIL);
+        assert_eq!(
+            budget_from_available(Some(2 * 1024 * 1024 * 1024)),
+            (2 * 1024 - 512) * 1024 * 1024
+        );
+        assert_eq!(
+            parse_mem_available("MemTotal: 100 kB\nMemAvailable: 2048 kB\n"),
+            Some(2048 * 1024)
+        );
+        assert_eq!(parse_mem_available("MemTotal: 100 kB\n"), None);
+        assert_eq!(parse_mem_available("MemAvailable: no\n"), None);
     }
 
     #[cfg(unix)]
