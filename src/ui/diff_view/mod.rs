@@ -21,7 +21,7 @@ use crate::app::{
 use crate::diff::{is_no_newline_marker, LineType, PatchClassifier};
 use crate::syntax::highlighter::{
     begin_slab_highlight, finish_slab_highlight, release_highlight_heap, CancelHighlight,
-    HighlightBudget, HighlightControl, PREFETCH_QUERY_BUDGET,
+    HighlightBudget, HighlightControl, SlabFinishError, PREFETCH_QUERY_BUDGET,
 };
 use crate::syntax::{
     apply_line_highlights, collect_line_highlights_bounded,
@@ -246,6 +246,11 @@ pub fn build_diff_cache_for_prefetch(
     )
 }
 
+enum CstSlabOutcome<T> {
+    Done(T),
+    Retry,
+}
+
 fn build_diff_cache_controlled(
     patch: &str,
     filename: &str,
@@ -328,47 +333,81 @@ fn build_diff_cache_controlled(
                 budget,
             )
         } else {
-            // Standard CST highlighting: get cached query
-            let query = parser_pool
-                .get_or_create_query(lang)
-                .expect("Query should be available for supported language");
-            let capture_names: Vec<String> = query
-                .capture_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            // The slab walk borrows the tree. Finish that borrow before dropping
-            // the tree, so the highlight map is built after the tree's pages
-            // can be returned to the OS.
-            let streamed = {
-                let tree = &cst_result.as_ref().unwrap().tree;
-                begin_slab_highlight(&combined_source, tree, query, budget)
-            };
-            match streamed {
-                Ok(Some(stream)) => {
-                    drop(cst_result);
-                    release_highlight_heap();
-                    finish_slab_highlight(
-                        stream,
-                        &combined_source,
-                        query,
-                        &capture_names,
-                        style_cache,
-                        budget,
-                    )
-                }
-                Ok(None) => {
+            // `query` borrows the pool. Keep that borrow inside this block so a
+            // spill read error can parse the source again.
+            let outcome = {
+                let query = parser_pool
+                    .get_or_create_query(lang)
+                    .expect("Query should be available for supported language");
+                let capture_names: Vec<String> = query
+                    .capture_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // The slab walk borrows the tree. Finish that borrow before dropping
+                // the tree, so the highlight map is built after the tree's pages
+                // can be returned to the OS.
+                let streamed = {
                     let tree = &cst_result.as_ref().unwrap().tree;
+                    begin_slab_highlight(&combined_source, tree, query, budget)
+                };
+                match streamed {
+                    Ok(Some(stream)) => {
+                        drop(cst_result);
+                        release_highlight_heap();
+                        match finish_slab_highlight(
+                            stream,
+                            &combined_source,
+                            query,
+                            &capture_names,
+                            style_cache,
+                            budget,
+                        ) {
+                            Ok(highlights) => CstSlabOutcome::Done(Ok(highlights)),
+                            Err(SlabFinishError::Abort(reason)) => {
+                                CstSlabOutcome::Done(Err(reason))
+                            }
+                            Err(SlabFinishError::Retry) => CstSlabOutcome::Retry,
+                        }
+                    }
+                    Ok(None) => {
+                        let tree = &cst_result.as_ref().unwrap().tree;
+                        CstSlabOutcome::Done(collect_line_highlights_bounded(
+                            &combined_source,
+                            tree,
+                            query,
+                            &capture_names,
+                            style_cache,
+                            budget,
+                        ))
+                    }
+                    Err(reason) => CstSlabOutcome::Done(Err(reason)),
+                }
+            };
+            match outcome {
+                CstSlabOutcome::Done(result) => result,
+                CstSlabOutcome::Retry => {
+                    let Some(parsed) = highlighter.parse_source(&combined_source, parser_pool)
+                    else {
+                        return plain_highlight_fallback(original_patch, tab_width, markdown_rich);
+                    };
+                    let query = parser_pool
+                        .get_or_create_query(parsed.lang)
+                        .expect("Query should be available for supported language");
+                    let capture_names: Vec<String> = query
+                        .capture_names()
+                        .iter()
+                        .map(|name| name.to_string())
+                        .collect();
                     collect_line_highlights_bounded(
                         &combined_source,
-                        tree,
+                        &parsed.tree,
                         query,
                         &capture_names,
                         style_cache,
                         budget,
                     )
                 }
-                Err(reason) => Err(reason),
             }
         };
         let Ok(line_highlights) = line_highlights else {

@@ -992,6 +992,8 @@ fn peak_rss_bytes() -> u64 {
 #[test]
 fn spill_failure_falls_back_to_the_whole_tree_cursor() {
     let source = post_change_source(&generate_haskell_diff_patch(1_000));
+    let _budget = super::override_spill_budget(0);
+    let _window = super::override_window_walk();
     super::force_spill_failure(true);
     let slabs = render_source("Synthetic.hs", &source, Some(QueryPlan::Slabs));
     super::force_spill_failure(false);
@@ -1004,9 +1006,47 @@ fn spill_failure_falls_back_to_the_whole_tree_cursor() {
 }
 
 #[test]
+fn spilled_slabs_match_the_whole_tree_cursor() {
+    let source = post_change_source(&generate_haskell_diff_patch(1_000));
+    let slabs = {
+        let _budget = super::override_spill_budget(0);
+        let _window = super::override_window_walk();
+        render_source("Synthetic.hs", &source, Some(QueryPlan::Slabs))
+    };
+    let whole = render_source("Synthetic.hs", &source, Some(QueryPlan::Whole));
+    assert_eq!(
+        slabs, whole,
+        "records spilled under a zero budget must render the whole-tree highlight"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_backed_temp_dir_falls_back_to_the_whole_tree() {
+    let shm = std::path::Path::new("/dev/shm");
+    if !super::fs_is_memory_backed(shm) {
+        return;
+    }
+    let source = post_change_source(&generate_haskell_diff_patch(1_000));
+    let slabs = {
+        let _budget = super::override_spill_budget(0);
+        let _window = super::override_window_walk();
+        let _dirs = super::override_spill_dirs(shm, None);
+        render_source("Synthetic.hs", &source, Some(QueryPlan::Slabs))
+    };
+    let whole = render_source("Synthetic.hs", &source, Some(QueryPlan::Whole));
+    assert_eq!(
+        slabs, whole,
+        "a RAM-only spill directory must fall back to the whole-tree highlight"
+    );
+    assert!(!slabs.is_empty(), "fallback highlight was empty");
+}
+
+#[test]
 fn deep_chain_dedup_does_not_hold_every_match() {
     let source = post_change_source(&generate_haskell_diff_patch(1_000));
     let _guard = force(Some(QueryPlan::Slabs));
+    let _window = super::override_window_walk();
     highlight_bounded("Synthetic.hs", &source, &OpenHighlight).expect("slab highlight");
     let (max_loaded, total) = slab_resident_budget();
     assert!(
