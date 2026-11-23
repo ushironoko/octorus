@@ -297,9 +297,8 @@ pub struct LogEntry {
 
 impl LogEntry {
     pub fn new(event_type: LogEventType, message: String) -> Self {
-        let now = chrono::Local::now();
         Self {
-            timestamp: now.format("%H:%M:%S").to_string(),
+            timestamp: crate::timefmt::local_log_timestamp(),
             event_type,
             message,
         }

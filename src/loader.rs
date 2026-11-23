@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use tokio::process::Command;
@@ -142,7 +141,7 @@ pub async fn fetch_local_diff(
         user: github::User {
             login: "local".to_string(),
         },
-        updated_at: Utc::now().to_rfc3339(),
+        updated_at: crate::timefmt::utc_now_rfc3339(),
     };
 
     let _ = tx
@@ -362,7 +361,7 @@ fn cached_diff_is_current(
         (Some(cached_tip), Some(fresh_tip)) => cached_tip == fresh_tip,
         _ => false,
     };
-    fresh.updated_at == cached.updated_at
+    crate::timefmt::pr_updated_at_unchanged(&cached.updated_at, &fresh.updated_at)
         && fresh.head.sha == cached.head_sha
         && fresh.base.ref_name == cached.base_ref
         && fresh.base.sha == cached.base_sha

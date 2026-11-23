@@ -1,7 +1,6 @@
 #![allow(clippy::print_stdout)]
 
 use anyhow::Result;
-use chrono::DateTime;
 use serde::Serialize;
 
 use octorus::cache::LocalReviewComment;
@@ -200,16 +199,11 @@ fn select_latest_local_comments(
     limit: usize,
 ) -> Vec<LocalReviewComment> {
     comments.sort_by(|a, b| {
-        parse_comment_timestamp(&b.comment.created_at)
-            .cmp(&parse_comment_timestamp(&a.comment.created_at))
+        octorus::timefmt::cmp_rfc3339(&b.comment.created_at, &a.comment.created_at)
             .then_with(|| b.comment.id.cmp(&a.comment.id))
     });
     comments.truncate(limit);
     comments
-}
-
-fn parse_comment_timestamp(created_at: &str) -> Option<DateTime<chrono::FixedOffset>> {
-    DateTime::parse_from_rfc3339(created_at).ok()
 }
 
 fn format_local_comments_text(
@@ -302,7 +296,7 @@ fn update_local_comments(
         match action {
             LocalCommentAction::Resolve => {
                 entry.meta.is_resolved = true;
-                entry.meta.resolved_at = Some(chrono::Utc::now().to_rfc3339());
+                entry.meta.resolved_at = Some(octorus::timefmt::utc_now_rfc3339());
             }
             LocalCommentAction::Reopen => {
                 entry.meta.is_resolved = false;

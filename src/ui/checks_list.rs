@@ -160,25 +160,7 @@ fn format_duration(started: &Option<String>, completed: &Option<String>) -> Stri
         return "-".to_string();
     };
 
-    let Ok(start) = chrono::DateTime::parse_from_rfc3339(started) else {
-        return "-".to_string();
-    };
-    let Ok(end) = chrono::DateTime::parse_from_rfc3339(completed) else {
-        return "-".to_string();
-    };
-
-    let duration = end.signed_duration_since(start);
-    let secs = duration.num_seconds();
-    if secs < 0 {
-        return "-".to_string();
-    }
-    if secs < 60 {
-        format!("{}s", secs)
-    } else {
-        let mins = secs / 60;
-        let remaining_secs = secs % 60;
-        format!("{}m {:02}s", mins, remaining_secs)
-    }
+    crate::timefmt::format_check_duration(started, completed)
 }
 
 fn build_check_list_items(checks: &[CheckItem], theme: Theme) -> Vec<ListItem<'static>> {

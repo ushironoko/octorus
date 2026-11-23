@@ -20,9 +20,11 @@ pub mod language;
 pub mod loader;
 pub mod local_watch;
 pub mod module_graph;
+mod posix_tz;
 pub mod symbol;
 pub mod symbols;
 pub mod syntax;
+pub mod timefmt;
 pub mod ui;
 mod untracked_diff;
 

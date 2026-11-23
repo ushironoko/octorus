@@ -442,7 +442,7 @@ fn bootstrap_manifest(version: &str) -> VersionManifest {
 }
 
 fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339()
+    octorus::timefmt::utc_now_rfc3339()
 }
 
 // ---------------------------------------------------------------------------
@@ -708,7 +708,7 @@ fn plan_file_action(
 // ---------------------------------------------------------------------------
 
 fn create_backup(config_dir: &Path, skill_dir: Option<&Path>) -> Result<PathBuf> {
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let timestamp = octorus::timefmt::local_backup_timestamp();
     let mut backup_dir = config_dir.join(format!(".backup-{}", timestamp));
 
     // Handle collision
