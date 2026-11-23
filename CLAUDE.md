@@ -24,6 +24,7 @@ cargo bench --bench ui_rendering
 cargo bench --bench diff_parsing
 cargo bench --bench symbol_search
 cargo bench --bench symbol_index
+cccc --table --top-cognitive 20 src # Top 20 functions by cognitive complexity
 ```
 
 `.github/workflows/benchmark.yml` runs only `ui_rendering` and `diff_parsing`, and only on

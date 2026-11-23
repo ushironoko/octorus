@@ -88,3 +88,42 @@ jobs:
 
       - name: Run benchmark assertions
         run: cargo bench --bench blame_parse -- --test
+
+  # Report only. cccc.toml sets no max-cognitive / max-cyclomatic, so a high
+  # score exits 0 and this job does not fail the workflow or block a PR.
+  # It has no `needs:`, so it runs beside fmt, clippy, test, and
+  # bench-assertions instead of extending them.
+  complexity:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - name: Measure cognitive complexity
+        id: cccc
+        uses: moznion/cccc-action@1d5313811f8451953e46a268c61791a01e40b7df # v1.1.2
+        with:
+          version: v1.10.0
+          path: src crates
+          top-cognitive: "20"
+          args: --format table
+          output-file: cccc-top.txt
+
+      - name: Publish top 20 to the job summary
+        if: always()
+        run: |
+          {
+            echo "### Top 20 functions by cognitive complexity"
+            echo
+            if [ -f cccc-top.txt ]; then
+              echo '```text'
+              cat cccc-top.txt
+              echo '```'
+            else
+              echo "cccc produced no report."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f cccc-top.txt ]; then
+            echo "Wrote $(wc -l < cccc-top.txt) lines to the job summary."
+          fi
