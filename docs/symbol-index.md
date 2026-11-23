@@ -2,7 +2,7 @@
 
 The Repository Browser symbol engine is exposed by `src/symbols.rs`, an
 octorus-owned compatibility facade over the exact crates.io dependency
-`hearth-graph = "=0.3.0"`.
+`hearth-graph = "=0.3.1"`.
 
 Read this document when changing the facade, adding a symbol language, or
 upgrading Hearth. The browser architecture and task lifecycle remain documented
@@ -198,6 +198,11 @@ Haskell is registered with
 `with_merge_adjacent_same_name_definitions(true)`. Consecutive equations such as
 `describe 0 = ...` and `describe value = ...` become one logical symbol.
 Ordinary sibling overloads in other languages are preserved.
+
+`type Label = Text` remains a type symbol. tree-sitter-haskell 0.24.1 names
+that declaration `type_synonym` (0.23.1 spelled the node `type_synomym`).
+Hearth's bundled tags query uses the 0.24.1 name, and
+`src/queries/haskell/tags.scm` matches the same node.
 
 ### Markdown nesting
 

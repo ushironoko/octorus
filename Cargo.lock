@@ -994,9 +994,9 @@ dependencies = [
 
 [[package]]
 name = "hearth-graph"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97b303638424a7087d145af8d69048c8b47b2cc661efeefb25bbc8c1a8a69b9"
+checksum = "45442339a3ece2465c85b27cf7e7eececffce833c43c2783ea68903cdd2a2105"
 dependencies = [
  "compact_str 0.10.0",
  "json-strip-comments",
@@ -3112,9 +3112,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-haskell"
-version = "0.23.1"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4"
+checksum = "781de30e0d1ec8e6db4ed799d36ce1cedaf4684374dada45ebe2a8ea44c3f814"
 dependencies = [
  "cc",
  "tree-sitter-language",
