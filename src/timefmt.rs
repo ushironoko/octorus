@@ -79,45 +79,349 @@ fn format_local_now(format: &str) -> String {
         .to_string()
 }
 
-/// Zone chrono's `Local` would use.
+/// Zone chrono 0.4.45's `Local` would use.
 ///
-/// A usable `TZ` wins, including the empty value that both libraries treat as
-/// UTC. An unusable `TZ` (`Invalid/Zone`, `garbage`) makes jiff report
-/// `Etc/Unknown`, which formats as UTC. Chrono instead falls back to
-/// `/etc/localtime`, then UTC.
+/// Usable `TZ` values follow chrono's file-then-POSIX rules (`from_posix_tz`).
+/// `TZ` unset reads `/etc/localtime` as TZif, following symlinks and ignoring
+/// the link text. Anything else uses the `iana-time-zone` 0.1.64 name fallback
+/// chrono calls, then `/usr/share/zoneinfo/<name>`, else UTC.
 fn local_time_zone() -> jiff::tz::TimeZone {
-    if let Ok(zone) = jiff::tz::TimeZone::try_system() {
-        return zone;
-    }
-    fallback_system_zone()
-}
-
-fn fallback_system_zone() -> jiff::tz::TimeZone {
     #[cfg(unix)]
     {
-        if let Some(zone) = zone_from_localtime_file("/etc/localtime") {
-            return zone;
+        cached_unix_zone()
+    }
+    #[cfg(not(unix))]
+    {
+        jiff::tz::TimeZone::try_system().unwrap_or(jiff::tz::TimeZone::UTC)
+    }
+}
+
+/// Directories `find_tz_file` searches for a relative `TZ` (`tz_info/timezone.rs`).
+const ZONEINFO_SEARCH_DIRS: [&str; 4] = [
+    "/usr/share/zoneinfo",
+    "/share/zoneinfo",
+    "/etc/zoneinfo",
+    "/usr/share/lib/zoneinfo",
+];
+
+/// Link-text prefixes from `iana-time-zone` 0.1.64 (`tz_linux.rs`), the fallback
+/// chrono 0.4.45 calls. A target must start with one of these; a `zoneinfo/`
+/// substring anywhere else is not a name.
+const LOCALTIME_LINK_PREFIXES: [&str; 4] = [
+    "/usr/share/zoneinfo/",
+    "../usr/share/zoneinfo/",
+    "/etc/zoneinfo/",
+    "../etc/zoneinfo/",
+];
+
+const ZONEINFO_LOAD_ROOT: &str = "/usr/share/zoneinfo";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Localtime<'a> {
+    Missing,
+    Regular,
+    /// Link text. `None` when the target is not UTF-8, which iana-time-zone rejects.
+    Symlink(Option<&'a str>),
+}
+
+struct ZoneInput<'a> {
+    tz: Option<&'a str>,
+    localtime: Localtime<'a>,
+    /// `File::open("/etc/localtime")` would succeed (symlinks are followed).
+    localtime_opens: bool,
+    timezone_text: Option<&'a str>,
+    config_system: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ZoneChoice {
+    Utc,
+    /// Bytes of `/etc/localtime` after following symlinks.
+    LocaltimeFile,
+    /// `/usr/share/zoneinfo/<name>`.
+    Zoneinfo(String),
+    Posix(String),
+    /// A TZif file named by `TZ` itself.
+    ExplicitFile {
+        path: String,
+        name: String,
+    },
+}
+
+/// Chrono's local-zone decision. `exists` is "this path can be opened as a file".
+fn choose_zone(input: &ZoneInput<'_>, exists: &mut impl FnMut(&str) -> bool) -> ZoneChoice {
+    if let Some(tz) = input.tz {
+        if let Some(choice) = choose_explicit_tz(tz, input.localtime_opens, exists) {
+            return choice;
+        }
+    } else if input.localtime_opens {
+        return ZoneChoice::LocaltimeFile;
+    }
+    match fallback_name(input) {
+        Some(name) if exists(&zoneinfo_load_path(&name)) => ZoneChoice::Zoneinfo(name),
+        _ => ZoneChoice::Utc,
+    }
+}
+
+fn choose_explicit_tz(
+    tz: &str,
+    localtime_opens: bool,
+    exists: &mut impl FnMut(&str) -> bool,
+) -> Option<ZoneChoice> {
+    if tz.is_empty() {
+        return Some(ZoneChoice::Utc);
+    }
+    if tz == "localtime" {
+        // A missing file is a failed `from_posix_tz`, so the name fallback runs.
+        return localtime_opens.then_some(ZoneChoice::LocaltimeFile);
+    }
+    // A leading ':' is only a file path. Chrono does not try a POSIX rule after it.
+    // Failure still falls through to the name fallback.
+    if let Some(path) = tz.strip_prefix(':') {
+        let found = locate_tz_file(path, exists)?;
+        return Some(ZoneChoice::ExplicitFile {
+            name: path.to_string(),
+            path: found,
+        });
+    }
+    if let Some(found) = locate_tz_file(tz, exists) {
+        return Some(ZoneChoice::ExplicitFile {
+            name: tz.to_string(),
+            path: found,
+        });
+    }
+    // Chrono trims ASCII whitespace only after the file lookup misses.
+    let rule = tz.trim_matches(|c: char| c.is_ascii_whitespace());
+    posix_rule(rule).then(|| ZoneChoice::Posix(rule.to_string()))
+}
+
+fn posix_rule(tz: &str) -> bool {
+    jiff::tz::TimeZone::posix(tz).is_ok()
+}
+
+fn locate_tz_file(spec: &str, exists: &mut impl FnMut(&str) -> bool) -> Option<String> {
+    if spec.starts_with('/') {
+        return exists(spec).then(|| spec.to_string());
+    }
+    ZONEINFO_SEARCH_DIRS.iter().find_map(|dir| {
+        let path = format!("{dir}/{spec}");
+        exists(&path).then_some(path)
+    })
+}
+
+fn zoneinfo_load_path(name: &str) -> String {
+    format!("{ZONEINFO_LOAD_ROOT}/{name}")
+}
+
+/// Symlink name, then `/etc/timezone`, then OpenWrt `/etc/config/system`.
+/// A symlink name is final even when its zone file is missing.
+fn fallback_name(input: &ZoneInput<'_>) -> Option<String> {
+    if let Some(name) = symlink_zone_name(input.localtime) {
+        return Some(name.to_string());
+    }
+    if let Some(text) = input.timezone_text {
+        return Some(text[..text.trim_end().len()].to_string());
+    }
+    input.config_system.and_then(openwrt_zone_name)
+}
+
+fn symlink_zone_name(localtime: Localtime<'_>) -> Option<&str> {
+    let Localtime::Symlink(Some(target)) = localtime else {
+        return None;
+    };
+    // An empty remainder is still a successful parse. Chrono then fails to
+    // read the zone file and uses UTC, without consulting `/etc/timezone`.
+    LOCALTIME_LINK_PREFIXES
+        .iter()
+        .find_map(|prefix| target.strip_prefix(prefix))
+}
+
+fn openwrt_zone_name(text: &str) -> Option<String> {
+    let mut in_system = false;
+    let mut timezone = None;
+    for line in text.lines() {
+        let words = match openwrt_words(line) {
+            Ok(words) => words,
+            Err(()) => return None,
+        };
+        if words.first().is_some_and(|word| *word == "config") {
+            in_system = words.get(1).is_some_and(|word| *word == "system") && words.len() == 2;
+            continue;
+        }
+        if !in_system || words.first() != Some(&"option") {
+            continue;
+        }
+        match (words.get(1).copied(), words.get(2).copied(), words.len()) {
+            (Some("zonename"), Some(name), 3) => return Some(name.to_string()),
+            (Some("timezone"), Some(name), 3) => timezone = Some(name.to_string()),
+            _ => {}
         }
     }
-    jiff::tz::TimeZone::UTC
+    timezone
 }
 
-#[cfg(unix)]
-fn zone_from_localtime_file(path: &str) -> Option<jiff::tz::TimeZone> {
-    if let Some(zone) = zoneinfo_symlink(path) {
-        return Some(zone);
+fn openwrt_words(line: &str) -> Result<Vec<&str>, ()> {
+    let mut rest = line.trim_start();
+    let mut words = Vec::new();
+    while !rest.is_empty() && !rest.starts_with('#') {
+        let (word, tail) = openwrt_word(rest)?;
+        words.push(word);
+        rest = tail.trim_start();
     }
-    let bytes = std::fs::read(path).ok()?;
-    jiff::tz::TimeZone::tzif("localtime", &bytes).ok()
+    Ok(words)
+}
+
+fn openwrt_word(text: &str) -> Result<(&str, &str), ()> {
+    match text.chars().next() {
+        Some(quote @ ('\'' | '"')) => {
+            let (word, tail) = text[quote.len_utf8()..].split_once(quote).ok_or(())?;
+            Ok((word, tail))
+        }
+        _ => Ok(text.split_once(char::is_whitespace).unwrap_or((text, ""))),
+    }
 }
 
 #[cfg(unix)]
-fn zoneinfo_symlink(path: &str) -> Option<jiff::tz::TimeZone> {
-    let target = std::fs::read_link(path).ok()?;
-    let target = target.to_str()?;
-    let needle = "zoneinfo/";
-    let name = target.get(target.rfind(needle)? + needle.len()..)?;
-    jiff::tz::TimeZone::get(name).ok()
+fn cached_unix_zone() -> jiff::tz::TimeZone {
+    use std::cell::RefCell;
+    use std::time::SystemTime;
+
+    struct Cache {
+        key: CacheKey,
+        zone: jiff::tz::TimeZone,
+        last_checked: SystemTime,
+    }
+
+    thread_local! {
+        static CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
+    }
+
+    CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let now = SystemTime::now();
+        if let Some(cache) = slot.as_ref() {
+            if !cache_window_elapsed(cache.last_checked, now) {
+                return cache.zone.clone();
+            }
+        }
+        let key = unix_cache_key();
+        if let Some(cache) = slot.as_ref() {
+            if !should_replace_cached_zone(true, cache.key == key) {
+                let zone = cache.zone.clone();
+                if let Some(cache) = slot.as_mut() {
+                    cache.last_checked = now;
+                }
+                return zone;
+            }
+        }
+        let zone = load_unix_zone();
+        *slot = Some(Cache {
+            key,
+            zone: zone.clone(),
+            last_checked: now,
+        });
+        zone
+    })
+}
+
+#[cfg(unix)]
+#[derive(PartialEq, Eq)]
+enum CacheKey {
+    Env(String),
+    /// When `symlink_metadata` fails, chrono stores `SystemTime::now()`, so the
+    /// next check after one second sees a different stamp and reloads.
+    Localtime(std::time::SystemTime),
+}
+
+#[cfg(unix)]
+fn unix_cache_key() -> CacheKey {
+    match std::env::var("TZ") {
+        Ok(value) => CacheKey::Env(value),
+        Err(_) => {
+            let mtime = std::fs::symlink_metadata("/etc/localtime")
+                .and_then(|meta| meta.modified())
+                .unwrap_or_else(|_| std::time::SystemTime::now());
+            CacheKey::Localtime(mtime)
+        }
+    }
+}
+
+/// True once chrono would re-read `TZ` and `/etc/localtime` (about one second).
+fn cache_window_elapsed(last_checked: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    match now.duration_since(last_checked) {
+        Ok(elapsed) => elapsed.as_secs() >= 1,
+        Err(_) => true,
+    }
+}
+
+fn should_replace_cached_zone(window_elapsed: bool, same_key: bool) -> bool {
+    window_elapsed && !same_key
+}
+
+#[cfg(unix)]
+fn load_unix_zone() -> jiff::tz::TimeZone {
+    let tz = std::env::var("TZ").ok();
+    let link = std::fs::read_link("/etc/localtime").ok();
+    let localtime = match &link {
+        None => {
+            if std::fs::symlink_metadata("/etc/localtime").is_ok() {
+                Localtime::Regular
+            } else {
+                Localtime::Missing
+            }
+        }
+        Some(target) => Localtime::Symlink(target.to_str()),
+    };
+    let timezone = std::fs::read_to_string("/etc/timezone").ok();
+    let config = std::fs::read_to_string("/etc/config/system").ok();
+    let input = ZoneInput {
+        tz: tz.as_deref(),
+        localtime,
+        localtime_opens: std::fs::File::open("/etc/localtime").is_ok(),
+        timezone_text: timezone.as_deref(),
+        config_system: config.as_deref(),
+    };
+    let mut exists = |path: &str| std::fs::File::open(path).is_ok();
+    let choice = choose_zone(&input, &mut exists);
+    if let Some(zone) = zone_from_choice(&choice) {
+        return zone;
+    }
+    // `TimeZone::local` failed (the TZif did not parse). Chrono still runs
+    // the name fallback before UTC.
+    let mut exists = |path: &str| std::fs::File::open(path).is_ok();
+    name_fallback_zone(&input, &mut exists)
+}
+
+#[cfg(unix)]
+fn zone_from_choice(choice: &ZoneChoice) -> Option<jiff::tz::TimeZone> {
+    match choice {
+        ZoneChoice::Utc => Some(jiff::tz::TimeZone::UTC),
+        ZoneChoice::Posix(rule) => jiff::tz::TimeZone::posix(rule).ok(),
+        ZoneChoice::LocaltimeFile => read_tzif("/etc/localtime", "localtime"),
+        ZoneChoice::Zoneinfo(name) => read_tzif(&zoneinfo_load_path(name), name),
+        ZoneChoice::ExplicitFile { path, name } => read_tzif(path, name),
+    }
+}
+
+#[cfg(unix)]
+fn name_fallback_zone(
+    input: &ZoneInput<'_>,
+    exists: &mut impl FnMut(&str) -> bool,
+) -> jiff::tz::TimeZone {
+    let Some(name) = fallback_name(input) else {
+        return jiff::tz::TimeZone::UTC;
+    };
+    let path = zoneinfo_load_path(&name);
+    if !exists(&path) {
+        return jiff::tz::TimeZone::UTC;
+    }
+    read_tzif(&path, &name).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+#[cfg(unix)]
+fn read_tzif(path: &str, name: &str) -> Option<jiff::tz::TimeZone> {
+    let bytes = std::fs::read(path).ok()?;
+    jiff::tz::TimeZone::tzif(name, &bytes).ok()
 }
 
 /// Parse with the acceptance rules of `DateTime::parse_from_rfc3339` in chrono 0.4.45.
@@ -1246,42 +1550,272 @@ mod tests {
             return;
         }
 
+        // Docker, Nix, and WSL often have no symlink. The layout matrix below
+        // covers those shapes; this process check only runs for a normal link.
+        let Some(name) = normal_localtime_zone_name() else {
+            return;
+        };
         let system = tz_probe("unset", None);
         let invalid = tz_probe("invalid", Some("Invalid/Zone"));
         let garbage = tz_probe("garbage", Some("garbage"));
-        assert_eq!(
-            (&invalid.ours, &invalid.civil),
-            (&system.ours, &system.civil),
-            "TZ=Invalid/Zone must follow /etc/localtime, not UTC"
-        );
-        assert_eq!(
-            (&garbage.ours, &garbage.civil),
-            (&system.ours, &system.civil),
-            "TZ=garbage must follow /etc/localtime"
-        );
-        assert_ne!(
-            invalid.ours, invalid.jiff,
-            "jiff's invalid-TZ fallback is Etc/Unknown, which formats as UTC"
-        );
-        assert_ne!(garbage.ours, garbage.jiff);
+        assert_eq!(invalid.civil, system.civil, "TZ=Invalid/Zone");
+        assert_eq!(garbage.civil, system.civil, "TZ=garbage");
+        assert_eq!(invalid.ours, name);
+        assert_ne!(invalid.ours, invalid.jiff);
         assert_ne!(invalid.ours, "unknown");
+    }
 
-        let link = std::fs::read_link("/etc/localtime").expect("/etc/localtime");
-        let link = link.to_str().expect("localtime symlink is utf-8");
-        let suffix = link
-            .rsplit_once("zoneinfo/")
-            .map(|(_, name)| name)
-            .expect("localtime points into zoneinfo");
-        assert_eq!(system.ours, suffix);
-
-        let utc_civil = Timestamp::new(1_718_452_800, 0)
-            .expect("fixed probe instant")
-            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
-            .strftime("%Y%m%d-%H%M%S")
-            .to_string();
-        if system.civil != utc_civil {
-            assert_ne!(invalid.civil, utc_civil);
+    #[cfg(unix)]
+    fn normal_localtime_zone_name() -> Option<String> {
+        let target = std::fs::read_link("/etc/localtime").ok()?;
+        let target = target.to_str()?;
+        let name = symlink_zone_name(Localtime::Symlink(Some(target)))?;
+        if name.is_empty() || std::fs::File::open(zoneinfo_load_path(name)).is_err() {
+            return None;
         }
+        std::fs::File::open("/etc/localtime").ok()?;
+        Some(name.to_string())
+    }
+
+    #[test]
+    fn local_zone_layout_matches_chrono_fallback() {
+        // Outcomes captured from chrono 0.4.45: `Local::now` inside `unshare -rm`
+        // with these `/etc` shapes. `NY` is America/New_York, loaded only from
+        // `/usr/share/zoneinfo/<name>`.
+        const NY: &str = "/usr/share/zoneinfo/America/New_York";
+        const TOKYO: &str = "/usr/share/zoneinfo/Asia/Tokyo";
+        const NY_ONLY: &[&str] = &[NY];
+        const TOKYO_ONLY: &[&str] = &[TOKYO];
+        const BOTH: &[&str] = &[NY, TOKYO];
+        const NONE: &[&str] = &[];
+        let cases = [
+            (
+                "S4 unset",
+                layout(None, Localtime::Missing, false, Some("America/New_York\n"), None),
+                NY_ONLY,
+                ZoneChoice::Zoneinfo("America/New_York".to_string()),
+            ),
+            (
+                "S4 invalid",
+                layout(
+                    Some("Invalid/Zone"),
+                    Localtime::Missing,
+                    false,
+                    Some("America/New_York\n"),
+                    None,
+                ),
+                NY_ONLY,
+                ZoneChoice::Zoneinfo("America/New_York".to_string()),
+            ),
+            (
+                "S6 unset dangling",
+                layout(
+                    None,
+                    Localtime::Symlink(Some("/usr/share/zoneinfo/America/New_York")),
+                    false,
+                    None,
+                    None,
+                ),
+                NONE,
+                ZoneChoice::Utc,
+            ),
+            (
+                "S6 invalid dangling",
+                layout(
+                    Some("garbage"),
+                    Localtime::Symlink(Some("/usr/share/zoneinfo/America/New_York")),
+                    false,
+                    Some("Asia/Tokyo\n"),
+                    None,
+                ),
+                TOKYO_ONLY,
+                ZoneChoice::Utc,
+            ),
+            (
+                "S3 invalid regular file",
+                layout(Some("Invalid/Zone"), Localtime::Regular, true, None, None),
+                NY_ONLY,
+                ZoneChoice::Utc,
+            ),
+            (
+                "S3b timezone Tokyo",
+                layout(
+                    Some("Invalid/Zone"),
+                    Localtime::Regular,
+                    true,
+                    Some("Asia/Tokyo\n"),
+                    None,
+                ),
+                BOTH,
+                ZoneChoice::Zoneinfo("Asia/Tokyo".to_string()),
+            ),
+            (
+                "S8 nonstandard prefix",
+                layout(
+                    Some("Invalid/Zone"),
+                    Localtime::Symlink(Some("/tmp/x/zoneinfo/America/New_York")),
+                    false,
+                    None,
+                    None,
+                ),
+                NY_ONLY,
+                ZoneChoice::Utc,
+            ),
+            (
+                "symlink unset reads the file",
+                layout(
+                    None,
+                    Localtime::Symlink(Some("/usr/share/zoneinfo/America/New_York")),
+                    true,
+                    Some("Asia/Tokyo\n"),
+                    None,
+                ),
+                BOTH,
+                ZoneChoice::LocaltimeFile,
+            ),
+            (
+                "symlink invalid uses the link name",
+                layout(
+                    Some("Invalid/Zone"),
+                    Localtime::Symlink(Some("/usr/share/zoneinfo/America/New_York")),
+                    true,
+                    Some("Asia/Tokyo\n"),
+                    None,
+                ),
+                BOTH,
+                ZoneChoice::Zoneinfo("America/New_York".to_string()),
+            ),
+            (
+                "relative Nix-style link",
+                layout(
+                    Some("garbage"),
+                    Localtime::Symlink(Some("../usr/share/zoneinfo/America/New_York")),
+                    false,
+                    None,
+                    None,
+                ),
+                NY_ONLY,
+                ZoneChoice::Zoneinfo("America/New_York".to_string()),
+            ),
+            (
+                "empty TZ is UTC",
+                layout(
+                    Some(""),
+                    Localtime::Symlink(Some("/usr/share/zoneinfo/America/New_York")),
+                    true,
+                    None,
+                    None,
+                ),
+                NY_ONLY,
+                ZoneChoice::Utc,
+            ),
+            (
+                "usable IANA name ignores /etc",
+                layout(
+                    Some("Asia/Tokyo"),
+                    Localtime::Regular,
+                    true,
+                    Some("America/New_York\n"),
+                    None,
+                ),
+                BOTH,
+                ZoneChoice::ExplicitFile {
+                    path: TOKYO.to_string(),
+                    name: "Asia/Tokyo".to_string(),
+                },
+            ),
+            (
+                "posix TZ ignores /etc",
+                layout(Some("JST-9"), Localtime::Regular, true, Some("Asia/Tokyo\n"), None),
+                TOKYO_ONLY,
+                ZoneChoice::Posix("JST-9".to_string()),
+            ),
+            (
+                "openwrt zonename after timezone file is absent",
+                layout(
+                    None,
+                    Localtime::Missing,
+                    false,
+                    None,
+                    Some("config system\n\toption timezone 'CST-8'\n\toption zonename 'Asia/Tokyo'\n"),
+                ),
+                TOKYO_ONLY,
+                ZoneChoice::Zoneinfo("Asia/Tokyo".to_string()),
+            ),
+            (
+                "posix whitespace is trimmed",
+                layout(Some(" JST-9\n"), Localtime::Missing, false, Some("Asia/Tokyo\n"), None),
+                TOKYO_ONLY,
+                ZoneChoice::Posix("JST-9".to_string()),
+            ),
+            (
+                "S8 unset reads the file, not the link text",
+                layout(
+                    None,
+                    Localtime::Symlink(Some("/tmp/x/zoneinfo/America/New_York")),
+                    true,
+                    Some("Asia/Tokyo\n"),
+                    None,
+                ),
+                BOTH,
+                ZoneChoice::LocaltimeFile,
+            ),
+            (
+                "timezone keeps a leading space",
+                layout(None, Localtime::Missing, false, Some(" America/New_York\n"), None),
+                NY_ONLY,
+                ZoneChoice::Utc,
+            ),
+            (
+                "broken openwrt quote discards an earlier name",
+                layout(
+                    None,
+                    Localtime::Missing,
+                    false,
+                    None,
+                    Some("config system\noption timezone 'Asia/Tokyo'\noption zonename 'America/New_York\n"),
+                ),
+                BOTH,
+                ZoneChoice::Utc,
+            ),
+        ];
+        for (label, input, present, expected) in cases {
+            assert_eq!(choose_with(&input, present), expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn local_zone_cache_rechecks_after_one_second() {
+        let earlier = std::time::SystemTime::UNIX_EPOCH;
+        let now = earlier + std::time::Duration::from_millis(999);
+        let later = earlier + std::time::Duration::from_secs(1);
+        assert!(!cache_window_elapsed(earlier, now));
+        assert!(cache_window_elapsed(earlier, later));
+        assert!(cache_window_elapsed(later, earlier));
+        assert!(!should_replace_cached_zone(false, false));
+        assert!(!should_replace_cached_zone(true, true));
+        assert!(should_replace_cached_zone(true, false));
+    }
+
+    fn layout<'a>(
+        tz: Option<&'a str>,
+        localtime: Localtime<'a>,
+        localtime_opens: bool,
+        timezone_text: Option<&'a str>,
+        config_system: Option<&'a str>,
+    ) -> ZoneInput<'a> {
+        ZoneInput {
+            tz,
+            localtime,
+            localtime_opens,
+            timezone_text,
+            config_system,
+        }
+    }
+
+    fn choose_with(input: &ZoneInput<'_>, present: &[&str]) -> ZoneChoice {
+        let mut exists = |path: &str| present.contains(&path);
+        choose_zone(input, &mut exists)
     }
 
     #[cfg(unix)]
