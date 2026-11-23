@@ -10733,7 +10733,7 @@ fn test_tree_jump_to_first_last() {
     app.toggle_file_tree();
 
     // jump to last
-    app.file_tree_state.as_mut().unwrap().jump_to_last();
+    app.file_tree_jump_to_last();
     let tree = app.file_tree_state.as_ref().unwrap();
     assert_eq!(tree.selected_row, tree.row_count() - 1);
 
@@ -10741,6 +10741,176 @@ fn test_tree_jump_to_first_last() {
     app.file_tree_jump_to_first();
     let tree = app.file_tree_state.as_ref().unwrap();
     assert_eq!(tree.selected_row, 0);
+}
+
+fn char_key(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+/// Three files, selection on the first. Local mode keeps `G` (git ops) off the network.
+fn file_list_app_with_keys(keybindings: crate::config::KeybindingsConfig) -> App {
+    let config = Config {
+        keybindings,
+        ..Config::default()
+    };
+    let (mut app, _tx) =
+        App::new_loading("owner/repo", 1, config, RepositoryAvailability::Available);
+    let files: Vec<ChangedFile> = ["a.rs", "b.rs", "c.rs"]
+        .into_iter()
+        .map(make_changed_file)
+        .collect();
+    app.install_loaded(make_test_pr(), files.into());
+    app.state = AppState::FileList;
+    app.selected_file = 0;
+    app.set_local_mode(true);
+    // Split-view jumps sync the diff, which would otherwise fetch comments.
+    app.cmt.review_comments = Some(Vec::new());
+    app
+}
+
+fn git_ops_on_x() -> crate::config::KeybindingsConfig {
+    use crate::keybinding::{KeyBinding, KeySequence};
+    crate::config::KeybindingsConfig {
+        git_ops: KeySequence::single(KeyBinding::char('X')),
+        ..crate::config::KeybindingsConfig::default()
+    }
+}
+
+fn jump_to_last_on_z() -> crate::config::KeybindingsConfig {
+    use crate::keybinding::{KeyBinding, KeySequence};
+    crate::config::KeybindingsConfig {
+        jump_to_last: KeySequence::single(KeyBinding::char('Z')),
+        ..crate::config::KeybindingsConfig::default()
+    }
+}
+
+#[tokio::test]
+async fn test_file_list_default_g_opens_git_ops() {
+    let mut app = file_list_app_with_keys(crate::config::KeybindingsConfig::default());
+    let mut terminal = test_terminal();
+
+    app.handle_file_list_input(char_key('G'), &mut terminal)
+        .await
+        .unwrap();
+
+    assert_eq!(app.state, AppState::GitOpsSplitTree);
+    assert!(app.git_ops_state.is_some());
+    assert_eq!(
+        app.selected_file, 0,
+        "git ops must not move the file selection"
+    );
+}
+
+#[tokio::test]
+async fn test_split_file_pane_default_g_opens_git_ops() {
+    let mut app = file_list_app_with_keys(crate::config::KeybindingsConfig::default());
+    app.state = AppState::SplitViewFileList;
+    let mut terminal = test_terminal();
+
+    app.handle_split_view_file_list_input(char_key('G'), &mut terminal)
+        .await
+        .unwrap();
+
+    assert_eq!(app.state, AppState::GitOpsSplitTree);
+    assert!(app.git_ops_state.is_some());
+    assert_eq!(app.selected_file, 0);
+}
+
+#[tokio::test]
+async fn test_file_list_g_jumps_to_last_when_git_ops_is_remapped() {
+    let mut app = file_list_app_with_keys(git_ops_on_x());
+    let mut terminal = test_terminal();
+
+    app.handle_file_list_input(char_key('G'), &mut terminal)
+        .await
+        .unwrap();
+
+    assert_eq!(app.state, AppState::FileList);
+    assert!(app.git_ops_state.is_none());
+    assert_eq!(app.selected_file, 2);
+
+    app.handle_file_list_input(char_key('X'), &mut terminal)
+        .await
+        .unwrap();
+    assert_eq!(app.state, AppState::GitOpsSplitTree);
+}
+
+#[tokio::test]
+async fn test_split_file_pane_g_jumps_to_last_when_git_ops_is_remapped() {
+    let mut app = file_list_app_with_keys(git_ops_on_x());
+    app.state = AppState::SplitViewFileList;
+    app.diff_scroll.selected_line = 9;
+    let mut terminal = test_terminal();
+
+    app.handle_split_view_file_list_input(char_key('G'), &mut terminal)
+        .await
+        .unwrap();
+
+    assert_eq!(app.state, AppState::SplitViewFileList);
+    assert!(app.git_ops_state.is_none());
+    assert_eq!(app.selected_file, 2);
+    assert_eq!(
+        app.diff_scroll.selected_line, 0,
+        "the diff follows the jumped-to file"
+    );
+}
+
+#[tokio::test]
+async fn test_remapped_jump_to_last_jumps_in_file_list_and_split_pane() {
+    let mut file_list = file_list_app_with_keys(jump_to_last_on_z());
+    let mut terminal = test_terminal();
+
+    file_list
+        .handle_file_list_input(char_key('Z'), &mut terminal)
+        .await
+        .unwrap();
+    assert_eq!(file_list.state, AppState::FileList);
+    assert_eq!(file_list.selected_file, 2);
+
+    file_list
+        .handle_file_list_input(char_key('G'), &mut terminal)
+        .await
+        .unwrap();
+    assert_eq!(file_list.state, AppState::GitOpsSplitTree);
+    assert_eq!(file_list.selected_file, 2);
+
+    let mut split = file_list_app_with_keys(jump_to_last_on_z());
+    split.state = AppState::SplitViewFileList;
+    split
+        .handle_split_view_file_list_input(char_key('Z'), &mut terminal)
+        .await
+        .unwrap();
+    assert_eq!(split.state, AppState::SplitViewFileList);
+    assert_eq!(split.selected_file, 2);
+}
+
+#[tokio::test]
+async fn test_file_list_tree_jumps_to_last_when_git_ops_is_remapped() {
+    let mut app = file_list_app_with_keys(git_ops_on_x());
+    app.toggle_file_tree();
+    let mut terminal = test_terminal();
+
+    app.handle_file_list_input(char_key('G'), &mut terminal)
+        .await
+        .unwrap();
+
+    let tree = app.file_tree_state.as_ref().unwrap();
+    assert_eq!(tree.selected_row, tree.row_count() - 1);
+    assert_eq!(app.selected_file, 2);
+    assert_eq!(app.state, AppState::FileList);
+}
+
+#[tokio::test]
+async fn test_file_list_help_key_still_opens_help_with_default_and_remapped_git_ops() {
+    let mut terminal = test_terminal();
+    for keys in [crate::config::KeybindingsConfig::default(), git_ops_on_x()] {
+        let mut app = file_list_app_with_keys(keys);
+        app.handle_file_list_input(char_key('?'), &mut terminal)
+            .await
+            .unwrap();
+        assert_eq!(app.state, AppState::Help);
+        assert_eq!(app.selected_file, 0);
+    }
 }
 
 #[test]
