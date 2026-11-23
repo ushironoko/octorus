@@ -13,7 +13,7 @@
 
 use std::cmp::Ordering;
 
-use jiff::{Timestamp, ZonedDateTime};
+use jiff::Timestamp;
 
 /// Inclusive range of `chrono 0.4.45`'s `DateTime::<Utc>::from_timestamp(secs, 0)`.
 ///
@@ -64,12 +64,60 @@ pub(crate) fn format_utc_rfc3339(ts: Timestamp) -> String {
 
 /// `chrono::Local::now().format("%Y%m%d-%H%M%S")`, used for migration backups.
 pub fn local_backup_timestamp() -> String {
-    ZonedDateTime::now().strftime("%Y%m%d-%H%M%S").to_string()
+    format_local_now("%Y%m%d-%H%M%S")
 }
 
 /// `chrono::Local::now().format("%H:%M:%S")`, used for AI Rally log lines.
 pub fn local_log_timestamp() -> String {
-    ZonedDateTime::now().strftime("%H:%M:%S").to_string()
+    format_local_now("%H:%M:%S")
+}
+
+fn format_local_now(format: &str) -> String {
+    Timestamp::now()
+        .to_zoned_datetime(local_time_zone())
+        .strftime(format)
+        .to_string()
+}
+
+/// Zone chrono's `Local` would use.
+///
+/// A usable `TZ` wins, including the empty value that both libraries treat as
+/// UTC. An unusable `TZ` (`Invalid/Zone`, `garbage`) makes jiff report
+/// `Etc/Unknown`, which formats as UTC. Chrono instead falls back to
+/// `/etc/localtime`, then UTC.
+fn local_time_zone() -> jiff::tz::TimeZone {
+    if let Ok(zone) = jiff::tz::TimeZone::try_system() {
+        return zone;
+    }
+    fallback_system_zone()
+}
+
+fn fallback_system_zone() -> jiff::tz::TimeZone {
+    #[cfg(unix)]
+    {
+        if let Some(zone) = zone_from_localtime_file("/etc/localtime") {
+            return zone;
+        }
+    }
+    jiff::tz::TimeZone::UTC
+}
+
+#[cfg(unix)]
+fn zone_from_localtime_file(path: &str) -> Option<jiff::tz::TimeZone> {
+    if let Some(zone) = zoneinfo_symlink(path) {
+        return Some(zone);
+    }
+    let bytes = std::fs::read(path).ok()?;
+    jiff::tz::TimeZone::tzif("localtime", &bytes).ok()
+}
+
+#[cfg(unix)]
+fn zoneinfo_symlink(path: &str) -> Option<jiff::tz::TimeZone> {
+    let target = std::fs::read_link(path).ok()?;
+    let target = target.to_str()?;
+    let needle = "zoneinfo/";
+    let name = target.get(target.rfind(needle)? + needle.len()..)?;
+    jiff::tz::TimeZone::get(name).ok()
 }
 
 /// Parse with the acceptance rules of `DateTime::parse_from_rfc3339` in chrono 0.4.45.
@@ -187,18 +235,24 @@ pub(crate) fn format_check_duration(started: &str, completed: &str) -> String {
 ///
 /// Truncates toward zero. A negative fraction whose magnitude is under one
 /// second therefore reports `0`, which the checks list renders as `0s`.
+///
+/// A leap second (`nanos >= 1_000_000_000`) is counted from the UTC
+/// time-of-day, the way `NaiveTime::signed_duration_since` does. A `:60` that
+/// is not `23:59:60` still shifts the result by one second when the
+/// time-of-day order says so.
 fn whole_seconds(later: Instant, earlier: Instant) -> i64 {
     let mut secs = later.secs - earlier.secs;
-    let mut nanos = i64::from(later.nanos) - i64::from(earlier.nanos);
-    if nanos >= 1_000_000_000 || nanos <= -1_000_000_000 {
-        let carry = nanos.div_euclid(1_000_000_000);
-        secs += carry;
-        nanos = nanos.rem_euclid(1_000_000_000);
-    } else if nanos < 0 {
+    let mut frac = i64::from(later.nanos) - i64::from(earlier.nanos);
+    let later_tod = later.secs.rem_euclid(86_400);
+    let earlier_tod = earlier.secs.rem_euclid(86_400);
+    if later_tod > earlier_tod && earlier.nanos >= 1_000_000_000 {
+        secs += 1;
+    } else if later_tod < earlier_tod && later.nanos >= 1_000_000_000 {
         secs -= 1;
-        nanos += 1_000_000_000;
     }
-    if secs < 0 && nanos > 0 {
+    secs += frac.div_euclid(1_000_000_000);
+    frac = frac.rem_euclid(1_000_000_000);
+    if secs < 0 && frac > 0 {
         secs + 1
     } else {
         secs
@@ -547,6 +601,27 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(format_relative_time_at(input, NOW), expected, "{input}");
         }
+
+        // `(now, then, expected)`. The first row is `2024-01-01T00:00:60Z`
+        // viewed 3659s after midnight (`01:00:59Z`): chrono counts the leap
+        // and reports 3600s (`1h ago`). The last row is the other direction,
+        // where the viewer itself is the leap second.
+        let leap_away_from_midnight = [
+            ("2024-01-01T01:00:59Z", "2024-01-01T00:00:60Z", "1h ago"),
+            ("2024-06-15T16:30:59Z", "2024-06-15T15:30:60Z", "1h ago"),
+            ("2024-06-15T16:31:00Z", "2024-06-15T15:30:60.5Z", "1h ago"),
+            ("2024-01-02T00:00:60Z", "2024-01-01T23:01:00Z", "59m ago"),
+            ("2024-06-16T00:00:60Z", "2024-06-15T16:30:01Z", "7h ago"),
+            ("2024-01-01T12:00:00Z", "2024-01-01T00:00:60Z", "11h ago"),
+        ];
+        for (now, then, expected) in leap_away_from_midnight {
+            let now = parse_rfc3339(now).unwrap_or_else(|| panic!("now {now}"));
+            assert_eq!(
+                format_relative_time_at(then, now),
+                expected,
+                "{then} @ {now:?}"
+            );
+        }
     }
 
     #[test]
@@ -607,6 +682,16 @@ mod tests {
             ("2024-01-01T09:00:00+09:00", "2024-01-01T00:00:30Z", "30s"),
             ("2016-12-31T23:59:59Z", "2016-12-31T23:59:60Z", "1s"),
             ("2016-12-31T23:59:60Z", "2017-01-01T00:00:00Z", "0s"),
+            // `:60` away from 23:59. Chrono adds a second when the later
+            // time-of-day is greater, and subtracts one when the later
+            // instant is the leap and its time-of-day is smaller.
+            ("2024-01-01T00:00:60Z", "2024-01-01T12:00:00Z", "719m 01s"),
+            ("2024-01-01T00:00:60Z", "2024-01-01T00:01:00Z", "1s"),
+            ("2024-01-01T00:00:60.5Z", "2024-01-01T00:01:00.5Z", "1s"),
+            ("2024-06-15T15:30:60Z", "2024-06-15T16:30:00Z", "59m 01s"),
+            ("2024-01-01T23:00:00Z", "2024-01-02T00:00:60Z", "60m 59s"),
+            ("2024-06-15T16:30:00Z", "2024-06-16T00:00:60Z", "450m 59s"),
+            ("2024-01-01T12:00:00Z", "2024-01-01T00:00:60Z", "-"),
             ("bad", "2024-01-01T00:00:00Z", "-"),
             ("2024-01-01T00:00:00Z", "bad", "-"),
             (
@@ -1140,6 +1225,120 @@ mod tests {
                 log,
                 "{zone} {instant} log"
             );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_tz_falls_back_to_system_zone_not_utc() {
+        if let Ok(path) = std::env::var("OCTORUS_TIMEFMT_TZ_PROBE") {
+            let zone = local_time_zone();
+            let name = zone.iana_name().unwrap_or("unknown").to_string();
+            let instant = Timestamp::new(1_718_452_800, 0).expect("fixed probe instant");
+            let civil = instant
+                .to_zoned_datetime(zone)
+                .strftime("%Y%m%d-%H%M%S")
+                .to_string();
+            let jiff_fallback = jiff::tz::TimeZone::system();
+            let jiff_name = jiff_fallback.iana_name().unwrap_or("unknown");
+            std::fs::write(&path, format!("ours={name} civil={civil} jiff={jiff_name}"))
+                .unwrap_or_else(|error| panic!("write {path}: {error}"));
+            return;
+        }
+
+        let system = tz_probe("unset", None);
+        let invalid = tz_probe("invalid", Some("Invalid/Zone"));
+        let garbage = tz_probe("garbage", Some("garbage"));
+        assert_eq!(
+            (&invalid.ours, &invalid.civil),
+            (&system.ours, &system.civil),
+            "TZ=Invalid/Zone must follow /etc/localtime, not UTC"
+        );
+        assert_eq!(
+            (&garbage.ours, &garbage.civil),
+            (&system.ours, &system.civil),
+            "TZ=garbage must follow /etc/localtime"
+        );
+        assert_ne!(
+            invalid.ours, invalid.jiff,
+            "jiff's invalid-TZ fallback is Etc/Unknown, which formats as UTC"
+        );
+        assert_ne!(garbage.ours, garbage.jiff);
+        assert_ne!(invalid.ours, "unknown");
+
+        let link = std::fs::read_link("/etc/localtime").expect("/etc/localtime");
+        let link = link.to_str().expect("localtime symlink is utf-8");
+        let suffix = link
+            .rsplit_once("zoneinfo/")
+            .map(|(_, name)| name)
+            .expect("localtime points into zoneinfo");
+        assert_eq!(system.ours, suffix);
+
+        let utc_civil = Timestamp::new(1_718_452_800, 0)
+            .expect("fixed probe instant")
+            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+            .strftime("%Y%m%d-%H%M%S")
+            .to_string();
+        if system.civil != utc_civil {
+            assert_ne!(invalid.civil, utc_civil);
+        }
+    }
+
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct TzProbe {
+        ours: String,
+        civil: String,
+        jiff: String,
+    }
+
+    #[cfg(unix)]
+    fn tz_probe(label: &str, tz: Option<&str>) -> TzProbe {
+        let path =
+            std::env::temp_dir().join(format!("octorus-tz-probe-{}-{label}", std::process::id()));
+        let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .arg("timefmt::tests::invalid_tz_falls_back_to_system_zone_not_utc")
+            .arg("--exact")
+            .env("OCTORUS_TIMEFMT_TZ_PROBE", &path);
+        match tz {
+            Some(value) => {
+                command.env("TZ", value);
+            }
+            None => {
+                command.env_remove("TZ");
+            }
+        }
+        let output = command.output().expect("spawn tz probe");
+        let report = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.status.success(),
+            "tz probe failed\nreport:\n{report}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let line = report.lines().next().unwrap_or_else(|| {
+            panic!(
+                "missing probe report\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        let mut ours = None;
+        let mut civil = None;
+        let mut jiff_name = None;
+        for field in line.split_whitespace() {
+            if let Some(value) = field.strip_prefix("ours=") {
+                ours = Some(value.to_string());
+            } else if let Some(value) = field.strip_prefix("civil=") {
+                civil = Some(value.to_string());
+            } else if let Some(value) = field.strip_prefix("jiff=") {
+                jiff_name = Some(value.to_string());
+            }
+        }
+        TzProbe {
+            ours: ours.expect("ours"),
+            civil: civil.expect("civil"),
+            jiff: jiff_name.expect("jiff"),
         }
     }
 
