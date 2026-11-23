@@ -14,9 +14,9 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{
     apply_line_highlights, collect_line_highlights_bounded,
-    collect_line_highlights_with_injections, selected_query_plan, trace_raw_captures,
-    visible_tree_depth, ForcePlan, HighlightAbort, HighlightControl, Highlighter, LineHighlights,
-    OpenHighlight, QueryPlan, DEEP_TREE_MIN_DEPTH,
+    collect_line_highlights_with_injections, selected_query_plan, slab_resident_budget,
+    trace_raw_captures, visible_tree_depth, ForcePlan, HighlightAbort, HighlightControl,
+    Highlighter, LineHighlights, OpenHighlight, QueryPlan, DEEP_TREE_MIN_DEPTH,
 };
 use crate::syntax::ParserPool;
 use crate::ui::diff_view::build_diff_cache;
@@ -987,6 +987,36 @@ fn peak_rss_bytes() -> u64 {
         return kb.saturating_mul(1024);
     }
     0
+}
+
+#[test]
+fn spill_failure_falls_back_to_the_whole_tree_cursor() {
+    let source = post_change_source(&generate_haskell_diff_patch(1_000));
+    super::force_spill_failure(true);
+    let slabs = render_source("Synthetic.hs", &source, Some(QueryPlan::Slabs));
+    super::force_spill_failure(false);
+    let whole = render_source("Synthetic.hs", &source, Some(QueryPlan::Whole));
+    assert_eq!(
+        slabs, whole,
+        "a spill that cannot be created must still render the whole-tree highlight"
+    );
+    assert!(!slabs.is_empty(), "fallback highlight was empty");
+}
+
+#[test]
+fn deep_chain_dedup_does_not_hold_every_match() {
+    let source = post_change_source(&generate_haskell_diff_patch(1_000));
+    let _guard = force(Some(QueryPlan::Slabs));
+    highlight_bounded("Synthetic.hs", &source, &OpenHighlight).expect("slab highlight");
+    let (max_loaded, total) = slab_resident_budget();
+    assert!(
+        total > 5_000,
+        "synthetic 1k produced too few slab hits ({total})"
+    );
+    assert!(
+        max_loaded.saturating_mul(3) < total.saturating_mul(2),
+        "one dedup loaded {max_loaded} hits out of {total}; the chain is keeping too much"
+    );
 }
 
 #[test]

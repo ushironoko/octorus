@@ -11,8 +11,12 @@
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
+use std::fs::File;
 use std::hash::{Hash, Hasher};
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::ControlFlow;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -99,6 +103,48 @@ pub enum HighlightAbort {
     TimedOut,
     /// [`HIGHLIGHT_MATCH_LIMIT`] in-progress matches was exceeded.
     MatchLimit,
+}
+
+/// A slab walk stopped because the query was aborted, or because the spill
+/// file could not be written. A spill failure falls back to the whole-tree
+/// cursor so the highlight still completes when the temp directory is unusable.
+#[derive(Debug)]
+enum SlabQueryError {
+    Abort(HighlightAbort),
+    Spill,
+}
+
+impl From<HighlightAbort> for SlabQueryError {
+    fn from(reason: HighlightAbort) -> Self {
+        Self::Abort(reason)
+    }
+}
+
+thread_local! {
+    static SPILL_UNUSABLE: Cell<bool> = const { Cell::new(false) };
+}
+
+fn spill_unusable() -> bool {
+    SPILL_UNUSABLE.with(Cell::get)
+}
+
+fn note_spill_unusable() {
+    SPILL_UNUSABLE.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_SPILL_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn force_spill_failure(fail: bool) {
+    FORCE_SPILL_FAILURE.with(|flag| flag.set(fail));
+}
+
+#[cfg(test)]
+fn spill_forced_to_fail() -> bool {
+    FORCE_SPILL_FAILURE.with(Cell::get)
 }
 
 /// Cooperative stop signal checked before a query and from tree-sitter's
@@ -575,8 +621,11 @@ impl CaptureSink<'_> {
 
 /// `true` when the heaviest spine is a deep chain.
 ///
-/// Slab queries keep every match until the slabs can be merged, so a bushy
-/// tree (many nodes per level) spends more memory than the whole-tree cursor.
+/// Slab queries used to keep every match until the merge. A narrow chain a
+/// million nodes deep made that arena larger than the tree. Finalized hits
+/// are spilled so only the open ancestor frames stay resident. A bushy tree
+/// (many nodes per level) still spends more than the whole-tree cursor, and
+/// stays on that cursor.
 /// Descendant count is an upper bound on depth: a subtree that cannot reach
 /// the required spine is skipped. The walk follows only the heaviest child.
 fn chain_deep_enough(tree: &Tree, control: &dyn HighlightControl) -> Result<bool, HighlightAbort> {
@@ -773,53 +822,6 @@ fn visible_tree_depth(tree: &Tree) -> u32 {
     }
 }
 
-/// Every node whose depth is a multiple of `stride`, preorder.
-///
-/// [`query_slabs`] merges the kept matches by finish byte. Visit order is the
-/// order each slab's own cursor yielded, which the merge does not reshuffle.
-fn collect_stride_roots<'tree>(
-    tree: &'tree Tree,
-    stride: u32,
-    control: &dyn HighlightControl,
-) -> Result<Vec<(Node<'tree>, u32, u32)>, HighlightAbort> {
-    debug_assert!(stride > 0);
-    let mut roots = Vec::new();
-    let mut stack: Vec<(u32, u32)> = Vec::new();
-    let mut cursor = tree.walk();
-    let mut depth = 0u32;
-    let mut steps = 0u32;
-    loop {
-        steps += 1;
-        if steps.is_multiple_of(4096) {
-            if let Some(reason) = control.poll_abort() {
-                return Err(reason);
-            }
-        }
-        if depth.is_multiple_of(stride) {
-            while stack.last().is_some_and(|(seen, _)| *seen >= depth) {
-                stack.pop();
-            }
-            let parent = stack.last().map(|(_, index)| *index).unwrap_or(u32::MAX);
-            let index = u32::try_from(roots.len()).unwrap_or(u32::MAX);
-            stack.push((depth, index));
-            roots.push((cursor.node(), depth, parent));
-        }
-        if cursor.goto_first_child() {
-            depth += 1;
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return Ok(roots);
-            }
-            depth = depth.saturating_sub(1);
-        }
-    }
-}
-
 fn select_plan(tree: &Tree, control: &dyn HighlightControl) -> Result<QueryPlan, HighlightAbort> {
     #[cfg(test)]
     {
@@ -935,6 +937,7 @@ fn query_whole(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct Cap {
     index: u32,
     start: u32,
@@ -953,10 +956,6 @@ struct SlabHit {
 /// so a million slabs do not each allocate.
 struct Slab {
     depth: u32,
-    /// Index of the slab one stride shallower, or `u32::MAX` at the root.
-    /// A match is repeated only by that parent, and only when it started on
-    /// the shared boundary level.
-    parent: u32,
     hit_at: u32,
     hit_len: u32,
 }
@@ -968,49 +967,168 @@ fn query_slabs(
     sink: &mut CaptureSink<'_>,
     control: &dyn HighlightControl,
 ) -> Result<(), HighlightAbort> {
-    if u32::try_from(text.len()).is_err() {
+    if u32::try_from(text.len()).is_err() || spill_unusable() {
         return query_whole(text, tree, query, sink, control);
     }
-    let roots = collect_stride_roots(tree, QUERY_DEPTH_STRIDE, control)?;
-    let bytes = text.as_bytes();
-    let match_limit = control.match_limit();
     let nested = super::parser_pool::nested_pattern_flags(query);
-    let mut slabs: Vec<Slab> = Vec::with_capacity(roots.len());
-    let mut caps = Vec::new();
-    let mut hits = Vec::new();
-    let mut hashes = Vec::new();
-
-    for (root, depth, parent) in roots {
-        if let Some(reason) = control.poll_abort() {
-            return Err(reason);
+    match stream_slab_matches(text, tree, query, control) {
+        Ok(stream) => expand_slab_stream(stream, nested, sink, control),
+        // The tree is still alive. The whole-tree cursor renders the same
+        // captures; it is the path ordinary files already use.
+        Err(SlabQueryError::Spill) => {
+            note_spill_unusable();
+            query_whole(text, tree, query, sink, control)
         }
-        let hit_at = u32::try_from(hits.len()).unwrap_or(u32::MAX);
-        let mut out = SlabOut {
-            caps: &mut caps,
-            hits: &mut hits,
-            hashes: &mut hashes,
-        };
-        let added = query_one_slab(bytes, root, query, match_limit, &mut out, control)?;
-        slabs.push(Slab {
-            depth,
-            parent,
-            hit_at,
-            hit_len: added,
-        });
+        Err(SlabQueryError::Abort(reason)) => Err(reason),
     }
+}
 
-    // The parent slab is the only other cursor that can see a match, and only
-    // when the pattern started on the shared boundary. Keep the copy with the
-    // higher count; a tie keeps the shallower cursor. Copies inside the
-    // winning cursor stay, in the order that cursor yielded them.
-    dedup_parent_overlaps(&mut slabs, &mut hits, &hashes);
-    drop(hashes);
-
-    emit_merged(&slabs, &hits, &caps, nested, sink, control)?;
-    if let Some(reason) = control.poll_abort() {
-        return Err(reason);
+/// Start a depth-slab query without building the line map.
+///
+/// `None` means the caller should run the whole-tree cursor. `Some` is a
+/// spill of the deduped matches. The tree is only borrowed while this runs;
+/// expanding the spill does not need it, so the caller can drop the tree
+/// before the highlight output is allocated.
+pub(crate) fn begin_slab_highlight(
+    text: &str,
+    tree: &Tree,
+    query: &Query,
+    control: &dyn HighlightControl,
+) -> Result<Option<SlabStream>, HighlightAbort> {
+    // Each viewed file gets its own attempt. A previous file's full disk
+    // should not permanently disable the bounded path.
+    SPILL_UNUSABLE.with(|flag| flag.set(false));
+    if !matches!(select_plan(tree, control)?, QueryPlan::Slabs) {
+        return Ok(None);
     }
-    Ok(())
+    if u32::try_from(text.len()).is_err() || spill_unusable() {
+        return Ok(None);
+    }
+    match stream_slab_matches(text, tree, query, control) {
+        Ok(stream) => Ok(Some(stream)),
+        Err(SlabQueryError::Spill) => {
+            note_spill_unusable();
+            Ok(None)
+        }
+        Err(SlabQueryError::Abort(reason)) => Err(reason),
+    }
+}
+
+/// Turn a spilled slab query into per-line captures.
+///
+/// Safe to call after the syntax tree has been dropped.
+pub(crate) fn finish_slab_highlight(
+    stream: SlabStream,
+    source: &str,
+    query: &Query,
+    capture_names: &[String],
+    style_cache: &ThemeStyleCache,
+    control: &dyn HighlightControl,
+) -> Result<LineHighlights, HighlightAbort> {
+    let line_offsets = line_offsets(source);
+    let mut captures_by_line = HashMap::new();
+    let nested = super::parser_pool::nested_pattern_flags(query);
+    let mut sink = CaptureSink {
+        origin: 0,
+        line_offsets: &line_offsets,
+        source_len: source.len(),
+        capture_names,
+        style_cache,
+        out: &mut captures_by_line,
+    };
+    expand_slab_stream(stream, nested, &mut sink, control)?;
+    for captures in captures_by_line.values_mut() {
+        captures.sort_by_key(|capture| capture.local_start);
+    }
+    Ok(LineHighlights { captures_by_line })
+}
+
+/// Return freed heap pages to the OS.
+///
+/// The slab spill is written while the tree is still alive. Dropping the
+/// tree leaves a hole in the glibc heap; `malloc_trim` releases it before
+/// the highlight output is built, so the two never share one high-water mark.
+pub(crate) fn release_highlight_heap() {
+    #[cfg(target_os = "linux")]
+    {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: `malloc_trim` is process-global and only releases free
+        // chunks. The tree that filled those chunks has already been dropped.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+}
+
+/// Deduped slab matches, appended as they are discovered.
+///
+/// Records live in a temporary file so a multi-million-node chain does not
+/// keep every capture next to the syntax tree. [`Drop`] removes the file.
+pub(crate) struct SlabStream {
+    /// Buffered handle. The short tail page is written here; bulk bytes are not.
+    buffered: File,
+    /// `O_DIRECT` handle when the filesystem allows it. Bulk spill bytes never
+    /// enter the page cache, which is what kept a deep highlight under the
+    /// cgroup cap.
+    direct: Option<File>,
+    path: PathBuf,
+    /// Byte offset of each slab record, in preorder. The index is the merge group.
+    offsets: Vec<u32>,
+    /// Packed drop bits for every hit, in query order. One byte per eight hits.
+    drops: Vec<u8>,
+    len: u64,
+    /// Page-aligned prefix already dropped from the page cache.
+    released: u64,
+}
+
+impl Drop for SlabStream {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct SlabBudget {
+    max_loaded: usize,
+    total_hits: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SLAB_BUDGET: std::cell::RefCell<SlabBudget> = const { std::cell::RefCell::new(SlabBudget { max_loaded: 0, total_hits: 0 }) };
+}
+
+#[cfg(test)]
+fn reset_slab_budget() {
+    SLAB_BUDGET.with(|budget| *budget.borrow_mut() = SlabBudget::default());
+}
+
+#[cfg(test)]
+fn note_slab_loaded(loaded: usize, added: usize) {
+    SLAB_BUDGET.with(|budget| {
+        let mut budget = budget.borrow_mut();
+        budget.total_hits = budget.total_hits.saturating_add(added);
+        budget.max_loaded = budget.max_loaded.max(loaded);
+    });
+}
+
+/// `(max hits loaded for one parent/child dedup, total hits queried)`.
+#[cfg(test)]
+pub(super) fn slab_resident_budget() -> (usize, usize) {
+    SLAB_BUDGET.with(|budget| {
+        let budget = budget.borrow();
+        (budget.max_loaded, budget.total_hits)
+    })
+}
+
+struct LiveSlab {
+    hits: Vec<SlabHit>,
+    caps: Vec<Cap>,
+    hashes: Vec<u128>,
+    drop_hit: Vec<bool>,
 }
 
 struct SlabOut<'a> {
@@ -1019,22 +1137,28 @@ struct SlabOut<'a> {
     hashes: &'a mut Vec<u128>,
 }
 
+struct ReusedQuery<'a> {
+    cursor: &'a mut QueryCursor,
+    raw: *mut tree_sitter::ffi::TSQueryCursor,
+    enforce_match_limit: bool,
+}
+
 fn query_one_slab<'tree>(
     bytes: &[u8],
     root: Node<'tree>,
     query: &Query,
-    match_limit: Option<u32>,
+    reused: &mut ReusedQuery<'_>,
     out: &mut SlabOut<'_>,
     control: &dyn HighlightControl,
 ) -> Result<u32, HighlightAbort> {
-    let mut cursor = QueryCursor::new();
-    if let Some(limit) = match_limit {
-        cursor.set_match_limit(limit);
-    }
     // Capping a subtree that is already shallower than the stride changes
     // the order of matches that finish on the same node, and saves nothing.
+    // Reset the depth on every slab: the cursor is reused, and a cap left
+    // over from a deeper sibling would reorder a shallow one.
     if node_deeper_than(root, QUERY_DEPTH_STRIDE) {
-        cursor.set_max_start_depth(Some(QUERY_DEPTH_STRIDE));
+        reused.cursor.set_max_start_depth(Some(QUERY_DEPTH_STRIDE));
+    } else {
+        reused.cursor.set_max_start_depth(None);
     }
     let aborted = Cell::new(None);
     let mut callback = |_state: &QueryCursorState| {
@@ -1046,13 +1170,9 @@ fn query_one_slab<'tree>(
         }
     };
     let options = QueryCursorOptions::new().progress_callback(&mut callback);
-    let raw = QueryCursor::into_raw(cursor);
-    // SAFETY: `into_raw` does not free the cursor. The rebuilt wrapper owns
-    // it until the end of this function, and `raw` is only read while
-    // `matches` borrows that wrapper. The public cursor has no finish-node
-    // accessor; [`cursor_finish_byte`] documents the layout it reads.
-    let mut cursor = unsafe { QueryCursor::from_raw(raw) };
-    let mut matches = cursor.matches_with_options(query, root, bytes, options);
+    let mut matches = reused
+        .cursor
+        .matches_with_options(query, root, bytes, options);
     let before = out.hits.len();
     while let Some(mat) = matches.next() {
         if aborted.get().is_some() {
@@ -1061,7 +1181,7 @@ fn query_one_slab<'tree>(
         if mat.captures.is_empty() {
             continue;
         }
-        let Ok(finish) = u32::try_from(cursor_finish_byte(raw)) else {
+        let Ok(finish) = u32::try_from(cursor_finish_byte(reused.raw)) else {
             continue;
         };
         let Ok(cap_at) = u32::try_from(out.caps.len()) else {
@@ -1098,83 +1218,924 @@ fn query_one_slab<'tree>(
     if let Some(reason) = aborted.get() {
         return Err(reason);
     }
-    if match_limit.is_some() && cursor.did_exceed_match_limit() {
+    if reused.enforce_match_limit && reused.cursor.did_exceed_match_limit() {
         return Err(HighlightAbort::MatchLimit);
     }
     u32::try_from(out.hits.len() - before).or(Err(HighlightAbort::MatchLimit))
 }
 
-/// Drop the losing copy of a match that two adjacent slabs both found.
-fn dedup_parent_overlaps(slabs: &mut [Slab], hits: &mut Vec<SlabHit>, hashes: &[u128]) {
-    let mut drop_hit = vec![false; hits.len()];
-    let mut pairs: Vec<(u32, u32)> = Vec::new();
-    for (index, slab) in slabs.iter().enumerate() {
-        if slab.parent != u32::MAX && slab.hit_len > 0 && slabs[slab.parent as usize].hit_len > 0 {
-            pairs.push((slab.parent, u32::try_from(index).unwrap_or(u32::MAX)));
+#[derive(Clone, Copy)]
+struct SlabFrame {
+    /// Index of this slab's first drop bit in the in-memory bitset.
+    bit_at: u32,
+    hit_count: u32,
+    /// File offset of the append-only hash list.
+    hash_off: u32,
+}
+
+/// Deletes the spill unless the walk transferred it to a [`SlabStream`].
+struct SpillCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for SpillCleanup {
+    fn drop(&mut self) {
+        if self.armed && !self.path.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.path);
         }
     }
-    pairs.sort_unstable_by_key(|(parent, _)| *parent);
-    let mut child_counts: FxHashMap<u128, u32> = FxHashMap::default();
-    let mut parent_counts: FxHashMap<u128, u32> = FxHashMap::default();
-    let mut drop_from_parent: FxHashMap<u128, ()> = FxHashMap::default();
-    let mut pair_at = 0;
-    while pair_at < pairs.len() {
-        let parent_index = pairs[pair_at].0 as usize;
-        let parent_at = slabs[parent_index].hit_at as usize;
-        let parent_len = slabs[parent_index].hit_len as usize;
-        parent_counts.clear();
-        drop_from_parent.clear();
-        for hash in &hashes[parent_at..parent_at + parent_len] {
-            *parent_counts.entry(*hash).or_default() += 1;
-        }
-        while pair_at < pairs.len() && pairs[pair_at].0 as usize == parent_index {
-            let child_index = pairs[pair_at].1 as usize;
-            pair_at += 1;
-            let child_at = slabs[child_index].hit_at as usize;
-            let child_len = slabs[child_index].hit_len as usize;
-            child_counts.clear();
-            for hash in &hashes[child_at..child_at + child_len] {
-                if parent_counts.contains_key(hash) {
-                    *child_counts.entry(*hash).or_default() += 1;
-                }
+}
+
+struct SpillFile {
+    buffered: File,
+    direct: Option<File>,
+    cleanup: SpillCleanup,
+    /// Bytes not flushed yet. `tail_off` is the file offset of `tail[0]`.
+    tail: Vec<u8>,
+    tail_off: u64,
+    end: u64,
+    offsets: Vec<u32>,
+    /// Packed drop bits. Kept in memory so a parent update does not rewrite a
+    /// spilled page back into the cache. Eight million hits is about 1 MB.
+    drops: Vec<u8>,
+    drop_hits: u32,
+}
+
+fn stream_slab_matches(
+    text: &str,
+    tree: &Tree,
+    query: &Query,
+    control: &dyn HighlightControl,
+) -> Result<SlabStream, SlabQueryError> {
+    #[cfg(test)]
+    reset_slab_budget();
+    // Parsing the deep tree leaves freed scratch above the live nodes.
+    // Give those pages back before the slab walk allocates its own buffers.
+    release_highlight_heap();
+    let mut spill = SpillFile::create()?;
+    // Slab frames only. The navigation stack is one window per stride, not a
+    // tree cursor: a cursor on this chain keeps an ancestor entry per level
+    // and that alone was ~120 MB on top of the tree.
+    let mut frames: Vec<SlabFrame> = Vec::new();
+    let bytes = text.as_bytes();
+    let match_limit = control.match_limit();
+    let mut steps = 0u32;
+    let mut query_cursor = QueryCursor::new();
+    if let Some(limit) = match_limit {
+        query_cursor.set_match_limit(limit);
+    }
+    let raw = QueryCursor::into_raw(query_cursor);
+    // SAFETY: `into_raw` does not free the cursor. This wrapper owns it for
+    // the rest of the walk, and `raw` is only read while `matches` borrows it.
+    let mut query_cursor = unsafe { QueryCursor::from_raw(raw) };
+    let mut wins = vec![StrideWin::new(tree.root_node(), 0)];
+
+    loop {
+        steps += 1;
+        if steps.is_multiple_of(4096) {
+            if let Some(reason) = control.poll_abort() {
+                return Err(reason.into());
             }
-            for (offset, hash) in hashes[child_at..child_at + child_len].iter().enumerate() {
-                let Some(&child_count) = child_counts.get(hash) else {
-                    continue;
-                };
-                // Higher count wins. A tie keeps the shallower parent.
-                if parent_counts[hash] >= child_count {
-                    drop_hit[child_at + offset] = true;
-                } else {
-                    drop_from_parent.insert(*hash, ());
-                }
-            }
         }
-        if drop_from_parent.is_empty() {
+        let Some(win) = wins.last() else {
+            debug_assert!(frames.is_empty());
+            return spill.into_stream();
+        };
+        if !win.queried {
+            let node = win.node;
+            let depth = win.depth;
+            wins.last_mut().expect("window").queried = true;
+            let mut walk = SlabWalk {
+                cursor: &mut query_cursor,
+                raw,
+                enforce_match_limit: match_limit.is_some(),
+                spill: &mut spill,
+                frames: &mut frames,
+            };
+            commit_slab(bytes, node, depth, query, &mut walk, control)?;
             continue;
         }
-        for (offset, hash) in hashes[parent_at..parent_at + parent_len].iter().enumerate() {
-            if drop_from_parent.contains_key(hash) {
-                drop_hit[parent_at + offset] = true;
+
+        let action = {
+            let win = wins.last_mut().expect("window");
+            let local = stride_local_node(win);
+            let next = win.down[win.levels as usize];
+            let count = u32::try_from(local.child_count()).unwrap_or(u32::MAX);
+            if next < count {
+                if let Some(child) = local.child(next) {
+                    win.down[win.levels as usize] = next + 1;
+                    if u32::from(win.levels) + 1 == QUERY_DEPTH_STRIDE {
+                        Some(child)
+                    } else {
+                        win.levels += 1;
+                        win.down[win.levels as usize] = 0;
+                        None
+                    }
+                } else {
+                    win.down[win.levels as usize] = next + 1;
+                    None
+                }
+            } else if win.levels == 0 {
+                // Finished. `None` child and we signal by emptying below.
+                wins.pop();
+                frames.pop();
+                continue;
+            } else {
+                win.levels -= 1;
+                None
+            }
+        };
+        if let Some(child) = action {
+            let depth = wins.last().expect("parent window").depth + QUERY_DEPTH_STRIDE;
+            wins.push(StrideWin::new(child, depth));
+        }
+    }
+}
+
+/// One stride node plus the at-most-`QUERY_DEPTH_STRIDE` levels under it.
+///
+/// Deeper nodes become their own window, so this never stores the whole spine.
+struct StrideWin<'tree> {
+    node: Node<'tree>,
+    depth: u32,
+    queried: bool,
+    /// Next child index to try at each relative depth.
+    down: [u32; QUERY_DEPTH_STRIDE as usize],
+    levels: u8,
+}
+
+impl<'tree> StrideWin<'tree> {
+    fn new(node: Node<'tree>, depth: u32) -> Self {
+        Self {
+            node,
+            depth,
+            queried: false,
+            down: [0; QUERY_DEPTH_STRIDE as usize],
+            levels: 0,
+        }
+    }
+}
+
+fn stride_local_node<'a>(win: &StrideWin<'a>) -> Node<'a> {
+    let mut node = win.node;
+    for level in 0..win.levels {
+        let index = win.down[level as usize] - 1;
+        node = node
+            .child(index)
+            .expect("child index came from child_count");
+    }
+    node
+}
+
+struct SlabWalk<'a> {
+    cursor: &'a mut QueryCursor,
+    raw: *mut tree_sitter::ffi::TSQueryCursor,
+    enforce_match_limit: bool,
+    spill: &'a mut SpillFile,
+    frames: &'a mut Vec<SlabFrame>,
+}
+
+fn commit_slab(
+    bytes: &[u8],
+    node: Node<'_>,
+    depth: u32,
+    query: &Query,
+    walk: &mut SlabWalk<'_>,
+    control: &dyn HighlightControl,
+) -> Result<(), SlabQueryError> {
+    let mut live = LiveSlab {
+        hits: Vec::new(),
+        caps: Vec::new(),
+        hashes: Vec::new(),
+        drop_hit: Vec::new(),
+    };
+    {
+        let mut out = SlabOut {
+            caps: &mut live.caps,
+            hits: &mut live.hits,
+            hashes: &mut live.hashes,
+        };
+        query_one_slab(
+            bytes,
+            node,
+            query,
+            &mut ReusedQuery {
+                cursor: walk.cursor,
+                raw: walk.raw,
+                enforce_match_limit: walk.enforce_match_limit,
+            },
+            &mut out,
+            control,
+        )?;
+    }
+    live.drop_hit.resize(live.hits.len(), false);
+    let child_hits = live.hits.len();
+    let loaded = if let Some(parent) = walk.frames.last().copied() {
+        let parent_hashes = walk.spill.read_hashes(parent.hash_off, parent.hit_count)?;
+        let mut parent_drop = walk.spill.parent_drops(parent.bit_at, parent.hit_count);
+        mark_overlap(
+            &parent_hashes,
+            &mut parent_drop,
+            &live.hashes,
+            &mut live.drop_hit,
+        );
+        walk.spill.store_drops(parent.bit_at, &parent_drop);
+        parent.hit_count as usize + child_hits
+    } else {
+        child_hits
+    };
+    #[cfg(test)]
+    note_slab_loaded(loaded, child_hits);
+    #[cfg(not(test))]
+    let _ = loaded;
+    let frame = walk.spill.write_record(depth, &live)?;
+    walk.frames.push(frame);
+    Ok(())
+}
+
+fn expand_slab_stream(
+    mut stream: SlabStream,
+    nested: &[u8],
+    sink: &mut CaptureSink<'_>,
+    control: &dyn HighlightControl,
+) -> Result<(), HighlightAbort> {
+    let mut slabs = Vec::with_capacity(stream.offsets.len());
+    let mut hits = Vec::new();
+    let mut caps = Vec::new();
+    let count = stream.offsets.len();
+    for index in 0..count {
+        let offset = stream.offsets[index];
+        // Earlier records are fully consumed. Drop their pages before the
+        // expanded arena grows, and keep this record's page so the read hits cache.
+        stream.release_prefix(u64::from(offset));
+        let (depth, kept_hits, kept_caps) = stream.read_kept(offset)?;
+        let hit_at = u32::try_from(hits.len()).unwrap_or(u32::MAX);
+        let mut hit_len = 0u32;
+        for hit in kept_hits {
+            let start = hit.cap_at as usize;
+            let end = start + hit.cap_len as usize;
+            let new_at = u32::try_from(caps.len()).unwrap_or(u32::MAX);
+            if end > kept_caps.len() || new_at == u32::MAX {
+                continue;
+            }
+            caps.extend_from_slice(&kept_caps[start..end]);
+            hits.push(SlabHit {
+                pattern: hit.pattern,
+                finish: hit.finish,
+                cap_at: new_at,
+                cap_len: hit.cap_len,
+            });
+            hit_len = hit_len.saturating_add(1);
+        }
+        slabs.push(Slab {
+            depth,
+            hit_at,
+            hit_len,
+        });
+    }
+    stream.release_rest();
+    emit_merged(&slabs, &hits, &caps, nested, sink, control)?;
+    if let Some(reason) = control.poll_abort() {
+        return Err(reason);
+    }
+    Ok(())
+}
+
+impl SpillFile {
+    fn create() -> Result<Self, SlabQueryError> {
+        #[cfg(test)]
+        if spill_forced_to_fail() {
+            return Err(SlabQueryError::Spill);
+        }
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, AtomicOrdering::Relaxed);
+        let path = std::env::temp_dir().join(format!("octorus-slab-{}-{id}", std::process::id()));
+        let buffered = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(spill_err)?;
+        let direct = open_direct(&path);
+        Ok(Self {
+            buffered,
+            direct,
+            cleanup: SpillCleanup { path, armed: true },
+            tail: Vec::with_capacity(128 * 1024),
+            tail_off: 0,
+            end: 0,
+            offsets: Vec::new(),
+            drops: Vec::new(),
+            drop_hits: 0,
+        })
+    }
+
+    fn into_stream(mut self) -> Result<SlabStream, SlabQueryError> {
+        self.flush_all()?;
+        self.cleanup.armed = false;
+        let path = std::mem::take(&mut self.cleanup.path);
+        Ok(SlabStream {
+            buffered: self.buffered,
+            direct: self.direct.take(),
+            path,
+            offsets: std::mem::take(&mut self.offsets),
+            drops: std::mem::take(&mut self.drops),
+            len: self.end,
+            released: 0,
+        })
+    }
+
+    fn write_record(&mut self, depth: u32, live: &LiveSlab) -> Result<SlabFrame, SlabQueryError> {
+        let hit_count = u32::try_from(live.hits.len())
+            .map_err(|_| SlabQueryError::Abort(HighlightAbort::MatchLimit))?;
+        let cap_count = u32::try_from(live.caps.len())
+            .map_err(|_| SlabQueryError::Abort(HighlightAbort::MatchLimit))?;
+        let offset = u32::try_from(self.end)
+            .map_err(|_| SlabQueryError::Abort(HighlightAbort::MatchLimit))?;
+        let bit_at = self.drop_hits;
+        if bit_at.checked_add(hit_count).is_none() {
+            return Err(SlabQueryError::Abort(HighlightAbort::MatchLimit));
+        }
+        let mut buf = Vec::with_capacity(
+            16 + live.hits.len() * 16 + live.caps.len() * 12 + live.hashes.len() * 16,
+        );
+        push_u32(&mut buf, depth);
+        push_u32(&mut buf, hit_count);
+        push_u32(&mut buf, cap_count);
+        push_u32(&mut buf, bit_at);
+        for hit in &live.hits {
+            push_u32(&mut buf, hit.pattern);
+            push_u32(&mut buf, hit.finish);
+            push_u32(&mut buf, hit.cap_at);
+            push_u32(&mut buf, hit.cap_len);
+        }
+        for cap in &live.caps {
+            push_u32(&mut buf, cap.index);
+            push_u32(&mut buf, cap.start);
+            push_u32(&mut buf, cap.end);
+        }
+        let hash_off = u32::try_from(self.end + buf.len() as u64)
+            .map_err(|_| SlabQueryError::Abort(HighlightAbort::MatchLimit))?;
+        for hash in &live.hashes {
+            buf.extend_from_slice(&hash.to_le_bytes());
+        }
+        self.append(&buf)?;
+        self.push_drops(&live.drop_hit);
+        self.offsets.push(offset);
+        Ok(SlabFrame {
+            bit_at,
+            hit_count,
+            hash_off,
+        })
+    }
+
+    fn read_hashes(&mut self, hash_off: u32, hits: u32) -> Result<Vec<u128>, SlabQueryError> {
+        if hits == 0 {
+            return Ok(Vec::new());
+        }
+        let mut raw = vec![0u8; hits as usize * 16];
+        self.read_at(u64::from(hash_off), &mut raw)?;
+        Ok(raw
+            .chunks_exact(16)
+            .map(|chunk| u128::from_le_bytes(chunk.try_into().expect("16-byte hash")))
+            .collect())
+    }
+
+    fn parent_drops(&self, bit_at: u32, hits: u32) -> Vec<bool> {
+        let mut drops = vec![false; hits as usize];
+        for (index, drop) in drops.iter_mut().enumerate() {
+            let at = bit_at as usize + index;
+            let byte = self.drops.get(at / 8).copied().unwrap_or(0);
+            *drop = byte & (1 << (at % 8)) != 0;
+        }
+        drops
+    }
+
+    fn store_drops(&mut self, bit_at: u32, drops: &[bool]) {
+        for (index, drop) in drops.iter().enumerate() {
+            let at = bit_at as usize + index;
+            if at / 8 >= self.drops.len() {
+                break;
+            }
+            let mask = 1u8 << (at % 8);
+            if *drop {
+                self.drops[at / 8] |= mask;
+            } else {
+                self.drops[at / 8] &= !mask;
             }
         }
     }
 
-    let mut dst = 0usize;
-    for slab in slabs.iter_mut() {
-        let start = slab.hit_at as usize;
-        let end = start + slab.hit_len as usize;
-        let new_at = u32::try_from(dst).unwrap_or(u32::MAX);
-        for index in start..end {
-            if !drop_hit[index] {
-                hits[dst] = hits[index];
-                dst += 1;
+    fn push_drops(&mut self, drops: &[bool]) {
+        let start = self.drop_hits as usize;
+        let need = (start + drops.len()).div_ceil(8);
+        if self.drops.len() < need {
+            self.drops.resize(need, 0);
+        }
+        for (index, drop) in drops.iter().enumerate() {
+            if *drop {
+                let at = start + index;
+                self.drops[at / 8] |= 1 << (at % 8);
             }
         }
-        slab.hit_at = new_at;
-        slab.hit_len = u32::try_from(dst - new_at as usize).unwrap_or(0);
+        self.drop_hits = self
+            .drop_hits
+            .saturating_add(u32::try_from(drops.len()).unwrap_or(u32::MAX));
     }
-    hits.truncate(dst);
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), SlabQueryError> {
+        self.tail.extend_from_slice(bytes);
+        self.end += bytes.len() as u64;
+        self.flush_full_pages()
+    }
+
+    /// Move complete pages to disk. A small tail stays in this process so the
+    /// parent slab's hashes are usually still a memory read.
+    fn flush_full_pages(&mut self) -> Result<(), SlabQueryError> {
+        let page = page_size() as usize;
+        const KEEP: usize = 64 * 1024;
+        if self.tail.len() < KEEP + page {
+            return Ok(());
+        }
+        let n = self.tail.len() & !(page - 1);
+        self.write_pages(n)
+    }
+
+    fn flush_all(&mut self) -> Result<(), SlabQueryError> {
+        let page = page_size() as usize;
+        let n = self.tail.len() & !(page - 1);
+        if n > 0 {
+            self.write_pages(n)?;
+        }
+        if self.tail.is_empty() {
+            return Ok(());
+        }
+        // The last partial page cannot go through `O_DIRECT`.
+        self.buffered
+            .seek(SeekFrom::Start(self.tail_off))
+            .map_err(spill_err)?;
+        self.buffered.write_all(&self.tail).map_err(spill_err)?;
+        self.tail_off += self.tail.len() as u64;
+        self.tail.clear();
+        let _ = self.buffered.sync_data();
+        advise_whole_file(&self.buffered);
+        Ok(())
+    }
+
+    fn write_pages(&mut self, n: usize) -> Result<(), SlabQueryError> {
+        if n == 0 {
+            return Ok(());
+        }
+        if let Some(direct) = self.direct.as_ref() {
+            let aligned = align_copy(&self.tail[..n]);
+            pwrite_all(direct, self.tail_off, aligned.as_slice())?;
+        } else {
+            self.buffered
+                .seek(SeekFrom::Start(self.tail_off))
+                .map_err(spill_err)?;
+            self.buffered
+                .write_all(&self.tail[..n])
+                .map_err(spill_err)?;
+            let _ = sync_and_drop_cache(&self.buffered, self.tail_off, n as u64);
+        }
+        self.tail.drain(..n);
+        self.tail_off += n as u64;
+        Ok(())
+    }
+
+    fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), SlabQueryError> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        if offset >= self.tail_off {
+            let start = (offset - self.tail_off) as usize;
+            let end = start + dst.len();
+            if end > self.tail.len() {
+                return Err(SlabQueryError::Abort(HighlightAbort::MatchLimit));
+            }
+            dst.copy_from_slice(&self.tail[start..end]);
+            return Ok(());
+        }
+        if offset + dst.len() as u64 <= self.tail_off {
+            return read_disk(
+                self.direct.as_ref(),
+                &self.buffered,
+                self.tail_off,
+                offset,
+                dst,
+            );
+        }
+        let n = (self.tail_off - offset) as usize;
+        let tail_len = dst.len() - n;
+        read_disk(
+            self.direct.as_ref(),
+            &self.buffered,
+            self.tail_off,
+            offset,
+            &mut dst[..n],
+        )?;
+        dst[n..].copy_from_slice(&self.tail[..tail_len]);
+        Ok(())
+    }
+}
+
+impl SlabStream {
+    fn read_kept(&mut self, offset: u32) -> Result<(u32, Vec<SlabHit>, Vec<Cap>), HighlightAbort> {
+        let mut hdr = [0u8; 16];
+        self.read_at(u64::from(offset), &mut hdr)?;
+        let depth = u32::from_le_bytes(hdr[0..4].try_into().expect("depth"));
+        let hit_count = u32::from_le_bytes(hdr[4..8].try_into().expect("hits")) as usize;
+        let cap_count = u32::from_le_bytes(hdr[8..12].try_into().expect("caps")) as usize;
+        let bit_at = u32::from_le_bytes(hdr[12..16].try_into().expect("bits")) as usize;
+        let mut body = vec![0u8; hit_count * 16 + cap_count * 12];
+        self.read_at(u64::from(offset) + 16, &mut body)?;
+        let mut hits = Vec::with_capacity(hit_count);
+        for chunk in body[..hit_count * 16].chunks_exact(16) {
+            hits.push(SlabHit {
+                pattern: u32::from_le_bytes(chunk[0..4].try_into().expect("pattern")),
+                finish: u32::from_le_bytes(chunk[4..8].try_into().expect("finish")),
+                cap_at: u32::from_le_bytes(chunk[8..12].try_into().expect("cap_at")),
+                cap_len: u32::from_le_bytes(chunk[12..16].try_into().expect("cap_len")),
+            });
+        }
+        let mut caps = Vec::with_capacity(cap_count);
+        for chunk in body[hit_count * 16..].chunks_exact(12) {
+            caps.push(Cap {
+                index: u32::from_le_bytes(chunk[0..4].try_into().expect("index")),
+                start: u32::from_le_bytes(chunk[4..8].try_into().expect("start")),
+                end: u32::from_le_bytes(chunk[8..12].try_into().expect("end")),
+            });
+        }
+        let kept = hits
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| !self.bit_dropped(bit_at + index))
+            .map(|(_, hit)| hit)
+            .collect();
+        Ok((depth, kept, caps))
+    }
+
+    fn bit_dropped(&self, index: usize) -> bool {
+        let byte = self.drops.get(index / 8).copied().unwrap_or(0);
+        byte & (1 << (index % 8)) != 0
+    }
+
+    fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), HighlightAbort> {
+        read_disk(self.direct.as_ref(), &self.buffered, self.len, offset, dst).map_err(|err| {
+            match err {
+                SlabQueryError::Abort(reason) => reason,
+                SlabQueryError::Spill => HighlightAbort::MatchLimit,
+            }
+        })
+    }
+
+    /// Drop pages fully before `consumed_until`. The live record may share
+    /// its first page with the previous one, so that page stays.
+    fn release_prefix(&mut self, consumed_until: u64) {
+        let until = consumed_until & !(page_size() - 1);
+        if until <= self.released {
+            return;
+        }
+        advise_dontneed(&self.buffered, self.released, until - self.released);
+        self.released = until;
+    }
+
+    fn release_rest(&mut self) {
+        advise_whole_file(&self.buffered);
+        self.released = u64::MAX;
+    }
+}
+
+struct AlignedBytes {
+    raw: Vec<u8>,
+    off: usize,
+    len: usize,
+}
+
+impl AlignedBytes {
+    fn as_slice(&self) -> &[u8] {
+        &self.raw[self.off..self.off + self.len]
+    }
+}
+
+/// Copy `src` into a page-aligned allocation.
+///
+/// `O_DIRECT` rejects a buffer whose address is not a multiple of the page
+/// size. `Vec<u8>` is only aligned to 1, so the bytes are copied forward to
+/// the next aligned address in the same allocation.
+fn align_copy(src: &[u8]) -> AlignedBytes {
+    let page = page_size() as usize;
+    let mut raw = vec![0u8; src.len() + page];
+    let addr = raw.as_mut_ptr() as usize;
+    let start = (addr + page - 1) & !(page - 1);
+    let off = start - addr;
+    raw[off..off + src.len()].copy_from_slice(src);
+    AlignedBytes {
+        raw,
+        off,
+        len: src.len(),
+    }
+}
+
+fn open_direct(path: &std::path::Path) -> Option<File> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // `O_DIRECT`. Bulk spill writes then skip the page cache.
+        File::options()
+            .read(true)
+            .write(true)
+            .custom_flags(0x4000)
+            .open(path)
+            .ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+fn pwrite_all(file: &File, offset: u64, bytes: &[u8]) -> Result<(), SlabQueryError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(bytes, offset).map_err(spill_err)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, offset, bytes);
+        Err(SlabQueryError::Spill)
+    }
+}
+
+fn pread_all(file: &File, offset: u64, dst: &mut [u8]) -> Result<(), SlabQueryError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(dst, offset).map_err(spill_err)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, offset, dst);
+        Err(SlabQueryError::Spill)
+    }
+}
+
+fn pread_direct(file: &File, offset: u64, dst: &mut [u8]) -> Result<(), SlabQueryError> {
+    let page = page_size();
+    let start = offset & !(page - 1);
+    let end = (offset + dst.len() as u64 + page - 1) & !(page - 1);
+    let len = (end - start) as usize;
+    let mut raw = vec![0u8; len + page as usize];
+    let addr = raw.as_mut_ptr() as usize;
+    let aligned = (addr + page as usize - 1) & !(page as usize - 1);
+    let off = aligned - addr;
+    pread_all(file, start, &mut raw[off..off + len])?;
+    let src = (offset - start) as usize;
+    dst.copy_from_slice(&raw[off + src..off + src + dst.len()]);
+    Ok(())
+}
+
+/// Read `dst` from the spill.
+///
+/// `file_len` is the flushed size. Whole pages were written with `O_DIRECT`
+/// and are read the same way. A short tail, and a filesystem that rejected
+/// `O_DIRECT`, go through the buffered handle and then drop those pages.
+fn read_disk(
+    direct: Option<&File>,
+    buffered: &File,
+    file_len: u64,
+    offset: u64,
+    dst: &mut [u8],
+) -> Result<(), SlabQueryError> {
+    if dst.is_empty() {
+        return Ok(());
+    }
+    let page = page_size();
+    let direct_end = file_len & !(page - 1);
+    if let Some(direct) = direct {
+        if offset + dst.len() as u64 <= direct_end {
+            return pread_direct(direct, offset, dst);
+        }
+        if offset < direct_end {
+            let n = (direct_end - offset) as usize;
+            pread_direct(direct, offset, &mut dst[..n])?;
+            pread_all(buffered, offset + n as u64, &mut dst[n..])?;
+            advise_dontneed(
+                buffered,
+                direct_end,
+                (offset + dst.len() as u64) - direct_end,
+            );
+            return Ok(());
+        }
+    }
+    pread_all(buffered, offset, dst)?;
+    let start = offset & !(page - 1);
+    let end = (offset + dst.len() as u64 + page - 1) & !(page - 1);
+    advise_dontneed(buffered, start, end.saturating_sub(start));
+    Ok(())
+}
+
+fn push_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+/// A spill that cannot be written or read aborts the highlight. The caller
+/// keeps the plain diff.
+fn spill_err(_err: std::io::Error) -> SlabQueryError {
+    SlabQueryError::Spill
+}
+
+/// Exclusive end of spill bytes that can leave the page cache.
+///
+/// The record that starts at `last_record` is still the parent's match list.
+/// Anything from its first page onward stays resident.
+#[cfg(test)]
+fn spill_drop_end(last_record: u64, already: u64) -> u64 {
+    let until = last_record & !(page_size() - 1);
+    if until <= already {
+        0
+    } else {
+        until
+    }
+}
+
+fn page_size() -> u64 {
+    static PAGE: OnceLock<u64> = OnceLock::new();
+    *PAGE.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        {
+            extern "C" {
+                fn sysconf(name: i32) -> i64;
+            }
+            // `_SC_PAGESIZE` on Linux.
+            const SC_PAGESIZE: i32 = 30;
+            // SAFETY: `sysconf` is process-global and only reads a kernel constant.
+            let n = unsafe { sysconf(SC_PAGESIZE) };
+            if n > 0 {
+                n as u64
+            } else {
+                4096
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            4096
+        }
+    })
+}
+
+/// Flush and drop a page-aligned range.
+///
+/// `sync_file_range` returns `EINVAL` unless `offset` and `nbytes` are both
+/// multiples of the page size (or `nbytes` runs to EOF). Slab records are not
+/// page-aligned, and a failed flush leaves the pages dirty, which
+/// `POSIX_FADV_DONTNEED` will not drop. Callers pass the live record's start;
+/// this rounds inward so the live page stays.
+fn sync_and_drop_cache(file: &File, start: u64, len: u64) -> bool {
+    let page = page_size();
+    let aligned_start = start.saturating_add(page - 1) & !(page - 1);
+    let end = start.saturating_add(len);
+    let aligned_end = end & !(page - 1);
+    if aligned_end <= aligned_start {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let len = aligned_end - aligned_start;
+        // WAIT_BEFORE | WRITE | WAIT_AFTER. WAIT_AFTER makes the pages clean
+        // before the advice below, which ignores dirty pages.
+        const SYNC_ALL: u32 = 1 | 2 | 4;
+        let synced = sync_file_range_range(file, aligned_start, len, SYNC_ALL);
+        let dropped = advise_dontneed(file, aligned_start, len);
+        synced && dropped
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        true
+    }
+}
+
+fn sync_file_range_range(file: &File, offset: u64, nbytes: u64, flags: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        extern "C" {
+            fn sync_file_range(fd: i32, offset: i64, nbytes: i64, flags: u32) -> i32;
+        }
+        let fd = file.as_raw_fd();
+        // SAFETY: `fd` belongs to `file`. The range covers bytes this process wrote.
+        unsafe { sync_file_range(fd, offset as i64, nbytes as i64, flags) == 0 }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, offset, nbytes, flags);
+        true
+    }
+}
+
+fn advise_whole_file(file: &File) {
+    #[cfg(target_os = "linux")]
+    {
+        // A zero length advises every byte from the offset to EOF, including
+        // the last partial page.
+        raw_fadvise(file, 0, 0);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+    }
+}
+
+/// Drop clean page-cache pages. A partial page at either end is kept.
+fn advise_dontneed(file: &File, start: u64, len: u64) -> bool {
+    let page = page_size();
+    let aligned_start = start.saturating_add(page - 1) & !(page - 1);
+    let end = start.saturating_add(len);
+    let aligned_end = end & !(page - 1);
+    if aligned_end <= aligned_start {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        raw_fadvise(file, aligned_start, aligned_end - aligned_start)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        true
+    }
+}
+
+fn raw_fadvise(file: &File, offset: u64, len: u64) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        extern "C" {
+            fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> i32;
+        }
+        // POSIX_FADV_DONTNEED. The spill is on a real filesystem (`/tmp` here
+        // is ext4), so this drops page cache and the bytes stay on disk.
+        // The libc wrapper returns a positive errno, not -1.
+        const DONTNEED: i32 = 4;
+        let fd = file.as_raw_fd();
+        // SAFETY: `fd` belongs to `file`. Advice does not change the file.
+        unsafe { posix_fadvise(fd, offset as i64, len as i64, DONTNEED) == 0 }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, offset, len);
+        true
+    }
+}
+
+/// Mark copies of one match that a parent slab and one child slab both saw.
+///
+/// Counts come from the original hit list, including hits an earlier child
+/// already marked. A higher count wins; a tie keeps the shallower parent.
+/// Every hit of the losing hash is marked, which is the buffered dedup.
+fn mark_overlap(
+    parent_hashes: &[u128],
+    parent_drop: &mut [bool],
+    child_hashes: &[u128],
+    child_drop: &mut [bool],
+) {
+    if parent_hashes.is_empty() || child_hashes.is_empty() {
+        return;
+    }
+    let mut parent_counts: FxHashMap<u128, u32> = FxHashMap::default();
+    for hash in parent_hashes {
+        *parent_counts.entry(*hash).or_default() += 1;
+    }
+    let mut child_counts: FxHashMap<u128, u32> = FxHashMap::default();
+    for hash in child_hashes {
+        if parent_counts.contains_key(hash) {
+            *child_counts.entry(*hash).or_default() += 1;
+        }
+    }
+    let mut drop_from_parent: FxHashMap<u128, ()> = FxHashMap::default();
+    for (offset, hash) in child_hashes.iter().enumerate() {
+        let Some(&child_count) = child_counts.get(hash) else {
+            continue;
+        };
+        if parent_counts[hash] >= child_count {
+            child_drop[offset] = true;
+        } else {
+            drop_from_parent.insert(*hash, ());
+        }
+    }
+    if drop_from_parent.is_empty() {
+        return;
+    }
+    for (offset, hash) in parent_hashes.iter().enumerate() {
+        if drop_from_parent.contains_key(hash) {
+            parent_drop[offset] = true;
+        }
+    }
 }
 
 fn match_key_hash(pattern: usize, captures: &[QueryCapture<'_>]) -> u128 {
@@ -1703,6 +2664,154 @@ mod deep_tree;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spill_roundtrip_keeps_hits_and_applies_drop_bits() {
+        let mut spill = SpillFile::create().expect("spill");
+        let page = page_size() as usize;
+        // Enough records to flush full pages, so the first one is read back
+        // from disk rather than from the tail buffer.
+        let mut first = None;
+        for record in 0u32..40 {
+            let hits: Vec<SlabHit> = (0u32..300)
+                .map(|index| SlabHit {
+                    pattern: record,
+                    finish: index,
+                    cap_at: index,
+                    cap_len: 1,
+                })
+                .collect();
+            let caps: Vec<Cap> = (0u32..300)
+                .map(|index| Cap {
+                    index,
+                    start: index,
+                    end: index + 1,
+                })
+                .collect();
+            let hashes: Vec<u128> = (0u32..300)
+                .map(|index| u128::from(record) << 32 | u128::from(index))
+                .collect();
+            let drop_hit = vec![false; 300];
+            let live = LiveSlab {
+                hits,
+                caps,
+                hashes,
+                drop_hit,
+            };
+            let frame = spill.write_record(record, &live).expect("record");
+            if record == 0 {
+                first = Some(frame);
+            }
+        }
+        let first = first.expect("first record");
+        assert!(
+            spill.tail_off > page as u64,
+            "expected a flushed page, tail_off {}",
+            spill.tail_off
+        );
+        let hashes = spill
+            .read_hashes(first.hash_off, first.hit_count)
+            .expect("hashes");
+        assert_eq!(hashes.len(), 300);
+        assert_eq!(hashes[0], 0);
+        assert_eq!(hashes[299], 299);
+        let mut parent_drop = spill.parent_drops(first.bit_at, first.hit_count);
+        assert!(parent_drop.iter().all(|drop| !drop));
+        parent_drop[1] = true;
+        parent_drop[2] = true;
+        spill.store_drops(first.bit_at, &parent_drop);
+        let mut stream = spill.into_stream().expect("stream");
+        let (depth, kept, caps) = stream.read_kept(stream.offsets[0]).expect("read");
+        assert_eq!(depth, 0);
+        assert_eq!(kept.len(), 298, "two hits were marked dropped");
+        assert_eq!(kept[0].finish, 0);
+        assert_eq!(kept[1].finish, 3);
+        assert_eq!(caps.len(), 300);
+        #[cfg(target_os = "linux")]
+        assert!(
+            stream.direct.is_some(),
+            "O_DIRECT should open on a real filesystem"
+        );
+    }
+
+    #[test]
+    fn spill_drop_end_keeps_the_live_records_page() {
+        let page = page_size();
+        assert_eq!(spill_drop_end(0, 0), 0);
+        assert_eq!(spill_drop_end(page - 1, 0), 0);
+        assert_eq!(spill_drop_end(page, 0), page);
+        assert_eq!(spill_drop_end(page + 100, 0), page);
+        let chunk = 2 * 1024 * 1024;
+        assert_eq!(spill_drop_end(chunk + 100, 0), chunk);
+        assert_eq!(spill_drop_end(8 * page, page), 8 * page);
+        assert_eq!(spill_drop_end(page, page), 0);
+        assert_eq!(spill_drop_end(100, page), 0);
+    }
+
+    /// `sync_file_range` rejects an unaligned length, and dirty pages then
+    /// survive `DONTNEED`. The helper rounds inward and the middle pages go.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unaligned_spill_range_still_drops_page_cache() {
+        let page = page_size() as usize;
+        let len = 8 * 1024 * 1024 + page;
+        let path =
+            std::env::temp_dir().join(format!("octorus-fadv-{}-{}", std::process::id(), page));
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("spill test file");
+        let chunk = vec![1u8; page];
+        for _ in 0..(len / page) {
+            file.write_all(&chunk).expect("write");
+        }
+        let before = resident_pages(&file, len);
+        // Start and end are intentionally off a page boundary.
+        let dropped = sync_and_drop_cache(&file, 100, (len - page) as u64);
+        let after = resident_pages(&file, len);
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        assert!(dropped, "aligned flush was rejected");
+        assert!(
+            before > 100,
+            "expected the written file to be cached, got {before} pages"
+        );
+        assert!(
+            after.saturating_mul(10) < before,
+            "fadvise left {after} pages cached of {before}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resident_pages(file: &File, len: usize) -> usize {
+        use std::os::unix::io::AsRawFd;
+        extern "C" {
+            fn mmap(
+                addr: *mut u8,
+                len: usize,
+                prot: i32,
+                flags: i32,
+                fd: i32,
+                offset: i64,
+            ) -> *mut u8;
+            fn munmap(addr: *mut u8, len: usize) -> i32;
+            fn mincore(addr: *mut u8, len: usize, vec: *mut u8) -> i32;
+        }
+        let page = page_size() as usize;
+        // SAFETY: the mapping is shared and read-only over `file`, and it is
+        // unmapped before this function returns. `mincore` does not fault.
+        let addr = unsafe { mmap(std::ptr::null_mut(), len, 1, 1, file.as_raw_fd(), 0) };
+        assert_ne!(addr as isize, -1, "mmap");
+        let mut vec = vec![0u8; len.div_ceil(page)];
+        let rc = unsafe { mincore(addr, len, vec.as_mut_ptr()) };
+        assert_eq!(rc, 0, "mincore");
+        let resident = vec.iter().filter(|byte| *byte & 1 != 0).count();
+        unsafe { munmap(addr, len) };
+        resident
+    }
 
     #[test]
     fn test_highlighter_rust() {
