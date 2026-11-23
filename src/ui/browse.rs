@@ -2440,7 +2440,8 @@ mod tests {
 
     #[test]
     fn test_blame_gutter_degrades_full_then_no_time_then_identity_then_hidden() {
-        let timestamp = (chrono::Utc::now() - chrono::Duration::hours(2)).timestamp();
+        let timestamp =
+            crate::timefmt::unix_seconds_before_now(jiff::SignedDuration::from_hours(2));
         let porcelain = format!(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1\n\
              author Alice Example\n\
@@ -2671,7 +2672,8 @@ mod tests {
 
     #[test]
     fn test_blame_gutter_handles_cjk_repeats_and_uncommitted_lines_honestly() {
-        let timestamp = (chrono::Utc::now() - chrono::Duration::hours(2)).timestamp();
+        let timestamp =
+            crate::timefmt::unix_seconds_before_now(jiff::SignedDuration::from_hours(2));
         let porcelain = format!(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1\n\
              author 山田太郎 Long Name\n\
@@ -2709,7 +2711,8 @@ mod tests {
 
     #[test]
     fn test_blame_and_buffer_line_count_mismatches_keep_source_alignment() {
-        let timestamp = (chrono::Utc::now() - chrono::Duration::days(2)).timestamp();
+        let timestamp =
+            crate::timefmt::unix_seconds_before_now(jiff::SignedDuration::from_secs(2 * 86_400));
         let short_porcelain = format!(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1\n\
              author Alice\n\

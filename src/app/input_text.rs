@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::Utc;
 use crossterm::event::{self, KeyEvent};
 use tokio::sync::mpsc;
 
@@ -297,7 +296,7 @@ impl App {
             user: github::User {
                 login: Self::local_comment_author(),
             },
-            created_at: Utc::now().to_rfc3339(),
+            created_at: crate::timefmt::utc_now_rfc3339(),
             in_reply_to_id: None,
             location: github::comment::ReviewCommentLocation {
                 side: Some(ctx.side.as_github_side().to_string()),
@@ -378,7 +377,7 @@ impl App {
             user: github::User {
                 login: Self::local_comment_author(),
             },
-            created_at: Utc::now().to_rfc3339(),
+            created_at: crate::timefmt::utc_now_rfc3339(),
             in_reply_to_id: Some(comment_id),
             location: github::comment::ReviewCommentLocation {
                 side: parent.location.side.clone(),

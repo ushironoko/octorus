@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::client::{gh_api, gh_command};
@@ -308,51 +307,11 @@ pub async fn fetch_local_commit_diff(working_dir: Option<&str>, sha: &str) -> Re
 ///
 /// 例: "2h ago", "3d ago", "1m ago"
 pub fn format_relative_time(iso_date: &str) -> String {
-    let Ok(dt) = DateTime::parse_from_rfc3339(iso_date) else {
-        return iso_date.to_string();
-    };
-
-    format_relative_time_at(dt.with_timezone(&Utc), Utc::now())
+    crate::timefmt::format_relative_time(iso_date)
 }
 
 pub(crate) fn format_relative_time_from_epoch(epoch_seconds: i64) -> String {
-    let Some(dt) = DateTime::<Utc>::from_timestamp(epoch_seconds, 0) else {
-        return "unknown".to_string();
-    };
-
-    format_relative_time_at(dt, Utc::now())
-}
-
-fn format_relative_time_at(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let duration = now.signed_duration_since(dt);
-
-    let seconds = duration.num_seconds();
-    if seconds < 0 {
-        return "just now".to_string();
-    }
-
-    let minutes = duration.num_minutes();
-    let hours = duration.num_hours();
-    let days = duration.num_days();
-    let weeks = days / 7;
-    let months = days / 30;
-    let years = days / 365;
-
-    if seconds < 60 {
-        "just now".to_string()
-    } else if minutes < 60 {
-        format!("{}m ago", minutes)
-    } else if hours < 24 {
-        format!("{}h ago", hours)
-    } else if days < 7 {
-        format!("{}d ago", days)
-    } else if weeks < 5 {
-        format!("{}w ago", weeks)
-    } else if months < 12 {
-        format!("{}mo ago", months)
-    } else {
-        format!("{}y ago", years)
-    }
+    crate::timefmt::format_relative_time_from_epoch(epoch_seconds)
 }
 
 #[cfg(test)]
@@ -361,27 +320,24 @@ mod tests {
 
     #[test]
     fn test_format_relative_time_minutes() {
-        let now = Utc::now();
-        let five_min_ago = now - chrono::Duration::minutes(5);
-        let iso = five_min_ago.to_rfc3339();
+        let five_min_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_mins(5);
+        let iso = crate::timefmt::format_utc_rfc3339(five_min_ago);
         let result = format_relative_time(&iso);
         assert_eq!(result, "5m ago");
     }
 
     #[test]
     fn test_format_relative_time_hours() {
-        let now = Utc::now();
-        let two_hours_ago = now - chrono::Duration::hours(2);
-        let iso = two_hours_ago.to_rfc3339();
+        let two_hours_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2);
+        let iso = crate::timefmt::format_utc_rfc3339(two_hours_ago);
         let result = format_relative_time(&iso);
         assert_eq!(result, "2h ago");
     }
 
     #[test]
     fn test_format_relative_time_days() {
-        let now = Utc::now();
-        let three_days_ago = now - chrono::Duration::days(3);
-        let iso = three_days_ago.to_rfc3339();
+        let three_days_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(3 * 86_400);
+        let iso = crate::timefmt::format_utc_rfc3339(three_days_ago);
         let result = format_relative_time(&iso);
         assert_eq!(result, "3d ago");
     }
@@ -394,12 +350,12 @@ mod tests {
 
     #[test]
     fn test_rfc3339_and_epoch_relative_time_entry_points_agree() {
-        let instant = Utc::now() - chrono::Duration::hours(6);
-        let iso = instant.to_rfc3339();
+        let instant = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(6);
+        let iso = crate::timefmt::format_utc_rfc3339(instant);
 
         assert_eq!(
             format_relative_time(&iso),
-            format_relative_time_from_epoch(instant.timestamp())
+            format_relative_time_from_epoch(instant.as_second())
         );
         assert_eq!(format_relative_time_from_epoch(i64::MAX), "unknown");
     }

@@ -23,6 +23,7 @@ pub mod module_graph;
 pub mod symbol;
 pub mod symbols;
 pub mod syntax;
+pub mod timefmt;
 pub mod ui;
 mod untracked_diff;
 

@@ -312,7 +312,7 @@ fn write_init_manifest(
     written_files: &HashMap<String, bool>,
 ) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = octorus::timefmt::utc_now_rfc3339();
 
     // Read existing manifest to preserve versions of skipped files
     let manifest_path = config_dir.join(".version");

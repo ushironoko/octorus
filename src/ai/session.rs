@@ -105,7 +105,7 @@ pub fn write_history_entry(
     let history_entry = RallyHistoryEntry {
         iteration,
         entry_type: entry.clone(),
-        timestamp: chrono_now(),
+        timestamp: utc_now_rfc3339(),
     };
     let content = serde_json::to_string_pretty(&history_entry)
         .context("Failed to serialize history entry")?;
@@ -148,13 +148,13 @@ pub fn cleanup_session(repo: &str, pr_number: u32) -> Result<()> {
     Ok(())
 }
 
-fn chrono_now() -> String {
-    chrono::Utc::now().to_rfc3339()
+fn utc_now_rfc3339() -> String {
+    crate::timefmt::utc_now_rfc3339()
 }
 
 impl RallySession {
     pub fn new(repo: &str, pr_number: u32) -> Self {
-        let now = chrono_now();
+        let now = utc_now_rfc3339();
         Self {
             repo: repo.to_string(),
             pr_number,
@@ -167,12 +167,12 @@ impl RallySession {
 
     pub fn update_state(&mut self, state: RallyState) {
         self.state = state;
-        self.updated_at = chrono_now();
+        self.updated_at = utc_now_rfc3339();
     }
 
     pub fn increment_iteration(&mut self) {
         self.iteration += 1;
-        self.updated_at = chrono_now();
+        self.updated_at = utc_now_rfc3339();
     }
 }
 
