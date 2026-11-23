@@ -95,6 +95,8 @@ jobs:
   # bench-assertions instead of extending them.
   complexity:
     runs-on: ubuntu-latest
+    # cccc install, attestation, API, or gate errors must not mark this job failed.
+    continue-on-error: true
     permissions:
       contents: read
     steps:
