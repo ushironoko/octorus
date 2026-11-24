@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::schema::{ThemePreset, THEME_COLOR_KEYS};
+use super::schema::{InlineCommentMode, ThemePreset, THEME_COLOR_KEYS};
 use super::Config;
 
 pub(super) fn sanitize_theme_table(
@@ -191,6 +191,77 @@ fn theme_value_text(value: &toml::Value) -> String {
     }
 }
 
+/// Drops an unknown `[review]` value so startup continues with the default, or
+/// with the global value when the local file is the one that was wrong.
+///
+/// The same path as [`sanitize_theme_table`]: the bad key is removed before
+/// deserialize, and the warning names the file, the key, and which value is used.
+pub(super) fn sanitize_review_table(
+    path: &Path,
+    value: &mut toml::Value,
+    global_has: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Some(root) = value.as_table_mut() else {
+        return warnings;
+    };
+    let rejected_review = root
+        .get("review")
+        .filter(|review| !review.is_table())
+        .map(|review| (toml_type_name(review), theme_value_text(review)));
+    if let Some((kind, shown)) = rejected_review {
+        let fallback = fallback_label(global_has("review"));
+        warnings.push(format!(
+            "{}: review: expected a table, got {kind} {shown:?} ({fallback})",
+            warning_path(path)
+        ));
+        root.remove("review");
+        return warnings;
+    }
+    let drop_review = {
+        let Some(review) = root
+            .get_mut("review")
+            .and_then(|review| review.as_table_mut())
+        else {
+            return warnings;
+        };
+        let bad_mode = review.get("inline_comment_mode").and_then(|mode| {
+            if known_inline_comment_mode(mode) {
+                None
+            } else {
+                Some(theme_value_text(mode))
+            }
+        });
+        if let Some(shown) = bad_mode {
+            let fallback = fallback_label(global_has("inline_comment_mode"));
+            warnings.push(format!(
+                "{}: review.inline_comment_mode: unknown value {shown:?} ({fallback})",
+                warning_path(path)
+            ));
+            review.remove("inline_comment_mode");
+        }
+        review.is_empty()
+    };
+    if drop_review {
+        root.remove("review");
+    }
+    warnings
+}
+
+pub(super) fn review_key_held(global: &toml::Value, key: &str) -> bool {
+    let Some(review) = global.get("review").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    if key == "review" {
+        return review.contains_key("inline_comment_mode");
+    }
+    key == "inline_comment_mode" && review.contains_key("inline_comment_mode")
+}
+
+fn known_inline_comment_mode(value: &toml::Value) -> bool {
+    value.clone().try_into::<InlineCommentMode>().is_ok()
+}
+
 fn fallback_label(global_has_key: bool) -> &'static str {
     if global_has_key {
         "using global"
@@ -303,6 +374,7 @@ impl Config {
             toml::Value::Table(toml::map::Map::new())
         };
         let mut theme_warnings = sanitize_theme_table(global_path, &mut base_value, |_| false);
+        let mut review_warnings = sanitize_review_table(global_path, &mut base_value, |_| false);
 
         let mut stripped_local_value: Option<toml::Value> = None;
         if local_path.exists() {
@@ -323,6 +395,9 @@ impl Config {
 
             theme_warnings.extend(sanitize_theme_table(local_path, &mut local_value, |key| {
                 theme_key_held(&base_value, key)
+            }));
+            review_warnings.extend(sanitize_review_table(local_path, &mut local_value, |key| {
+                review_key_held(&base_value, key)
             }));
             stripped_local_value = Some(local_value.clone());
             deep_merge_toml(&mut base_value, local_value);
@@ -369,6 +444,7 @@ impl Config {
         // Keep the warnings for the TUI, and print each one to stderr for runs without it.
         // tracing writes debug.log only when OR_DEBUG=1.
         let mut warnings = theme_warnings;
+        warnings.extend(review_warnings);
         if let Err(errors) = config.keybindings.validate() {
             warnings.extend(errors);
         }
@@ -396,7 +472,7 @@ impl Config {
         if table.contains_key("editor") {
             overrides.insert("editor".to_string());
         }
-        for section in ["diff", "ai", "keybindings", "layout", "theme"] {
+        for section in ["diff", "ai", "keybindings", "layout", "theme", "review"] {
             if let Some(toml::Value::Table(sub)) = table.get(section) {
                 for key in sub.keys() {
                     overrides.insert(format!("{}.{}", section, key));

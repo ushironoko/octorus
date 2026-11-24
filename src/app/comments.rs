@@ -124,24 +124,30 @@ pub(crate) fn count_pending_drafts(comments: &[ReviewComment]) -> usize {
 }
 
 /// Reads what the diff shows for a PR: published comments, review summary
-/// bodies, and the viewer's pending drafts (issue #169). The drafts come from the
-/// review list, so they are read after it.
+/// bodies, and, in pending mode, the viewer's pending drafts (issue #169). The
+/// drafts come from the review list, so they are read after it. Immediate mode
+/// skips that read, so the list is the published comments v0.7.4 showed.
 async fn fetch_review_comments_for_view(
     repo: &str,
     pr_number: u32,
+    include_pending_drafts: bool,
 ) -> Result<ReviewCommentsFetch, String> {
     let (review_comments_result, reviews_result) = tokio::join!(
         github::comment::fetch_review_comments(repo, pr_number),
         github::comment::fetch_reviews(repo, pr_number),
     );
-    let drafts_result = match &reviews_result {
-        Ok(reviews) => match github::pending_review_id(reviews) {
-            Some(review_id) => github::fetch_draft_comments(repo, pr_number, review_id)
-                .await
-                .map_err(|e| e.to_string()),
-            None => Ok(Vec::new()),
-        },
-        Err(error) => Err(error.to_string()),
+    let drafts_result = if include_pending_drafts {
+        match &reviews_result {
+            Ok(reviews) => match github::pending_review_id(reviews) {
+                Some(review_id) => github::fetch_draft_comments(repo, pr_number, review_id)
+                    .await
+                    .map_err(|e| e.to_string()),
+                None => Ok(Vec::new()),
+            },
+            Err(error) => Err(error.to_string()),
+        }
+    } else {
+        Ok(Vec::new())
     };
     combine_review_fetch_results(review_comments_result, reviews_result, drafts_result)
 }
@@ -427,9 +433,15 @@ impl App {
     /// Whether a review submit may start now. A comment still being added must
     /// reach the pending review before the review publishes it, or the comment
     /// would be left out. When a submit is refused, the reason goes to the toast.
+    ///
+    /// Immediate mode posts the comment on its own, so a review can be submitted
+    /// while that post is in flight. That is the v0.7.4 order.
     pub(crate) fn review_submit_may_start(&mut self) -> bool {
         if self.is_submitting_review() {
             return false;
+        }
+        if self.inline_comments_post_immediately() {
+            return true;
         }
         if self.cmt.comment_submitting {
             self.cmt.submission_result = Some(Toast::failure(
@@ -438,6 +450,11 @@ impl App {
             return false;
         }
         true
+    }
+
+    /// `true` when `[review] inline_comment_mode` is `immediate`.
+    pub(crate) fn inline_comments_post_immediately(&self) -> bool {
+        self.config.review.inline_comment_mode == crate::config::InlineCommentMode::Immediate
     }
 
     /// Whether a new inline comment or suggestion may start now. Refused while a
@@ -972,9 +989,11 @@ impl App {
         self.cmt.comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
+        let include_pending_drafts = !self.inline_comments_post_immediately();
 
         tokio::spawn(async move {
-            let combined = fetch_review_comments_for_view(&repo, pr_number).await;
+            let combined =
+                fetch_review_comments_for_view(&repo, pr_number, include_pending_drafts).await;
             let _ = tx.send(combined).await;
         });
     }

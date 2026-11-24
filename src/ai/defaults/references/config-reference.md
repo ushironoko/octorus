@@ -25,6 +25,18 @@ review_only = false
 # reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
 
+## Inline comments
+
+```toml
+[review]
+# "pending" (default) adds each inline comment or suggestion to your pending
+# GitHub review. "immediate" posts each one right away, as in v0.7.4.
+# Replies are posted immediately in either mode.
+inline_comment_mode = "pending"
+```
+
+An unknown value warns at startup and falls back to `pending`, or to the global value when that file still has the key.
+
 ## Project-Local Overrides
 
 File: `.octorus/config.toml` (created via `or init --local`)

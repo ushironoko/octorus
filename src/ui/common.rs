@@ -59,7 +59,8 @@ pub fn pending_review_text(drafts: usize) -> String {
 /// draft's comment tag is. `None` when the viewer has no drafts on this PR, and in
 /// local mode, which has no pending review.
 pub fn build_pending_review_span(app: &App, theme: Theme) -> Option<Span<'static>> {
-    if app.is_local_mode() {
+    // Immediate mode posts each comment on its own, so it has no draft count.
+    if app.is_local_mode() || app.inline_comments_post_immediately() {
         return None;
     }
     match app.cmt.pending_drafts {
@@ -379,6 +380,15 @@ mod pending_note_tests {
     fn pending_note_is_hidden_in_local_mode() {
         let mut app = App::new_for_test();
         app.set_local_mode(true);
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+
+        assert!(build_pending_review_span(&app, Theme::test_default()).is_none());
+    }
+
+    #[test]
+    fn pending_note_is_hidden_when_comments_post_immediately() {
+        let mut app = App::new_for_test();
+        app.config.review.inline_comment_mode = crate::config::InlineCommentMode::Immediate;
         app.cmt.pending_drafts = PendingDrafts::Known(3);
 
         assert!(build_pending_review_span(&app, Theme::test_default()).is_none());

@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::ai::{PromptLoader, PromptSource};
 use crate::app::{App, HelpTab};
-use crate::config::{Config, KeybindingsConfig};
+use crate::config::{Config, InlineCommentMode, KeybindingsConfig};
 use crate::keybinding::{display_keys, KeyBinding, KeySequence, NamedKey};
 use crate::syntax::available_themes;
 use crate::ui::common::wrap_text;
@@ -133,7 +133,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_keybindings_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let kb = &app.config.keybindings;
-    let help_lines = build_help_lines(kb, app.theme);
+    let help_lines = build_help_lines_for(kb, app.theme, app.config.review.inline_comment_mode);
     let total_lines = help_lines.len();
     let content_height = area.height.saturating_sub(2) as usize;
 
@@ -567,7 +567,16 @@ pub fn build_config_lines(config: &Config, theme: Theme) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg(test)]
 fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> {
+    build_help_lines_for(kb, theme, InlineCommentMode::Pending)
+}
+
+fn build_help_lines_for(
+    kb: &KeybindingsConfig,
+    theme: Theme,
+    inline_comment_mode: InlineCommentMode,
+) -> Vec<Line<'static>> {
     let key_width = 14; // Width for key column
 
     // Several rows close with Esc as well as the quit key; `key_label` lists it once.
@@ -1013,6 +1022,16 @@ fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> 
             "{}  Submit",
             fmt_key(&kb.submit.display(), key_width)
         )),
+        Line::from(match inline_comment_mode {
+            InlineCommentMode::Pending => {
+                "  Comments join your pending review until you submit it."
+            }
+            InlineCommentMode::Immediate => "  Comments are posted immediately.",
+        }),
+        Line::from(match inline_comment_mode {
+            InlineCommentMode::Pending => "  Or inline_comment_mode = \"immediate\" to post now.",
+            InlineCommentMode::Immediate => "  Or inline_comment_mode = \"pending\" to batch them.",
+        }),
         Line::from("  Esc             Cancel (comment text kept per line)"),
         Line::from(vec![Span::styled(
             "  Readline-style editing keys:",
@@ -1612,6 +1631,8 @@ mod tests {
             "Request changes (publish pending drafts)",
             "Comment only (publish pending drafts)",
             "Cancel (comment text kept per line)",
+            "Comments join your pending review until you submit it.",
+            "Or inline_comment_mode = \"immediate\" to post now.",
         ] {
             let line = texts
                 .iter()
@@ -1622,6 +1643,20 @@ mod tests {
                 "help line too wide for 60 columns: {line}"
             );
         }
+
+        let immediate = build_help_lines_for(
+            &kb,
+            Theme::test_default(),
+            crate::config::InlineCommentMode::Immediate,
+        );
+        let immediate_text = immediate
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(immediate_text.contains("Comments are posted immediately."));
+        assert!(immediate_text.contains("Or inline_comment_mode = \"pending\" to batch them."));
+        assert!(!immediate_text.contains("Comments join your pending review"));
     }
 
     #[test]

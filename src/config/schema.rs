@@ -251,6 +251,34 @@ impl Default for ShellConfig {
     }
 }
 
+/// Where a new inline comment or suggestion is sent.
+///
+/// `Pending` (default) adds it to the viewer's pending GitHub review, which is
+/// published when a review is submitted. `Immediate` posts it at once, which is
+/// what v0.7.4 did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InlineCommentMode {
+    #[default]
+    Pending,
+    Immediate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReviewConfig {
+    /// `pending` or `immediate`. An unknown value is dropped at load time.
+    pub inline_comment_mode: InlineCommentMode,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            inline_comment_mode: InlineCommentMode::Pending,
+        }
+    }
+}
+
 pub(crate) const THEME_COLOR_KEYS: [&str; 6] =
     ["accent", "muted", "warning", "danger", "success", "info"];
 
