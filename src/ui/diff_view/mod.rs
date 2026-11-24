@@ -2096,10 +2096,12 @@ fn render_comment_context(
             Span::styled(line_display, app.theme.warning.style()),
         ]),
     ];
-    lines.push(Line::from(Span::styled(
-        "Added to your pending review. Published when you submit the review.",
-        app.theme.muted.style(),
-    )));
+    if !app.inline_comments_post_immediately() {
+        lines.push(Line::from(Span::styled(
+            "Added to your pending review. Published when you submit the review.",
+            app.theme.muted.style(),
+        )));
+    }
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -2132,7 +2134,19 @@ fn render_text_input_area(
         .render_with_title(frame, area, &title, placeholder);
 }
 
-/// Render the TextArea of an inline comment, whose text joins the pending review.
+/// Title of an inline composer. Pending mode names the pending review. Immediate
+/// mode uses the v0.7.4 title (`submit`, and `Suggested code` for a suggestion).
+fn inline_composer_title(app: &App, pending_label: &str, immediate_label: &str) -> String {
+    let submit_key = app.input_text_area.submit_key_display();
+    if app.inline_comments_post_immediately() {
+        format!("{immediate_label} ({submit_key}: submit, Esc: cancel)")
+    } else {
+        pending_review_input_title(pending_label, &submit_key)
+    }
+}
+
+/// Render the TextArea of an inline comment. Pending mode joins the pending
+/// review. Immediate mode posts the comment when it is submitted.
 fn render_pending_input_area(
     frame: &mut Frame,
     app: &App,
@@ -2140,16 +2154,14 @@ fn render_pending_input_area(
     label: &str,
     placeholder: &str,
 ) {
-    let submit_key = app.input_text_area.submit_key_display();
-    let title = pending_review_input_title(label, &submit_key);
+    let title = inline_composer_title(app, label, label);
     app.input_text_area
         .render_with_title(frame, area, &title, placeholder);
 }
 
 /// Render suggestion input TextArea with syntax highlighting
 fn render_suggestion_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let submit_key = app.input_text_area.submit_key_display();
-    let title = pending_review_input_title("Suggestion", &submit_key);
+    let title = inline_composer_title(app, "Suggestion", "Suggested code");
 
     if let Some(ref cache) = app.suggestion_highlight_cache {
         app.input_text_area.render_highlighted(
@@ -2284,8 +2296,13 @@ fn render_suggestion_context(
 
     // Add hint about what will be submitted
     lines.push(Line::from(""));
+    let suggestion_hint = if app.inline_comments_post_immediately() {
+        "Edit the code below. It will be posted as a GitHub suggestion."
+    } else {
+        "Edit the code below. It will be added to your pending review as a suggestion."
+    };
     lines.push(Line::from(vec![Span::styled(
-        "Edit the code below. It will be added to your pending review as a suggestion.",
+        suggestion_hint,
         Style::default().fg(Color::DarkGray),
     )]));
 
@@ -4783,6 +4800,40 @@ mod pending_review_composer_tests {
             screen.contains("It will be added to your pending"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn immediate_mode_composer_matches_the_direct_post_wording() {
+        let mut app = App::new_for_test();
+        app.config.review.inline_comment_mode = crate::config::InlineCommentMode::Immediate;
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Comment(context()));
+
+        let comment = screen(&app, 80, 24);
+        assert!(
+            comment.contains("Comment (Ctrl-s: submit, Esc: cancel)"),
+            "{comment}"
+        );
+        assert!(!comment.contains("pending review"), "{comment}");
+        assert!(
+            !comment.contains("Added to your pending review"),
+            "{comment}"
+        );
+
+        app.input_mode = Some(InputMode::Suggestion {
+            context: context(),
+            original_code: "let x = 1;".to_string(),
+        });
+        let suggestion = screen(&app, 80, 40);
+        assert!(
+            suggestion.contains("Suggested code (Ctrl-s: submit, Esc: cancel)"),
+            "{suggestion}"
+        );
+        assert!(
+            suggestion.contains("It will be posted as a GitHub suggestion."),
+            "{suggestion}"
+        );
+        assert!(!suggestion.contains("pending review"), "{suggestion}");
     }
 
     /// A reply posts at once, so its title must not claim the pending review.

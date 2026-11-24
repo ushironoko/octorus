@@ -124,8 +124,10 @@ pub(crate) fn count_pending_drafts(comments: &[ReviewComment]) -> usize {
 }
 
 /// Reads what the diff shows for a PR: published comments, review summary
-/// bodies, and the viewer's pending drafts (issue #169). The drafts come from the
-/// review list, so they are read after it.
+/// bodies, and the viewer's pending drafts (issue #169). The drafts come from
+/// the review list, so they are read after it. Immediate mode reads them too:
+/// a pending review that already exists stays visible, because submitting the
+/// review still publishes it.
 async fn fetch_review_comments_for_view(
     repo: &str,
     pr_number: u32,
@@ -427,9 +429,15 @@ impl App {
     /// Whether a review submit may start now. A comment still being added must
     /// reach the pending review before the review publishes it, or the comment
     /// would be left out. When a submit is refused, the reason goes to the toast.
+    ///
+    /// Immediate mode posts the comment on its own, so a review can be submitted
+    /// while that post is in flight. That is the v0.7.4 order.
     pub(crate) fn review_submit_may_start(&mut self) -> bool {
         if self.is_submitting_review() {
             return false;
+        }
+        if self.inline_comments_post_immediately() {
+            return true;
         }
         if self.cmt.comment_submitting {
             self.cmt.submission_result = Some(Toast::failure(
@@ -438,6 +446,11 @@ impl App {
             return false;
         }
         true
+    }
+
+    /// `true` when `[review] inline_comment_mode` is `immediate`.
+    pub(crate) fn inline_comments_post_immediately(&self) -> bool {
+        self.config.review.inline_comment_mode == crate::config::InlineCommentMode::Immediate
     }
 
     /// Whether a new inline comment or suggestion may start now. Refused while a
@@ -972,7 +985,6 @@ impl App {
         self.cmt.comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
-
         tokio::spawn(async move {
             let combined = fetch_review_comments_for_view(&repo, pr_number).await;
             let _ = tx.send(combined).await;

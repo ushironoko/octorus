@@ -13948,3 +13948,453 @@ async fn refresh_shares_one_file_list_between_the_screen_and_the_session_cache()
     assert_eq!(cached.files[0].patch.as_deref(), Some(patch_a));
     assert_eq!(cached.files[1].patch.as_deref(), Some(patch_b));
 }
+
+#[test]
+fn an_immediate_422_from_an_existing_pending_review_is_a_short_refusal() {
+    use crate::loader::CommentSubmitResult;
+
+    let blocked = super::input_text::immediate_comment_failure(
+        "gh command failed: gh: User can only have one pending review per pull request (HTTP 422)",
+    );
+    match blocked {
+        CommentSubmitResult::Refused(message) => {
+            assert_eq!(message, "Pending review exists: submit or discard it first");
+        }
+        CommentSubmitResult::Success
+        | CommentSubmitResult::AddedToPendingReview
+        | CommentSubmitResult::Unknown
+        | CommentSubmitResult::Error(_) => panic!("expected the short refusal"),
+    }
+
+    let other = super::input_text::immediate_comment_failure(
+        "gh command failed: HTTP 422: Unprocessable Entity",
+    );
+    assert!(matches!(other, CommentSubmitResult::Error(message) if message.contains("HTTP 422")));
+}
+
+#[test]
+fn a_new_app_keeps_inline_comments_on_the_pending_review() {
+    let app = App::new_for_test();
+    assert!(!app.inline_comments_post_immediately());
+    assert_eq!(
+        app.config.review.inline_comment_mode,
+        crate::config::InlineCommentMode::Pending
+    );
+}
+
+/// Request shape of an inline comment in both modes. Pending posts a review
+/// draft. Immediate posts `POST /pulls/{n}/comments`, which is the v0.7.4 call,
+/// with the `line` and `side` those functions send now.
+#[cfg(unix)]
+mod inline_comment_mode_requests {
+    use super::{
+        app_on_added_line, shown_toast, wait_for_inline_add, AppState, InputMode,
+        MultilineSelection, PendingDrafts, ToastKind, SIDE_PATCH,
+    };
+    use crate::config::InlineCommentMode;
+    use crate::github::fake_gh::FakeGh;
+    use serial_test::serial;
+
+    const COMMENT_JSON: &str = r#"{"id":1,"path":"test.rs","line":2,"body":"nit","user":{"login":"me"},"created_at":"2026-11-17T00:00:00Z"}"#;
+
+    fn immediate(app: &mut super::App) {
+        app.config.review.inline_comment_mode = InlineCommentMode::Immediate;
+    }
+
+    async fn send_comment(app: &mut super::App, body: &str) {
+        let Some(InputMode::Comment(ctx)) = app.input_mode.clone() else {
+            panic!("expected a comment composer, got {:?}", app.input_mode);
+        };
+        app.submit_comment(ctx, body.to_string());
+        wait_for_inline_add(app).await;
+    }
+
+    async fn send_suggestion(app: &mut super::App, code: &str) {
+        let Some(InputMode::Suggestion { context, .. }) = app.input_mode.clone() else {
+            panic!("expected a suggestion composer, got {:?}", app.input_mode);
+        };
+        app.submit_suggestion(context, code.to_string());
+        wait_for_inline_add(app).await;
+    }
+
+    fn assert_no_direct_comment_post(calls: &str) {
+        assert!(
+            !calls.contains("POST repos/owner/repo/pulls/1/comments"),
+            "pending mode must not post the comment on its own: {calls}"
+        );
+    }
+
+    fn assert_no_pending_review_post(calls: &str) {
+        assert!(
+            !calls.contains("POST repos/owner/repo/pulls/1/reviews"),
+            "immediate mode must not open a pending review: {calls}"
+        );
+        assert!(
+            !calls.contains("POST graphql"),
+            "immediate mode must not append a draft: {calls}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn pending_single_line_comment_opens_a_pending_review() {
+        let gh = FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+        let mut app = app_on_added_line();
+        app.cmt.pending_drafts = PendingDrafts::Known(1);
+        app.enter_comment_input();
+
+        send_comment(&mut app, "nit").await;
+
+        let calls = gh.calls();
+        assert!(
+            calls.contains("POST repos/owner/repo/pulls/1/reviews"),
+            "{calls}"
+        );
+        assert!(calls.contains(r#""commit_id":"abc123""#), "{calls}");
+        assert!(calls.contains(r#""path":"test.rs""#), "{calls}");
+        assert!(calls.contains(r#""body":"nit""#), "{calls}");
+        assert!(calls.contains(r#""line":2"#), "{calls}");
+        assert!(calls.contains(r#""side":"RIGHT""#), "{calls}");
+        assert!(!calls.contains(r#""event""#), "{calls}");
+        assert_no_direct_comment_post(&calls);
+        assert_eq!(
+            shown_toast(&app.cmt.submission_result),
+            (ToastKind::Success, "Added to pending review".to_string())
+        );
+        assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(2));
+        wait_for_comment_load(&mut app).await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn pending_range_suggestion_and_left_line_stay_on_the_pending_review() {
+        {
+            let gh = FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+            let mut app = app_on_added_line();
+            app.multiline_selection = Some(MultilineSelection {
+                anchor_line: 2,
+                cursor_line: 3,
+            });
+            app.enter_multiline_comment_input();
+            send_comment(&mut app, "span").await;
+            let calls = gh.calls();
+            assert!(calls.contains(r#""start_line":2"#), "{calls}");
+            assert!(calls.contains(r#""line":3"#), "{calls}");
+            assert!(calls.contains(r#""start_side":"RIGHT""#), "{calls}");
+            assert!(calls.contains(r#""side":"RIGHT""#), "{calls}");
+            assert_no_direct_comment_post(&calls);
+            wait_for_comment_load(&mut app).await;
+        }
+
+        {
+            let gh = FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+            let mut app = app_on_added_line();
+            app.enter_suggestion_input();
+            send_suggestion(&mut app, "let x = 1;").await;
+            let calls = gh.calls();
+            assert!(calls.contains("```suggestion"), "{calls}");
+            assert!(calls.contains("let x = 1;"), "{calls}");
+            assert!(
+                calls.contains("POST repos/owner/repo/pulls/1/reviews"),
+                "{calls}"
+            );
+            assert_no_direct_comment_post(&calls);
+            wait_for_comment_load(&mut app).await;
+        }
+
+        {
+            let gh = FakeGh::install("[[]]", r#"{"id":9,"state":"PENDING"}"#, "", "");
+            let mut app = super::make_app_with_patch(SIDE_PATCH);
+            app.pr_number = Some(1);
+            app.state = AppState::DiffView;
+            app.diff_scroll.selected_line = 2;
+            app.enter_comment_input();
+            send_comment(&mut app, "gone").await;
+            let calls = gh.calls();
+            assert!(calls.contains(r#""line":11"#), "{calls}");
+            assert!(calls.contains(r#""side":"LEFT""#), "{calls}");
+            assert!(!calls.contains(r#""side":"RIGHT""#), "{calls}");
+            assert_no_direct_comment_post(&calls);
+            wait_for_comment_load(&mut app).await;
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn immediate_single_line_comment_posts_line_and_right_side() {
+        let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.cmt.pending_drafts = PendingDrafts::Known(1);
+        app.enter_comment_input();
+
+        send_comment(&mut app, "nit").await;
+
+        let calls = gh.calls();
+        assert!(
+            calls.contains("POST repos/owner/repo/pulls/1/comments "),
+            "{calls}"
+        );
+        assert!(calls.contains("-f body=nit"), "{calls}");
+        assert!(calls.contains("-f commit_id=abc123"), "{calls}");
+        assert!(calls.contains("-f path=test.rs"), "{calls}");
+        assert!(calls.contains("-F line=2"), "{calls}");
+        assert!(calls.contains("-f side=RIGHT"), "{calls}");
+        assert!(!calls.contains("subject_type"), "{calls}");
+        assert!(!calls.contains("position"), "{calls}");
+        assert_no_pending_review_post(&calls);
+        assert_eq!(
+            shown_toast(&app.cmt.submission_result),
+            (ToastKind::Success, "Submitted".to_string())
+        );
+        assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(1));
+        let note = crate::ui::common::build_pending_review_span(
+            &app,
+            crate::ui::theme::Theme::test_default(),
+        )
+        .expect("an existing pending review stays visible");
+        assert_eq!(note.content, "Pending review: 1 draft");
+        wait_for_comment_load(&mut app).await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn immediate_range_suggestion_and_left_line_post_on_their_own() {
+        {
+            let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+            let mut app = app_on_added_line();
+            immediate(&mut app);
+            app.multiline_selection = Some(MultilineSelection {
+                anchor_line: 2,
+                cursor_line: 3,
+            });
+            app.enter_multiline_comment_input();
+            send_comment(&mut app, "span").await;
+            let calls = gh.calls();
+            assert!(
+                calls.contains("POST repos/owner/repo/pulls/1/comments "),
+                "{calls}"
+            );
+            assert!(calls.contains("-F start_line=2"), "{calls}");
+            assert!(calls.contains("-F line=3"), "{calls}");
+            assert!(calls.contains("-f start_side=RIGHT"), "{calls}");
+            assert!(calls.contains("-f side=RIGHT"), "{calls}");
+            assert!(calls.contains("-f body=span"), "{calls}");
+            assert!(!calls.contains("subject_type"), "{calls}");
+            assert_no_pending_review_post(&calls);
+            assert_eq!(
+                shown_toast(&app.cmt.submission_result).1,
+                "Submitted".to_string()
+            );
+            wait_for_comment_load(&mut app).await;
+        }
+
+        {
+            let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+            let mut app = app_on_added_line();
+            immediate(&mut app);
+            app.enter_suggestion_input();
+            send_suggestion(&mut app, "let x = 1;").await;
+            let calls = gh.calls();
+            assert!(calls.contains("```suggestion"), "{calls}");
+            assert!(calls.contains("let x = 1;"), "{calls}");
+            assert!(
+                calls.contains("POST repos/owner/repo/pulls/1/comments "),
+                "{calls}"
+            );
+            assert_no_pending_review_post(&calls);
+            wait_for_comment_load(&mut app).await;
+        }
+
+        {
+            let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+            let mut app = super::make_app_with_patch(SIDE_PATCH);
+            app.pr_number = Some(1);
+            app.state = AppState::DiffView;
+            immediate(&mut app);
+            app.diff_scroll.selected_line = 2;
+            app.enter_comment_input();
+            send_comment(&mut app, "gone").await;
+            let calls = gh.calls();
+            assert!(calls.contains("-F line=11"), "{calls}");
+            assert!(calls.contains("-f side=LEFT"), "{calls}");
+            assert!(!calls.contains("RIGHT"), "{calls}");
+            assert!(
+                calls.contains("POST repos/owner/repo/pulls/1/comments "),
+                "{calls}"
+            );
+            assert_no_pending_review_post(&calls);
+            wait_for_comment_load(&mut app).await;
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn replies_post_immediately_in_both_modes() {
+        for mode in [InlineCommentMode::Pending, InlineCommentMode::Immediate] {
+            let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+            let mut app = app_on_added_line();
+            app.config.review.inline_comment_mode = mode;
+            app.submit_reply(42, "thanks".to_string());
+            wait_for_inline_add(&mut app).await;
+
+            let calls = gh.calls();
+            assert!(
+                calls.contains("POST repos/owner/repo/pulls/1/comments/42/replies"),
+                "{mode:?} {calls}"
+            );
+            assert!(calls.contains("-f body=thanks"), "{mode:?} {calls}");
+            assert_no_pending_review_post(&calls);
+            assert_eq!(
+                shown_toast(&app.cmt.submission_result),
+                (ToastKind::Success, "Submitted".to_string())
+            );
+            wait_for_comment_load(&mut app).await;
+            drop(gh);
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn an_immediate_post_that_fails_says_failed_and_keeps_the_text() {
+        let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+        gh.fail_first(1);
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.enter_comment_input();
+        app.input_text_area.set_content_verbatim("try again");
+        send_comment(&mut app, "try again").await;
+
+        let (kind, message) = shown_toast(&app.cmt.submission_result);
+        assert_eq!(kind, ToastKind::Failure);
+        assert!(
+            message.starts_with("Failed: "),
+            "a failed immediate post is still Failed: …, got {message}"
+        );
+        assert!(!message.contains("Text kept"), "{message}");
+        assert!(!message.contains("pending"), "{message}");
+        assert!(app.cmt.pending_add.is_none());
+
+        app.input_mode = None;
+        app.state = AppState::DiffView;
+        app.enter_comment_input();
+        assert_eq!(app.input_text_area.content(), "try again");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn an_immediate_post_blocked_by_a_pending_review_says_so() {
+        let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+        gh.fail_with(
+            1,
+            "gh: User can only have one pending review per pull request (HTTP 422)",
+        );
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.enter_comment_input();
+        send_comment(&mut app, "nit").await;
+
+        assert_eq!(
+            shown_toast(&app.cmt.submission_result),
+            (
+                ToastKind::Failure,
+                "Pending review exists: submit or discard it first".to_string()
+            )
+        );
+        let calls = gh.calls();
+        assert!(
+            calls.contains("POST repos/owner/repo/pulls/1/comments "),
+            "{calls}"
+        );
+        assert_no_pending_review_post(&calls);
+
+        app.input_mode = None;
+        app.state = AppState::DiffView;
+        app.enter_comment_input();
+        assert_eq!(app.input_text_area.content(), "nit");
+        drop(gh);
+
+        let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+        gh.fail_first(1);
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.enter_suggestion_input();
+        send_suggestion(&mut app, "let x = 1;").await;
+        let (kind, message) = shown_toast(&app.cmt.submission_result);
+        assert_eq!(kind, ToastKind::Failure);
+        assert!(message.starts_with("Failed: "), "{message}");
+        app.input_mode = None;
+        app.state = AppState::DiffView;
+        app.enter_suggestion_input();
+        assert_eq!(app.input_text_area.content(), "let x = 1;");
+        drop(gh);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn immediate_mode_still_shows_an_existing_pending_review() {
+        let reviews = r#"[[{"id":77,"body":null,"state":"PENDING","user":{"login":"me"},"submitted_at":null}]]"#;
+        let drafts = r#"[[{"id":501,"path":"test.rs","line":2,"body":"draft","user":{"login":"me"},"created_at":"2026-11-10T00:00:00Z"}]]"#;
+
+        let gh = FakeGh::install(reviews, "[]", "", "");
+        gh.set_drafts(drafts);
+        let mut app = app_on_added_line();
+        app.load_review_comments();
+        wait_for_comment_load(&mut app).await;
+        let calls = gh.calls();
+        assert!(
+            calls.contains("repos/owner/repo/pulls/1/reviews/77/comments"),
+            "{calls}"
+        );
+        assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(1));
+        assert!(app
+            .cmt
+            .review_comments
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|comment| comment.id == 501 && comment.is_pending_draft()));
+        drop(gh);
+
+        let gh = FakeGh::install(reviews, "[]", "", "");
+        gh.set_drafts(drafts);
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.load_review_comments();
+        wait_for_comment_load(&mut app).await;
+        let calls = gh.calls();
+        assert!(
+            calls.contains("repos/owner/repo/pulls/1/reviews/77/comments"),
+            "immediate mode still reads an existing pending review: {calls}"
+        );
+        assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(1));
+        assert!(app
+            .cmt
+            .review_comments
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|comment| comment.id == 501 && comment.is_pending_draft()));
+        assert!(
+            !app.cmt.file_comment_lines.is_empty(),
+            "the draft keeps its diff marker"
+        );
+        let note = crate::ui::common::build_pending_review_span(
+            &app,
+            crate::ui::theme::Theme::test_default(),
+        )
+        .expect("the draft count stays in the header");
+        assert_eq!(note.content, "Pending review: 1 draft");
+    }
+
+    async fn wait_for_comment_load(app: &mut super::App) {
+        for _ in 0..500 {
+            app.poll_comment_updates();
+            if !app.cmt.comments_loading {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("review comments did not load");
+    }
+}

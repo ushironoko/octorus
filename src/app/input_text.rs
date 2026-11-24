@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use crate::cache::{
     load_local_review_comments, save_local_review_comments, LocalReviewComment, PrCacheKey,
 };
+use crate::diff::SideLine;
 use crate::github;
 use crate::github::comment::ReviewComment;
 use crate::loader::CommentSubmitResult;
@@ -12,6 +13,20 @@ use crate::ui::text_area::TextAreaAction;
 
 use super::types::*;
 use super::{App, SuggestionHighlightCache, INLINE_COMMENT_TIMEOUT};
+
+/// Footer text when GitHub rejects an immediate comment because a pending
+/// review already exists. The raw 422 is long and the footer cuts off the cause.
+const PENDING_REVIEW_BLOCKS_POST: &str = "Pending review exists: submit or discard it first";
+
+/// Maps a failed immediate post. The one-pending-review 422 becomes
+/// [`PENDING_REVIEW_BLOCKS_POST`]. Anything else stays `Failed: …`.
+pub(crate) fn immediate_comment_failure(error: &str) -> CommentSubmitResult {
+    if error.to_ascii_lowercase().contains("one pending review") {
+        CommentSubmitResult::Refused(PENDING_REVIEW_BLOCKS_POST.to_string())
+    } else {
+        CommentSubmitResult::Error(error.to_string())
+    }
+}
 
 /// GitHub's draft `side` for the diff side the composer is writing to.
 fn draft_side(side: crate::diff::DiffSide) -> github::DraftSide {
@@ -220,6 +235,13 @@ impl App {
             return;
         }
 
+        // Opt-in: post this comment on its own, as v0.7.4 did. Pending mode,
+        // the default, continues below and is unchanged.
+        if self.inline_comments_post_immediately() {
+            self.submit_immediate_review_comment(ctx, kind, typed, body);
+            return;
+        }
+
         let Some(file) = self.files().get(ctx.file_index) else {
             return;
         };
@@ -262,6 +284,76 @@ impl App {
         self.spawn_inline_comment_add(pr_number, INLINE_COMMENT_TIMEOUT, async move {
             github::add_inline_draft(&repo, pr_number, pr_node_id.as_deref(), &commit_id, &draft)
                 .await
+        });
+    }
+
+    /// Posts one inline comment or suggestion immediately.
+    ///
+    /// This is the v0.7.4 path: `POST /repos/{owner}/{repo}/pulls/{n}/comments`
+    /// through [`github::create_review_comment`] or
+    /// [`github::create_multiline_review_comment`], then `Submitted` or
+    /// `Failed: …`. It does not join a pending review. A failure keeps `typed`
+    /// for the line. The line and side are the ones those functions send now
+    /// (`line`/`side`, not the removed `position` field).
+    fn submit_immediate_review_comment(
+        &mut self,
+        ctx: LineInputContext,
+        kind: DraftKind,
+        typed: String,
+        body: String,
+    ) {
+        let Some(file) = self.files().get(ctx.file_index) else {
+            return;
+        };
+        let Some(pr) = self.pr() else {
+            return;
+        };
+
+        let commit_id = pr.head.sha.clone();
+        let path = file.filename.clone();
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number();
+        let end = SideLine {
+            side: ctx.side,
+            line: ctx.line_number,
+        };
+        let start = ctx.start_line_number.map(|line| SideLine {
+            side: ctx.side,
+            line,
+        });
+        // Held until the result arrives, so a failed post can keep the text.
+        self.cmt.pending_add = Some(PendingAdd {
+            anchor: DraftAnchor {
+                pr_number,
+                path: path.clone(),
+                line: ctx.line_number,
+                side: ctx.side,
+                start_line: ctx.start_line_number,
+                kind,
+            },
+            body: typed,
+        });
+
+        let (tx, rx) = mpsc::channel(1);
+        self.cmt.comment_submit_receiver = Some((pr_number, rx));
+        self.cmt.comment_submitting = true;
+
+        tokio::spawn(async move {
+            let result = if let Some(start) = start {
+                github::create_multiline_review_comment(
+                    &repo, pr_number, &commit_id, &path, start, end, &body,
+                )
+                .await
+            } else {
+                github::create_review_comment(&repo, pr_number, &commit_id, &path, end, &body).await
+            };
+
+            let _ = tx
+                .send(match result {
+                    Ok(_) => CommentSubmitResult::Success,
+                    Err(e) => immediate_comment_failure(&e.to_string()),
+                })
+                .await;
         });
     }
 

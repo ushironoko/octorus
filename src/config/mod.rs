@@ -7,8 +7,8 @@ pub use loader::{find_project_root, find_project_root_in};
 #[cfg(test)]
 pub(crate) use schema::THEME_COLOR_KEYS;
 pub use schema::{
-    AiConfig, DiffConfig, GitOpsConfig, LayoutConfig, MouseConfig, ProposalPostStrategy,
-    ShellConfig, ThemeColors, ThemeConfig, ThemePreset,
+    AiConfig, DiffConfig, GitOpsConfig, InlineCommentMode, LayoutConfig, MouseConfig,
+    ProposalPostStrategy, ReviewConfig, ShellConfig, ThemeColors, ThemeConfig, ThemePreset,
 };
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,8 @@ pub struct Config {
     pub git_ops: GitOpsConfig,
     pub shell: ShellConfig,
     pub mouse: MouseConfig,
+    #[serde(default)]
+    pub review: ReviewConfig,
     #[serde(default, skip_serializing_if = "ThemeConfig::is_untouched")]
     pub theme: ThemeConfig,
     #[serde(skip)]
@@ -141,6 +143,111 @@ mod tests {
         let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
         assert_eq!(config.theme.preset, ThemePreset::Dark);
         assert!(config.theme.is_untouched());
+    }
+
+    #[test]
+    fn inline_comment_mode_defaults_to_pending() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            config.review.inline_comment_mode,
+            InlineCommentMode::Pending
+        );
+        assert_eq!(
+            Config::default().review.inline_comment_mode,
+            InlineCommentMode::Pending
+        );
+    }
+
+    #[test]
+    fn inline_comment_mode_parses_pending_and_immediate() {
+        let pending: Config = toml::from_str(
+            r#"
+            [review]
+            inline_comment_mode = "pending"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            pending.review.inline_comment_mode,
+            InlineCommentMode::Pending
+        );
+
+        let immediate: Config = toml::from_str(
+            r#"
+            [review]
+            inline_comment_mode = "immediate"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            immediate.review.inline_comment_mode,
+            InlineCommentMode::Immediate
+        );
+    }
+
+    #[test]
+    fn unknown_inline_comment_mode_warns_and_falls_back_to_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        let source = "[review]\ninline_comment_mode = \"now\"\n";
+        fs::write(&global, source).unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(
+            config.review.inline_comment_mode,
+            InlineCommentMode::Pending
+        );
+        assert_eq!(
+            config.load_warnings,
+            vec![format!(
+                "{}: review.inline_comment_mode: unknown value \"now\" (using default)",
+                global.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn non_string_inline_comment_mode_warns_and_falls_back_to_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("missing-local.toml");
+        fs::write(&global, "[review]\ninline_comment_mode = 1\n").unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(
+            config.review.inline_comment_mode,
+            InlineCommentMode::Pending
+        );
+        assert_eq!(
+            config.load_warnings,
+            vec![format!(
+                "{}: review.inline_comment_mode: unknown value \"1\" (using default)",
+                global.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn invalid_local_inline_comment_mode_keeps_the_global_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+        fs::write(&global, "[review]\ninline_comment_mode = \"immediate\"\n").unwrap();
+        fs::write(&local, "[review]\ninline_comment_mode = \"later\"\n").unwrap();
+
+        let config = Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(
+            config.review.inline_comment_mode,
+            InlineCommentMode::Immediate
+        );
+        assert_eq!(
+            config.load_warnings,
+            vec![format!(
+                "{}: review.inline_comment_mode: unknown value \"later\" (using global)",
+                local.display()
+            )]
+        );
     }
 
     #[test]
