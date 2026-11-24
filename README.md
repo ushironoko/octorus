@@ -704,6 +704,8 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 | `?` | Toggle help |
 | `q` | Quit |
 
+`git_ops` is checked before `jump_to_last` on this screen. With the defaults, `G` opens Git Ops. After `git_ops` is remapped, `G` jumps to the last file. A `jump_to_last` key other than the `git_ops` key also jumps to the last file.
+
 ### Split View
 
 The split view shows the file list (left) and a diff preview (right). The default ratio is 35%/65%, configurable via `layout.left_panel_width`. The focused pane is highlighted with a yellow border.
@@ -720,6 +722,8 @@ The split view shows the file list (left) and a diff preview (right). The defaul
 | `Enter` / `→` / `l` | Focus diff pane |
 | `Z` | Toggle zen mode |
 | `←` / `h` / `q` | Back to file list |
+
+The file pane uses the same order: `git_ops`, then `jump_to_last`. The default `G` opens Git Ops. When `jump_to_last` is a different key, that key jumps to the last file and the diff follows.
 
 **Diff Focus:**
 
@@ -1076,7 +1080,7 @@ go_to_definition = ["g", "d"]
 | `diff_page_down` | `PageDown` | Scroll diff page down (works from any pane in split view) |
 | `diff_page_up` | `PageUp` | Scroll diff page up (works from any pane in split view) |
 | `jump_to_first` | `gg` | Jump to first line |
-| `jump_to_last` | `G` | Jump to last line |
+| `jump_to_last` | `G` | Jump to the last line, or the last file. On the File List and the split-view file pane this runs when the key is not `git_ops` |
 | `jump_back` | `Ctrl+o` | Jump to previous position |
 | `next_comment` | `n` | Jump to next comment |
 | `prev_comment` | `N` | Jump to previous comment |
@@ -1096,7 +1100,7 @@ go_to_definition = ["g", "d"]
 | `open_panel` | `Enter` | Open panel / select |
 | `open_in_browser` | `O` | Open PR in browser |
 | `ci_checks` | `S` | View CI checks status |
-| `git_ops` | `G` | Open git ops view |
+| `git_ops` | `G` | Open git ops view from the File List or the split-view file pane (checked before `jump_to_last`) |
 | `issue_list` | `I` | Open issue list |
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |

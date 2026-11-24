@@ -684,10 +684,15 @@ fn build_help_lines_for(
             "{}  Open issue list",
             fmt_key(&kb.issue_list.display(), key_width)
         )),
-        // `G` opens git ops here. `jump_to_last` is the same default key in other views.
+        // `git_ops` is checked before `jump_to_last`. When they share a key
+        // (the default `G`), the jump row is dropped below.
         Line::from(format!(
             "{}  Open git ops",
             fmt_key(&kb.git_ops.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to last file",
+            fmt_key(&kb.jump_to_last.display(), key_width)
         )),
         Line::from(format!(
             "{}  Open Repository Browser",
@@ -722,6 +727,10 @@ fn build_help_lines_for(
         Line::from(format!(
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to last file",
+            fmt_key(&kb.jump_to_last.display(), key_width)
         )),
         Line::from(format!(
             "{}  Focus diff pane",
@@ -1452,6 +1461,16 @@ fn build_help_lines_for(
             );
         }
     }
+    // The File List and the split file pane match `git_ops` first. A shared
+    // key opens Git Ops, so those screens do not advertise `jump_to_last`.
+    if kb.jump_to_last == kb.git_ops {
+        lines.retain(|line| {
+            !line
+                .spans
+                .iter()
+                .any(|span| span.content.contains("Jump to last file"))
+        });
+    }
     lines
 }
 
@@ -1886,14 +1905,29 @@ mod tests {
         help_section(&rows, "Git Ops View", "PR List View").to_vec()
     }
 
-    /// File List documents `G` as git ops, plus repo browse and the shell key.
-    /// `jump_to_last` shares that default key and does not run on this screen.
+    fn split_file_focus_help(kb: &KeybindingsConfig) -> Vec<String> {
+        let rows = help_rows(kb);
+        let split = help_section(&rows, "Split View", "Diff View");
+        let start = split
+            .iter()
+            .position(|row| row.contains("File List Focus"))
+            .expect("split help missing file list focus");
+        let end = split
+            .iter()
+            .position(|row| row.contains("Diff Focus"))
+            .expect("split help missing diff focus");
+        split[start..end].to_vec()
+    }
+
+    /// File List documents git ops, repo browse, and the shell key.
+    /// `jump_to_last` is listed on the File List and the split file pane only
+    /// when its key is not `git_ops` (git ops is checked first).
     fn assert_file_list_help_keys(kb: &KeybindingsConfig) {
         let file_list = file_list_help(kb);
         for row in &file_list {
             assert!(
-                !row.contains("Jump to first") && !row.contains("Jump to last"),
-                "file list help still lists jump to first/last: {row}"
+                !row.contains("Jump to first"),
+                "file list help lists jump to first: {row}"
             );
         }
         for (key, label) in [
@@ -1907,6 +1941,31 @@ mod tests {
                 }),
                 "file list help missing {key:?} {label:?}: {file_list:#?}"
             );
+        }
+        let expect_jump = kb.jump_to_last != kb.git_ops;
+        let jump_key = kb.jump_to_last.display();
+        for (name, rows) in [
+            ("file list", file_list),
+            ("split file focus", split_file_focus_help(kb)),
+        ] {
+            let jump_rows: Vec<_> = rows
+                .iter()
+                .filter(|row| row.contains("Jump to last"))
+                .collect();
+            if expect_jump {
+                assert!(
+                    jump_rows.iter().any(|row| {
+                        help_key_column(row) == Some(jump_key.as_str())
+                            && row.ends_with("Jump to last file")
+                    }),
+                    "{name} help missing jump to last: {rows:#?}"
+                );
+            } else {
+                assert!(
+                    jump_rows.is_empty(),
+                    "{name} help lists jump while it shares the git ops key: {jump_rows:#?}"
+                );
+            }
         }
     }
 
@@ -1942,10 +2001,34 @@ mod tests {
         assert_file_list_help_keys(&kb);
         let file_list = file_list_help(&kb);
         assert!(
+            file_list.iter().any(|row| {
+                help_key_column(row) == Some("G") && row.ends_with("Jump to last file")
+            }),
+            "file list help should offer the freed jump key: {file_list:#?}"
+        );
+        assert!(
             file_list
                 .iter()
-                .all(|row| help_key_column(row) != Some("G")),
-            "file list help kept the default git ops key: {file_list:#?}"
+                .all(|row| !(help_key_column(row) == Some("G") && row.ends_with("Open git ops"))),
+            "file list help kept G as git ops: {file_list:#?}"
+        );
+    }
+
+    #[test]
+    fn test_file_list_help_follows_a_remapped_jump_to_last_key() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        let kb = KeybindingsConfig {
+            jump_to_last: KeySequence::single(KeyBinding::char('Z')),
+            ..KeybindingsConfig::default()
+        };
+        assert_file_list_help_keys(&kb);
+        let file_list = file_list_help(&kb);
+        assert!(
+            file_list
+                .iter()
+                .any(|row| { help_key_column(row) == Some("G") && row.ends_with("Open git ops") }),
+            "file list help dropped git ops: {file_list:#?}"
         );
     }
 

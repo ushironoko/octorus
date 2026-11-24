@@ -104,6 +104,14 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+  # Highlight spill on the macOS archives below, and on any non-Linux build:
+  # `O_DIRECT`, `sync_file_range`, `posix_fadvise`, and `malloc_trim` are
+  # compiled only for Linux. `malloc_trim` is glibc-only (`target_env = "gnu"`),
+  # so a musl `cargo install` still links. macOS keeps the in-memory slab arena
+  # until the same byte budget, then spills to an unlinked mode-0600 file with
+  # buffered I/O (`O_TMPFILE` and the statfs RAM check are Linux-only). Capture
+  # output matches Linux and matches main. A RAM disk used as `TMPDIR` on macOS
+  # is not detected; the spill is only created once the arena budget is exceeded.
   build:
     needs: [validate, test]
     strategy:
