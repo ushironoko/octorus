@@ -124,30 +124,26 @@ pub(crate) fn count_pending_drafts(comments: &[ReviewComment]) -> usize {
 }
 
 /// Reads what the diff shows for a PR: published comments, review summary
-/// bodies, and, in pending mode, the viewer's pending drafts (issue #169). The
-/// drafts come from the review list, so they are read after it. Immediate mode
-/// skips that read, so the list is the published comments v0.7.4 showed.
+/// bodies, and the viewer's pending drafts (issue #169). The drafts come from
+/// the review list, so they are read after it. Immediate mode reads them too:
+/// a pending review that already exists stays visible, because submitting the
+/// review still publishes it.
 async fn fetch_review_comments_for_view(
     repo: &str,
     pr_number: u32,
-    include_pending_drafts: bool,
 ) -> Result<ReviewCommentsFetch, String> {
     let (review_comments_result, reviews_result) = tokio::join!(
         github::comment::fetch_review_comments(repo, pr_number),
         github::comment::fetch_reviews(repo, pr_number),
     );
-    let drafts_result = if include_pending_drafts {
-        match &reviews_result {
-            Ok(reviews) => match github::pending_review_id(reviews) {
-                Some(review_id) => github::fetch_draft_comments(repo, pr_number, review_id)
-                    .await
-                    .map_err(|e| e.to_string()),
-                None => Ok(Vec::new()),
-            },
-            Err(error) => Err(error.to_string()),
-        }
-    } else {
-        Ok(Vec::new())
+    let drafts_result = match &reviews_result {
+        Ok(reviews) => match github::pending_review_id(reviews) {
+            Some(review_id) => github::fetch_draft_comments(repo, pr_number, review_id)
+                .await
+                .map_err(|e| e.to_string()),
+            None => Ok(Vec::new()),
+        },
+        Err(error) => Err(error.to_string()),
     };
     combine_review_fetch_results(review_comments_result, reviews_result, drafts_result)
 }
@@ -989,11 +985,8 @@ impl App {
         self.cmt.comment_receiver = Some((pr_number, rx));
 
         let repo = self.repo.clone();
-        let include_pending_drafts = !self.inline_comments_post_immediately();
-
         tokio::spawn(async move {
-            let combined =
-                fetch_review_comments_for_view(&repo, pr_number, include_pending_drafts).await;
+            let combined = fetch_review_comments_for_view(&repo, pr_number).await;
             let _ = tx.send(combined).await;
         });
     }

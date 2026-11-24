@@ -292,9 +292,9 @@ const HASH_GLOBAL_CONFIG_0_7_4: &str =
 const HASH_LOCAL_CONFIG_0_7_4: &str =
     "6e480ef3ed4b1af4f53fad299613e0639c88f1b0b173db6d40f6e78d5c6f611c";
 const HASH_GLOBAL_CONFIG_0_8_0: &str =
-    "ee2c9871da6e99627977868f04353effefcff5e8ecf2fb258b953f5ebef84803";
+    "6634b20141daf2e1ab86c3ec87b6f548da9266f855101881805a0ea88283b9ef";
 const HASH_LOCAL_CONFIG_0_8_0: &str =
-    "4ebf3cc35506f19a136ffbded620452fe89be14811b883d0fe7229e1f0aeaa56";
+    "bf4c5560e9f2257c5ad527e1852b4989883dcc3993a89e813fbbae070fd2479d";
 const HASH_REVIEWER_0_5_6: &str =
     "d9dfdd90d4041ef424edbab3754ab94bafbdad9d69e7297db195cf6194701e58";
 const HASH_REVIEWEE_0_5_6: &str =
@@ -308,7 +308,7 @@ const HASH_SKILL_REF_HEADLESS_0_6_0: &str =
 const HASH_SKILL_REF_CONFIG_0_6_0: &str =
     "2d2a8beffdc65b63fd990557d703a8ef9fa67823078b8e31d8d438b3bf80dc5c";
 const HASH_SKILL_REF_CONFIG_0_8_0: &str =
-    "2e819a5191a25c1d1aef28e47a61365be63ad38c742d047702f2c1bd8fcec559";
+    "51a93bc805a2f2765b89d97316b439ba899ad552d15fe393dcf04819141c1ed2";
 
 // ---------------------------------------------------------------------------
 // Config Migrations (breaking changes registry)

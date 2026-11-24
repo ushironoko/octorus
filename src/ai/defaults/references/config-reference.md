@@ -30,7 +30,9 @@ review_only = false
 ```toml
 [review]
 # "pending" (default) adds each inline comment or suggestion to your pending
-# GitHub review. "immediate" posts each one right away, as in v0.7.4.
+# GitHub review. "immediate" posts each new one right away, as in v0.7.4.
+# Drafts already in a pending review stay visible, and submitting the review
+# still publishes them. A failed immediate post keeps the text for that line.
 # Replies are posted immediately in either mode.
 inline_comment_mode = "pending"
 ```

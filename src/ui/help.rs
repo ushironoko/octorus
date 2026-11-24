@@ -582,7 +582,7 @@ fn build_help_lines_for(
     // Several rows close with Esc as well as the quit key; `key_label` lists it once.
     let esc = KeySequence::single(KeyBinding::named(NamedKey::Esc));
 
-    vec![
+    let mut lines = vec![
         Line::from(""),
         Line::from(vec![Span::styled("Global", theme.warning.bold())]),
         Line::from(format!(
@@ -1435,7 +1435,24 @@ fn build_help_lines_for(
             theme.muted.style(),
         )]),
         Line::from(""),
-    ]
+    ];
+    if inline_comment_mode == InlineCommentMode::Immediate {
+        let insert_at = lines
+            .iter()
+            .position(|line| line.to_string().contains("to batch them."))
+            .map(|index| index + 1);
+        if let Some(insert_at) = insert_at {
+            lines.insert(
+                insert_at,
+                Line::from("  An existing pending review stays on screen."),
+            );
+            lines.insert(
+                insert_at,
+                Line::from("  A failed post keeps the text for that line."),
+            );
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -1656,6 +1673,23 @@ mod tests {
             .join("\n");
         assert!(immediate_text.contains("Comments are posted immediately."));
         assert!(immediate_text.contains("Or inline_comment_mode = \"pending\" to batch them."));
+        assert!(immediate_text.contains("A failed post keeps the text for that line."));
+        assert!(immediate_text.contains("An existing pending review stays on screen."));
+        for label in [
+            "A failed post keeps the text for that line.",
+            "An existing pending review stays on screen.",
+        ] {
+            let line = immediate
+                .iter()
+                .map(|entry| entry.to_string())
+                .find(|text| text.ends_with(label))
+                .unwrap_or_else(|| panic!("missing {label}"));
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 58,
+                "{label} is {} columns",
+                unicode_width::UnicodeWidthStr::width(line.as_str())
+            );
+        }
         assert!(!immediate_text.contains("Comments join your pending review"));
     }
 

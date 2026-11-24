@@ -13780,6 +13780,29 @@ async fn refresh_shares_one_file_list_between_the_screen_and_the_session_cache()
 }
 
 #[test]
+fn an_immediate_422_from_an_existing_pending_review_is_a_short_refusal() {
+    use crate::loader::CommentSubmitResult;
+
+    let blocked = super::input_text::immediate_comment_failure(
+        "gh command failed: gh: User can only have one pending review per pull request (HTTP 422)",
+    );
+    match blocked {
+        CommentSubmitResult::Refused(message) => {
+            assert_eq!(message, "Pending review exists: submit or discard it first");
+        }
+        CommentSubmitResult::Success
+        | CommentSubmitResult::AddedToPendingReview
+        | CommentSubmitResult::Unknown
+        | CommentSubmitResult::Error(_) => panic!("expected the short refusal"),
+    }
+
+    let other = super::input_text::immediate_comment_failure(
+        "gh command failed: HTTP 422: Unprocessable Entity",
+    );
+    assert!(matches!(other, CommentSubmitResult::Error(message) if message.contains("HTTP 422")));
+}
+
+#[test]
 fn a_new_app_keeps_inline_comments_on_the_pending_review() {
     let app = App::new_for_test();
     assert!(!app.inline_comments_post_immediately());
@@ -13955,11 +13978,12 @@ mod inline_comment_mode_requests {
             (ToastKind::Success, "Submitted".to_string())
         );
         assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(1));
-        assert!(crate::ui::common::build_pending_review_span(
+        let note = crate::ui::common::build_pending_review_span(
             &app,
-            crate::ui::theme::Theme::test_default()
+            crate::ui::theme::Theme::test_default(),
         )
-        .is_none());
+        .expect("an existing pending review stays visible");
+        assert_eq!(note.content, "Pending review: 1 draft");
         wait_for_comment_load(&mut app).await;
     }
 
@@ -14062,7 +14086,7 @@ mod inline_comment_mode_requests {
 
     #[tokio::test]
     #[serial]
-    async fn an_immediate_post_that_fails_says_failed_and_drops_the_text() {
+    async fn an_immediate_post_that_fails_says_failed_and_keeps_the_text() {
         let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
         gh.fail_first(1);
         let mut app = app_on_added_line();
@@ -14075,22 +14099,70 @@ mod inline_comment_mode_requests {
         assert_eq!(kind, ToastKind::Failure);
         assert!(
             message.starts_with("Failed: "),
-            "v0.7.4 reported the error as Failed: …, got {message}"
+            "a failed immediate post is still Failed: …, got {message}"
         );
         assert!(!message.contains("Text kept"), "{message}");
         assert!(!message.contains("pending"), "{message}");
         assert!(app.cmt.pending_add.is_none());
-        assert!(app.cmt.saved_drafts.is_empty());
 
         app.input_mode = None;
         app.state = AppState::DiffView;
         app.enter_comment_input();
-        assert!(app.input_text_area.content().is_empty());
+        assert_eq!(app.input_text_area.content(), "try again");
     }
 
     #[tokio::test]
     #[serial]
-    async fn immediate_mode_does_not_read_pending_drafts() {
+    async fn an_immediate_post_blocked_by_a_pending_review_says_so() {
+        let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+        gh.fail_with(
+            1,
+            "gh: User can only have one pending review per pull request (HTTP 422)",
+        );
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.enter_comment_input();
+        send_comment(&mut app, "nit").await;
+
+        assert_eq!(
+            shown_toast(&app.cmt.submission_result),
+            (
+                ToastKind::Failure,
+                "Pending review exists: submit or discard it first".to_string()
+            )
+        );
+        let calls = gh.calls();
+        assert!(
+            calls.contains("POST repos/owner/repo/pulls/1/comments "),
+            "{calls}"
+        );
+        assert_no_pending_review_post(&calls);
+
+        app.input_mode = None;
+        app.state = AppState::DiffView;
+        app.enter_comment_input();
+        assert_eq!(app.input_text_area.content(), "nit");
+        drop(gh);
+
+        let gh = FakeGh::install("[[]]", COMMENT_JSON, "", "");
+        gh.fail_first(1);
+        let mut app = app_on_added_line();
+        immediate(&mut app);
+        app.enter_suggestion_input();
+        send_suggestion(&mut app, "let x = 1;").await;
+        let (kind, message) = shown_toast(&app.cmt.submission_result);
+        assert_eq!(kind, ToastKind::Failure);
+        assert!(message.starts_with("Failed: "), "{message}");
+        app.input_mode = None;
+        app.state = AppState::DiffView;
+        app.enter_suggestion_input();
+        assert_eq!(app.input_text_area.content(), "let x = 1;");
+        drop(gh);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn immediate_mode_still_shows_an_existing_pending_review() {
         let reviews = r#"[[{"id":77,"body":null,"state":"PENDING","user":{"login":"me"},"submitted_at":null}]]"#;
         let drafts = r#"[[{"id":501,"path":"test.rs","line":2,"body":"draft","user":{"login":"me"},"created_at":"2026-11-10T00:00:00Z"}]]"#;
 
@@ -14122,22 +14194,27 @@ mod inline_comment_mode_requests {
         wait_for_comment_load(&mut app).await;
         let calls = gh.calls();
         assert!(
-            !calls.contains("reviews/77/comments"),
-            "immediate mode must not read the pending review: {calls}"
+            calls.contains("repos/owner/repo/pulls/1/reviews/77/comments"),
+            "immediate mode still reads an existing pending review: {calls}"
         );
-        assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(0));
-        assert!(!app
+        assert_eq!(app.cmt.pending_drafts, PendingDrafts::Known(1));
+        assert!(app
             .cmt
             .review_comments
             .as_ref()
             .unwrap()
             .iter()
-            .any(|comment| comment.is_pending_draft()));
-        assert!(crate::ui::common::build_pending_review_span(
+            .any(|comment| comment.id == 501 && comment.is_pending_draft()));
+        assert!(
+            !app.cmt.file_comment_lines.is_empty(),
+            "the draft keeps its diff marker"
+        );
+        let note = crate::ui::common::build_pending_review_span(
             &app,
-            crate::ui::theme::Theme::test_default()
+            crate::ui::theme::Theme::test_default(),
         )
-        .is_none());
+        .expect("the draft count stays in the header");
+        assert_eq!(note.content, "Pending review: 1 draft");
     }
 
     async fn wait_for_comment_load(app: &mut super::App) {

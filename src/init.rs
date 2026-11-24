@@ -43,7 +43,9 @@ tab_width = 4
 # Where a new inline comment or suggestion is sent.
 # "pending" (default): add it to your pending GitHub review. It is published
 # when you submit the review. The PR header counts those drafts.
-# "immediate": post each one right away, as in v0.7.4.
+# "immediate": post each new one right away, as in v0.7.4.
+# Drafts already in a pending review stay visible, and submitting the
+# review still publishes them. A failed post keeps the text for that line.
 # Replies are posted immediately in either mode.
 # inline_comment_mode = "pending"
 
@@ -103,6 +105,7 @@ pub(crate) const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configu
 
 # [review]
 # inline_comment_mode = "pending"  # or "immediate" to post each comment now
+# Drafts already in a pending review stay visible in either mode.
 
 # [ai]
 # reviewer = "claude"
