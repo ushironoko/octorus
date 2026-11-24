@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::ai::{PromptLoader, PromptSource};
 use crate::app::{App, HelpTab};
-use crate::config::{Config, KeybindingsConfig};
+use crate::config::{Config, InlineCommentMode, KeybindingsConfig};
 use crate::keybinding::{display_keys, KeyBinding, KeySequence, NamedKey};
 use crate::syntax::available_themes;
 use crate::ui::common::wrap_text;
@@ -133,7 +133,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_keybindings_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let kb = &app.config.keybindings;
-    let help_lines = build_help_lines(kb, app.theme);
+    let help_lines = build_help_lines_for(kb, app.theme, app.config.review.inline_comment_mode);
     let total_lines = help_lines.len();
     let content_height = area.height.saturating_sub(2) as usize;
 
@@ -567,13 +567,22 @@ pub fn build_config_lines(config: &Config, theme: Theme) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg(test)]
 fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> {
+    build_help_lines_for(kb, theme, InlineCommentMode::Pending)
+}
+
+fn build_help_lines_for(
+    kb: &KeybindingsConfig,
+    theme: Theme,
+    inline_comment_mode: InlineCommentMode,
+) -> Vec<Line<'static>> {
     let key_width = 14; // Width for key column
 
     // Several rows close with Esc as well as the quit key; `key_label` lists it once.
     let esc = KeySequence::single(KeyBinding::named(NamedKey::Esc));
 
-    vec![
+    let mut lines = vec![
         Line::from(""),
         Line::from(vec![Span::styled("Global", theme.warning.bold())]),
         Line::from(format!(
@@ -675,10 +684,15 @@ fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> 
             "{}  Open issue list",
             fmt_key(&kb.issue_list.display(), key_width)
         )),
-        // `G` opens git ops here. `jump_to_last` is the same default key in other views.
+        // `git_ops` is checked before `jump_to_last`. When they share a key
+        // (the default `G`), the jump row is dropped below.
         Line::from(format!(
             "{}  Open git ops",
             fmt_key(&kb.git_ops.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to last file",
+            fmt_key(&kb.jump_to_last.display(), key_width)
         )),
         Line::from(format!(
             "{}  Open Repository Browser",
@@ -713,6 +727,10 @@ fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> 
         Line::from(format!(
             "{}  Filter list",
             fmt_key(&kb.filter.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to last file",
+            fmt_key(&kb.jump_to_last.display(), key_width)
         )),
         Line::from(format!(
             "{}  Focus diff pane",
@@ -1013,6 +1031,16 @@ fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> 
             "{}  Submit",
             fmt_key(&kb.submit.display(), key_width)
         )),
+        Line::from(match inline_comment_mode {
+            InlineCommentMode::Pending => {
+                "  Comments join your pending review until you submit it."
+            }
+            InlineCommentMode::Immediate => "  Comments are posted immediately.",
+        }),
+        Line::from(match inline_comment_mode {
+            InlineCommentMode::Pending => "  Or inline_comment_mode = \"immediate\" to post now.",
+            InlineCommentMode::Immediate => "  Or inline_comment_mode = \"pending\" to batch them.",
+        }),
         Line::from("  Esc             Cancel (comment text kept per line)"),
         Line::from(vec![Span::styled(
             "  Readline-style editing keys:",
@@ -1416,7 +1444,34 @@ fn build_help_lines(kb: &KeybindingsConfig, theme: Theme) -> Vec<Line<'static>> 
             theme.muted.style(),
         )]),
         Line::from(""),
-    ]
+    ];
+    if inline_comment_mode == InlineCommentMode::Immediate {
+        let insert_at = lines
+            .iter()
+            .position(|line| line.to_string().contains("to batch them."))
+            .map(|index| index + 1);
+        if let Some(insert_at) = insert_at {
+            lines.insert(
+                insert_at,
+                Line::from("  An existing pending review stays on screen."),
+            );
+            lines.insert(
+                insert_at,
+                Line::from("  A failed post keeps the text for that line."),
+            );
+        }
+    }
+    // The File List and the split file pane match `git_ops` first. A shared
+    // key opens Git Ops, so those screens do not advertise `jump_to_last`.
+    if kb.jump_to_last == kb.git_ops {
+        lines.retain(|line| {
+            !line
+                .spans
+                .iter()
+                .any(|span| span.content.contains("Jump to last file"))
+        });
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -1612,6 +1667,8 @@ mod tests {
             "Request changes (publish pending drafts)",
             "Comment only (publish pending drafts)",
             "Cancel (comment text kept per line)",
+            "Comments join your pending review until you submit it.",
+            "Or inline_comment_mode = \"immediate\" to post now.",
         ] {
             let line = texts
                 .iter()
@@ -1622,6 +1679,37 @@ mod tests {
                 "help line too wide for 60 columns: {line}"
             );
         }
+
+        let immediate = build_help_lines_for(
+            &kb,
+            Theme::test_default(),
+            crate::config::InlineCommentMode::Immediate,
+        );
+        let immediate_text = immediate
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(immediate_text.contains("Comments are posted immediately."));
+        assert!(immediate_text.contains("Or inline_comment_mode = \"pending\" to batch them."));
+        assert!(immediate_text.contains("A failed post keeps the text for that line."));
+        assert!(immediate_text.contains("An existing pending review stays on screen."));
+        for label in [
+            "A failed post keeps the text for that line.",
+            "An existing pending review stays on screen.",
+        ] {
+            let line = immediate
+                .iter()
+                .map(|entry| entry.to_string())
+                .find(|text| text.ends_with(label))
+                .unwrap_or_else(|| panic!("missing {label}"));
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 58,
+                "{label} is {} columns",
+                unicode_width::UnicodeWidthStr::width(line.as_str())
+            );
+        }
+        assert!(!immediate_text.contains("Comments join your pending review"));
     }
 
     #[test]
@@ -1817,14 +1905,29 @@ mod tests {
         help_section(&rows, "Git Ops View", "PR List View").to_vec()
     }
 
-    /// File List documents `G` as git ops, plus repo browse and the shell key.
-    /// `jump_to_last` shares that default key and does not run on this screen.
+    fn split_file_focus_help(kb: &KeybindingsConfig) -> Vec<String> {
+        let rows = help_rows(kb);
+        let split = help_section(&rows, "Split View", "Diff View");
+        let start = split
+            .iter()
+            .position(|row| row.contains("File List Focus"))
+            .expect("split help missing file list focus");
+        let end = split
+            .iter()
+            .position(|row| row.contains("Diff Focus"))
+            .expect("split help missing diff focus");
+        split[start..end].to_vec()
+    }
+
+    /// File List documents git ops, repo browse, and the shell key.
+    /// `jump_to_last` is listed on the File List and the split file pane only
+    /// when its key is not `git_ops` (git ops is checked first).
     fn assert_file_list_help_keys(kb: &KeybindingsConfig) {
         let file_list = file_list_help(kb);
         for row in &file_list {
             assert!(
-                !row.contains("Jump to first") && !row.contains("Jump to last"),
-                "file list help still lists jump to first/last: {row}"
+                !row.contains("Jump to first"),
+                "file list help lists jump to first: {row}"
             );
         }
         for (key, label) in [
@@ -1838,6 +1941,31 @@ mod tests {
                 }),
                 "file list help missing {key:?} {label:?}: {file_list:#?}"
             );
+        }
+        let expect_jump = kb.jump_to_last != kb.git_ops;
+        let jump_key = kb.jump_to_last.display();
+        for (name, rows) in [
+            ("file list", file_list),
+            ("split file focus", split_file_focus_help(kb)),
+        ] {
+            let jump_rows: Vec<_> = rows
+                .iter()
+                .filter(|row| row.contains("Jump to last"))
+                .collect();
+            if expect_jump {
+                assert!(
+                    jump_rows.iter().any(|row| {
+                        help_key_column(row) == Some(jump_key.as_str())
+                            && row.ends_with("Jump to last file")
+                    }),
+                    "{name} help missing jump to last: {rows:#?}"
+                );
+            } else {
+                assert!(
+                    jump_rows.is_empty(),
+                    "{name} help lists jump while it shares the git ops key: {jump_rows:#?}"
+                );
+            }
         }
     }
 
@@ -1873,10 +2001,34 @@ mod tests {
         assert_file_list_help_keys(&kb);
         let file_list = file_list_help(&kb);
         assert!(
+            file_list.iter().any(|row| {
+                help_key_column(row) == Some("G") && row.ends_with("Jump to last file")
+            }),
+            "file list help should offer the freed jump key: {file_list:#?}"
+        );
+        assert!(
             file_list
                 .iter()
-                .all(|row| help_key_column(row) != Some("G")),
-            "file list help kept the default git ops key: {file_list:#?}"
+                .all(|row| !(help_key_column(row) == Some("G") && row.ends_with("Open git ops"))),
+            "file list help kept G as git ops: {file_list:#?}"
+        );
+    }
+
+    #[test]
+    fn test_file_list_help_follows_a_remapped_jump_to_last_key() {
+        use crate::keybinding::{KeyBinding, KeySequence};
+
+        let kb = KeybindingsConfig {
+            jump_to_last: KeySequence::single(KeyBinding::char('Z')),
+            ..KeybindingsConfig::default()
+        };
+        assert_file_list_help_keys(&kb);
+        let file_list = file_list_help(&kb);
+        assert!(
+            file_list
+                .iter()
+                .any(|row| { help_key_column(row) == Some("G") && row.ends_with("Open git ops") }),
+            "file list help dropped git ops: {file_list:#?}"
         );
     }
 

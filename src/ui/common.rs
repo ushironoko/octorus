@@ -57,7 +57,8 @@ pub fn pending_review_text(drafts: usize) -> String {
 
 /// The pending-review note as a header span, in the theme's warning color as a
 /// draft's comment tag is. `None` when the viewer has no drafts on this PR, and in
-/// local mode, which has no pending review.
+/// local mode, which has no pending review. Immediate mode shows it too: those
+/// drafts are still published when the review is submitted.
 pub fn build_pending_review_span(app: &App, theme: Theme) -> Option<Span<'static>> {
     if app.is_local_mode() {
         return None;
@@ -382,6 +383,19 @@ mod pending_note_tests {
         app.cmt.pending_drafts = PendingDrafts::Known(3);
 
         assert!(build_pending_review_span(&app, Theme::test_default()).is_none());
+    }
+
+    #[test]
+    fn pending_note_stays_visible_in_immediate_mode_when_drafts_exist() {
+        let mut app = App::new_for_test();
+        app.config.review.inline_comment_mode = crate::config::InlineCommentMode::Immediate;
+        let theme = Theme::test_default();
+        app.cmt.pending_drafts = PendingDrafts::Known(0);
+        assert!(build_pending_review_span(&app, theme).is_none());
+
+        app.cmt.pending_drafts = PendingDrafts::Known(3);
+        let note = build_pending_review_span(&app, theme).expect("existing drafts stay visible");
+        assert_eq!(note.content, "Pending review: 3 drafts");
     }
 
     #[test]

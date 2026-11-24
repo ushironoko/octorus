@@ -155,7 +155,7 @@ The module graph supports Rust, TypeScript, TSX, JavaScript, and JSX. JavaScript
 - Readline-style editing keys (`Ctrl-A/E/B/F/P/N/D/H/K/U/W`) inside the comment / reply / suggestion text input
 - Multiline selection mode (`Shift+Enter`) for range comments and suggestions
 - Show Comment List for Review Comments and Discussions
-- Review submission (Approve / Request Changes / Comment). Inline comments and suggestions are added to your pending review on GitHub and published together when you submit it. The PR header shows how many drafts are waiting, and each draft is tagged "pending review" in the comment panel. Replies are posted immediately.
+- Review submission (Approve / Request Changes / Comment). By default, inline comments and suggestions are added to your pending review on GitHub and published together when you submit it. The PR header shows how many drafts are waiting, and each draft is tagged "pending review" in the comment panel. Set `[review] inline_comment_mode = "immediate"` to post each new inline comment right away instead (the v0.7.4 behavior). A pending review that already exists stays visible in that mode, and submitting the review still publishes it. Replies are posted immediately in either mode.
 - Mark files and directories as viewed
 - File tree view toggle
 - Go to Definition (`gd`) with symbol popup and jump stack (up to 100 positions)
@@ -454,6 +454,19 @@ warning = "#b58900"
 | `enabled` | `bool` | `true` | Enable mouse support (click, wheel, drag). While capture is on, the terminal's native text selection is unavailable — press `F2` (`toggle_mouse`) to temporarily release the mouse for copying, or set this to `false` to opt out entirely |
 | `wheel_step` | `u16` | `3` | Lines moved per wheel notch (clamped to `1`–`10`) |
 
+#### `[review]`
+
+An unknown `inline_comment_mode` warns at startup and falls back to the default, or to the global value when the global file still has that key. Startup continues. The warning is printed to stderr, shown as a badge in the footer (`? for details`), and listed on the Config tab of the help screen (`?`).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inline_comment_mode` | `string` | `"pending"` | `pending`: add each inline comment or suggestion to your pending GitHub review and publish them when you submit the review. The header counts the drafts and each draft is tagged "pending review". `immediate`: post each new one right away with `POST /pulls/{n}/comments`, as in v0.7.4. Drafts already in a pending review stay counted, marked, and tagged, because submitting the review still publishes them. If that review exists, a new immediate comment is refused with "Pending review exists: submit or discard it first". A failed immediate post keeps the text for that line. Replies are posted immediately in either mode |
+
+```toml
+[review]
+inline_comment_mode = "pending"
+```
+
 #### `[ai]`
 
 | Key | Type | Default | Description |
@@ -691,6 +704,8 @@ PRs are loaded with infinite scroll — additional PRs are fetched automatically
 | `?` | Toggle help |
 | `q` | Quit |
 
+`git_ops` is checked before `jump_to_last` on this screen. With the defaults, `G` opens Git Ops. After `git_ops` is remapped, `G` jumps to the last file. A `jump_to_last` key other than the `git_ops` key also jumps to the last file.
+
 ### Split View
 
 The split view shows the file list (left) and a diff preview (right). The default ratio is 35%/65%, configurable via `layout.left_panel_width`. The focused pane is highlighted with a yellow border.
@@ -707,6 +722,8 @@ The split view shows the file list (left) and a diff preview (right). The defaul
 | `Enter` / `→` / `l` | Focus diff pane |
 | `Z` | Toggle zen mode |
 | `←` / `h` / `q` | Back to file list |
+
+The file pane uses the same order: `git_ops`, then `jump_to_last`. The default `G` opens Git Ops. When `jump_to_last` is a different key, that key jumps to the last file and the diff follows.
 
 **Diff Focus:**
 
@@ -790,9 +807,11 @@ When adding a comment, suggestion, or reply, you enter the built-in text input m
 | Key | Action |
 |-----|--------|
 | `Ctrl+S` | Submit |
-| `Esc` | Cancel |
+| `Esc` | Cancel (the unsent text is kept for that line) |
 
 Multi-line input is supported. Press `Enter` to insert a newline.
+
+With the default `[review] inline_comment_mode = "pending"`, submitting a comment or suggestion adds it to your pending review. The footer says "Added to pending review", and the review keys publish those drafts. `inline_comment_mode = "immediate"` posts that comment on its own: the footer says "Submitted" or "Failed: …". A failed post keeps the text for that line, and reopening the line brings it back. Drafts already waiting in a pending review stay in the header, on the diff, and in the comment list, and the review keys still publish them. While that review exists, a new immediate comment says "Pending review exists: submit or discard it first". A reply is posted immediately in both modes.
 
 ### Repository Browser View
 
@@ -1061,7 +1080,7 @@ go_to_definition = ["g", "d"]
 | `diff_page_down` | `PageDown` | Scroll diff page down (works from any pane in split view) |
 | `diff_page_up` | `PageUp` | Scroll diff page up (works from any pane in split view) |
 | `jump_to_first` | `gg` | Jump to first line |
-| `jump_to_last` | `G` | Jump to last line |
+| `jump_to_last` | `G` | Jump to the last line, or the last file. On the File List and the split-view file pane this runs when the key is not `git_ops` |
 | `jump_back` | `Ctrl+o` | Jump to previous position |
 | `next_comment` | `n` | Jump to next comment |
 | `prev_comment` | `N` | Jump to previous comment |
@@ -1081,7 +1100,7 @@ go_to_definition = ["g", "d"]
 | `open_panel` | `Enter` | Open panel / select |
 | `open_in_browser` | `O` | Open PR in browser |
 | `ci_checks` | `S` | View CI checks status |
-| `git_ops` | `G` | Open git ops view |
+| `git_ops` | `G` | Open git ops view from the File List or the split-view file pane (checked before `jump_to_last`) |
 | `issue_list` | `I` | Open issue list |
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |

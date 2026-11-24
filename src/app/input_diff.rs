@@ -184,6 +184,18 @@ impl App {
             }
         }
 
+        // Jump to last. `git_ops` is matched above, so the default `G` still
+        // opens Git Ops. This runs when `jump_to_last` is bound to another key.
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if tree_active {
+                self.file_tree_jump_to_last();
+            } else if !self.files().is_empty() {
+                self.selected_file = self.files().len().saturating_sub(1);
+            }
+            self.sync_diff_to_selected_file();
+            return Ok(());
+        }
+
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
         {

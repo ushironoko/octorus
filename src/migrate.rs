@@ -180,7 +180,20 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         filename: "rereview.md",
         sha256: HASH_REREVIEW_0_5_6,
     },
-    // 0.8.0 — config.toml updated with [mouse] section
+    // 0.7.4 — config.toml as shipped (mouse section, no [review] key).
+    DefaultFileHash {
+        scope: FileScope::Global,
+        version: "0.7.4",
+        filename: "config.toml",
+        sha256: HASH_GLOBAL_CONFIG_0_7_4,
+    },
+    DefaultFileHash {
+        scope: FileScope::Local,
+        version: "0.7.4",
+        filename: "config.toml",
+        sha256: HASH_LOCAL_CONFIG_0_7_4,
+    },
+    // 0.8.0 — config.toml documents [review] inline_comment_mode.
     DefaultFileHash {
         scope: FileScope::Global,
         version: "0.8.0",
@@ -256,6 +269,12 @@ const DEFAULT_HASHES: &[DefaultFileHash] = &[
         filename: "config-reference.md",
         sha256: HASH_SKILL_REF_CONFIG_0_6_0,
     },
+    DefaultFileHash {
+        scope: FileScope::Skill,
+        version: "0.8.0",
+        filename: "config-reference.md",
+        sha256: HASH_SKILL_REF_CONFIG_0_8_0,
+    },
 ];
 
 // These constants are verified by test_default_hashes_match_embedded_content.
@@ -268,10 +287,14 @@ const HASH_GLOBAL_CONFIG_0_5_8: &str =
     "432c5a06806123c2a3a944353c826d004ab775759e158728541f87039240560e";
 const HASH_LOCAL_CONFIG_0_5_8: &str =
     "db391a2874904add6f193366aaa0d5eb7b35689f5fae04cf4a2d8d740c1c353e";
-const HASH_GLOBAL_CONFIG_0_8_0: &str =
+const HASH_GLOBAL_CONFIG_0_7_4: &str =
     "dadbe4ae340835ca5ee1a9c82ea11f81afb464a7a20ea510c56d6aec9f395428";
-const HASH_LOCAL_CONFIG_0_8_0: &str =
+const HASH_LOCAL_CONFIG_0_7_4: &str =
     "6e480ef3ed4b1af4f53fad299613e0639c88f1b0b173db6d40f6e78d5c6f611c";
+const HASH_GLOBAL_CONFIG_0_8_0: &str =
+    "6634b20141daf2e1ab86c3ec87b6f548da9266f855101881805a0ea88283b9ef";
+const HASH_LOCAL_CONFIG_0_8_0: &str =
+    "bf4c5560e9f2257c5ad527e1852b4989883dcc3993a89e813fbbae070fd2479d";
 const HASH_REVIEWER_0_5_6: &str =
     "d9dfdd90d4041ef424edbab3754ab94bafbdad9d69e7297db195cf6194701e58";
 const HASH_REVIEWEE_0_5_6: &str =
@@ -284,6 +307,8 @@ const HASH_SKILL_REF_HEADLESS_0_6_0: &str =
     "4990398413faebbb2b8237b04be68d554ea254381b6551df1350dd482d4f0962";
 const HASH_SKILL_REF_CONFIG_0_6_0: &str =
     "2d2a8beffdc65b63fd990557d703a8ef9fa67823078b8e31d8d438b3bf80dc5c";
+const HASH_SKILL_REF_CONFIG_0_8_0: &str =
+    "51a93bc805a2f2765b89d97316b439ba899ad552d15fe393dcf04819141c1ed2";
 
 // ---------------------------------------------------------------------------
 // Config Migrations (breaking changes registry)
@@ -1288,7 +1313,7 @@ mod tests {
                 FileScope::Skill,
                 "config-reference.md",
                 AGENT_SKILL_REF_CONFIG,
-                HASH_SKILL_REF_CONFIG_0_6_0,
+                HASH_SKILL_REF_CONFIG_0_8_0,
             ),
         ];
 

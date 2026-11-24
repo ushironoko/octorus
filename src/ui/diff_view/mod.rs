@@ -20,7 +20,8 @@ use crate::app::{
 };
 use crate::diff::{is_no_newline_marker, LineType, PatchClassifier};
 use crate::syntax::highlighter::{
-    CancelHighlight, HighlightBudget, HighlightControl, PREFETCH_QUERY_BUDGET,
+    begin_slab_highlight, finish_slab_highlight, release_highlight_heap, CancelHighlight,
+    HighlightBudget, HighlightControl, SlabFinishError, PREFETCH_QUERY_BUDGET,
 };
 use crate::syntax::{
     apply_line_highlights, collect_line_highlights_bounded,
@@ -245,6 +246,11 @@ pub fn build_diff_cache_for_prefetch(
     )
 }
 
+enum CstSlabOutcome<T> {
+    Done(T),
+    Retry,
+}
+
 fn build_diff_cache_controlled(
     patch: &str,
     filename: &str,
@@ -296,7 +302,7 @@ fn build_diff_cache_controlled(
     let use_cst = cst_result.is_some();
 
     let lines: Vec<CachedDiffLine> = if use_cst {
-        let result = cst_result.as_ref().unwrap();
+        let lang = cst_result.as_ref().unwrap().lang;
         let base_style_cache = highlighter
             .style_cache()
             .expect("CST highlighter should have style_cache");
@@ -316,33 +322,93 @@ fn build_diff_cache_controlled(
         {
             // Injection path: query is obtained inside the function to avoid borrow conflicts
             // Note: priming_lines offset is handled when applying highlights to diff lines
+            let tree = &cst_result.as_ref().unwrap().tree;
             collect_line_highlights_with_injections_bounded(
                 &combined_source,
-                &result.tree,
-                result.lang,
+                tree,
+                lang,
                 style_cache,
                 parser_pool,
                 ext,
                 budget,
             )
         } else {
-            // Standard CST highlighting: get cached query
-            let query = parser_pool
-                .get_or_create_query(result.lang)
-                .expect("Query should be available for supported language");
-            let capture_names: Vec<String> = query
-                .capture_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            collect_line_highlights_bounded(
-                &combined_source,
-                &result.tree,
-                query,
-                &capture_names,
-                style_cache,
-                budget,
-            )
+            // `query` borrows the pool. Keep that borrow inside this block so a
+            // spill read error can parse the source again.
+            let outcome = {
+                let query = parser_pool
+                    .get_or_create_query(lang)
+                    .expect("Query should be available for supported language");
+                let capture_names: Vec<String> = query
+                    .capture_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // The slab walk borrows the tree. Finish that borrow before dropping
+                // the tree, so the highlight map is built after the tree's pages
+                // can be returned to the OS.
+                let streamed = {
+                    let tree = &cst_result.as_ref().unwrap().tree;
+                    begin_slab_highlight(&combined_source, tree, query, budget)
+                };
+                match streamed {
+                    Ok(Some(stream)) => {
+                        drop(cst_result);
+                        release_highlight_heap();
+                        match finish_slab_highlight(
+                            stream,
+                            &combined_source,
+                            query,
+                            &capture_names,
+                            style_cache,
+                            budget,
+                        ) {
+                            Ok(highlights) => CstSlabOutcome::Done(Ok(highlights)),
+                            Err(SlabFinishError::Abort(reason)) => {
+                                CstSlabOutcome::Done(Err(reason))
+                            }
+                            Err(SlabFinishError::Retry) => CstSlabOutcome::Retry,
+                        }
+                    }
+                    Ok(None) => {
+                        let tree = &cst_result.as_ref().unwrap().tree;
+                        CstSlabOutcome::Done(collect_line_highlights_bounded(
+                            &combined_source,
+                            tree,
+                            query,
+                            &capture_names,
+                            style_cache,
+                            budget,
+                        ))
+                    }
+                    Err(reason) => CstSlabOutcome::Done(Err(reason)),
+                }
+            };
+            match outcome {
+                CstSlabOutcome::Done(result) => result,
+                CstSlabOutcome::Retry => {
+                    let Some(parsed) = highlighter.parse_source(&combined_source, parser_pool)
+                    else {
+                        return plain_highlight_fallback(original_patch, tab_width, markdown_rich);
+                    };
+                    let query = parser_pool
+                        .get_or_create_query(parsed.lang)
+                        .expect("Query should be available for supported language");
+                    let capture_names: Vec<String> = query
+                        .capture_names()
+                        .iter()
+                        .map(|name| name.to_string())
+                        .collect();
+                    collect_line_highlights_bounded(
+                        &combined_source,
+                        &parsed.tree,
+                        query,
+                        &capture_names,
+                        style_cache,
+                        budget,
+                    )
+                }
+            }
         };
         let Ok(line_highlights) = line_highlights else {
             return plain_highlight_fallback(original_patch, tab_width, markdown_rich);
@@ -2030,10 +2096,12 @@ fn render_comment_context(
             Span::styled(line_display, app.theme.warning.style()),
         ]),
     ];
-    lines.push(Line::from(Span::styled(
-        "Added to your pending review. Published when you submit the review.",
-        app.theme.muted.style(),
-    )));
+    if !app.inline_comments_post_immediately() {
+        lines.push(Line::from(Span::styled(
+            "Added to your pending review. Published when you submit the review.",
+            app.theme.muted.style(),
+        )));
+    }
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -2066,7 +2134,19 @@ fn render_text_input_area(
         .render_with_title(frame, area, &title, placeholder);
 }
 
-/// Render the TextArea of an inline comment, whose text joins the pending review.
+/// Title of an inline composer. Pending mode names the pending review. Immediate
+/// mode uses the v0.7.4 title (`submit`, and `Suggested code` for a suggestion).
+fn inline_composer_title(app: &App, pending_label: &str, immediate_label: &str) -> String {
+    let submit_key = app.input_text_area.submit_key_display();
+    if app.inline_comments_post_immediately() {
+        format!("{immediate_label} ({submit_key}: submit, Esc: cancel)")
+    } else {
+        pending_review_input_title(pending_label, &submit_key)
+    }
+}
+
+/// Render the TextArea of an inline comment. Pending mode joins the pending
+/// review. Immediate mode posts the comment when it is submitted.
 fn render_pending_input_area(
     frame: &mut Frame,
     app: &App,
@@ -2074,16 +2154,14 @@ fn render_pending_input_area(
     label: &str,
     placeholder: &str,
 ) {
-    let submit_key = app.input_text_area.submit_key_display();
-    let title = pending_review_input_title(label, &submit_key);
+    let title = inline_composer_title(app, label, label);
     app.input_text_area
         .render_with_title(frame, area, &title, placeholder);
 }
 
 /// Render suggestion input TextArea with syntax highlighting
 fn render_suggestion_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let submit_key = app.input_text_area.submit_key_display();
-    let title = pending_review_input_title("Suggestion", &submit_key);
+    let title = inline_composer_title(app, "Suggestion", "Suggested code");
 
     if let Some(ref cache) = app.suggestion_highlight_cache {
         app.input_text_area.render_highlighted(
@@ -2218,8 +2296,13 @@ fn render_suggestion_context(
 
     // Add hint about what will be submitted
     lines.push(Line::from(""));
+    let suggestion_hint = if app.inline_comments_post_immediately() {
+        "Edit the code below. It will be posted as a GitHub suggestion."
+    } else {
+        "Edit the code below. It will be added to your pending review as a suggestion."
+    };
     lines.push(Line::from(vec![Span::styled(
-        "Edit the code below. It will be added to your pending review as a suggestion.",
+        suggestion_hint,
         Style::default().fg(Color::DarkGray),
     )]));
 
@@ -4717,6 +4800,40 @@ mod pending_review_composer_tests {
             screen.contains("It will be added to your pending"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn immediate_mode_composer_matches_the_direct_post_wording() {
+        let mut app = App::new_for_test();
+        app.config.review.inline_comment_mode = crate::config::InlineCommentMode::Immediate;
+        app.state = AppState::TextInput;
+        app.input_mode = Some(InputMode::Comment(context()));
+
+        let comment = screen(&app, 80, 24);
+        assert!(
+            comment.contains("Comment (Ctrl-s: submit, Esc: cancel)"),
+            "{comment}"
+        );
+        assert!(!comment.contains("pending review"), "{comment}");
+        assert!(
+            !comment.contains("Added to your pending review"),
+            "{comment}"
+        );
+
+        app.input_mode = Some(InputMode::Suggestion {
+            context: context(),
+            original_code: "let x = 1;".to_string(),
+        });
+        let suggestion = screen(&app, 80, 40);
+        assert!(
+            suggestion.contains("Suggested code (Ctrl-s: submit, Esc: cancel)"),
+            "{suggestion}"
+        );
+        assert!(
+            suggestion.contains("It will be posted as a GitHub suggestion."),
+            "{suggestion}"
+        );
+        assert!(!suggestion.contains("pending review"), "{suggestion}");
     }
 
     /// A reply posts at once, so its title must not claim the pending review.
